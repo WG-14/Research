@@ -12,11 +12,15 @@ def _complete_payload():
     return _structured_manifest_payload()
 
 
-@pytest.mark.parametrize("field", ("strategy_version", "execution_timing", "portfolio_policy", "risk_policy"))
+@pytest.mark.parametrize(
+    "field", ("strategy_version", "execution_timing", "portfolio_policy", "risk_policy")
+)
 def test_structured_manifest_rejects_implicit_core_experiment_contract(field):
     payload = _complete_payload()
     payload.pop(field)
-    with pytest.raises(ManifestValidationError, match=f"explicit contract field.*{field}"):
+    with pytest.raises(
+        ManifestValidationError, match=f"explicit contract field.*{field}"
+    ):
         parse_builtin_manifest(payload)
 
 

@@ -322,10 +322,9 @@ def read_segmented_hash_chain_full_snapshot(
                 if receipt is None:
                     raise ValueError("segmented_hash_chain_receipt_missing")
                 _validate_receipt(receipt, label=label)
-                if (
-                    receipt["row_hash"] != row["row_hash"]
-                    or int(receipt["sequence"]) != int(row["sequence"])
-                ):
+                if receipt["row_hash"] != row["row_hash"] or int(
+                    receipt["sequence"]
+                ) != int(row["sequence"]):
                     raise ValueError("segmented_hash_chain_receipt_binding_invalid")
             return SegmentedHashChainSnapshot(
                 rows=tuple(deepcopy(all_rows)),
@@ -396,9 +395,7 @@ def _load_for_append(
             **checkpoint,
             "active_row_count": len(active_rows),
             "row_count": int(checkpoint["active_start_sequence"]) + len(active_rows),
-            "stream_hash": _terminal_hash(
-                active_rows, checkpoint["active_prior_hash"]
-            ),
+            "stream_hash": _terminal_hash(active_rows, checkpoint["active_prior_hash"]),
         }
         _write_checkpoint(layout, checkpoint, label=label)
     return checkpoint, active_rows
@@ -495,10 +492,9 @@ def _verify_receipt(
         raise ValueError("segmented_hash_chain_duplicate_event_id")
     row = matches[0]
     _assert_payload_matches(row, expected_payload)
-    if (
-        row.get("row_hash") != receipt.get("row_hash")
-        or row.get("sequence") != receipt.get("sequence")
-    ):
+    if row.get("row_hash") != receipt.get("row_hash") or row.get(
+        "sequence"
+    ) != receipt.get("sequence"):
         raise ValueError("segmented_hash_chain_receipt_binding_invalid")
     return deepcopy(row)
 
@@ -519,10 +515,11 @@ def _read_and_validate_sealed_segment(
     )
     if (
         len(rows) != int(metadata["row_count"])
-        or _terminal_hash(rows, metadata["prior_hash"])
-        != metadata["terminal_hash"]
+        or _terminal_hash(rows, metadata["prior_hash"]) != metadata["terminal_hash"]
     ):
-        raise ValueError(f"segmented_hash_chain_metadata_binding_invalid:{segment_number}")
+        raise ValueError(
+            f"segmented_hash_chain_metadata_binding_invalid:{segment_number}"
+        )
     return rows
 
 
@@ -564,9 +561,10 @@ def _assert_active_matches_checkpoint(
         checkpoint["row_count"]
     ):
         raise ValueError("segmented_hash_chain_checkpoint_total_mismatch")
-    if _terminal_hash(rows, checkpoint["active_prior_hash"]) != checkpoint[
-        "stream_hash"
-    ]:
+    if (
+        _terminal_hash(rows, checkpoint["active_prior_hash"])
+        != checkpoint["stream_hash"]
+    ):
         raise ValueError("segmented_hash_chain_checkpoint_terminal_mismatch")
 
 
@@ -631,7 +629,9 @@ def _read_metadata(
         content_hash_payload(material), label=f"{label}_segment_metadata"
     )
     if supplied_hash != expected_hash or value.get("segment_number") != segment_number:
-        raise ValueError(f"segmented_hash_chain_metadata_hash_mismatch:{segment_number}")
+        raise ValueError(
+            f"segmented_hash_chain_metadata_hash_mismatch:{segment_number}"
+        )
     return value
 
 
@@ -726,9 +726,7 @@ def _payload_hash(payload: dict[str, Any], *, label: str) -> str:
     return sha256_prefixed(content_hash_payload(payload), label=f"{label}_payload")
 
 
-def _terminal_hash(
-    rows: list[dict[str, Any]], prior_hash: str | None
-) -> str | None:
+def _terminal_hash(rows: list[dict[str, Any]], prior_hash: str | None) -> str | None:
     return str(rows[-1]["row_hash"]) if rows else prior_hash
 
 

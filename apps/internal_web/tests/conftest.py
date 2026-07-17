@@ -72,9 +72,7 @@ def noop_research_fixture(tmp_path: Path, settings) -> tuple[ResearchPathManager
         )
         for day in ("2026-01-01", "2026-01-02"):
             base = int(
-                datetime.fromisoformat(day)
-                .replace(tzinfo=timezone.utc)
-                .timestamp()
+                datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp()
                 * 1000
             )
             prices = (100.0, 110.0, 90.0, 130.0, 120.0)

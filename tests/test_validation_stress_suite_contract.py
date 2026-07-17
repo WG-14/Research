@@ -79,7 +79,9 @@ def test_validation_bound_stress_suite_accepts_all_required_components() -> None
     assert contract.signal_omission is not None
 
 
-def test_parameter_surface_reports_connected_region_curvature_and_trade_retention() -> None:
+def test_parameter_surface_reports_connected_region_curvature_and_trade_retention() -> (
+    None
+):
     result = analyze_parameter_perturbation(
         contract={
             "relative_pct": [-10.0, 10.0],
@@ -114,12 +116,19 @@ def test_parameter_surface_reports_connected_region_curvature_and_trade_retentio
 
     assert result["status"] == "PASS"
     assert result["connected_pass_region_size"] == 3
-    assert result["local_curvature_cases"][0]["normalized_local_curvature"] == pytest.approx(0.3)
-    assert [case["trade_count_retention_pct"] for case in result["cases"]] == [90.0, 80.0]
+    assert result["local_curvature_cases"][0][
+        "normalized_local_curvature"
+    ] == pytest.approx(0.3)
+    assert [case["trade_count_retention_pct"] for case in result["cases"]] == [
+        90.0,
+        80.0,
+    ]
     assert result["unstable_peak"] is False
 
 
-def test_signal_omission_evidence_is_gated_by_layer_count_and_return_retention() -> None:
+def test_signal_omission_evidence_is_gated_by_layer_count_and_return_retention() -> (
+    None
+):
     result = analyze_signal_omission(
         contract={
             "omission_rates_pct": [25.0],
@@ -171,7 +180,9 @@ def test_analyzer_defensively_fails_a_required_contract_missing_components() -> 
     ]
 
 
-def test_validation_candidate_rejects_execution_model_without_standard_stress_dimensions() -> None:
+def test_validation_candidate_rejects_execution_model_without_standard_stress_dimensions() -> (
+    None
+):
     model = ExecutionModelConfig(
         scenarios=(
             ExecutionScenario(
@@ -237,13 +248,18 @@ def test_validation_candidate_accepts_standard_execution_stress_dimensions() -> 
         scenario_policy="must_pass_base_and_survive_stress",
     )
 
-    assert validation_execution_stress_policy_reasons(
-        research_classification="validated_candidate",
-        execution_model=model,
-    ) == []
+    assert (
+        validation_execution_stress_policy_reasons(
+            research_classification="validated_candidate",
+            execution_model=model,
+        )
+        == []
+    )
 
 
-def test_trade_bootstrap_is_reproducible_and_reports_positive_expectancy_interval() -> None:
+def test_trade_bootstrap_is_reproducible_and_reports_positive_expectancy_interval() -> (
+    None
+):
     trades = tuple(
         ClosedTradeRecord(exit_ts=index, net_pnl=value)
         for index, value in enumerate([100.0, 120.0, 80.0, 110.0, 90.0] * 2)

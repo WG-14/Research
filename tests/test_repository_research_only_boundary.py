@@ -8,14 +8,18 @@ from pathlib import Path
 
 import market_research
 
-from market_research.research_composition import list_builtin_strategies as list_research_strategies
+from market_research.research_composition import (
+    list_builtin_strategies as list_research_strategies,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_repository_has_only_research_entrypoints_and_environment_template() -> None:
-    assert not any((ROOT / name).exists() for name in ("main.py", "backtest.py", "backtest2.py"))
+    assert not any(
+        (ROOT / name).exists() for name in ("main.py", "backtest.py", "backtest2.py")
+    )
     env_keys = {
         line.split("=", 1)[0]
         for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
@@ -52,7 +56,9 @@ def test_no_operational_files_or_legacy_path_manager_remain() -> None:
 
 
 def test_architecture_paths_exist_and_strategy_catalog_is_exact() -> None:
-    boundaries = json.loads((ROOT / "docs/architecture-boundaries.json").read_text(encoding="utf-8"))
+    boundaries = json.loads(
+        (ROOT / "docs/architecture-boundaries.json").read_text(encoding="utf-8")
+    )
     for section in ("entrypoints", "research_core", "offline_data_helpers"):
         assert all((ROOT / path).exists() for path in boundaries[section])
     required_forbidden_domains = {
@@ -109,5 +115,7 @@ def test_package_source_does_not_read_legacy_db_path_environment_variable() -> N
 
 
 def test_every_package_module_imports_without_side_effects() -> None:
-    for module in pkgutil.walk_packages(market_research.__path__, market_research.__name__ + "."):
+    for module in pkgutil.walk_packages(
+        market_research.__path__, market_research.__name__ + "."
+    ):
         importlib.import_module(module.name)

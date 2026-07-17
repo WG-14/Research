@@ -116,9 +116,7 @@ def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]
             "final_holdout_result_hash_schema_version": (
                 FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION
             ),
-            "final_holdout_result_hash": confirmation[
-                "final_holdout_result_hash"
-            ],
+            "final_holdout_result_hash": confirmation["final_holdout_result_hash"],
         },
     )
     confirmation.update(
@@ -162,9 +160,7 @@ def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]
         (
             "ROBUSTNESS_PASSED",
             "OUT_OF_SAMPLE_PASSED",
-            {
-                "final_holdout_confirmation_hash": confirmation["content_hash"]
-            },
+            {"final_holdout_confirmation_hash": confirmation["content_hash"]},
         ),
     ):
         append_lifecycle_transition(
@@ -246,7 +242,9 @@ def test_governance_capabilities_use_concrete_service_contracts() -> None:
     assert review.service_id == "ResearchGovernanceApplicationService.record_review"
     assert approval.request_model is StrategyApprovalRequest
     assert approval.result_model is StrategyApprovalResult
-    assert approval.service_id == "ResearchGovernanceApplicationService.approve_candidate"
+    assert (
+        approval.service_id == "ResearchGovernanceApplicationService.approve_candidate"
+    )
 
 
 def test_record_review_enforces_permission_before_append(tmp_path: Path) -> None:
@@ -440,11 +438,13 @@ def test_approval_commit_survives_projection_failure_and_exact_replay_recovers(
     with pytest.raises(OSError, match="injected_projection_failure"):
         service.approve_candidate(request)
     assert not output_path.exists()
-    rows_after_failure = governance_registry_path(context.paths).read_text(
-        encoding="utf-8"
-    ).splitlines()
+    rows_after_failure = (
+        governance_registry_path(context.paths).read_text(encoding="utf-8").splitlines()
+    )
     assert sum('"decision":"APPROVED"' in row for row in rows_after_failure) == 1
-    assert sum('"to_state":"RESEARCH_APPROVED"' in row for row in rows_after_failure) == 1
+    assert (
+        sum('"to_state":"RESEARCH_APPROVED"' in row for row in rows_after_failure) == 1
+    )
 
     monkeypatch.setattr(
         service_module,
@@ -454,9 +454,10 @@ def test_approval_commit_survives_projection_failure_and_exact_replay_recovers(
     recovered = service.approve_candidate(request)
 
     assert json.loads(output_path.read_text(encoding="utf-8")) == recovered.approval
-    assert governance_registry_path(context.paths).read_text(
-        encoding="utf-8"
-    ).splitlines() == rows_after_failure
+    assert (
+        governance_registry_path(context.paths).read_text(encoding="utf-8").splitlines()
+        == rows_after_failure
+    )
 
 
 def test_approval_explicit_key_conflict_and_projection_no_clobber(
@@ -512,9 +513,9 @@ def test_approval_projection_rejects_symlink_path_before_governance_commit(
             )
         )
 
-    rows = governance_registry_path(context.paths).read_text(
-        encoding="utf-8"
-    ).splitlines()
+    rows = (
+        governance_registry_path(context.paths).read_text(encoding="utf-8").splitlines()
+    )
     assert not any('"decision":"APPROVED"' in row for row in rows)
     assert real_target.read_text(encoding="utf-8") == "sentinel\n"
 
@@ -548,6 +549,5 @@ def test_cli_approval_adapter_preserves_success_output_and_exit_code(
     assert approval_path.exists()
     approval = json.loads(approval_path.read_text(encoding="utf-8"))
     assert output == [
-        "[RESEARCH-APPROVE-STRATEGY-CANDIDATE] "
-        f"content_hash={approval['content_hash']}"
+        f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] content_hash={approval['content_hash']}"
     ]

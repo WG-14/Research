@@ -203,6 +203,6 @@ def test_audit_projection_redacts_server_paths_and_secrets() -> None:
         "path": "<redacted-path>",
         "locator": "<redacted-path>",
     }
-    assert redact_server_topology(
-        {"locator": "file:///srv/private/result.json"}
-    ) == {"locator": "<server-managed>"}
+    assert redact_server_topology({"locator": "file:///srv/private/result.json"}) == {
+        "locator": "<server-managed>"
+    }

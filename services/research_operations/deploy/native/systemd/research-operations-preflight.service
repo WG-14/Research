@@ -1,0 +1,42 @@
+[Unit]
+Description=Research Operations fail-closed deployment preflight
+Documentation=file:/opt/research-platform/current/services/research_operations/deploy/native/README.md
+Wants=network-online.target
+After=network-online.target postgresql.service
+Before=research-operations-migrate.service nginx.service
+
+[Service]
+Type=oneshot
+User=root
+Group=research-ops
+EnvironmentFile=/etc/research-ops/runtime.env
+ExecStart=/usr/bin/python3 /opt/research-platform/current/services/research_operations/deploy/native/bin/preflight.py
+UMask=0077
+RuntimeDirectory=research-operations-preflight
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/run/research-operations-preflight
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+TasksMax=32
+MemoryMax=256M
+CPUQuota=100%
+TimeoutStartSec=45
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=research-operations-preflight

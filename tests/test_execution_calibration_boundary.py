@@ -6,12 +6,17 @@ from pathlib import Path
 import pytest
 from market_research.research_composition import builtin_strategy_registry
 
-from market_research.research.execution_calibration import build_calibration_artifact, compare_calibration_to_scenario
+from market_research.research.execution_calibration import (
+    build_calibration_artifact,
+    compare_calibration_to_scenario,
+)
 from market_research.research.readiness import build_research_readiness_report
 from market_research.research_cli.main import build_parser
 
 
-def _summary(*, sample_count: int = 30, execution_contract_hash: str | None = None) -> dict[str, object]:
+def _summary(
+    *, sample_count: int = 30, execution_contract_hash: str | None = None
+) -> dict[str, object]:
     return {
         "sample_count": sample_count,
         "median_slippage_vs_signal_bps": 4.0,
@@ -46,28 +51,49 @@ def _gate(artifact: dict[str, object], **kwargs: object) -> dict[str, object]:
 
 def test_canonical_calibration_artifact_retains_hash_and_gate_contracts() -> None:
     artifact = build_calibration_artifact(
-        summary=_summary(), market="KRW-BTC", interval="1m", generated_at="2026-01-01T00:00:00+00:00"
+        summary=_summary(),
+        market="KRW-BTC",
+        interval="1m",
+        generated_at="2026-01-01T00:00:00+00:00",
     )
     assert _gate(artifact)["status"] == "PASS"
 
     tampered = dict(artifact)
     tampered["content_hash"] = "sha256:tampered"
     assert "execution_calibration_content_hash_mismatch" in _gate(tampered)["reasons"]
-    assert "execution_calibration_market_mismatch" in _gate(artifact, expected_market="USD-BTC")["reasons"]
-    assert "execution_calibration_interval_mismatch" in _gate(artifact, expected_interval="5m")["reasons"]
+    assert (
+        "execution_calibration_market_mismatch"
+        in _gate(artifact, expected_market="USD-BTC")["reasons"]
+    )
+    assert (
+        "execution_calibration_interval_mismatch"
+        in _gate(artifact, expected_interval="5m")["reasons"]
+    )
 
-    insufficient = build_calibration_artifact(summary=_summary(sample_count=1), market="KRW-BTC", interval="1m")
-    assert "execution_calibration_sample_count_below_required" in _gate(insufficient)["reasons"]
+    insufficient = build_calibration_artifact(
+        summary=_summary(sample_count=1), market="KRW-BTC", interval="1m"
+    )
+    assert (
+        "execution_calibration_sample_count_below_required"
+        in _gate(insufficient)["reasons"]
+    )
 
     contract = build_calibration_artifact(
-        summary=_summary(execution_contract_hash="sha256:external-contract"), market="KRW-BTC", interval="1m"
+        summary=_summary(execution_contract_hash="sha256:external-contract"),
+        market="KRW-BTC",
+        interval="1m",
     )
-    assert "execution_calibration_contract_hash_mismatch" in _gate(
-        contract, expected_execution_contract_hash="sha256:different-contract"
-    )["reasons"]
+    assert (
+        "execution_calibration_contract_hash_mismatch"
+        in _gate(
+            contract, expected_execution_contract_hash="sha256:different-contract"
+        )["reasons"]
+    )
 
 
-def test_readiness_fails_closed_for_missing_candles_without_classification_artifact(tmp_path: Path) -> None:
+def test_readiness_fails_closed_for_missing_candles_without_classification_artifact(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "input.sqlite"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -83,7 +109,10 @@ def test_readiness_fails_closed_for_missing_candles_without_classification_artif
 
     assert report["status"] == "FAIL"
     assert "persistent_missing_classification" not in report
-    assert any("replace or correct the external immutable dataset" in action for action in report["next_actions"])
+    assert any(
+        "replace or correct the external immutable dataset" in action
+        for action in report["next_actions"]
+    )
     assert all(
         "external immutable dataset" in action or "external SQLite" in action
         for action in report["next_actions"]
@@ -95,9 +124,17 @@ def test_readiness_fails_closed_for_missing_candles_without_classification_artif
 
 def test_readiness_cli_has_no_missing_classification_option() -> None:
     parser = build_parser()
-    args = parser.parse_args(["research-readiness", "--manifest", "/abs/experiment.json"])
+    args = parser.parse_args(
+        ["research-readiness", "--manifest", "/abs/experiment.json"]
+    )
     assert not hasattr(args, "missing_classification")
     with pytest.raises(SystemExit):
         parser.parse_args(
-            ["research-readiness", "--manifest", "/abs/experiment.json", "--missing-classification", "/abs/legacy.json"]
+            [
+                "research-readiness",
+                "--manifest",
+                "/abs/experiment.json",
+                "--missing-classification",
+                "/abs/legacy.json",
+            ]
         )

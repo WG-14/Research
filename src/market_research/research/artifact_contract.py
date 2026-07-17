@@ -59,7 +59,9 @@ def apply_artifact_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
     merged = dict(payload)
     merged.update(
-        diagnostic_feature_mining_taxonomy(researcher_next_action=researcher_next_action)
+        diagnostic_feature_mining_taxonomy(
+            researcher_next_action=researcher_next_action
+        )
     )
     merged["artifact_type"] = artifact_type
     merged["schema_version"] = 2
@@ -70,7 +72,10 @@ def apply_artifact_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
 def validate_artifact_contract(payload: Mapping[str, Any]) -> None:
     artifact_type = str(payload.get("artifact_type") or "")
     contract = artifact_contract_for_type(artifact_type)
-    if payload.get("artifact_role") != "diagnostic" or payload.get("diagnostic_only") is not True:
+    if (
+        payload.get("artifact_role") != "diagnostic"
+        or payload.get("diagnostic_only") is not True
+    ):
         raise ValueError(f"{artifact_type} must remain diagnostic-only")
     if payload.get("validation_evidence") is not False:
         raise ValueError(f"{artifact_type} must not be validation evidence")
@@ -79,15 +84,17 @@ def validate_artifact_contract(payload: Mapping[str, Any]) -> None:
     if payload.get("evidence_scope") != contract.evidence_scope:
         raise ValueError(f"{artifact_type} evidence_scope mismatch")
     forbidden_uses = payload.get("forbidden_uses")
-    if not isinstance(forbidden_uses, list) or not set(contract.forbidden_uses).issubset(
-        {str(item) for item in forbidden_uses}
-    ):
+    if not isinstance(forbidden_uses, list) or not set(
+        contract.forbidden_uses
+    ).issubset({str(item) for item in forbidden_uses}):
         raise ValueError(f"{artifact_type} forbidden_uses incomplete")
     if not str(payload.get("researcher_next_action") or "").strip():
         raise ValueError(f"{artifact_type} researcher_next_action required")
 
 
-def diagnostic_artifact_rejection_reasons(payload: Mapping[str, Any] | None) -> tuple[str, ...]:
+def diagnostic_artifact_rejection_reasons(
+    payload: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
     if not isinstance(payload, Mapping):
         return ()
     artifact_type = str(payload.get("artifact_type") or "")
@@ -97,7 +104,10 @@ def diagnostic_artifact_rejection_reasons(payload: Mapping[str, Any] | None) -> 
         "diagnostic_artifact_not_validation_evidence",
         "diagnostic_artifact_not_candidate_selection_evidence",
     ]
-    reasons.extend(f"forbidden_use:{value}" for value in _ARTIFACT_CONTRACTS[artifact_type].forbidden_uses)
+    reasons.extend(
+        f"forbidden_use:{value}"
+        for value in _ARTIFACT_CONTRACTS[artifact_type].forbidden_uses
+    )
     try:
         validate_artifact_contract(payload)
     except ValueError as exc:

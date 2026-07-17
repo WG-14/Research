@@ -24,9 +24,7 @@ def _candidate() -> dict[str, object]:
 
 def _candidate_scores() -> list[dict[str, object]]:
     score_material = {"candidate_id": "candidate-a", "eligible": True}
-    return [
-        {**score_material, "score_hash": sha256_prefixed(score_material)}
-    ]
+    return [{**score_material, "score_hash": sha256_prefixed(score_material)}]
 
 
 def _artifact(candidate: dict[str, object]) -> dict[str, object]:
@@ -60,9 +58,7 @@ def _manifest(*, holdout_required: bool = False, holdout_present: bool = False):
     )
 
 
-def _report(
-    *, candidate: dict[str, object], artifact: dict[str, object], **overrides
-):
+def _report(*, candidate: dict[str, object], artifact: dict[str, object], **overrides):
     candidate_scores = _candidate_scores()
     payload = {
         "manifest_hash": artifact["manifest_hash"],

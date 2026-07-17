@@ -30,6 +30,16 @@ venv/
 !.env.example
 *.key
 *.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+*.htpasswd
+*.dump
+*.backup
+**/runtime.env
+**/secrets/
+**/pki/
 
 # =========================
 # Runtime / local state

@@ -46,8 +46,16 @@ def stress_suite_required(manifest_or_payload: Any) -> bool:
     if hasattr(manifest_or_payload, "stress_suite"):
         contract = getattr(manifest_or_payload, "stress_suite")
         return bool(contract.required_for_validation) if contract is not None else False
-    contract = manifest_or_payload.get("stress_suite_contract") if isinstance(manifest_or_payload, dict) else None
-    return bool(contract.get("required_for_validation")) if isinstance(contract, dict) else False
+    contract = (
+        manifest_or_payload.get("stress_suite_contract")
+        if isinstance(manifest_or_payload, dict)
+        else None
+    )
+    return (
+        bool(contract.get("required_for_validation"))
+        if isinstance(contract, dict)
+        else False
+    )
 
 
 def stress_suite_required_for_candidate(
@@ -58,7 +66,10 @@ def stress_suite_required_for_candidate(
     return (
         bool(candidate.get("stress_suite_required"))
         or bool(report_payload.get("stress_suite_required"))
-        or requires_candidate_validation(candidate.get("research_classification") or report_payload.get("research_classification"))
+        or requires_candidate_validation(
+            candidate.get("research_classification")
+            or report_payload.get("research_classification")
+        )
     )
 
 
@@ -171,8 +182,12 @@ def analyze_stress_suite(
             starting_cash=starting_cash,
         )
         payload["trade_bootstrap_uncertainty"] = uncertainty_section
-        fail_reasons.extend(str(reason) for reason in uncertainty_section.get("fail_reasons") or [])
-        limitations.extend(str(item) for item in uncertainty_section.get("limitations") or [])
+        fail_reasons.extend(
+            str(reason) for reason in uncertainty_section.get("fail_reasons") or []
+        )
+        limitations.extend(
+            str(item) for item in uncertainty_section.get("limitations") or []
+        )
     if contract.risk_adjusted_score is not None:
         section = analyze_risk_adjusted_score(
             contract=contract.risk_adjusted_score.as_dict(),
@@ -199,7 +214,10 @@ def analyze_trade_removal(
     fail_reasons: list[str] = []
     cases: list[dict[str, Any]] = []
     if not closed_trades:
-        if contract.get("min_return_retention_pct") is None and contract.get("max_mdd_multiplier") is None:
+        if (
+            contract.get("min_return_retention_pct") is None
+            and contract.get("max_mdd_multiplier") is None
+        ):
             return {
                 "status": "PASS",
                 "cases": [],
@@ -209,7 +227,10 @@ def analyze_trade_removal(
         return {
             "status": "FAIL",
             "cases": [],
-            "fail_reasons": ["stress_trade_removal_no_closed_trades", "stress_trade_removal_return_retention_failed"],
+            "fail_reasons": [
+                "stress_trade_removal_no_closed_trades",
+                "stress_trade_removal_return_retention_failed",
+            ],
             "limitations": ["stress_trade_removal_no_closed_trades"],
         }
     top_values = [int(item) for item in contract.get("top_n_by_net_pnl") or []]
@@ -278,7 +299,9 @@ def analyze_trade_order_monte_carlo(
     if not closed_trades:
         survival_probability = 0.0
         fail_reasons.append("stress_monte_carlo_no_closed_trades")
-        if contract.get("min_survival_probability") is not None and survival_probability < float(
+        if contract.get(
+            "min_survival_probability"
+        ) is not None and survival_probability < float(
             contract.get("min_survival_probability")
         ):
             fail_reasons.append("stress_monte_carlo_survival_probability_failed")
@@ -455,7 +478,11 @@ def analyze_period_ablation(
             }
         trade_years.append(year)
     requested = contract.get("calendar_years")
-    calendar_years = sorted(set(trade_years)) if requested == "auto" else [int(item) for item in requested or []]
+    calendar_years = (
+        sorted(set(trade_years))
+        if requested == "auto"
+        else [int(item) for item in requested or []]
+    )
     matching_years = [year for year in calendar_years if year in set(trade_years)]
     if not matching_years:
         return {
@@ -475,7 +502,9 @@ def analyze_period_ablation(
     required_data_missing = False
     case_fail_reasons: list[str] = []
     for year in matching_years:
-        kept = tuple(trade for trade in closed_trades if _trade_exit_year(trade) != year)
+        kept = tuple(
+            trade for trade in closed_trades if _trade_exit_year(trade) != year
+        )
         removed_count = len(closed_trades) - len(kept)
         stressed = _trade_summary(kept, starting_cash=starting_cash)
         retention = (
@@ -504,7 +533,9 @@ def analyze_period_ablation(
                 "stressed_realized_return_pct": stressed["realized_return_pct"],
                 "return_retention_pct": retention,
                 "stressed_profit_factor": stressed["profit_factor"],
-                "stressed_expectancy_per_trade_krw": stressed["expectancy_per_trade_krw"],
+                "stressed_expectancy_per_trade_krw": stressed[
+                    "expectancy_per_trade_krw"
+                ],
                 "stressed_win_rate": stressed["win_rate"],
                 "gate_result": "PASS" if not case_reasons else "FAIL",
                 "fail_reasons": sorted(set(case_reasons)),
@@ -515,7 +546,9 @@ def analyze_period_ablation(
     if pass_ratio < min_pass_ratio:
         fail_reasons.append("stress_period_ablation_pass_ratio_failed")
         fail_reasons.extend(
-            reason for reason in case_fail_reasons if reason != "stress_period_ablation_required_data_missing"
+            reason
+            for reason in case_fail_reasons
+            if reason != "stress_period_ablation_required_data_missing"
         )
     if required_data_missing:
         fail_reasons.append("stress_period_ablation_required_data_missing")
@@ -552,11 +585,17 @@ def analyze_parameter_perturbation(
 ) -> dict[str, Any]:
     relative_values = [float(item) for item in contract.get("relative_pct") or []]
     min_pass_ratio = float(contract.get("min_pass_ratio") or 0.8)
-    min_trade_retention = float(contract.get("min_neighbor_trade_count_retention_pct", 50.0))
+    min_trade_retention = float(
+        contract.get("min_neighbor_trade_count_retention_pct", 50.0)
+    )
     min_return_retention = float(contract.get("min_neighbor_return_retention_pct", 0.0))
     min_connected_size = int(contract.get("min_connected_pass_region_size", 2))
     max_curvature = float(contract.get("max_normalized_local_curvature", 2.0))
-    numeric_items = [(key, value) for key, value in sorted(base_parameter_values.items()) if _is_numeric_param_value(value)]
+    numeric_items = [
+        (key, value)
+        for key, value in sorted(base_parameter_values.items())
+        if _is_numeric_param_value(value)
+    ]
     if not numeric_items:
         return {
             "method": "existing_grid_relative_parameter_perturbation",
@@ -584,10 +623,13 @@ def analyze_parameter_perturbation(
         for item in candidates
         if isinstance(item.get("parameter_values"), dict)
     }
-    base_candidate = candidate_by_params.get(_parameter_signature(base_parameter_values))
+    base_candidate = candidate_by_params.get(
+        _parameter_signature(base_parameter_values)
+    )
     base_metrics = (
         base_candidate.get("validation_metrics")
-        if isinstance(base_candidate, dict) and isinstance(base_candidate.get("validation_metrics"), dict)
+        if isinstance(base_candidate, dict)
+        and isinstance(base_candidate.get("validation_metrics"), dict)
         else {}
     )
     base_return = _finite_or_none(base_metrics.get("return_pct"))
@@ -611,38 +653,68 @@ def analyze_parameter_perturbation(
                 matched_gate = None
             else:
                 matched_candidate_id = matched.get("candidate_id")
-                validation_metrics = matched.get("validation_metrics") if isinstance(matched.get("validation_metrics"), dict) else {}
-                final_holdout_metrics = (
-                    matched.get("final_holdout_metrics") if isinstance(matched.get("final_holdout_metrics"), dict) else None
+                validation_metrics = (
+                    matched.get("validation_metrics")
+                    if isinstance(matched.get("validation_metrics"), dict)
+                    else {}
                 )
-                validation_return = _finite_or_none(validation_metrics.get("return_pct"))
-                validation_trade_count = _finite_or_none(validation_metrics.get("trade_count"))
-                validation_mdd = _finite_or_none(validation_metrics.get("max_drawdown_pct"))
+                final_holdout_metrics = (
+                    matched.get("final_holdout_metrics")
+                    if isinstance(matched.get("final_holdout_metrics"), dict)
+                    else None
+                )
+                validation_return = _finite_or_none(
+                    validation_metrics.get("return_pct")
+                )
+                validation_trade_count = _finite_or_none(
+                    validation_metrics.get("trade_count")
+                )
+                validation_mdd = _finite_or_none(
+                    validation_metrics.get("max_drawdown_pct")
+                )
                 final_holdout_return = (
-                    _finite_or_none(final_holdout_metrics.get("return_pct")) if isinstance(final_holdout_metrics, dict) else None
+                    _finite_or_none(final_holdout_metrics.get("return_pct"))
+                    if isinstance(final_holdout_metrics, dict)
+                    else None
                 )
                 matched_gate = str(matched.get("scenario_acceptance_gate_result") or "")
-                matched_fail_reasons = [str(reason) for reason in matched.get("scenario_fail_reasons") or []]
+                matched_fail_reasons = [
+                    str(reason) for reason in matched.get("scenario_fail_reasons") or []
+                ]
                 if matched_gate != "PASS":
-                    case_reasons.append("stress_parameter_perturbation_constraint_invalid")
+                    case_reasons.append(
+                        "stress_parameter_perturbation_constraint_invalid"
+                    )
                 trade_count_retention = (
                     (validation_trade_count / base_trade_count) * 100.0
-                    if validation_trade_count is not None and base_trade_count is not None and base_trade_count > 0.0
+                    if validation_trade_count is not None
+                    and base_trade_count is not None
+                    and base_trade_count > 0.0
                     else None
                 )
                 return_retention = (
                     (validation_return / base_return) * 100.0
-                    if validation_return is not None and base_return is not None and base_return > 0.0
+                    if validation_return is not None
+                    and base_return is not None
+                    and base_return > 0.0
                     else None
                 )
                 if trade_count_retention is None:
-                    case_reasons.append("stress_parameter_perturbation_trade_count_retention_missing")
+                    case_reasons.append(
+                        "stress_parameter_perturbation_trade_count_retention_missing"
+                    )
                 elif trade_count_retention < min_trade_retention:
-                    case_reasons.append("stress_parameter_perturbation_trade_count_retention_failed")
+                    case_reasons.append(
+                        "stress_parameter_perturbation_trade_count_retention_failed"
+                    )
                 if return_retention is None:
-                    case_reasons.append("stress_parameter_perturbation_return_retention_missing")
+                    case_reasons.append(
+                        "stress_parameter_perturbation_return_retention_missing"
+                    )
                 elif return_retention < min_return_retention:
-                    case_reasons.append("stress_parameter_perturbation_return_retention_failed")
+                    case_reasons.append(
+                        "stress_parameter_perturbation_return_retention_failed"
+                    )
             if matched is None:
                 validation_trade_count = None
                 trade_count_retention = None
@@ -669,16 +741,19 @@ def analyze_parameter_perturbation(
                 }
             )
     pass_ratio = passing / len(cases) if cases else 0.0
-    fail_reasons = sorted({reason for case in cases for reason in case.get("fail_reasons") or []})
+    fail_reasons = sorted(
+        {reason for case in cases for reason in case.get("fail_reasons") or []}
+    )
     if pass_ratio < min_pass_ratio:
         fail_reasons.append("stress_parameter_perturbation_pass_ratio_failed")
     connected_pass_region_size = 1 + passing if base_candidate is not None else 0
     if connected_pass_region_size < min_connected_size:
-        fail_reasons.append("stress_parameter_perturbation_connected_pass_region_too_small")
+        fail_reasons.append(
+            "stress_parameter_perturbation_connected_pass_region_too_small"
+        )
     curvature_cases: list[dict[str, Any]] = []
     cases_by_key = {
-        (str(case["parameter"]), float(case["relative_pct"])): case
-        for case in cases
+        (str(case["parameter"]), float(case["relative_pct"])): case for case in cases
     }
     for parameter, _base_value in numeric_items:
         magnitudes = sorted({abs(value) for value in relative_values if value != 0.0})
@@ -741,18 +816,35 @@ def analyze_parameter_perturbation(
     )
 
 
-def analyze_risk_adjusted_score(*, contract: dict[str, Any], metrics_v2: dict[str, Any] | None) -> dict[str, Any]:
-    return_risk = metrics_v2.get("return_risk") if isinstance(metrics_v2, dict) and isinstance(metrics_v2.get("return_risk"), dict) else {}
+def analyze_risk_adjusted_score(
+    *, contract: dict[str, Any], metrics_v2: dict[str, Any] | None
+) -> dict[str, Any]:
+    return_risk = (
+        metrics_v2.get("return_risk")
+        if isinstance(metrics_v2, dict)
+        and isinstance(metrics_v2.get("return_risk"), dict)
+        else {}
+    )
     cagr = _finite_or_none(return_risk.get("cagr_pct"))
     mdd = _finite_or_none(return_risk.get("max_drawdown_pct"))
-    calmar = (cagr / mdd) if cagr is not None and mdd is not None and mdd > 0.0 else None
+    calmar = (
+        (cagr / mdd) if cagr is not None and mdd is not None and mdd > 0.0 else None
+    )
     sharpe = _finite_or_none(return_risk.get("sharpe_ratio"))
     sortino = _finite_or_none(return_risk.get("sortino_ratio"))
-    limitations = [str(item) for item in (metrics_v2 or {}).get("limitation_reasons", [])] if isinstance(metrics_v2, dict) else []
+    limitations = (
+        [str(item) for item in (metrics_v2 or {}).get("limitation_reasons", [])]
+        if isinstance(metrics_v2, dict)
+        else []
+    )
     limitations = [
         item
         for item in limitations
-        if item in {"sharpe_unavailable_without_period_return_series", "sortino_unavailable_without_period_return_series"}
+        if item
+        in {
+            "sharpe_unavailable_without_period_return_series",
+            "sortino_unavailable_without_period_return_series",
+        }
     ]
     if sharpe is None:
         limitations.append("sharpe_unavailable_without_period_return_series")
@@ -808,7 +900,9 @@ def analyze_signal_omission(
                 reasons.append("stress_signal_omission_minimum_omitted_signals_failed")
         retention = (
             (stressed_return / base_return) * 100.0
-            if stressed_return is not None and base_return is not None and base_return > 0.0
+            if stressed_return is not None
+            and base_return is not None
+            and base_return > 0.0
             else None
         )
         if retention is None:
@@ -839,7 +933,9 @@ def analyze_signal_omission(
     )
 
 
-def validate_stress_suite_evidence_for_candidate(candidate: dict[str, Any], report: dict[str, Any]) -> list[str]:
+def validate_stress_suite_evidence_for_candidate(
+    candidate: dict[str, Any], report: dict[str, Any]
+) -> list[str]:
     reasons: list[str] = []
     required = stress_suite_required_for_candidate(candidate, report)
     if not required:
@@ -850,16 +946,25 @@ def validate_stress_suite_evidence_for_candidate(candidate: dict[str, Any], repo
     if candidate.get("stress_suite_gate_result") != "PASS":
         reasons.append("stress_suite_gate_not_passed")
     expected_contract_hash = str(candidate.get("stress_suite_contract_hash") or "")
-    actual_contract_hash = sha256_prefixed(contract) if isinstance(contract, dict) else ""
+    actual_contract_hash = (
+        sha256_prefixed(contract) if isinstance(contract, dict) else ""
+    )
     if not expected_contract_hash.startswith("sha256:"):
         reasons.append("stress_suite_hash_missing")
     elif actual_contract_hash != expected_contract_hash:
         reasons.append("stress_suite_hash_mismatch")
     report_contract = report.get("stress_suite_contract")
     report_contract_hash = str(report.get("stress_suite_contract_hash") or "")
-    if isinstance(report_contract, dict) and isinstance(contract, dict) and report_contract != contract:
+    if (
+        isinstance(report_contract, dict)
+        and isinstance(contract, dict)
+        and report_contract != contract
+    ):
         reasons.append("stress_suite_contract_mismatch")
-    if report_contract_hash.startswith("sha256:") and report_contract_hash != expected_contract_hash:
+    if (
+        report_contract_hash.startswith("sha256:")
+        and report_contract_hash != expected_contract_hash
+    ):
         reasons.append("stress_suite_contract_mismatch")
     _validate_stress_evidence(
         candidate.get("validation_stress_suite"),
@@ -884,7 +989,10 @@ def validate_stress_suite_evidence_for_candidate(candidate: dict[str, Any], repo
 
 
 def _final_holdout_stress_required(candidate: dict[str, Any]) -> bool:
-    return candidate.get("final_holdout_present") is True or candidate.get("final_holdout_required_for_validation") is True
+    return (
+        candidate.get("final_holdout_present") is True
+        or candidate.get("final_holdout_required_for_validation") is True
+    )
 
 
 def _validate_stress_evidence(
@@ -904,7 +1012,11 @@ def _validate_stress_evidence(
     if not embedded_hash.startswith("sha256:"):
         reasons.append(hash_missing_code)
     else:
-        actual_hash = sha256_prefixed(content_hash_payload({k: v for k, v in evidence.items() if k != "stress_suite_hash"}))
+        actual_hash = sha256_prefixed(
+            content_hash_payload(
+                {k: v for k, v in evidence.items() if k != "stress_suite_hash"}
+            )
+        )
         if actual_hash != embedded_hash:
             reasons.append(hash_mismatch_code)
     if evidence.get("contract_hash") != expected_contract_hash:
@@ -927,7 +1039,11 @@ def _trade_exit_year(trade: ClosedTradeRecord) -> int | None:
 
 
 def _is_numeric_param_value(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 def _perturbed_value(base_value: Any, relative_pct: float) -> Any:
@@ -937,11 +1053,17 @@ def _perturbed_value(base_value: Any, relative_pct: float) -> Any:
     return round(target, 12)
 
 
-def _parameter_signature(parameter_values: dict[str, Any]) -> tuple[tuple[str, str], ...]:
-    return tuple((str(key), repr(value)) for key, value in sorted(parameter_values.items()))
+def _parameter_signature(
+    parameter_values: dict[str, Any],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (str(key), repr(value)) for key, value in sorted(parameter_values.items())
+    )
 
 
-def _trade_summary(trades: tuple[ClosedTradeRecord, ...], *, starting_cash: float) -> dict[str, Any]:
+def _trade_summary(
+    trades: tuple[ClosedTradeRecord, ...], *, starting_cash: float
+) -> dict[str, Any]:
     values = [float(trade.net_pnl) for trade in trades]
     wins = [value for value in values if value > 0.0]
     losses = [value for value in values if value < 0.0]
@@ -949,14 +1071,18 @@ def _trade_summary(trades: tuple[ClosedTradeRecord, ...], *, starting_cash: floa
     gross_loss = abs(sum(losses))
     return {
         "trade_count": len(values),
-        "realized_return_pct": (sum(values) / starting_cash * 100.0) if starting_cash > 0.0 else 0.0,
+        "realized_return_pct": (sum(values) / starting_cash * 100.0)
+        if starting_cash > 0.0
+        else 0.0,
         "profit_factor": (gross_profit / gross_loss) if gross_loss > 0.0 else None,
         "expectancy_per_trade_krw": (sum(values) / len(values)) if values else None,
         "win_rate": (len(wins) / len(values)) if values else 0.0,
     }
 
 
-def _pnl_path_stats(values: list[float], *, starting_cash: float) -> tuple[float, float, int]:
+def _pnl_path_stats(
+    values: list[float], *, starting_cash: float
+) -> tuple[float, float, int]:
     equity = float(starting_cash)
     peak = max(equity, 1e-12)
     max_drawdown = 0.0
@@ -991,7 +1117,9 @@ def _percentile(values: list[float] | list[int], pct: float) -> float | None:
 
 
 def _metrics_v2_max_drawdown(metrics_v2: dict[str, Any] | None) -> float | None:
-    if not isinstance(metrics_v2, dict) or not isinstance(metrics_v2.get("return_risk"), dict):
+    if not isinstance(metrics_v2, dict) or not isinstance(
+        metrics_v2.get("return_risk"), dict
+    ):
         return None
     return _finite_or_none(metrics_v2["return_risk"].get("max_drawdown_pct"))
 

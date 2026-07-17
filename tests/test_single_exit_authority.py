@@ -1,7 +1,9 @@
 from pathlib import Path
 from dataclasses import replace
 import pytest
-from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
+from market_research.research_composition import (
+    resolve_builtin_strategy as resolve_research_strategy,
+)
 
 
 def test_common_engine_does_not_import_strategy_exit_evaluator():
@@ -11,7 +13,9 @@ def test_common_engine_does_not_import_strategy_exit_evaluator():
 
 
 def test_sma_event_does_not_prebuild_final_exit_intent():
-    source = Path("src/market_research/research/strategies/sma_with_filter_events.py").read_text()
+    source = Path(
+        "src/market_research/research/strategies/sma_with_filter_events.py"
+    ).read_text()
     assert "exit_intent=" not in source
 
 

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .contracts import DatasetAdapter, DatasetArtifactAdapter, OrderbookDepthAdapter, TopOfBookAdapter, UnsupportedDatasetAdapterError
+from .contracts import (
+    DatasetAdapter,
+    DatasetArtifactAdapter,
+    OrderbookDepthAdapter,
+    TopOfBookAdapter,
+    UnsupportedDatasetAdapterError,
+)
 
 
 @dataclass
@@ -16,21 +22,44 @@ class DatasetAdapterRegistry:
         source = str(adapter.source or "").strip()
         if not source:
             raise ValueError("dataset adapter source must be non-empty")
-        required_methods = ("load_range", "quality_report", "provenance", "verify_snapshot")
+        required_methods = (
+            "load_range",
+            "quality_report",
+            "provenance",
+            "verify_snapshot",
+        )
         required_attributes = ("requires_runtime_db", "requires_artifact_manifest")
-        missing = [name for name in required_methods if not callable(getattr(adapter, name, None))]
-        missing.extend(name for name in required_attributes if not hasattr(adapter, name))
+        missing = [
+            name
+            for name in required_methods
+            if not callable(getattr(adapter, name, None))
+        ]
+        missing.extend(
+            name for name in required_attributes if not hasattr(adapter, name)
+        )
         if missing:
-            raise ValueError(f"dataset_adapter_missing_capability:{source}:{','.join(missing)}")
+            raise ValueError(
+                f"dataset_adapter_missing_capability:{source}:{','.join(missing)}"
+            )
         self._adapters[source] = adapter
         if bool(getattr(adapter, "requires_artifact_manifest")):
             self.register_artifact(adapter)  # type: ignore[arg-type]
 
     def register_artifact(self, adapter: DatasetArtifactAdapter) -> None:
         source = str(adapter.source or "").strip()
-        required = ("resolve", "verify", "materialize", "requires_artifact_manifest", "requires_runtime_db")
+        required = (
+            "resolve",
+            "verify",
+            "materialize",
+            "requires_artifact_manifest",
+            "requires_runtime_db",
+        )
         missing = [name for name in required if not hasattr(adapter, name)]
-        if not source or missing or not bool(getattr(adapter, "requires_artifact_manifest", False)):
+        if (
+            not source
+            or missing
+            or not bool(getattr(adapter, "requires_artifact_manifest", False))
+        ):
             suffix = ",".join(missing) if missing else "requires_artifact_manifest"
             raise ValueError(f"dataset_artifact_adapter_incomplete:{source}:{suffix}")
         self._artifact_adapters[source] = adapter
@@ -51,7 +80,9 @@ class DatasetAdapterRegistry:
         normalized = str(source or "").strip()
         adapter = self._adapters.get(normalized)
         if adapter is None:
-            raise UnsupportedDatasetAdapterError(f"unsupported_dataset_adapter:{normalized}")
+            raise UnsupportedDatasetAdapterError(
+                f"unsupported_dataset_adapter:{normalized}"
+            )
         return adapter
 
     def resolve_top_of_book(self, source: str) -> TopOfBookAdapter:
@@ -59,7 +90,9 @@ class DatasetAdapterRegistry:
         adapter = self._top_of_book_adapters.get(normalized)
         if adapter is not None:
             return adapter
-        raise UnsupportedDatasetAdapterError(f"unsupported_top_of_book_adapter:{normalized}")
+        raise UnsupportedDatasetAdapterError(
+            f"unsupported_top_of_book_adapter:{normalized}"
+        )
 
     def resolve_depth(self, source: str) -> OrderbookDepthAdapter:
         normalized = str(source or "").strip()
@@ -71,7 +104,9 @@ class DatasetAdapterRegistry:
     def resolve_capability(self, source: str, capability: str) -> DatasetAdapter:
         adapter = self.resolve(source)
         normalized_capability = str(capability or "").strip()
-        if normalized_capability not in getattr(adapter, "supported_capabilities", frozenset()):
+        if normalized_capability not in getattr(
+            adapter, "supported_capabilities", frozenset()
+        ):
             raise UnsupportedDatasetAdapterError(
                 f"unsupported_dataset_capability:{source}:{normalized_capability}"
             )
@@ -80,7 +115,9 @@ class DatasetAdapterRegistry:
     def resolve_artifact(self, source: str) -> DatasetArtifactAdapter:
         adapter = self._artifact_adapters.get(str(source or "").strip())
         if adapter is None:
-            raise UnsupportedDatasetAdapterError(f"dataset_artifact_adapter_required:{source}")
+            raise UnsupportedDatasetAdapterError(
+                f"dataset_artifact_adapter_required:{source}"
+            )
         return adapter
 
     def sources(self) -> tuple[str, ...]:

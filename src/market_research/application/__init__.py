@@ -45,9 +45,23 @@ from .errors import (
 )
 from .service import ResearchApplicationService
 from .governance_service import ResearchGovernanceApplicationService
+from .release import ReleaseMetadata, ReleaseMetadataError
+from .cli_execution import (
+    ADMITTED_CLI_EXECUTION_SCOPE,
+    LEGACY_WEB_CLAIM_SCOPE,
+    LEGACY_WEB_WORKER_SCOPE,
+    RESEARCH_JOB_DISPATCH_SCOPE,
+    OperatedAdmissionBinding,
+    OperatedExecutionDenied,
+    ResearchCliOutcome,
+    execute_admitted_research_cli,
+    is_operated_runtime,
+    require_operated_execution_capability,
+)
 
 __all__ = [
     "ActorContext",
+    "ADMITTED_CLI_EXECUTION_SCOPE",
     "ApplicationAuthorizationError",
     "ApplicationCancellation",
     "ApplicationError",
@@ -64,6 +78,10 @@ __all__ = [
     "GovernanceSubjectRef",
     "HumanReviewRequest",
     "HumanReviewResult",
+    "LEGACY_WEB_CLAIM_SCOPE",
+    "LEGACY_WEB_WORKER_SCOPE",
+    "OperatedAdmissionBinding",
+    "OperatedExecutionDenied",
     "PreflightRequest",
     "PreflightResult",
     "ReportComparisonRequest",
@@ -74,6 +92,10 @@ __all__ = [
     "ResearchReadinessResult",
     "ResearchApplicationService",
     "ResearchGovernanceApplicationService",
+    "RESEARCH_JOB_DISPATCH_SCOPE",
+    "ReleaseMetadata",
+    "ReleaseMetadataError",
+    "ResearchCliOutcome",
     "ResearchValidationRequest",
     "ResearchValidationResult",
     "ResearchWorkloadResult",
@@ -86,4 +108,7 @@ __all__ = [
     "capability_registry",
     "get_capability",
     "ensure_capability_authorized",
+    "execute_admitted_research_cli",
+    "is_operated_runtime",
+    "require_operated_execution_capability",
 ]

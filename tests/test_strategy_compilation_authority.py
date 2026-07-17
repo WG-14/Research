@@ -6,16 +6,28 @@ import inspect
 
 
 def test_parameter_source_map_covers_every_materialized_parameter():
-    contract = StrategyCompiler(builtin_strategy_registry()).compile(strategy_name="sma_with_filter",
-        raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3}, fee_rate=.001, slippage_bps=10)
+    contract = StrategyCompiler(builtin_strategy_registry()).compile(
+        strategy_name="sma_with_filter",
+        raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
+        fee_rate=0.001,
+        slippage_bps=10,
+    )
     assert set(contract.materialized_parameters) == set(contract.parameter_source_map)
     assert contract.compiled_contract_hash.startswith("sha256:")
 
 
 def test_same_candidate_scenario_compiles_identically():
     compiler = StrategyCompiler(builtin_strategy_registry())
-    values = dict(strategy_name="noop_baseline", raw_parameters={}, fee_rate=.001, slippage_bps=10)
-    assert compiler.compile(**values).compiled_contract_hash == compiler.compile(**values).compiled_contract_hash
+    values = dict(
+        strategy_name="noop_baseline",
+        raw_parameters={},
+        fee_rate=0.001,
+        slippage_bps=10,
+    )
+    assert (
+        compiler.compile(**values).compiled_contract_hash
+        == compiler.compile(**values).compiled_contract_hash
+    )
 
 
 def test_spec_materialization_occurs_once_per_candidate_scenario(monkeypatch):
@@ -28,8 +40,12 @@ def test_spec_materialization_occurs_once_per_candidate_scenario(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(compiler_module, "materialize_parameters_from_spec", counted)
-    StrategyCompiler(builtin_strategy_registry()).compile(strategy_name="sma_with_filter",
-        raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3}, fee_rate=.001, slippage_bps=10)
+    StrategyCompiler(builtin_strategy_registry()).compile(
+        strategy_name="sma_with_filter",
+        raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
+        fee_rate=0.001,
+        slippage_bps=10,
+    )
     assert calls == 1
 
 
@@ -44,10 +60,15 @@ def test_plugin_extension_receives_materialized_parameters():
 
     from dataclasses import replace
     from market_research.research.strategy_registry import StrategyRegistry
+
     changed = replace(plugin, parameter_materializer=extension)
-    StrategyCompiler(StrategyRegistry.build((changed,))).compile(strategy_name=changed.name,
-        raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3}, fee_rate=.001, slippage_bps=10)
-    assert observed["LIVE_FEE_RATE_ESTIMATE"] == .001
+    StrategyCompiler(StrategyRegistry.build((changed,))).compile(
+        strategy_name=changed.name,
+        raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
+        fee_rate=0.001,
+        slippage_bps=10,
+    )
+    assert observed["LIVE_FEE_RATE_ESTIMATE"] == 0.001
     assert observed["STRATEGY_ENTRY_SLIPPAGE_BPS"] == 10
 
 
@@ -67,12 +88,13 @@ def test_parameter_extension_cannot_receive_raw_parameters():
 
     from dataclasses import replace
     from market_research.research.strategy_registry import StrategyRegistry
+
     changed = replace(plugin, parameter_materializer=legacy)
     try:
         StrategyCompiler(StrategyRegistry.build((changed,))).compile(
             strategy_name=changed.name,
             raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
-            fee_rate=.001,
+            fee_rate=0.001,
             slippage_bps=10,
         )
     except TypeError as exc:
@@ -90,18 +112,21 @@ def test_parameter_extension_materialized_payload_is_immutable():
 
     from dataclasses import replace
     from market_research.research.strategy_registry import StrategyRegistry
+
     changed = replace(plugin, parameter_materializer=extension)
     try:
         StrategyCompiler(StrategyRegistry.build((changed,))).compile(
             strategy_name=changed.name,
             raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
-            fee_rate=.001,
+            fee_rate=0.001,
             slippage_bps=10,
         )
     except TypeError:
         pass
     else:
-        raise AssertionError("parameter extension mutated compiler-owned materialization")
+        raise AssertionError(
+            "parameter extension mutated compiler-owned materialization"
+        )
 
 
 def test_parameter_extension_returns_source_overrides_for_every_changed_key():
@@ -116,12 +141,13 @@ def test_parameter_extension_returns_source_overrides_for_every_changed_key():
     from dataclasses import replace
     from market_research.research.strategy_compiler import StrategyCompilationError
     from market_research.research.strategy_registry import StrategyRegistry
+
     changed = replace(plugin, parameter_materializer=extension)
     try:
         StrategyCompiler(StrategyRegistry.build((changed,))).compile(
             strategy_name=changed.name,
             raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
-            fee_rate=.001,
+            fee_rate=0.001,
             slippage_bps=10,
         )
     except StrategyCompilationError as exc:

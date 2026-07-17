@@ -26,8 +26,9 @@ from market_research.application.contracts import (
 )
 from market_research.application.service import ResearchApplicationService
 from market_research.paths import ResearchPathError
-from market_research.research.hashing import content_hash_payload, sha256_prefixed
-from market_research.research.research_decision_report import (
+from market_research.application.adapter_contracts import (
+    content_hash_payload,
+    sha256_prefixed,
     validate_research_decision_report,
 )
 
@@ -108,9 +109,7 @@ class VisibleDecisionReportResolver:
         ensure_capability_authorized("reports.list", self.actor)
         _validate_page(limit=limit, offset=offset)
         verified = self._scan_verified_reports()
-        return tuple(
-            item.catalog_item() for item in verified[offset : offset + limit]
-        )
+        return tuple(item.catalog_item() for item in verified[offset : offset + limit])
 
     def load_reports(
         self,
@@ -132,10 +131,14 @@ class VisibleDecisionReportResolver:
         return {report_id: resolved[report_id] for report_id in normalized}
 
     def _scan_verified_reports(self) -> list[VerifiedDecisionReport]:
-        jobs = jobs_visible_to(self.user).filter(
-            capability_id=ResearchJob.Capability.VALIDATE,
-            status=ResearchJob.Status.SUCCEEDED,
-        ).order_by("-created_at", "-pk")[:MAX_VISIBLE_VALIDATION_JOBS]
+        jobs = (
+            jobs_visible_to(self.user)
+            .filter(
+                capability_id=ResearchJob.Capability.VALIDATE,
+                status=ResearchJob.Status.SUCCEEDED,
+            )
+            .order_by("-created_at", "-pk")[:MAX_VISIBLE_VALIDATION_JOBS]
+        )
         reports: list[VerifiedDecisionReport] = []
         seen: set[str] = set()
         for job in jobs:
@@ -152,11 +155,7 @@ class VisibleDecisionReportResolver:
         if not self.user.has_perm("portal.view_all_research_jobs"):
             imported = imported.filter(
                 Q(owner=self.user)
-                | Q(
-                    visibility=(
-                        ImportedDecisionReport.Visibility.ORGANIZATION
-                    )
-                )
+                | Q(visibility=(ImportedDecisionReport.Visibility.ORGANIZATION))
             )
         for record in imported.order_by("-created_at", "-pk")[
             :MAX_VISIBLE_VALIDATION_JOBS
@@ -318,9 +317,7 @@ def _verify_imported_report(
         experiment_id=binding["experiment_id"],
         run_id=binding["run_id"],
         validation_result=binding["validation_result"],
-        selected_candidate_id=(
-            binding["selected_candidate_id"] or None
-        ),
+        selected_candidate_id=(binding["selected_candidate_id"] or None),
         market=binding["market"],
         interval=binding["interval"],
         strategy_name=binding["strategy_name"],
@@ -348,9 +345,7 @@ def _validate_summary_binding(job: ResearchJob, summary: dict[str, Any]) -> None
         job.owner_id != job.manifest.owner_id
         or not job.run_id
         or not job.research_outcome
-        or any(
-            actual != expected for actual, expected in bindings
-        )
+        or any(actual != expected for actual, expected in bindings)
     ):
         raise ValidationError("validation_summary_job_binding_mismatch")
 
@@ -388,9 +383,7 @@ def _validate_candidate_binding(
         (conditions.get("strategy_version"), summary.get("strategy_version")),
     )
     if any(
-        not isinstance(actual, str)
-        or not actual.strip()
-        or actual != expected
+        not isinstance(actual, str) or not actual.strip() or actual != expected
         for actual, expected in dimension_bindings
     ):
         raise ValidationError("candidate_report_dimension_binding_mismatch")

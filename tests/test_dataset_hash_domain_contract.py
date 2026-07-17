@@ -15,14 +15,21 @@ from market_research.research.dataset_snapshot import (
 )
 from market_research.research.datasets.hashing_contract import artifact_content_hash
 from market_research.research.experiment_manifest import DateRange
-from market_research.research_composition import parse_builtin_manifest as parse_manifest
+from market_research.research_composition import (
+    parse_builtin_manifest as parse_manifest,
+)
 
 
 def _timestamp(day: str, minute: int = 0) -> int:
-    return int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000) + minute * 60_000
+    return (
+        int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000)
+        + minute * 60_000
+    )
 
 
-def _snapshot(*, split_name: str, date_range: DateRange, candles: tuple[Candle, ...]) -> DatasetSnapshot:
+def _snapshot(
+    *, split_name: str, date_range: DateRange, candles: tuple[Candle, ...]
+) -> DatasetSnapshot:
     return DatasetSnapshot(
         snapshot_id="hash-domain-fixture",
         source="frozen_sqlite_candles",
@@ -86,7 +93,8 @@ def _freeze_fixture(tmp_path: Path) -> dict[str, object]:
                 "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 ("KRW-BTC", "1m", _timestamp(day), price, price, price, price, 1.0),
             )
-    return freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE,
+    return freeze_sqlite_candles_dataset(
+        source_provenance=TEST_SOURCE_PROVENANCE,
         source_db=source,
         market="KRW-BTC",
         interval="1m",
@@ -118,28 +126,45 @@ def test_snapshot_data_hash_does_not_include_split_role() -> None:
     candle = Candle(_timestamp("2026-01-01"), 100.0, 100.0, 100.0, 100.0, 1.0)
     date_range = DateRange("2026-01-01", "2026-01-01")
 
-    assert _snapshot(split_name="train", date_range=date_range, candles=(candle,)).snapshot_data_hash() == _snapshot(
-        split_name="validation", date_range=date_range, candles=(candle,)
-    ).snapshot_data_hash()
+    assert (
+        _snapshot(
+            split_name="train", date_range=date_range, candles=(candle,)
+        ).snapshot_data_hash()
+        == _snapshot(
+            split_name="validation", date_range=date_range, candles=(candle,)
+        ).snapshot_data_hash()
+    )
 
 
 def test_snapshot_fingerprint_changes_when_split_role_changes() -> None:
     candle = Candle(_timestamp("2026-01-01"), 100.0, 100.0, 100.0, 100.0, 1.0)
     date_range = DateRange("2026-01-01", "2026-01-01")
 
-    assert _snapshot(split_name="train", date_range=date_range, candles=(candle,)).snapshot_fingerprint_hash() != _snapshot(
-        split_name="validation", date_range=date_range, candles=(candle,)
-    ).snapshot_fingerprint_hash()
+    assert (
+        _snapshot(
+            split_name="train", date_range=date_range, candles=(candle,)
+        ).snapshot_fingerprint_hash()
+        != _snapshot(
+            split_name="validation", date_range=date_range, candles=(candle,)
+        ).snapshot_fingerprint_hash()
+    )
 
 
 def test_snapshot_query_hash_changes_when_range_changes() -> None:
     candle = Candle(_timestamp("2026-01-01"), 100.0, 100.0, 100.0, 100.0, 1.0)
 
-    assert _snapshot(
-        split_name="train", date_range=DateRange("2026-01-01", "2026-01-01"), candles=(candle,)
-    ).snapshot_query_hash() != _snapshot(
-        split_name="train", date_range=DateRange("2026-01-01", "2026-01-02"), candles=(candle,)
-    ).snapshot_query_hash()
+    assert (
+        _snapshot(
+            split_name="train",
+            date_range=DateRange("2026-01-01", "2026-01-01"),
+            candles=(candle,),
+        ).snapshot_query_hash()
+        != _snapshot(
+            split_name="train",
+            date_range=DateRange("2026-01-01", "2026-01-02"),
+            candles=(candle,),
+        ).snapshot_query_hash()
+    )
 
 
 def test_quality_report_never_substitutes_snapshot_hash_for_artifact_hash() -> None:
@@ -157,20 +182,35 @@ def test_quality_report_never_substitutes_snapshot_hash_for_artifact_hash() -> N
 
     assert report.payload["artifact_content_hash"] is None
     assert report.payload["source_content_hash"] is None
-    assert report.payload["snapshot_fingerprint_hash"] == snapshot.snapshot_fingerprint_hash()
-    assert report.payload["source_content_hash"] != report.payload["snapshot_fingerprint_hash"]
+    assert (
+        report.payload["snapshot_fingerprint_hash"]
+        == snapshot.snapshot_fingerprint_hash()
+    )
+    assert (
+        report.payload["source_content_hash"]
+        != report.payload["snapshot_fingerprint_hash"]
+    )
 
 
-def test_artifact_hash_is_not_compared_to_materialized_range_hash(tmp_path: Path) -> None:
+def test_artifact_hash_is_not_compared_to_materialized_range_hash(
+    tmp_path: Path,
+) -> None:
     frozen = _freeze_fixture(tmp_path)
     manifest = _frozen_manifest(frozen=frozen)
 
-    snapshot = load_dataset_split(db_path=tmp_path / "unused.sqlite", manifest=manifest, split_name="train")
-    report = build_dataset_quality_report(db_path=tmp_path / "unused.sqlite", snapshot=snapshot)
+    snapshot = load_dataset_split(
+        db_path=tmp_path / "unused.sqlite", manifest=manifest, split_name="train"
+    )
+    report = build_dataset_quality_report(
+        db_path=tmp_path / "unused.sqlite", snapshot=snapshot
+    )
 
     assert len(snapshot.candles) == 1
     assert snapshot.artifact_content_hash == frozen["artifact_content_hash"]
     assert snapshot.artifact_content_hash != snapshot.snapshot_data_hash()
     assert report.payload["artifact_content_hash"] == frozen["artifact_content_hash"]
     assert report.payload["snapshot_data_hash"] == snapshot.snapshot_data_hash()
-    assert report.payload["snapshot_fingerprint_hash"] == snapshot.snapshot_fingerprint_hash()
+    assert (
+        report.payload["snapshot_fingerprint_hash"]
+        == snapshot.snapshot_fingerprint_hash()
+    )

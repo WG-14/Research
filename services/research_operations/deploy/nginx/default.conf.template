@@ -1,0 +1,95 @@
+log_format research_json escape=json '{"timestamp":"$time_iso8601","severity":"INFO","service_role":"reverse-proxy","release_id":"external-config","event_code":"https_request","status":$status,"method":"$request_method","correlation_id":"$upstream_http_x_correlation_id","duration_seconds":$request_time}';
+access_log /dev/stdout research_json;
+error_log /dev/stderr warn;
+
+upstream research_web { server web:8080; keepalive 16; }
+upstream research_ops_api { server ops-api:8081; keepalive 8; }
+
+server {
+    listen 8082;
+    server_name ${EMPLOYEE_SERVER_NAME};
+    return 308 https://${EMPLOYEE_SERVER_NAME}:8443$request_uri;
+}
+
+server {
+    # Keep the syntax accepted by the declared Nginx 1.24+ deployment floor.
+    listen 8443 ssl http2;
+    server_name ${EMPLOYEE_SERVER_NAME};
+    server_tokens off;
+    ssl_certificate /run/secrets/proxy_server_cert;
+    ssl_certificate_key /run/secrets/proxy_server_key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    client_max_body_size 3m;
+    client_body_timeout 15s;
+    keepalive_timeout 15s;
+
+    location ^~ /__ops { return 404; }
+    location ^~ /_internal { return 404; }
+
+    location /static/ {
+        alias /srv/static/;
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=3600" always;
+        add_header X-Content-Type-Options nosniff always;
+    }
+
+    location = /_mutation_gate {
+        internal;
+        proxy_pass http://research_ops_api/_internal/mutation-admission;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Research-Ops-Internal mutation-gate-v1;
+        proxy_set_header X-Research-Ops-Original-Method $request_method;
+        proxy_set_header X-Research-Ops-Authorized "";
+        proxy_set_header X-Research-Ops-Client-Verified "";
+    }
+
+    location / {
+        auth_request /_mutation_gate;
+        proxy_pass http://research_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Correlation-ID "";
+        proxy_set_header Connection "";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 45s;
+        proxy_send_timeout 45s;
+        proxy_hide_header Server;
+    }
+}
+
+server {
+    listen 9443 ssl http2;
+    server_name ${EMPLOYEE_SERVER_NAME};
+    server_tokens off;
+    ssl_certificate /run/secrets/proxy_server_cert;
+    ssl_certificate_key /run/secrets/proxy_server_key;
+    ssl_client_certificate /run/secrets/ops_client_ca;
+    ssl_verify_client on;
+    ssl_verify_depth 2;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    client_max_body_size 1k;
+
+    location ~ ^/__ops/(live|ready/web-read|ready/workflow-mutation)$ {
+        proxy_pass http://research_ops_api;
+        proxy_set_header X-Research-Ops-Authorized "";
+        proxy_set_header X-Research-Ops-Client-Verified "";
+    }
+
+    location ~ ^/__ops/(diagnostics|metrics)$ {
+        auth_basic "research operations";
+        auth_basic_user_file /run/secrets/ops_htpasswd;
+        limit_except GET { deny all; }
+        proxy_pass http://research_ops_api;
+        proxy_set_header X-Research-Ops-Client-Verified $ssl_client_verify;
+        proxy_set_header X-Research-Ops-Authorized 1;
+        proxy_set_header Authorization "";
+    }
+
+    location / { return 404; }
+}

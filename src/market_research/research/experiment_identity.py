@@ -115,11 +115,7 @@ def bind_research_validation_experiment(
                 + ",".join(semantic_reasons)
             )
         existing = next(
-            (
-                row
-                for row in snapshot.rows
-                if row.get("experiment_id") == normalized_id
-            ),
+            (row for row in snapshot.rows if row.get("experiment_id") == normalized_id),
             None,
         )
         if existing is not None:
@@ -143,8 +139,7 @@ def bind_research_validation_experiment(
         raise
     except ValueError as exc:
         raise ExperimentIdentityIntegrityError(
-            "research_validate_experiment_identity_registry_invalid:"
-            + str(exc)
+            "research_validate_experiment_identity_registry_invalid:" + str(exc)
         ) from exc
 
 
@@ -162,8 +157,7 @@ def validate_experiment_identity_registry(
         return {
             "status": "FAIL",
             "reasons": [
-                "experiment_identity_registry_unreadable:"
-                + type(exc).__name__
+                "experiment_identity_registry_unreadable:" + type(exc).__name__
             ],
             "row_count": 0,
             "stream_hash": None,
@@ -206,9 +200,10 @@ def _identity_semantics(
         if row.get("event_id") != experiment_id:
             reasons.append(f"identity_event_id_mismatch:{index}")
         manifest_hash = row.get("manifest_hash")
-        if not isinstance(manifest_hash, str) or _HASH_PATTERN.fullmatch(
-            manifest_hash
-        ) is None:
+        if (
+            not isinstance(manifest_hash, str)
+            or _HASH_PATTERN.fullmatch(manifest_hash) is None
+        ):
             reasons.append(f"identity_manifest_hash_invalid:{index}")
             continue
         if experiment_id in bindings:

@@ -22,14 +22,28 @@ class StrategyFeatureDefinition:
     lookback_parameter_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.name.strip() or not self.description.strip() or not self.calculation.strip():
-            raise StrategySpecError("strategy feature name, description, and calculation are required")
+        if (
+            not self.name.strip()
+            or not self.description.strip()
+            or not self.calculation.strip()
+        ):
+            raise StrategySpecError(
+                "strategy feature name, description, and calculation are required"
+            )
         if not self.source_data or any(not item.strip() for item in self.source_data):
-            raise StrategySpecError(f"strategy feature source_data is required:{self.name}")
+            raise StrategySpecError(
+                f"strategy feature source_data is required:{self.name}"
+            )
         if len(set(self.source_data)) != len(self.source_data):
-            raise StrategySpecError(f"strategy feature has duplicate source data:{self.name}")
-        if len(set(self.lookback_parameter_names)) != len(self.lookback_parameter_names):
-            raise StrategySpecError(f"strategy feature has duplicate lookback parameter:{self.name}")
+            raise StrategySpecError(
+                f"strategy feature has duplicate source data:{self.name}"
+            )
+        if len(set(self.lookback_parameter_names)) != len(
+            self.lookback_parameter_names
+        ):
+            raise StrategySpecError(
+                f"strategy feature has duplicate lookback parameter:{self.name}"
+            )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -49,10 +63,18 @@ class StrategyRuleDeclaration:
     parameter_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.rule_id.strip() or not self.description.strip() or not self.enabled_when.strip():
-            raise StrategySpecError("strategy rule id, description, and enabled_when are required")
+        if (
+            not self.rule_id.strip()
+            or not self.description.strip()
+            or not self.enabled_when.strip()
+        ):
+            raise StrategySpecError(
+                "strategy rule id, description, and enabled_when are required"
+            )
         if len(set(self.parameter_names)) != len(self.parameter_names):
-            raise StrategySpecError(f"strategy rule has duplicate parameter binding:{self.rule_id}")
+            raise StrategySpecError(
+                f"strategy rule has duplicate parameter binding:{self.rule_id}"
+            )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -80,24 +102,34 @@ class StrategyRuleSpec:
         if self.schema_version != 1:
             raise StrategySpecError("strategy rule spec schema_version must be 1")
         declarations = (
-            self.entry, self.take_profit, self.edge_invalidation, self.time_exit,
-            self.stop_loss, self.position_sizing, *self.entry_prohibitions,
+            self.entry,
+            self.take_profit,
+            self.edge_invalidation,
+            self.time_exit,
+            self.stop_loss,
+            self.position_sizing,
+            *self.entry_prohibitions,
             *self.additional_exits,
         )
         ids = [item.rule_id for item in declarations]
         if len(set(ids)) != len(ids):
             raise StrategySpecError("strategy rule ids must be unique")
         exit_ids = {
-            self.take_profit.rule_id, self.edge_invalidation.rule_id,
-            self.time_exit.rule_id, self.stop_loss.rule_id,
+            self.take_profit.rule_id,
+            self.edge_invalidation.rule_id,
+            self.time_exit.rule_id,
+            self.stop_loss.rule_id,
             *(item.rule_id for item in self.additional_exits),
         }
         if len(set(self.exit_priority)) != len(self.exit_priority):
-            raise StrategySpecError("strategy exit priority must not contain duplicates")
+            raise StrategySpecError(
+                "strategy exit priority must not contain duplicates"
+            )
         unknown_priority = sorted(set(self.exit_priority) - exit_ids)
         if unknown_priority:
             raise StrategySpecError(
-                "strategy exit priority references unknown rule(s): " + ",".join(unknown_priority)
+                "strategy exit priority references unknown rule(s): "
+                + ",".join(unknown_priority)
             )
 
     def as_dict(self) -> dict[str, object]:
@@ -116,11 +148,18 @@ class StrategyRuleSpec:
 
     def parameter_names(self) -> tuple[str, ...]:
         declarations = (
-            self.entry, self.take_profit, self.edge_invalidation, self.time_exit,
-            self.stop_loss, self.position_sizing, *self.entry_prohibitions,
+            self.entry,
+            self.take_profit,
+            self.edge_invalidation,
+            self.time_exit,
+            self.stop_loss,
+            self.position_sizing,
+            *self.entry_prohibitions,
             *self.additional_exits,
         )
-        return tuple(sorted({name for item in declarations for name in item.parameter_names}))
+        return tuple(
+            sorted({name for item in declarations for name in item.parameter_names})
+        )
 
 
 @dataclass(frozen=True)
@@ -175,9 +214,13 @@ class StrategyParameterSchema:
                 raise StrategySpecError(f"{self.name} must be str")
             comparable = value
         else:
-            raise StrategySpecError(f"{self.name} has unsupported schema type:{self.value_type}")
+            raise StrategySpecError(
+                f"{self.name} has unsupported schema type:{self.value_type}"
+            )
         if self.enum and value not in self.enum:
-            raise StrategySpecError(f"{self.name} must be one of {','.join(map(str, self.enum))}")
+            raise StrategySpecError(
+                f"{self.name} must be one of {','.join(map(str, self.enum))}"
+            )
         if isinstance(comparable, float):
             if self.min_value is not None and comparable < float(self.min_value):
                 raise StrategySpecError(f"{self.name} must be >= {self.min_value}")
@@ -204,23 +247,33 @@ class StrategySpec:
     feature_definitions: tuple[StrategyFeatureDefinition, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "default_parameters", deep_freeze(self.default_parameters))
-        object.__setattr__(self, "exit_policy_schema", deep_freeze(self.exit_policy_schema))
+        object.__setattr__(
+            self, "default_parameters", deep_freeze(self.default_parameters)
+        )
+        object.__setattr__(
+            self, "exit_policy_schema", deep_freeze(self.exit_policy_schema)
+        )
         if self.rule_spec is not None:
-            unknown = sorted(set(self.rule_spec.parameter_names()) - set(self.accepted_parameter_names))
+            unknown = sorted(
+                set(self.rule_spec.parameter_names())
+                - set(self.accepted_parameter_names)
+            )
             if unknown:
                 raise StrategySpecError(
-                    "strategy rule spec references unknown parameter(s): " + ",".join(unknown)
+                    "strategy rule spec references unknown parameter(s): "
+                    + ",".join(unknown)
                 )
         feature_names = [item.name for item in self.feature_definitions]
         if len(set(feature_names)) != len(feature_names):
             raise StrategySpecError("strategy feature names must be unique")
-        unknown_feature_parameters = sorted({
-            name
-            for feature in self.feature_definitions
-            for name in feature.lookback_parameter_names
-            if name not in self.accepted_parameter_names
-        })
+        unknown_feature_parameters = sorted(
+            {
+                name
+                for feature in self.feature_definitions
+                for name in feature.lookback_parameter_names
+                if name not in self.accepted_parameter_names
+            }
+        )
         if unknown_feature_parameters:
             raise StrategySpecError(
                 "strategy feature references unknown parameter(s): "
@@ -233,7 +286,9 @@ class StrategySpec:
             "strategy_version": self.strategy_version,
             "accepted_parameter_names": list(self.accepted_parameter_names),
             "required_parameter_names": list(self.required_parameter_names),
-            "behavior_affecting_parameter_names": list(self.behavior_affecting_parameter_names),
+            "behavior_affecting_parameter_names": list(
+                self.behavior_affecting_parameter_names
+            ),
             "metadata_only_parameter_names": list(self.metadata_only_parameter_names),
             "research_only_parameter_names": list(self.research_only_parameter_names),
             "default_parameters": canonical_mutable(self.default_parameters),
@@ -242,19 +297,27 @@ class StrategySpec:
             "optional_data": list(self.optional_data),
             "exit_policy_schema": canonical_mutable(self.exit_policy_schema),
             "parameter_schema": [item.as_dict() for item in self.parameter_schema],
-            "rule_spec": self.rule_spec.as_dict() if self.rule_spec is not None else None,
-            "feature_definitions": [item.as_dict() for item in self.feature_definitions],
+            "rule_spec": self.rule_spec.as_dict()
+            if self.rule_spec is not None
+            else None,
+            "feature_definitions": [
+                item.as_dict() for item in self.feature_definitions
+            ],
         }
 
     def validate_parameters(self, parameter_values: dict[str, Any]) -> None:
         schemas = {item.name: item for item in self.parameter_schema}
         for schema in schemas.values():
             if schema.required and schema.name not in parameter_values:
-                raise StrategySpecError(f"missing required strategy parameter(s): {schema.name}")
+                raise StrategySpecError(
+                    f"missing required strategy parameter(s): {schema.name}"
+                )
         if schemas:
             unknown = sorted(set(parameter_values) - set(self.accepted_parameter_names))
             if unknown:
-                raise StrategySpecError(f"unknown strategy parameter(s): {','.join(unknown)}")
+                raise StrategySpecError(
+                    f"unknown strategy parameter(s): {','.join(unknown)}"
+                )
         for name, value in parameter_values.items():
             schema = schemas.get(name)
             if schema is not None:
@@ -264,22 +327,31 @@ class StrategySpec:
         return sha256_prefixed(self.as_dict())
 
 
-def strategy_spec_for_name(strategy_name: str, *, registry: Any | None = None) -> StrategySpec:
+def strategy_spec_for_name(
+    strategy_name: str, *, registry: Any | None = None
+) -> StrategySpec:
     """Resolve only through an explicitly supplied composition authority."""
     if registry is None:
         raise StrategySpecError("explicit strategy registry required")
     try:
         return registry.resolve(strategy_name).spec
     except ValueError as exc:
-        raise StrategySpecError(f"unsupported research strategy: {strategy_name}") from exc
+        raise StrategySpecError(
+            f"unsupported research strategy: {strategy_name}"
+        ) from exc
 
 
-def runtime_bound_behavior_parameter_names(strategy_name: str, *, registry: Any) -> tuple[str, ...]:
+def runtime_bound_behavior_parameter_names(
+    strategy_name: str, *, registry: Any
+) -> tuple[str, ...]:
     return runtime_bound_behavior_parameter_names_from_spec(
-        strategy_spec_for_name(strategy_name, registry=registry))
+        strategy_spec_for_name(strategy_name, registry=registry)
+    )
 
 
-def runtime_bound_behavior_parameter_names_from_spec(spec: StrategySpec) -> tuple[str, ...]:
+def runtime_bound_behavior_parameter_names_from_spec(
+    spec: StrategySpec,
+) -> tuple[str, ...]:
     """Return runtime-bound behavior names using only the supplied authority."""
     research_only = set(spec.research_only_parameter_names)
     return tuple(
@@ -302,24 +374,36 @@ def validate_parameter_space_against_strategy_spec(
     unknown = sorted(key for key in parameter_space if key not in accepted)
     if unknown:
         raise StrategySpecError(f"unknown strategy parameter(s): {','.join(unknown)}")
-    missing = sorted(key for key in spec.required_parameter_names if key not in parameter_space)
+    missing = sorted(
+        key for key in spec.required_parameter_names if key not in parameter_space
+    )
     if missing:
-        raise StrategySpecError(f"missing required strategy parameter(s): {','.join(missing)}")
-    metadata = sorted(key for key in parameter_space if key in set(spec.metadata_only_parameter_names))
+        raise StrategySpecError(
+            f"missing required strategy parameter(s): {','.join(missing)}"
+        )
+    metadata = sorted(
+        key for key in parameter_space if key in set(spec.metadata_only_parameter_names)
+    )
     if metadata and requires_candidate_validation(research_classification):
         raise StrategySpecError(
             "metadata-only strategy parameter(s) cannot be optimized for validation-bound manifests: "
             + ",".join(metadata)
         )
-    research_only = sorted(key for key in parameter_space if key in set(spec.research_only_parameter_names))
+    research_only = sorted(
+        key for key in parameter_space if key in set(spec.research_only_parameter_names)
+    )
     if research_only and requires_candidate_validation(research_classification):
         raise StrategySpecError(
             "research-only strategy parameter(s) cannot be optimized for validation-bound manifests: "
             + ",".join(research_only)
         )
     if requires_candidate_validation(research_classification):
-        runtime_bound_behavior = sorted(runtime_bound_behavior_parameter_names_from_spec(spec))
-        missing_behavior = [key for key in runtime_bound_behavior if key not in parameter_space]
+        runtime_bound_behavior = sorted(
+            runtime_bound_behavior_parameter_names_from_spec(spec)
+        )
+        missing_behavior = [
+            key for key in runtime_bound_behavior if key not in parameter_space
+        ]
         if missing_behavior:
             raise StrategySpecError(
                 "validation-bound manifests must declare every runtime-bound behavior-affecting "
@@ -338,8 +422,10 @@ def strategy_parameter_source_map(
     registry: Any | None = None,
 ) -> dict[str, str]:
     return parameter_source_map_from_spec(
-        strategy_spec_for_name(strategy_name, registry=registry), parameter_values,
-        fee_rate=fee_rate, slippage_bps=slippage_bps,
+        strategy_spec_for_name(strategy_name, registry=registry),
+        parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
     )
 
 
@@ -378,8 +464,10 @@ def materialize_strategy_parameters(
     registry: Any | None = None,
 ) -> dict[str, Any]:
     return materialize_parameters_from_spec(
-        strategy_spec_for_name(strategy_name, registry=registry), parameter_values,
-        fee_rate=fee_rate, slippage_bps=slippage_bps,
+        strategy_spec_for_name(strategy_name, registry=registry),
+        parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
     )
 
 
@@ -436,7 +524,9 @@ def exit_policy_materialization_from_parameters(
             default_source="plugin_exit_policy_materializer",
             default_mode=materialization_mode,
         )
-    schema_rules = tuple(str(rule).strip().lower() for rule in spec.exit_policy_schema.get("rules") or ())
+    schema_rules = tuple(
+        str(rule).strip().lower() for rule in spec.exit_policy_schema.get("rules") or ()
+    )
     if not schema_rules:
         policy = _no_exit_policy(strategy_name)
         return normalize_exit_policy_materialization(
@@ -461,7 +551,9 @@ def exit_policy_materialization_from_parameters(
             "strategy exit policy materializer required for strategy-owned rule(s): "
             + ",".join(strategy_owned)
         )
-    policy = _common_exit_policy_from_parameters(strategy_name, parameter_values, spec=spec)
+    policy = _common_exit_policy_from_parameters(
+        strategy_name, parameter_values, spec=spec
+    )
     return normalize_exit_policy_materialization(
         {
             "exit_policy": policy,
@@ -476,10 +568,14 @@ def exit_policy_materialization_from_parameters(
     )
 
 
-def exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any], *,
-                                registry: Any | None = None) -> dict[str, Any]:
-    return dict(exit_policy_materialization_from_parameters(
-        strategy_name, parameter_values, registry=registry).exit_policy)
+def exit_policy_from_parameters(
+    strategy_name: str, parameter_values: dict[str, Any], *, registry: Any | None = None
+) -> dict[str, Any]:
+    return dict(
+        exit_policy_materialization_from_parameters(
+            strategy_name, parameter_values, registry=registry
+        ).exit_policy
+    )
 
 
 def _no_exit_policy(strategy_name: str) -> dict[str, Any]:
@@ -496,8 +592,9 @@ def _no_exit_policy(strategy_name: str) -> dict[str, Any]:
     }
 
 
-def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any], *,
-                                        spec: StrategySpec) -> dict[str, Any]:
+def _common_exit_policy_from_parameters(
+    strategy_name: str, parameter_values: dict[str, Any], *, spec: StrategySpec
+) -> dict[str, Any]:
     values = materialize_parameters_from_spec(spec, parameter_values)
     rules = _normalize_exit_rule_names(str(values.get("STRATEGY_EXIT_RULES") or ""))
     _validate_common_exit_rule_names(",".join(rules))
@@ -591,7 +688,9 @@ def _allowed_exit_rule_names(spec: StrategySpec) -> set[str]:
 def _validate_strategy_exit_rule_names(raw: object, *, spec: StrategySpec) -> None:
     if not isinstance(raw, str):
         raise StrategySpecError("STRATEGY_EXIT_RULES must be str")
-    unsupported = sorted(set(_normalize_exit_rule_names(raw)) - _allowed_exit_rule_names(spec))
+    unsupported = sorted(
+        set(_normalize_exit_rule_names(raw)) - _allowed_exit_rule_names(spec)
+    )
     if unsupported:
         raise StrategySpecError(
             "STRATEGY_EXIT_RULES contains unsupported rule(s): " + ",".join(unsupported)
@@ -626,7 +725,9 @@ def _validate_exit_policy_parameter_values(
     )
 
 
-def _validate_exit_policy_materialized_values(values: dict[str, Any], *, spec: StrategySpec) -> None:
+def _validate_exit_policy_materialized_values(
+    values: dict[str, Any], *, spec: StrategySpec
+) -> None:
     stop_loss_ratio = _non_negative_float(
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         values.get("STRATEGY_EXIT_STOP_LOSS_RATIO", 0.0),
@@ -638,7 +739,9 @@ def _validate_exit_policy_materialized_values(values: dict[str, Any], *, spec: S
     min_edge_ratio = _non_negative_float(
         "STRATEGY_EXIT_MIN_EDGE_RATIO", values.get("STRATEGY_EXIT_MIN_EDGE_RATIO", 0.0)
     )
-    _validate_strategy_exit_rule_names(values.get("STRATEGY_EXIT_RULES") or "", spec=spec)
+    _validate_strategy_exit_rule_names(
+        values.get("STRATEGY_EXIT_RULES") or "", spec=spec
+    )
     rules = _normalize_exit_rule_names(str(values.get("STRATEGY_EXIT_RULES") or ""))
     if stop_loss_ratio > 0.0 and "stop_loss" not in rules:
         raise StrategySpecError(
@@ -679,7 +782,9 @@ def _non_negative_float(name: str, value: object) -> float:
     try:
         resolved = float(value)
     except (TypeError, ValueError) as exc:
-        raise StrategySpecError(f"{name} must be a finite value >= 0, got {value!r}") from exc
+        raise StrategySpecError(
+            f"{name} must be a finite value >= 0, got {value!r}"
+        ) from exc
     if not math.isfinite(resolved) or resolved < 0.0:
         raise StrategySpecError(f"{name} must be a finite value >= 0, got {value!r}")
     return resolved

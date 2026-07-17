@@ -20,8 +20,9 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 
-from market_research.research.hashing import content_hash_payload, sha256_prefixed
-from market_research.research.research_decision_report import (
+from market_research.application.adapter_contracts import (
+    content_hash_payload,
+    sha256_prefixed,
     validate_research_decision_report,
 )
 from market_research.storage_io import write_json_atomic_create_or_verify
@@ -33,9 +34,7 @@ from .storage import SafeArtifactRef, make_artifact_ref
 
 
 CODE_REVISION_PATTERN = re.compile(r"[0-9a-f]{7,64}\Z")
-ALLOWED_VALIDATION_RESULTS = frozenset(
-    {"PASS", "FAIL", "INSUFFICIENT_EVIDENCE"}
-)
+ALLOWED_VALIDATION_RESULTS = frozenset({"PASS", "FAIL", "INSUFFICIENT_EVIDENCE"})
 
 
 class HistoricalReportImportConflict(ValidationError):
@@ -269,11 +268,10 @@ def _read_relative_no_follow(
         expected_root = os.stat(root, follow_symlinks=False)
         directory_fd = os.open(root, directory_flags)
         opened_root = os.fstat(directory_fd)
-        if (
-            not stat.S_ISDIR(expected_root.st_mode)
-            or (expected_root.st_dev, expected_root.st_ino)
-            != (opened_root.st_dev, opened_root.st_ino)
-        ):
+        if not stat.S_ISDIR(expected_root.st_mode) or (
+            expected_root.st_dev,
+            expected_root.st_ino,
+        ) != (opened_root.st_dev, opened_root.st_ino):
             raise ValidationError("historical_report_import_root_changed")
         for part in relative.parts[:-1]:
             next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
@@ -335,8 +333,7 @@ def _validate_report_binding(
     data_quality = sections.get("data_quality")
     conclusion = sections.get("research_conclusion")
     if not all(
-        isinstance(value, dict)
-        for value in (conditions, data_quality, conclusion)
+        isinstance(value, dict) for value in (conditions, data_quality, conclusion)
     ):
         raise ValidationError("historical_report_evidence_sections_incomplete")
 
@@ -508,10 +505,7 @@ def _managed_storage_ref(report_hash: str) -> str:
         report_hash,
         field="historical_report_hash",
     ).removeprefix("sha256:")
-    return (
-        "report:_internal_web/imported_reports/"
-        f"{digest[:2]}/{digest}.json"
-    )
+    return f"report:_internal_web/imported_reports/{digest[:2]}/{digest}.json"
 
 
 def _import_manifest_hash(values: dict[str, Any]) -> str:

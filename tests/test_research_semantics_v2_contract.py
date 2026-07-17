@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from market_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
+from market_research.research.artifact_contract import (
+    apply_artifact_contract,
+    validate_artifact_contract,
+)
 from market_research.research.experiment_manifest import ManifestValidationError
 from market_research.research.final_selection import (
     apply_final_selection_contract,
@@ -49,14 +52,20 @@ def _manifest_payload() -> dict[str, object]:
     }
 
 
-def _final_selection_payload(*, schema_version: int = 2, metric: str = "validation.metrics_v2.return_risk.cagr_pct") -> dict[str, object]:
+def _final_selection_payload(
+    *,
+    schema_version: int = 2,
+    metric: str = "validation.metrics_v2.return_risk.cagr_pct",
+) -> dict[str, object]:
     return {
         "schema_version": schema_version,
         "required_for_validation": False,
         "candidate_universe": "acceptance_gate_passed_required_scenarios",
         "must_pass": {"dataset_quality_gate_status": "PASS"},
         "selection_exposure_policy": {
-            "final_holdout_usage": "prohibited_during_selection" if schema_version == 2 else "confirmatory_metric_in_rank",
+            "final_holdout_usage": "prohibited_during_selection"
+            if schema_version == 2
+            else "confirmatory_metric_in_rank",
             "counts_as_holdout_reuse": False if schema_version == 2 else True,
         },
         "method": "lexicographic",
@@ -65,11 +74,16 @@ def _final_selection_payload(*, schema_version: int = 2, metric: str = "validati
             {"metric": metric, "order": "desc", "required": True},
             {"metric": "parameter_candidate_id", "order": "asc", "required": True},
         ],
-        "unsupported_metric_policy": {"sharpe_ratio": "fail_if_required", "sortino_ratio": "fail_if_required"},
+        "unsupported_metric_policy": {
+            "sharpe_ratio": "fail_if_required",
+            "sortino_ratio": "fail_if_required",
+        },
     }
 
 
-def _selection_candidate(candidate_id: str, cagr: float, holdout_return: float) -> dict[str, object]:
+def _selection_candidate(
+    candidate_id: str, cagr: float, holdout_return: float
+) -> dict[str, object]:
     return {
         "parameter_candidate_id": candidate_id,
         "parameter_values": {"NOOP_DECISION_START_INDEX": 0},
@@ -92,9 +106,13 @@ def _selection_candidate(candidate_id: str, cagr: float, holdout_return: float) 
 
 def test_final_selection_rejects_final_holdout_ranking_metric() -> None:
     payload = _manifest_payload()
-    payload["final_selection"] = _final_selection_payload(metric="final_holdout.metrics_v2.return_risk.return_pct")
+    payload["final_selection"] = _final_selection_payload(
+        metric="final_holdout.metrics_v2.return_risk.return_pct"
+    )
 
-    with pytest.raises(ManifestValidationError, match="must not reference final_holdout"):
+    with pytest.raises(
+        ManifestValidationError, match="must not reference final_holdout"
+    ):
         parse_manifest(payload)
 
 
@@ -105,7 +123,9 @@ def test_legacy_confirmatory_metric_in_rank_is_rejected_not_translated() -> None
         metric="final_holdout.metrics_v2.return_risk.return_pct",
     )
 
-    with pytest.raises(ManifestValidationError, match="legacy schema_version 1 is not translated"):
+    with pytest.raises(
+        ManifestValidationError, match="legacy schema_version 1 is not translated"
+    ):
         parse_manifest(payload)
 
 
@@ -113,8 +133,14 @@ def test_selection_and_artifact_are_invariant_to_final_holdout_metric_values() -
     payload = _manifest_payload()
     payload["final_selection"] = _final_selection_payload()
     manifest = parse_manifest(payload)
-    candidates = [_selection_candidate("candidate-a", 10.0, -20.0), _selection_candidate("candidate-b", 5.0, 50.0)]
-    reversed_holdout = [_selection_candidate("candidate-a", 10.0, 100.0), _selection_candidate("candidate-b", 5.0, -100.0)]
+    candidates = [
+        _selection_candidate("candidate-a", 10.0, -20.0),
+        _selection_candidate("candidate-b", 5.0, 50.0),
+    ]
+    reversed_holdout = [
+        _selection_candidate("candidate-a", 10.0, 100.0),
+        _selection_candidate("candidate-b", 5.0, -100.0),
+    ]
 
     first = apply_final_selection_contract(
         contract=manifest.final_selection,
@@ -128,10 +154,22 @@ def test_selection_and_artifact_are_invariant_to_final_holdout_metric_values() -
         report_context={"dataset_quality_gate_status": "PASS"},
         validation_required=False,
     )
-    first_artifact = build_selection_artifact(manifest_hash=manifest.manifest_hash(), selection_result=first, candidates=candidates)
-    second_artifact = build_selection_artifact(manifest_hash=manifest.manifest_hash(), selection_result=second, candidates=reversed_holdout)
+    first_artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=first,
+        candidates=candidates,
+    )
+    second_artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=second,
+        candidates=reversed_holdout,
+    )
 
-    assert first["selected_candidate_id"] == second["selected_candidate_id"] == "candidate-a"
+    assert (
+        first["selected_candidate_id"]
+        == second["selected_candidate_id"]
+        == "candidate-a"
+    )
     assert first_artifact == second_artifact
     assert first_artifact is not None
     assert validate_selection_artifact(first_artifact) == []
@@ -161,9 +199,7 @@ def test_selection_artifact_excludes_runtime_only_candidate_observations() -> No
     changed[0]["scenario_results"][0]["validation_resource_usage"][
         "runtime_seconds"
     ] = 99.0
-    changed[0]["scenario_results"][0]["detail_artifact_hash"] = (
-        "sha256:" + "8" * 64
-    )
+    changed[0]["scenario_results"][0]["detail_artifact_hash"] = "sha256:" + "8" * 64
 
     first_selection = apply_final_selection_contract(
         contract=manifest.final_selection,
@@ -200,13 +236,19 @@ def test_selection_artifact_rejects_candidate_or_contract_hash_tampering() -> No
         report_context={"dataset_quality_gate_status": "PASS"},
         validation_required=False,
     )
-    artifact = build_selection_artifact(manifest_hash=manifest.manifest_hash(), selection_result=selection, candidates=candidates)
+    artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=selection,
+        candidates=candidates,
+    )
     assert artifact is not None
 
     artifact["selected_candidate_id"] = "candidate-b"
     artifact["compiled_strategy_contract_hash"] = "sha256:" + "3" * 64
 
-    assert "selection_artifact_content_hash_mismatch" in validate_selection_artifact(artifact)
+    assert "selection_artifact_content_hash_mismatch" in validate_selection_artifact(
+        artifact
+    )
 
 
 def test_selection_artifact_rejects_report_candidate_substitution() -> None:
@@ -275,10 +317,13 @@ def test_selection_binding_uses_materialized_values_when_raw_values_are_empty() 
         "candidates": [candidate],
     }
 
-    assert validate_selection_artifact_binding(
-        report=report,
-        selection_artifact=artifact,
-    ) == []
+    assert (
+        validate_selection_artifact_binding(
+            report=report,
+            selection_artifact=artifact,
+        )
+        == []
+    )
 
 
 def test_selection_binding_ignores_nested_confirmatory_holdout_fields() -> None:
@@ -310,24 +355,23 @@ def test_selection_binding_ignores_nested_confirmatory_holdout_fields() -> None:
     assert artifact is not None
 
     persisted = copy.deepcopy(candidate)
-    del persisted["validation_stress_suite"]["scenarios"][0][
-        "final_holdout_metrics"
-    ]
+    del persisted["validation_stress_suite"]["scenarios"][0]["final_holdout_metrics"]
     report = {
         "manifest_hash": manifest.manifest_hash(),
         "selected_candidate_id": "candidate-a",
-        "final_selection_contract_hash": selection[
-            "final_selection_contract_hash"
-        ],
+        "final_selection_contract_hash": selection["final_selection_contract_hash"],
         "candidate_final_scores": selection["candidate_final_scores"],
         "candidate_final_scores_hash": selection["candidate_final_scores_hash"],
         "candidates": [persisted],
     }
 
-    assert validate_selection_artifact_binding(
-        report=report,
-        selection_artifact=artifact,
-    ) == []
+    assert (
+        validate_selection_artifact_binding(
+            report=report,
+            selection_artifact=artifact,
+        )
+        == []
+    )
 
 
 def test_compact_report_preserves_complete_final_selection_input() -> None:
@@ -392,7 +436,10 @@ def test_manifest_uses_research_classification_and_validation_contract_names() -
     assert manifest.research_run.diagnostic_mode == "candidate_validation"
     assert "research_classification" in manifest.canonical_payload()
     assert "deployment_tier" not in manifest.canonical_payload()
-    assert manifest.acceptance_gate.as_dict()["final_holdout_required_for_validation"] is False
+    assert (
+        manifest.acceptance_gate.as_dict()["final_holdout_required_for_validation"]
+        is False
+    )
 
 
 def test_dataset_quality_policy_is_strict_and_hash_equivalent_when_omitted() -> None:
@@ -408,12 +455,18 @@ def test_dataset_quality_policy_is_strict_and_hash_equivalent_when_omitted() -> 
         "dense_candles_required": True,
         "missing_candle_policy": "fail",
     }
-    assert explicit.canonical_payload()["dataset_quality_policy"] == omitted.canonical_payload()["dataset_quality_policy"]
+    assert (
+        explicit.canonical_payload()["dataset_quality_policy"]
+        == omitted.canonical_payload()["dataset_quality_policy"]
+    )
     assert explicit.manifest_hash() == omitted.manifest_hash()
 
 
 def test_default_strict_manifest_hash_is_preserved() -> None:
-    manifest_path = Path(__file__).resolve().parents[1] / "examples/research/sma_filter_manifest.example.json"
+    manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "examples/research/sma_filter_manifest.example.json"
+    )
 
     assert load_manifest(manifest_path).manifest_hash() == (
         "sha256:4c151853a65af373c94032c4c1d1a16533e4f5e9eb83585c59b8f6e13b5d6377"
@@ -424,7 +477,10 @@ def test_default_strict_manifest_hash_is_preserved() -> None:
     "policy, message",
     (
         (
-            {"dense_candles_required": False, "missing_candle_policy": "diagnostic_only"},
+            {
+                "dense_candles_required": False,
+                "missing_candle_policy": "diagnostic_only",
+            },
             "dataset_quality_policy.missing_candle_policy must be fail",
         ),
         (
@@ -468,7 +524,9 @@ def test_legacy_manifest_classification_keys_are_unknown(legacy_key: str) -> Non
 
 
 def test_diagnostic_artifact_contract_is_research_schema_v2() -> None:
-    payload = apply_artifact_contract({"artifact_type": "forward_return_diagnostic_report"})
+    payload = apply_artifact_contract(
+        {"artifact_type": "forward_return_diagnostic_report"}
+    )
 
     assert payload == {
         "artifact_type": "forward_return_diagnostic_report",
@@ -487,16 +545,36 @@ def test_diagnostic_artifact_contract_is_research_schema_v2() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     (
-        ({"final_selection_gate_failed": True}, "candidate_not_selected_review_final_selection_contract"),
-        ({"statistical_gate_failed": True}, "candidate_not_selected_review_statistical_selection"),
-        ({"registry_gate_failed": True}, "candidate_not_selected_review_experiment_registry"),
-        ({"validation_eligibility_failed": True}, "candidate_ineligible_review_blocking_reasons"),
-        ({"top_fail_reasons": Counter({"walk_forward_failed": 1})}, "candidate_not_selected_review_walk_forward_windows"),
-        ({"top_fail_reasons": Counter({"profit_factor_failed": 1})}, "candidate_not_selected_revise_strategy_hypothesis"),
+        (
+            {"final_selection_gate_failed": True},
+            "candidate_not_selected_review_final_selection_contract",
+        ),
+        (
+            {"statistical_gate_failed": True},
+            "candidate_not_selected_review_statistical_selection",
+        ),
+        (
+            {"registry_gate_failed": True},
+            "candidate_not_selected_review_experiment_registry",
+        ),
+        (
+            {"validation_eligibility_failed": True},
+            "candidate_ineligible_review_blocking_reasons",
+        ),
+        (
+            {"top_fail_reasons": Counter({"walk_forward_failed": 1})},
+            "candidate_not_selected_review_walk_forward_windows",
+        ),
+        (
+            {"top_fail_reasons": Counter({"profit_factor_failed": 1})},
+            "candidate_not_selected_revise_strategy_hypothesis",
+        ),
         ({"gate_result": "FAIL"}, "inspect_report_or_adjust_hypothesis"),
     ),
 )
-def test_run_summary_uses_research_candidate_next_actions(kwargs: dict[str, object], expected: str) -> None:
+def test_run_summary_uses_research_candidate_next_actions(
+    kwargs: dict[str, object], expected: str
+) -> None:
     arguments: dict[str, object] = {
         "validation_allowed": False,
         "has_candidates": True,

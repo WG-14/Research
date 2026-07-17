@@ -12,11 +12,7 @@ import marshal
 import re
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
-from .backtest_types import BacktestRunContext
-from .dataset_snapshot import DatasetSnapshot
 from .decision_event import ResearchDecisionEvent
-from .execution_model import ExecutionModel
-from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
 from .hashing import sha256_prefixed
 from .immutable_contract import canonical_mutable, deep_freeze
 from .strategy_spec import StrategySpec
@@ -24,7 +20,9 @@ from .strategy_spec import StrategySpec
 
 ResearchEventBuilder = Callable[..., Iterable[ResearchDecisionEvent]]
 DiagnosticCountBuilder = Callable[[dict[str, object]], dict[str, Any]]
-ResearchDataRequirementBuilder = Callable[[object | None], "ResearchStrategyDataRequirements"]
+ResearchDataRequirementBuilder = Callable[
+    [object | None], "ResearchStrategyDataRequirements"
+]
 ResearchDecisionBuilder = Callable[..., Any]
 ResearchPayloadAdapter = Callable[[dict[str, object], Any], dict[str, object]]
 ExitPolicyMaterializer = Callable[[str, dict[str, Any]], Any]
@@ -109,7 +107,9 @@ def _transitive_behavior_binding(hook: Callable[..., Any]) -> dict[str, str]:
         module = str(getattr(value, "__module__", ""))
         if not is_strategy_owned_module(module):
             return
-        identity = f"{module}:{getattr(value, '__qualname__', type(value).__qualname__)}"
+        identity = (
+            f"{module}:{getattr(value, '__qualname__', type(value).__qualname__)}"
+        )
         if identity in visited:
             return
         visited.add(identity)
@@ -168,7 +168,9 @@ class EngineCapabilitySupport:
     max_intents_per_decision: int = 1
     portfolio_modes: tuple[str, ...] = ("single_asset_cash_qty",)
 
-    def unsupported_fields(self, required: StrategyCapabilityContract) -> tuple[str, ...]:
+    def unsupported_fields(
+        self, required: StrategyCapabilityContract
+    ) -> tuple[str, ...]:
         unsupported: list[str] = []
         if required.instrument_count > self.max_instrument_count:
             unsupported.append("instrument_count")
@@ -212,8 +214,11 @@ class CompiledStrategyContract:
 
     def __post_init__(self) -> None:
         for field_name in (
-            "raw_parameters", "materialized_parameters", "parameter_source_map",
-            "data_requirements", "capability_contract",
+            "raw_parameters",
+            "materialized_parameters",
+            "parameter_source_map",
+            "data_requirements",
+            "capability_contract",
         ):
             object.__setattr__(self, field_name, deep_freeze(getattr(self, field_name)))
         if self.exit_policy is not None:
@@ -229,7 +234,9 @@ class CompiledStrategyContract:
             "parameter_source_map": canonical_mutable(self.parameter_source_map),
             "materialized_parameters_hash": self.materialized_parameters_hash,
             "data_requirements": canonical_mutable(self.data_requirements),
-            "exit_policy": canonical_mutable(self.exit_policy) if self.exit_policy is not None else None,
+            "exit_policy": canonical_mutable(self.exit_policy)
+            if self.exit_policy is not None
+            else None,
             "exit_mode": self.exit_mode,
             "capability_contract": canonical_mutable(self.capability_contract),
             "capability_contract_hash": self.capability_contract_hash,
@@ -286,11 +293,17 @@ def normalize_exit_policy_materialization(
     return ExitPolicyMaterialization(
         exit_policy=policy,
         exit_policy_hash=str(result.get("exit_policy_hash") or sha256_prefixed(policy)),
-        exit_policy_contract_hash=str(result.get("exit_policy_contract_hash") or sha256_prefixed(contract_payload)),
+        exit_policy_contract_hash=str(
+            result.get("exit_policy_contract_hash") or sha256_prefixed(contract_payload)
+        ),
         exit_policy_config=config,
-        exit_policy_config_hash=str(result.get("exit_policy_config_hash") or sha256_prefixed(config)),
+        exit_policy_config_hash=str(
+            result.get("exit_policy_config_hash") or sha256_prefixed(config)
+        ),
         exit_policy_source=source,
-        exit_policy_materialization_mode=str(result.get("exit_policy_materialization_mode") or default_mode),
+        exit_policy_materialization_mode=str(
+            result.get("exit_policy_materialization_mode") or default_mode
+        ),
     )
 
 
@@ -357,7 +370,9 @@ class ResearchStrategyDataRequirements:
         for name in self.optional_data:
             normalized = str(name).strip().lower()
             if normalized and normalized not in values:
-                values[normalized] = ResearchDataRequirement(name=normalized, required=False)
+                values[normalized] = ResearchDataRequirement(
+                    name=normalized, required=False
+                )
         for capability in self.capabilities:
             normalized = str(capability.name).strip().lower()
             if normalized:
@@ -412,24 +427,63 @@ class ResearchStrategyPlugin:
         if not str(self.version or "").strip():
             raise ValueError(f"research_strategy_version_missing:{name}")
         if not str(self.decision_contract_version or "").strip():
-            raise ValueError(f"research_strategy_decision_contract_version_missing:{name}")
+            raise ValueError(
+                f"research_strategy_decision_contract_version_missing:{name}"
+            )
         if self.spec.rule_spec is None:
             raise ValueError(f"research_strategy_rule_spec_missing:{name}")
         if self.event_builder is None:
             raise ValueError(f"research_strategy_event_builder_missing:{name}")
         if self.execution_authority != "common_simulation_engine":
-            raise ValueError(f"research_strategy_custom_execution_authority_rejected:{name}")
+            raise ValueError(
+                f"research_strategy_custom_execution_authority_rejected:{name}"
+            )
         object.__setattr__(self, "name", name)
-        object.__setattr__(self, "required_data", tuple(sorted({str(x).strip().lower() for x in self.required_data if str(x).strip()})))
-        object.__setattr__(self, "optional_data", tuple(sorted({str(x).strip().lower() for x in self.optional_data if str(x).strip()})))
+        object.__setattr__(
+            self,
+            "required_data",
+            tuple(
+                sorted(
+                    {
+                        str(x).strip().lower()
+                        for x in self.required_data
+                        if str(x).strip()
+                    }
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "optional_data",
+            tuple(
+                sorted(
+                    {
+                        str(x).strip().lower()
+                        for x in self.optional_data
+                        if str(x).strip()
+                    }
+                )
+            ),
+        )
         if self.diagnostics_builder is None:
-            object.__setattr__(self, "diagnostics_builder", generic_diagnostics_count_builder)
+            object.__setattr__(
+                self, "diagnostics_builder", generic_diagnostics_count_builder
+            )
         if self.exit_mode not in {"strategy_owned", "common_typed_policy"}:
-            raise ValueError(f"research_strategy_exit_mode_invalid:{name}:{self.exit_mode}")
-        if self.exit_mode == "common_typed_policy" and self.exit_decision_builder is not None:
-            raise ValueError(f"research_strategy_multiple_exit_authorities:{name}:common_policy_with_strategy_builder")
+            raise ValueError(
+                f"research_strategy_exit_mode_invalid:{name}:{self.exit_mode}"
+            )
+        if (
+            self.exit_mode == "common_typed_policy"
+            and self.exit_decision_builder is not None
+        ):
+            raise ValueError(
+                f"research_strategy_multiple_exit_authorities:{name}:common_policy_with_strategy_builder"
+            )
 
-    def data_requirements(self, strategy_spec: object | None = None) -> ResearchStrategyDataRequirements:
+    def data_requirements(
+        self, strategy_spec: object | None = None
+    ) -> ResearchStrategyDataRequirements:
         if self.data_requirements_builder is not None:
             return self.data_requirements_builder(strategy_spec)
         return ResearchStrategyDataRequirements(self.required_data, self.optional_data)
@@ -448,10 +502,14 @@ class ResearchStrategyPlugin:
         ):
             if hook is not None:
                 components = _transitive_behavior_binding(hook)
-                hooks[role] = {"module": hook.__module__, "qualname": hook.__qualname__, "role": role,
-                               "hook_contract_version": self.decision_contract_version,
-                               "source_artifact_hash": sha256_prefixed(components),
-                               "transitive_behavior_components": components}
+                hooks[role] = {
+                    "module": hook.__module__,
+                    "qualname": hook.__qualname__,
+                    "role": role,
+                    "hook_contract_version": self.decision_contract_version,
+                    "source_artifact_hash": sha256_prefixed(components),
+                    "transitive_behavior_components": components,
+                }
         return {
             "schema_version": 4,
             "name": self.name,
@@ -459,7 +517,9 @@ class ResearchStrategyPlugin:
             "strategy_spec_hash": self.spec.spec_hash(),
             "required_data": list(self.required_data),
             "optional_data": list(self.optional_data),
-            "research_data_requirements": self.data_requirements(self.spec.default_parameters).capability_contract_payload(),
+            "research_data_requirements": self.data_requirements(
+                self.spec.default_parameters
+            ).capability_contract_payload(),
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
             "execution_authority": self.execution_authority,
@@ -469,7 +529,9 @@ class ResearchStrategyPlugin:
             "event_builder_module": self.event_builder.__module__,
             "event_builder_qualname": self.event_builder.__qualname__,
             "parameter_materializer_module": (
-                self.parameter_materializer.__module__ if self.parameter_materializer is not None else None
+                self.parameter_materializer.__module__
+                if self.parameter_materializer is not None
+                else None
             ),
             "source_artifact_binding": "recursive_strategy_owned_components_v3",
             "reconstruction_identity": {

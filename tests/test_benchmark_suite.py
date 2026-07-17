@@ -60,11 +60,15 @@ def _approval_artifact(path: Path) -> tuple[str, str]:
         "research_approval": approval,
     }
     content_hash = sha256_prefixed(content_hash_payload(payload))
-    path.write_text(json.dumps({**payload, "content_hash": content_hash}), encoding="utf-8")
+    path.write_text(
+        json.dumps({**payload, "content_hash": content_hash}), encoding="utf-8"
+    )
     return str(path), content_hash
 
 
-def _benchmark_contract(approval_path: str, approval_hash: str) -> BenchmarkSuiteContract:
+def _benchmark_contract(
+    approval_path: str, approval_hash: str
+) -> BenchmarkSuiteContract:
     strategy = StrategyBenchmarkReference(
         "noop_baseline",
         "noop_baseline.research_contract.v1",
@@ -92,7 +96,9 @@ def _benchmark_contract(approval_path: str, approval_hash: str) -> BenchmarkSuit
     )
 
 
-def _manifest(*, fee_rate: float, slippage_bps: float, benchmark_suite=None) -> SimpleNamespace:
+def _manifest(
+    *, fee_rate: float, slippage_bps: float, benchmark_suite=None
+) -> SimpleNamespace:
     scenario = ExecutionScenario(
         type="fixed_bps",
         fee_rate=fee_rate,
@@ -129,22 +135,33 @@ def _manifest(*, fee_rate: float, slippage_bps: float, benchmark_suite=None) -> 
 def test_buy_and_hold_benchmark_uses_common_engine_and_execution_costs() -> None:
     snapshot = _snapshot()
     registry = builtin_strategy_registry()
-    zero_cost = BenchmarkSuiteRunner(_manifest(fee_rate=0.0, slippage_bps=0.0), registry).run((snapshot,))
-    costly = BenchmarkSuiteRunner(_manifest(fee_rate=0.01, slippage_bps=100.0), registry).run((snapshot,))
+    zero_cost = BenchmarkSuiteRunner(
+        _manifest(fee_rate=0.0, slippage_bps=0.0), registry
+    ).run((snapshot,))
+    costly = BenchmarkSuiteRunner(
+        _manifest(fee_rate=0.01, slippage_bps=100.0), registry
+    ).run((snapshot,))
 
     zero = zero_cost["validation"]
     stressed = costly["validation"]
     assert zero["buy_and_hold_method"] == "common_simulation_engine"
     assert stressed["buy_and_hold_return_pct"] < zero["buy_and_hold_return_pct"]
     assert stressed["buy_and_hold_metrics_hash"]
-    assert stressed["benchmark_execution_contract_hash"] != zero["benchmark_execution_contract_hash"]
+    assert (
+        stressed["benchmark_execution_contract_hash"]
+        != zero["benchmark_execution_contract_hash"]
+    )
     assert stressed["dataset_snapshot_hash"] == snapshot.snapshot_fingerprint_hash()
 
 
-def test_complete_benchmark_suite_is_deterministic_and_execution_backed(tmp_path: Path) -> None:
+def test_complete_benchmark_suite_is_deterministic_and_execution_backed(
+    tmp_path: Path,
+) -> None:
     snapshot = _snapshot()
     registry = builtin_strategy_registry()
-    approval_path, approval_hash = _approval_artifact(tmp_path / "approved-strategy.json")
+    approval_path, approval_hash = _approval_artifact(
+        tmp_path / "approved-strategy.json"
+    )
     manifest = _manifest(
         fee_rate=0.001,
         slippage_bps=5.0,
@@ -179,11 +196,18 @@ def test_complete_benchmark_suite_is_deterministic_and_execution_backed(tmp_path
     assert same_holding["schedule_hash"]
     assert split["simpler_strategy"]["status"] == "PASS"
     assert split["approved_strategy"]["status"] == "PASS"
-    assert split["approved_strategy"]["approval_evidence"]["approval_artifact_hash"] == approval_hash
+    assert (
+        split["approved_strategy"]["approval_evidence"]["approval_artifact_hash"]
+        == approval_hash
+    )
 
 
-def test_validation_benchmark_contract_requires_all_explicit_policy_choices(tmp_path: Path) -> None:
-    approval_path, approval_hash = _approval_artifact(tmp_path / "approved-strategy.json")
+def test_validation_benchmark_contract_requires_all_explicit_policy_choices(
+    tmp_path: Path,
+) -> None:
+    approval_path, approval_hash = _approval_artifact(
+        tmp_path / "approved-strategy.json"
+    )
     contract = _benchmark_contract(approval_path, approval_hash)
     payload = contract.as_dict()
     parsed = parse_benchmark_suite_contract(
@@ -208,7 +232,9 @@ def test_approved_strategy_artifact_tampering_is_rejected(tmp_path: Path) -> Non
     )
 
     try:
-        BenchmarkSuiteRunner(manifest, builtin_strategy_registry()).run((_snapshot(),), candidates=[])
+        BenchmarkSuiteRunner(manifest, builtin_strategy_registry()).run(
+            (_snapshot(),), candidates=[]
+        )
     except ValueError as exc:
         assert str(exc) == "approved_strategy_artifact_hash_mismatch"
     else:
@@ -229,9 +255,7 @@ def test_approved_strategy_rejects_copied_governance_registry(
     approval_material = {
         key: value for key, value in approval.items() if key != "content_hash"
     }
-    approval["content_hash"] = sha256_prefixed(
-        content_hash_payload(approval_material)
-    )
+    approval["content_hash"] = sha256_prefixed(content_hash_payload(approval_material))
     payload_material = {
         key: value for key, value in payload.items() if key != "content_hash"
     }
@@ -241,14 +265,10 @@ def test_approved_strategy_rejects_copied_governance_registry(
     manifest = _manifest(
         fee_rate=0.0,
         slippage_bps=0.0,
-        benchmark_suite=_benchmark_contract(
-            approval_path, forged_approval_hash
-        ),
+        benchmark_suite=_benchmark_contract(approval_path, forged_approval_hash),
     )
 
-    with pytest.raises(
-        ValueError, match="strategy_approval_registry_path_mismatch"
-    ):
+    with pytest.raises(ValueError, match="strategy_approval_registry_path_mismatch"):
         BenchmarkSuiteRunner(
             manifest,
             builtin_strategy_registry(),

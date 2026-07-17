@@ -61,7 +61,11 @@ class MarketRegimeSnapshot:
             "regime": self.legacy_regime,
             "regime_score": float(self.trend_strength),
             "chop_score": float(max(0.0, 1.0 - self.trend_strength)),
-            "volatility_state": "low" if self.volatility_bucket == "low_vol" else "normal",
-            "overextension_ratio": float(self.inputs.get("overextension_ratio", 0.0) or 0.0),
+            "volatility_state": "low"
+            if self.volatility_bucket == "low_vol"
+            else "normal",
+            "overextension_ratio": float(
+                self.inputs.get("overextension_ratio", 0.0) or 0.0
+            ),
             "allows_entry": bool(self.allows_sma_entry),
         }

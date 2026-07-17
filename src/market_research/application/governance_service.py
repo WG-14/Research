@@ -157,9 +157,7 @@ class ResearchGovernanceApplicationService:
                 evidence.effective_strategy_parameters_hash
             ),
             source_report_hash=evidence.source_report_hash,
-            final_holdout_confirmation_hash=(
-                evidence.final_holdout_confirmation_hash
-            ),
+            final_holdout_confirmation_hash=(evidence.final_holdout_confirmation_hash),
             reviewer_id=actor.actor_id,
             rationale=request.rationale,
             resolved_requirement_ids=request.resolved_requirement_ids,
@@ -215,8 +213,7 @@ class ResearchGovernanceApplicationService:
         result_reasons = validate_validated_research_result(report)
         if result_reasons:
             raise GovernanceError(
-                "strategy_approval_validated_result_invalid:"
-                + ",".join(result_reasons)
+                "strategy_approval_validated_result_invalid:" + ",".join(result_reasons)
             )
         selection_reasons = validate_final_selection_report(report)
         if selection_reasons:
@@ -275,18 +272,14 @@ class ResearchGovernanceApplicationService:
             raise GovernanceError("strategy_approval_hypothesis_identity_missing")
 
         candidates = [
-            item
-            for item in report.get("candidates") or []
-            if isinstance(item, dict)
+            item for item in report.get("candidates") or [] if isinstance(item, dict)
         ]
         selected = next(
             (
                 item
                 for item in candidates
                 if str(
-                    item.get("parameter_candidate_id")
-                    or item.get("candidate_id")
-                    or ""
+                    item.get("parameter_candidate_id") or item.get("candidate_id") or ""
                 )
                 == candidate_id
             ),

@@ -38,9 +38,7 @@ def build_database_settings(
         return _sqlite_settings(sqlite_path)
     if engine == "postgresql":
         return _postgresql_settings(environment)
-    raise RuntimeError(
-        f"{DATABASE_ENGINE_ENV} must be one of: postgresql, sqlite"
-    )
+    raise RuntimeError(f"{DATABASE_ENGINE_ENV} must be one of: postgresql, sqlite")
 
 
 def _sqlite_settings(sqlite_path: str | Path) -> dict[str, dict[str, Any]]:
@@ -70,9 +68,7 @@ def _postgresql_settings(
     sslmode = str(environment.get("INTERNAL_WEB_DATABASE_SSLMODE", "require"))
     if sslmode not in POSTGRESQL_SSLMODES:
         allowed = ", ".join(sorted(POSTGRESQL_SSLMODES))
-        raise RuntimeError(
-            f"INTERNAL_WEB_DATABASE_SSLMODE must be one of: {allowed}"
-        )
+        raise RuntimeError(f"INTERNAL_WEB_DATABASE_SSLMODE must be one of: {allowed}")
     connect_timeout = _bounded_integer(
         environment,
         "INTERNAL_WEB_DATABASE_CONNECT_TIMEOUT_SECONDS",
@@ -117,7 +113,10 @@ def _postgresql_settings(
     if (
         not application_name
         or len(application_name) > 63
-        or not all(character.isascii() and (character.isalnum() or character in "-_.") for character in application_name)
+        or not all(
+            character.isascii() and (character.isalnum() or character in "-_.")
+            for character in application_name
+        )
     ):
         raise RuntimeError(
             "INTERNAL_WEB_DATABASE_APPLICATION_NAME must contain only ASCII "

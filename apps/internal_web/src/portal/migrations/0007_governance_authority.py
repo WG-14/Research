@@ -168,7 +168,10 @@ class Migration(migrations.Migration):
                 ("content_hash", models.CharField(max_length=71)),
                 ("review_row_hash", models.CharField(max_length=71)),
                 ("transition_row_hash", models.CharField(blank=True, max_length=71)),
-                ("approval_artifact_ref", models.CharField(blank=True, max_length=1024)),
+                (
+                    "approval_artifact_ref",
+                    models.CharField(blank=True, max_length=1024),
+                ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 (
                     "subject",

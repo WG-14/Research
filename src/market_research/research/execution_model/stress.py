@@ -52,7 +52,11 @@ class StressExecutionModel:
                 requested_qty = float(request.requested_qty or 0.0)
             else:
                 requested_qty = (
-                    (float(request.requested_notional or 0.0) * (1.0 - float(self.fee_rate))) / avg_fill_price
+                    (
+                        float(request.requested_notional or 0.0)
+                        * (1.0 - float(self.fee_rate))
+                    )
+                    / avg_fill_price
                     if avg_fill_price > 0.0
                     else 0.0
                 )
@@ -130,7 +134,9 @@ class StressExecutionModel:
             best_ask=request.best_ask,
             spread_bps=request.spread_bps,
             requested_notional=request.requested_notional,
-            filled_notional=(float(filled_qty) * float(avg_fill_price) if fill_ratio > 0.0 else 0.0),
+            filled_notional=(
+                float(filled_qty) * float(avg_fill_price) if fill_ratio > 0.0 else 0.0
+            ),
             depth_snapshot_ts=request.depth_snapshot_ts,
             depth_snapshot_age_ms=request.depth_snapshot_age_ms,
             depth_levels_consumed=request.depth_levels_consumed,

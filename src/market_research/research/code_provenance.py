@@ -33,11 +33,17 @@ def collect_code_provenance(project_root: str | Path) -> dict[str, Any]:
         "git_commit": commit or "unknown",
         "git_available": commit is not None and status is not None and diff is not None,
         "git_dirty": bool(status) if status is not None else None,
-        "git_status_hash": _bytes_hash(status.encode("utf-8")) if status is not None else None,
+        "git_status_hash": _bytes_hash(status.encode("utf-8"))
+        if status is not None
+        else None,
         "git_diff_hash": _bytes_hash(diff) if diff is not None else None,
-        "source_tree_hash": sha256_prefixed(source_rows, label="repository_source_tree"),
+        "source_tree_hash": sha256_prefixed(
+            source_rows, label="repository_source_tree"
+        ),
         "source_file_count": len(source_rows),
-        "dependency_contract_hash": sha256_prefixed(lock_rows, label="repository_dependency_contract"),
+        "dependency_contract_hash": sha256_prefixed(
+            lock_rows, label="repository_dependency_contract"
+        ),
         "dependency_contract_files": [row["path"] for row in lock_rows],
     }
     payload["code_provenance_hash"] = sha256_prefixed(payload, label="code_provenance")

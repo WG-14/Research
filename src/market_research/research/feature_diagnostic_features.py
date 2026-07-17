@@ -25,8 +25,7 @@ class FeatureProvider(Protocol):
         self,
         *,
         view: "AsOfCandleView",
-    ) -> FeatureValue | None:
-        ...
+    ) -> FeatureValue | None: ...
 
 
 @dataclass(frozen=True, init=False)
@@ -73,7 +72,9 @@ def _feature(name: str, value: float | str | bool, value_type: str) -> FeatureVa
         name=name,
         value=value,
         value_type=value_type,
-        feature_hash=sha256_prefixed({"name": name, "value": value, "value_type": value_type}),
+        feature_hash=sha256_prefixed(
+            {"name": name, "value": value, "value_type": value_type}
+        ),
     )
 
 
@@ -117,7 +118,9 @@ class RangeRatioProvider:
         close = float(candle.close)
         if close <= 0.0:
             return None
-        return _feature(self.name, (float(candle.high) - float(candle.low)) / close, "float")
+        return _feature(
+            self.name, (float(candle.high) - float(candle.low)) / close, "float"
+        )
 
 
 @dataclass(frozen=True)
@@ -181,7 +184,9 @@ class ZScoreProvider:
         deviation = _std(closes)
         if deviation == 0.0:
             return _feature(self.name, 0.0, "float")
-        return _feature(self.name, (float(view.candle().close) - _mean(closes)) / deviation, "float")
+        return _feature(
+            self.name, (float(view.candle().close) - _mean(closes)) / deviation, "float"
+        )
 
 
 @dataclass(frozen=True)
@@ -200,8 +205,16 @@ class RegimeProvider:
         volumes = tuple(float(candle.volume) for candle in candles)
         short_history = view.history(min(self.short_window, len(candles)))
         long_history = view.history(min(self.long_window, len(candles)))
-        short_sma = _mean(tuple(float(candle.close) for candle in short_history)) if short_history else None
-        long_sma = _mean(tuple(float(candle.close) for candle in long_history)) if long_history else None
+        short_sma = (
+            _mean(tuple(float(candle.close) for candle in short_history))
+            if short_history
+            else None
+        )
+        long_sma = (
+            _mean(tuple(float(candle.close) for candle in long_history))
+            if long_history
+            else None
+        )
         snapshot = classify_market_regime_from_arrays(
             closes=closes,
             highs=highs,
@@ -215,12 +228,16 @@ class RegimeProvider:
 
 
 def feature_provider_for_name(name: str) -> FeatureProvider:
-    from market_research.research.feature_provider_registry import feature_provider_spec_for_name
+    from market_research.research.feature_provider_registry import (
+        feature_provider_spec_for_name,
+    )
 
     return feature_provider_spec_for_name(name).provider
 
 
 def feature_providers_for_names(names: tuple[str, ...]) -> tuple[FeatureProvider, ...]:
-    from market_research.research.feature_provider_registry import feature_provider_specs_for_names
+    from market_research.research.feature_provider_registry import (
+        feature_provider_specs_for_names,
+    )
 
     return tuple(spec.provider for spec in feature_provider_specs_for_names(names))

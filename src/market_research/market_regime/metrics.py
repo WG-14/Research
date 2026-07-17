@@ -59,7 +59,9 @@ def _max_consecutive_losses(values: list[float]) -> int:
     return longest
 
 
-def aggregate_regime_coverage(*, snapshots: Iterable[Any], trades: Iterable[dict[str, Any]]) -> tuple[RegimeCoverageRow, ...]:
+def aggregate_regime_coverage(
+    *, snapshots: Iterable[Any], trades: Iterable[dict[str, Any]]
+) -> tuple[RegimeCoverageRow, ...]:
     snapshot_list = list(snapshots)
     trade_list = [trade for trade in trades if _is_effective_trade(trade)]
     total = len(snapshot_list)
@@ -77,7 +79,9 @@ def aggregate_regime_coverage(*, snapshots: Iterable[Any], trades: Iterable[dict
             candle_counts[_snapshot_value(snapshot, dimension)] += 1
         for trade in trade_list:
             if str(trade.get("side") or "").upper() == "BUY":
-                trade_counts[_snapshot_value(trade.get("entry_regime_snapshot"), dimension)] += 1
+                trade_counts[
+                    _snapshot_value(trade.get("entry_regime_snapshot"), dimension)
+                ] += 1
         for regime in sorted(set(candle_counts) | set(trade_counts)):
             candles = candle_counts.get(regime, 0)
             rows.append(
@@ -101,8 +105,7 @@ def aggregate_regime_performance(
     closed = [
         trade
         for trade in trades
-        if _is_effective_trade(trade)
-        and str(trade.get("side") or "").upper() == "SELL"
+        if _is_effective_trade(trade) and str(trade.get("side") or "").upper() == "SELL"
     ]
     coverage_lookup = {(row.dimension, row.regime): row for row in coverage}
     rows: list[RegimePerformanceRow] = []
@@ -114,22 +117,36 @@ def aggregate_regime_performance(
         "composite_regime",
     ):
         regimes = {row.regime for row in coverage if row.dimension == dimension}
-        regimes.update(_snapshot_value(trade.get("entry_regime_snapshot"), dimension) for trade in closed)
+        regimes.update(
+            _snapshot_value(trade.get("entry_regime_snapshot"), dimension)
+            for trade in closed
+        )
         for regime in sorted(regimes):
             values = [
-                float(trade.get("net_pnl") if trade.get("net_pnl") is not None else trade.get("closed_trade_pnl") or 0.0)
+                float(
+                    trade.get("net_pnl")
+                    if trade.get("net_pnl") is not None
+                    else trade.get("closed_trade_pnl") or 0.0
+                )
                 for trade in closed
-                if _snapshot_value(trade.get("entry_regime_snapshot"), dimension) == regime
+                if _snapshot_value(trade.get("entry_regime_snapshot"), dimension)
+                == regime
             ]
             fees = [
-                float(trade.get("fee_total") if trade.get("fee_total") is not None else trade.get("fee") or 0.0)
+                float(
+                    trade.get("fee_total")
+                    if trade.get("fee_total") is not None
+                    else trade.get("fee") or 0.0
+                )
                 for trade in closed
-                if _snapshot_value(trade.get("entry_regime_snapshot"), dimension) == regime
+                if _snapshot_value(trade.get("entry_regime_snapshot"), dimension)
+                == regime
             ]
             slips = [
                 float(trade.get("slippage_total") or 0.0)
                 for trade in closed
-                if _snapshot_value(trade.get("entry_regime_snapshot"), dimension) == regime
+                if _snapshot_value(trade.get("entry_regime_snapshot"), dimension)
+                == regime
             ]
             wins = [value for value in values if value > 0.0]
             losses = [value for value in values if value < 0.0]
@@ -156,7 +173,9 @@ def aggregate_regime_performance(
                     candle_share=coverage_row.candle_share if coverage_row else 0.0,
                     gross_pnl=sum(values) + sum(fees) + sum(slips),
                     net_pnl=sum(values),
-                    return_pct=(sum(values) / float(start_cash)) * 100.0 if start_cash > 0.0 else 0.0,
+                    return_pct=(sum(values) / float(start_cash)) * 100.0
+                    if start_cash > 0.0
+                    else 0.0,
                     profit_factor=profit_factor,
                     profit_factor_unbounded=profit_factor_unbounded,
                     win_rate=(len(wins) / len(values)) if values else 0.0,
@@ -165,7 +184,9 @@ def aggregate_regime_performance(
                     max_consecutive_losses=_max_consecutive_losses(values),
                     fee_drag=sum(fees),
                     slippage_drag=sum(slips),
-                    single_trade_dependency_score=(largest_abs / total_abs) if total_abs > 0.0 else None,
+                    single_trade_dependency_score=(largest_abs / total_abs)
+                    if total_abs > 0.0
+                    else None,
                 )
             )
     return tuple(rows)
@@ -177,9 +198,14 @@ def _is_filled_trade(trade: dict[str, Any]) -> bool:
     execution = trade.get("execution")
     if isinstance(execution, dict):
         status = str(execution.get("fill_status") or "")
-        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {"filled", "partial"}
+        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {
+            "filled",
+            "partial",
+        }
     side = str(trade.get("side") or "").upper()
-    if side == "SELL" and (trade.get("net_pnl") is not None or trade.get("closed_trade_pnl") is not None):
+    if side == "SELL" and (
+        trade.get("net_pnl") is not None or trade.get("closed_trade_pnl") is not None
+    ):
         return True
     if side == "BUY" and trade.get("entry_regime_snapshot") is not None:
         return True

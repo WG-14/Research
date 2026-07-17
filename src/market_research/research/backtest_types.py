@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from .decision_event import OrderIntent, ResearchDecisionEvent
 from .execution_model.base import ExecutionFill, ExecutionRequest
 from .portfolio_ledger import LedgerEntry
+
 if TYPE_CHECKING:
     from .strategy_contract import CompiledStrategyContract
 
@@ -35,7 +36,9 @@ class MemorySample:
     peak_rss_platform: str | None = None
 
 
-def ru_maxrss_to_mb(raw_value: float, *, platform: str | None = None) -> tuple[float, str]:
+def ru_maxrss_to_mb(
+    raw_value: float, *, platform: str | None = None
+) -> tuple[float, str]:
     """Convert getrusage ru_maxrss using platform-defined units.
 
     Linux reports KiB and Darwin reports bytes. Other platforms are surfaced as
@@ -46,7 +49,9 @@ def ru_maxrss_to_mb(raw_value: float, *, platform: str | None = None) -> tuple[f
         return round(float(raw_value) / (1024.0 * 1024.0), 3), "bytes"
     if platform_name.startswith("linux"):
         return round(float(raw_value) / 1024.0, 3), "kib"
-    return round(float(raw_value) / 1024.0, 3), f"kib_assumed_for_platform:{platform_name}"
+    return round(
+        float(raw_value) / 1024.0, 3
+    ), f"kib_assumed_for_platform:{platform_name}"
 
 
 def sample_process_memory() -> MemorySample:
@@ -181,11 +186,18 @@ def resolve_tick_observability_policy(
     if not policy_name:
         if audit_mode == "complete_external":
             policy_name = "full_tick_canonical"
-        elif str(policy_materialization_mode or "").strip().lower() == "research_validation":
+        elif (
+            str(policy_materialization_mode or "").strip().lower()
+            == "research_validation"
+        ):
             policy_name = "validation_evidence"
         elif str(diagnostic_mode or "").strip().lower() == "exploratory":
             policy_name = "diagnostic_sampled"
-        elif str(report_detail or "").strip().lower() in {"index", "summary", "standard"}:
+        elif str(report_detail or "").strip().lower() in {
+            "index",
+            "summary",
+            "standard",
+        }:
             policy_name = "summary_aggregate"
         else:
             policy_name = "full_tick_canonical"
@@ -204,8 +216,12 @@ def resolve_tick_observability_policy(
             name="full_tick_canonical",
             audit_mode=audit_mode,
             full_tick_canonical_decision=True,
-            audit_decision="per_tick" if audit_mode == "complete_external" else "aggregate",
-            audit_equity_mark="per_tick" if audit_mode == "complete_external" else "aggregate",
+            audit_decision="per_tick"
+            if audit_mode == "complete_external"
+            else "aggregate",
+            audit_equity_mark="per_tick"
+            if audit_mode == "complete_external"
+            else "aggregate",
             strict_required_hashes=audit_mode == "complete_external",
             allow_fallback_hash=True,
         )
@@ -241,7 +257,9 @@ class BacktestRunContext:
     diagnostic_mode: str = "candidate_validation"
     audit_trail_policy: Any | None = None
     observability_policy: str | BacktestTickObservabilityPolicy | None = None
-    resource_limits: BacktestResourceLimits = field(default_factory=BacktestResourceLimits)
+    resource_limits: BacktestResourceLimits = field(
+        default_factory=BacktestResourceLimits
+    )
     heartbeat: BacktestHeartbeatPolicy = field(default_factory=BacktestHeartbeatPolicy)
     progress_callback: ProgressCallback | None = None
     audit_trace: Any | None = None
@@ -303,11 +321,13 @@ class BacktestRun:
 
     def validate_execution_lineage(self) -> None:
         """Fail closed on duplicate, orphaned, or inconsistent execution lineage."""
-        streams = (("decision", self.decisions, lambda x: x.decision_id()),
-                   ("intent", self.order_intents, lambda x: x.intent_id),
-                   ("request", self.execution_requests, lambda x: x.request_id),
-                   ("fill", self.fills, lambda x: x.fill_id),
-                   ("ledger_entry", self.ledger_entries, lambda x: x.ledger_entry_id))
+        streams = (
+            ("decision", self.decisions, lambda x: x.decision_id()),
+            ("intent", self.order_intents, lambda x: x.intent_id),
+            ("request", self.execution_requests, lambda x: x.request_id),
+            ("fill", self.fills, lambda x: x.fill_id),
+            ("ledger_entry", self.ledger_entries, lambda x: x.ledger_entry_id),
+        )
         indexes: dict[str, dict[str, object]] = {}
         for name, values, getter in streams:
             ids = [str(getter(value)) for value in values]
@@ -317,40 +337,82 @@ class BacktestRun:
                 raise ValueError(f"missing_{name}_id")
             indexes[name] = dict(zip(ids, values))
         if self.authoritative_decision_ids:
-            authoritative_ids = tuple(str(value) for value in self.authoritative_decision_ids)
+            authoritative_ids = tuple(
+                str(value) for value in self.authoritative_decision_ids
+            )
             if len(authoritative_ids) != len(set(authoritative_ids)):
                 raise ValueError("duplicate_authoritative_decision_id")
-            indexes["decision"] = {value: indexes["decision"].get(value) for value in authoritative_ids}
+            indexes["decision"] = {
+                value: indexes["decision"].get(value) for value in authoritative_ids
+            }
         for intent in self.order_intents:
-            if intent.decision_id not in indexes["decision"]: raise ValueError("orphan_intent")
+            if intent.decision_id not in indexes["decision"]:
+                raise ValueError("orphan_intent")
         for request in self.execution_requests:
-            if request.intent_id not in indexes["intent"] or request.decision_id not in indexes["decision"]: raise ValueError("orphan_request")
-            if indexes["intent"][request.intent_id].decision_id != request.decision_id: raise ValueError("request_intent_decision_mismatch")
+            if (
+                request.intent_id not in indexes["intent"]
+                or request.decision_id not in indexes["decision"]
+            ):
+                raise ValueError("orphan_request")
+            if indexes["intent"][request.intent_id].decision_id != request.decision_id:
+                raise ValueError("request_intent_decision_mismatch")
         for fill in self.fills:
-            if fill.request_id not in indexes["request"]: raise ValueError("orphan_fill")
+            if fill.request_id not in indexes["request"]:
+                raise ValueError("orphan_fill")
             request = indexes["request"][fill.request_id]
-            if fill.decision_id != request.decision_id or fill.intent_id != request.intent_id: raise ValueError("fill_request_lineage_mismatch")
+            if (
+                fill.decision_id != request.decision_id
+                or fill.intent_id != request.intent_id
+            ):
+                raise ValueError("fill_request_lineage_mismatch")
         for entry in self.ledger_entries:
             fill = indexes["fill"].get(entry.fill_id)
-            if fill is None: raise ValueError("orphan_ledger_entry")
-            if fill.fill_status not in {"filled", "partial"} or float(fill.filled_qty) <= 0: raise ValueError("invalid_ledger_fill")
-            if entry.side != fill.side or abs(float(entry.qty)-float(fill.filled_qty)) > 1e-8 or abs(float(entry.fee)-float(fill.fee)) > 1e-8 or entry.effective_ts != fill.portfolio_effective_ts: raise ValueError("ledger_fill_value_mismatch")
-        if len({entry.fill_id for entry in self.ledger_entries}) != len(self.ledger_entries):
+            if fill is None:
+                raise ValueError("orphan_ledger_entry")
+            if (
+                fill.fill_status not in {"filled", "partial"}
+                or float(fill.filled_qty) <= 0
+            ):
+                raise ValueError("invalid_ledger_fill")
+            if (
+                entry.side != fill.side
+                or abs(float(entry.qty) - float(fill.filled_qty)) > 1e-8
+                or abs(float(entry.fee) - float(fill.fee)) > 1e-8
+                or entry.effective_ts != fill.portfolio_effective_ts
+            ):
+                raise ValueError("ledger_fill_value_mismatch")
+        if len({entry.fill_id for entry in self.ledger_entries}) != len(
+            self.ledger_entries
+        ):
             raise ValueError("multiple_mutating_ledger_entries_for_fill")
-        mutating_fills = {fill.fill_id for fill in self.fills
-                          if fill.fill_status in {"filled", "partial"} and float(fill.filled_qty) > 0
-                          and fill.portfolio_effective_ts is not None}
+        mutating_fills = {
+            fill.fill_id
+            for fill in self.fills
+            if fill.fill_status in {"filled", "partial"}
+            and float(fill.filled_qty) > 0
+            and fill.portfolio_effective_ts is not None
+        }
         applied = {entry.fill_id for entry in self.ledger_entries}
-        pending = {str(trade.get("fill_id")) for trade in self.trades
-                   if trade.get("pending_execution_at_end") is True
-                   and trade.get("pending_execution_after_dataset_end") is True}
+        pending = {
+            str(trade.get("fill_id"))
+            for trade in self.trades
+            if trade.get("pending_execution_at_end") is True
+            and trade.get("pending_execution_after_dataset_end") is True
+        }
         if applied & pending:
             raise ValueError("fill_both_applied_and_pending")
         if mutating_fills != applied | pending:
             raise ValueError("mutating_fill_ledger_correspondence_mismatch")
         for trade in self.trades:
-            if not trade.get("ledger_entry_id"): continue
+            if not trade.get("ledger_entry_id"):
+                continue
             fill = indexes["fill"].get(str(trade.get("fill_id")))
             entry = indexes["ledger_entry"].get(str(trade.get("ledger_entry_id")))
-            if fill is None or entry is None or entry.fill_id != fill.fill_id: raise ValueError("trade_projection_lineage_mismatch")
-            if trade.get("side") != fill.side or float(trade.get("qty") or 0) != float(fill.filled_qty) or trade.get("price") != fill.avg_fill_price: raise ValueError("trade_projection_value_mismatch")
+            if fill is None or entry is None or entry.fill_id != fill.fill_id:
+                raise ValueError("trade_projection_lineage_mismatch")
+            if (
+                trade.get("side") != fill.side
+                or float(trade.get("qty") or 0) != float(fill.filled_qty)
+                or trade.get("price") != fill.avg_fill_price
+            ):
+                raise ValueError("trade_projection_value_mismatch")

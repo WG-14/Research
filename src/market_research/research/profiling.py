@@ -57,7 +57,9 @@ def run_with_cprofile(
     write_json_atomic(path, payload)
     return result, {
         "profile_artifact_path": str(path.resolve()),
-        "profile_artifact_ref": path.resolve().relative_to(manager.data_dir().resolve()).as_posix(),
+        "profile_artifact_ref": path.resolve()
+        .relative_to(manager.data_dir().resolve())
+        .as_posix(),
         "profile_artifact_type": "research_backtest_profile",
         "profile_artifact_written": True,
     }
@@ -71,26 +73,39 @@ def profile_artifact_path(
     scenario_id: str,
     split_name: str,
 ) -> Path:
-    safe_name = "_".join(_safe_part(part) for part in (candidate_id, scenario_id, split_name))
-    path = manager.research_artifact_path(experiment_id, "profiles", f"{safe_name}.json")
+    safe_name = "_".join(
+        _safe_part(part) for part in (candidate_id, scenario_id, split_name)
+    )
+    path = manager.research_artifact_path(
+        experiment_id, "profiles", f"{safe_name}.json"
+    )
     resolved = path.resolve()
     data_dir = manager.data_dir().resolve()
     if ResearchPathManager.is_within(resolved, manager.project_root.resolve()):
-        raise ResearchPathError(f"profile artifact must be outside repository: {resolved}")
+        raise ResearchPathError(
+            f"profile artifact must be outside repository: {resolved}"
+        )
     if not ResearchPathManager.is_within(resolved, data_dir):
-        raise ResearchPathError(f"profile artifact must be inside DATA_ROOT derived bucket: {resolved}")
+        raise ResearchPathError(
+            f"profile artifact must be inside DATA_ROOT derived bucket: {resolved}"
+        )
     return resolved
 
 
 def _safe_part(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(value or "unknown"))
+    cleaned = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "_"
+        for ch in str(value or "unknown")
+    )
     return cleaned[:96] or "unknown"
 
 
 def _hotspots(profiler: cProfile.Profile) -> list[dict[str, Any]]:
     stats = pstats.Stats(profiler)
     rows: list[dict[str, Any]] = []
-    for func, stat in sorted(stats.stats.items(), key=lambda item: item[1][3], reverse=True)[:10]:
+    for func, stat in sorted(
+        stats.stats.items(), key=lambda item: item[1][3], reverse=True
+    )[:10]:
         cc, nc, tt, ct, _callers = stat
         filename, line_no, function_name = func
         rows.append(

@@ -2,18 +2,30 @@
 
 ## Purpose
 
-`market-research` is an offline, reproducible market-strategy research
-repository. It uses externally prepared immutable market datasets, runs backtests and
-walk-forward studies, performs statistical validation, and writes research
+This is the `market-research` platform monorepo. It contains three deliberately
+separate distributions:
+
+- `market-research`, the offline reproducible research engine and CLI;
+- `apps/internal_web`, the authenticated internal-web adapter; and
+- `services/research_operations`, the operational trust domain for that offline
+  service.
+
+The platform uses externally prepared immutable market datasets, runs backtests
+and walk-forward studies, performs statistical validation, and writes research
 reports and audit evidence. It is not a trading bot.
 
 ## Repository boundaries
 
-The repository contains research code, tests, documentation, examples, and
-development validation scripts. It must not contain account access, private
-account APIs, order submission, account-connected runtime, state
-repair, single-instance coordination, service management, deployment, or
-operator tooling.
+Operational code is permitted only under `services/research_operations` and
+its deployment support paths. The `src/market_research` distribution must not
+import Django, `market_research_web`, `portal`, or `research_operations`, and it
+must not own PostgreSQL queues, service supervision, TLS, health checks, or
+operational backup/restore. Web and Operations may depend only on published
+Research application contracts or explicit adapter boundaries; Research must
+never depend on either adapter.
+
+`/home/vorac/work/Operation` is a separate trading-system repository. It must
+never be imported, modified, copied into, or used by this platform.
 
 Network market-data collection, operational order/fill database ingestion,
 exchange raw order-semantics inference, and retry/backfill/source-probe
@@ -90,10 +102,15 @@ Default patches use focused validation. Repository-wide cleanup and explicit
 integration validation may use one approved full suite after focused checks
 pass. Do not replace diagnosis with repeated broad test runs.
 
-## Forbidden operational functionality
+## Operations service boundary
 
-Do not add account-connected trading, private APIs, order submission, order
-management, account access, state repair, single-instance coordination, service
-units, health checks, operational backup/restore, reviewed-account profiles,
-runtime strategies, operator commands, emergency account controls, or
-real-account environment variables.
+`services/research_operations` may own PostgreSQL coordination, durable worker
+leases and fencing, audit projection, health/readiness, deployment, and
+backup/recovery for the offline research service. It must keep runtime state,
+credentials, certificates, datasets, artifacts, reports, and backups outside
+Git and outside the source tree.
+
+Across the entire monorepo, do not add account-connected trading, private
+exchange APIs, order submission or management, account access, operational
+order/fill ingestion, reviewed-account profiles, runtime trading strategies,
+emergency account controls, or real-account environment variables.

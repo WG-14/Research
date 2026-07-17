@@ -61,7 +61,9 @@ class ArtifactBudgetExceeded(RuntimeError):
         self.limit = int(limit)
         self.path = str(path.resolve()) if path is not None else None
         self.overwrite_existing_path = bool(overwrite_existing_path)
-        self.known_file_count = int(known_file_count) if known_file_count is not None else None
+        self.known_file_count = (
+            int(known_file_count) if known_file_count is not None else None
+        )
         message = (
             f"{reason}: observed={self.observed} attempted_write_bytes={self.attempted_write_bytes} "
             f"prior_total_bytes={self.prior_total_bytes} next_total_bytes={self.next_total_bytes} "
@@ -98,7 +100,10 @@ class ResearchArtifactCollisionError(RuntimeError):
 
 class ArtifactStore:
     def __init__(
-        self, *, root: Path, budget: ArtifactBudget | None = None,
+        self,
+        *,
+        root: Path,
+        budget: ArtifactBudget | None = None,
         additional_roots: tuple[Path, ...] = (),
     ) -> None:
         self.root = root.resolve()
@@ -125,10 +130,17 @@ class ArtifactStore:
     def audit_stream_bytes(self) -> int:
         return self._audit_stream_bytes
 
-    def write_json_atomic(self, path: Path, payload: dict[str, Any]) -> ArtifactWriteEvent:
+    def write_json_atomic(
+        self, path: Path, payload: dict[str, Any]
+    ) -> ArtifactWriteEvent:
         overwrite_existing_path = path.resolve() in self._known_files
         self._reserve_file(path)
-        encoded = json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
+        encoded = (
+            json.dumps(
+                payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False
+            ).encode("utf-8")
+            + b"\n"
+        )
         self._observe_bytes(
             path=path,
             byte_count=len(encoded),
@@ -138,10 +150,23 @@ class ArtifactStore:
         write_json_atomic(path, payload)
         return ArtifactWriteEvent(path=str(path.resolve()), bytes=len(encoded))
 
-    def append_jsonl(self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False) -> None:
+    def append_jsonl(
+        self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False
+    ) -> None:
         self._reserve_file(path)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
-        self._observe_bytes(path=path, byte_count=len(encoded), audit_stream=audit_stream)
+        encoded = (
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        self._observe_bytes(
+            path=path, byte_count=len(encoded), audit_stream=audit_stream
+        )
         if audit_stream:
             next_rows = self._audit_stream_rows + 1
             limit = self.budget.max_audit_stream_rows
@@ -234,7 +259,9 @@ class ResearchArtifactContext:
         self.derived_root = manager.research_artifact_path(experiment_id).resolve()
         self.report_root = manager.report_path("research", experiment_id).resolve()
         self.store = ArtifactStore(
-            root=manager.data_dir(), budget=budget, additional_roots=(manager.report_root,),
+            root=manager.data_dir(),
+            budget=budget,
+            additional_roots=(manager.report_root,),
         )
         self._claimed_paths: set[Path] = set()
         self._claim_root = self.derived_root / ".path_claims"
@@ -259,12 +286,16 @@ class ResearchArtifactContext:
     def audit_stream_bytes(self) -> int:
         return self.store.audit_stream_bytes
 
-    def write_json_atomic(self, path: Path, payload: dict[str, Any]) -> ArtifactWriteEvent:
+    def write_json_atomic(
+        self, path: Path, payload: dict[str, Any]
+    ) -> ArtifactWriteEvent:
         self._ensure_in_research_run(path)
         self.claim_path(path)
         return self.store.write_json_atomic(path, payload)
 
-    def append_jsonl(self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False) -> None:
+    def append_jsonl(
+        self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False
+    ) -> None:
         self._ensure_in_research_run(path)
         self.claim_path(path)
         self.store.append_jsonl(path, payload, audit_stream=audit_stream)
@@ -282,9 +313,15 @@ class ResearchArtifactContext:
         if resolved in self._claimed_paths:
             return
         if ResearchPathManager.is_within(resolved, self.manager.data_dir()):
-            relative = "artifact:" + resolved.relative_to(self.manager.data_dir().resolve()).as_posix()
+            relative = (
+                "artifact:"
+                + resolved.relative_to(self.manager.data_dir().resolve()).as_posix()
+            )
         else:
-            relative = "report:" + resolved.relative_to(self.manager.report_root.resolve()).as_posix()
+            relative = (
+                "report:"
+                + resolved.relative_to(self.manager.report_root.resolve()).as_posix()
+            )
         claim_name = hashlib.sha256(relative.encode("utf-8")).hexdigest() + ".claim"
         self._claim_root.mkdir(parents=True, exist_ok=True)
         claim_path = self._claim_root / claim_name
@@ -310,4 +347,6 @@ class ResearchArtifactContext:
             or self.report_root in resolved.parents
         ):
             return
-        raise ValueError(f"research artifact path outside experiment context: {resolved}")
+        raise ValueError(
+            f"research artifact path outside experiment context: {resolved}"
+        )

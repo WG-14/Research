@@ -120,7 +120,9 @@ def test_capability_registry_covers_every_cli_command_and_read_only_queries() ->
         "reports.detail",
         "reports.download",
     } <= set(registry)
-    assert registry["research-preflight"].execution_mode is CapabilityExecutionMode.QUEUED
+    assert (
+        registry["research-preflight"].execution_mode is CapabilityExecutionMode.QUEUED
+    )
     assert registry["research-preflight"].gui_policy is GuiPolicy.REQUIRED
     assert all(
         spec.permission and spec.service_id and spec.reason

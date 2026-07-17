@@ -13,7 +13,9 @@ class AuditTraceRecorder:
     def record_execution(self, run_context: Any, trade: dict[str, object]) -> None:
         support.trace_execution(run_context, trade)
 
-    def record_decision(self, run_context: Any, decision_payload: dict[str, object]) -> None:
+    def record_decision(
+        self, run_context: Any, decision_payload: dict[str, object]
+    ) -> None:
         support.trace_decision(run_context, decision_payload)
 
     def record_equity_mark(

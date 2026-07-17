@@ -1,0 +1,57 @@
+[Unit]
+Description=Research Operations guarded internal web service
+Documentation=file:/opt/research-platform/current/services/research_operations/deploy/native/README.md
+Requires=research-operations-preflight.service research-operations-migrate.service
+After=research-operations-preflight.service research-operations-migrate.service
+PartOf=research-operations.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=research-web
+Group=research-ops
+WorkingDirectory=/opt/research-platform/current
+EnvironmentFile=/etc/research-ops/runtime.env
+Environment=RESEARCH_OPS_DATABASE_ROLE=runtime
+Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /opt/research-platform/current/.venv/bin/gunicorn --config /opt/research-platform/current/services/research_operations/deploy/native/gunicorn-web.conf.py research_operations.runtime:guarded_web_application
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=45s
+TimeoutStopFailureMode=kill
+OOMPolicy=stop
+UMask=0027
+RuntimeDirectory=research-operations-web
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadOnlyPaths=/srv/research/data
+ReadWritePaths=/srv/research/data/_internal_web/manifests
+ReadWritePaths=/srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
+TasksMax=96
+LimitNOFILE=8192
+MemoryMax=1G
+CPUQuota=200%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=research-operations-web

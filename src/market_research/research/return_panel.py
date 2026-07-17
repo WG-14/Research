@@ -15,7 +15,9 @@ RETURN_PANEL_ARTIFACT_TYPE = "candidate_return_panel"
 DEFAULT_RETURN_UNIT = "trade_return"
 STATISTICAL_EVIDENCE_RETURN_UNIT = "portfolio_bar_return"
 DEFAULT_MISSING_OBSERVATION_POLICY = "skip_missing_candidate_trade_returns"
-VALIDATION_MISSING_OBSERVATION_POLICY = "fail_closed_complete_candidate_bar_alignment_required"
+VALIDATION_MISSING_OBSERVATION_POLICY = (
+    "fail_closed_complete_candidate_bar_alignment_required"
+)
 
 
 def build_candidate_return_panel(
@@ -64,11 +66,16 @@ def _build_trade_return_panel(
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     all_timestamps: list[int] = []
-    for candidate in sorted(candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")):
+    for candidate in sorted(
+        candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")
+    ):
         series = _candidate_trade_return_series(candidate, split=split)
         timestamps = [int(row["ts"]) for row in series]
         all_timestamps.extend(timestamps)
-        benchmark_series = [{"ts": row["ts"], "sequence": row["sequence"], "return_pct": 0.0} for row in series]
+        benchmark_series = [
+            {"ts": row["ts"], "sequence": row["sequence"], "return_pct": 0.0}
+            for row in series
+        ]
         excess_series = [
             {
                 "ts": row["ts"],
@@ -157,8 +164,12 @@ def _build_aligned_portfolio_return_panel(
         return None
     rows: list[dict[str, Any]] = []
     canonical_index: list[int] | None = None
-    for candidate in sorted(candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")):
-        series = _candidate_portfolio_bar_return_series(candidate, split=split, manager=manager)
+    for candidate in sorted(
+        candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")
+    ):
+        series = _candidate_portfolio_bar_return_series(
+            candidate, split=split, manager=manager
+        )
         if not series:
             return None
         timestamps = [int(row["ts"]) for row in series]
@@ -180,7 +191,8 @@ def _build_aligned_portfolio_return_panel(
             {
                 "ts": row["ts"],
                 "sequence": row["sequence"],
-                "excess_return_pct": float(row["return_pct"]) - float(benchmark_row["return_pct"]),
+                "excess_return_pct": float(row["return_pct"])
+                - float(benchmark_row["return_pct"]),
             }
             for row, benchmark_row in zip(series, benchmark_series)
         ]
@@ -221,7 +233,9 @@ def _build_aligned_portfolio_return_panel(
         "benchmark": benchmark,
         "missing_observation_policy": VALIDATION_MISSING_OBSERVATION_POLICY,
         "candidate_ids": [row["candidate_id"] for row in rows],
-        "scenario_ids_by_candidate": {row["candidate_id"]: row["scenario_ids"] for row in rows},
+        "scenario_ids_by_candidate": {
+            row["candidate_id"]: row["scenario_ids"] for row in rows
+        },
     }
     payload: dict[str, Any] = {
         "artifact_type": RETURN_PANEL_ARTIFACT_TYPE,
@@ -286,7 +300,12 @@ def _equity_curve_to_bar_return_series(value: Any) -> list[dict[str, Any]]:
         previous_equity = _as_float(previous.get("equity"))
         current_equity = _as_float(current.get("equity"))
         ts = _as_int(current.get("ts"))
-        if previous_equity is None or current_equity is None or ts is None or previous_equity <= 0.0:
+        if (
+            previous_equity is None
+            or current_equity is None
+            or ts is None
+            or previous_equity <= 0.0
+        ):
             return []
         rows.append(
             {
@@ -308,8 +327,12 @@ def write_candidate_return_panel(
     path = manager.research_artifact_path(experiment_id, "candidate_return_panel.json")
     project_root = manager.project_root.resolve()
     if ResearchPathManager.is_within(path.resolve(), project_root):
-        raise ValueError(f"candidate return panel path must be outside repository: {path.resolve()}")
-    store = artifact_context or ResearchArtifactContext(manager=manager, experiment_id=experiment_id)
+        raise ValueError(
+            f"candidate return panel path must be outside repository: {path.resolve()}"
+        )
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager, experiment_id=experiment_id
+    )
     store.write_json_atomic(path, panel)
     return path
 
@@ -321,7 +344,9 @@ def validate_return_panel_binding(
     panel: dict[str, Any] | None,
 ) -> list[str]:
     reasons: list[str] = []
-    expected_hash = str(evidence.get("return_panel_hash") or report.get("return_panel_hash") or "").strip()
+    expected_hash = str(
+        evidence.get("return_panel_hash") or report.get("return_panel_hash") or ""
+    ).strip()
     if not expected_hash.startswith("sha256:"):
         reasons.append("return_panel_hash_missing")
     if not isinstance(panel, dict):
@@ -329,23 +354,38 @@ def validate_return_panel_binding(
         return reasons
     if panel.get("artifact_type") != RETURN_PANEL_ARTIFACT_TYPE:
         reasons.append("return_panel_artifact_type_mismatch")
-    actual_hash = sha256_prefixed(content_hash_payload({k: v for k, v in panel.items() if k != "content_hash"}))
+    actual_hash = sha256_prefixed(
+        content_hash_payload({k: v for k, v in panel.items() if k != "content_hash"})
+    )
     embedded_hash = str(panel.get("content_hash") or "").strip()
     if expected_hash.startswith("sha256:") and actual_hash != expected_hash:
         reasons.append("return_panel_hash_mismatch")
     if embedded_hash != actual_hash:
         reasons.append("return_panel_hash_mismatch")
-    panel_content_payload = {k: v for k, v in panel.items() if k not in {"content_hash", "panel_content_hash"}}
-    if str(panel.get("panel_content_hash") or "").strip() != sha256_prefixed(content_hash_payload(panel_content_payload)):
+    panel_content_payload = {
+        k: v
+        for k, v in panel.items()
+        if k not in {"content_hash", "panel_content_hash"}
+    }
+    if str(panel.get("panel_content_hash") or "").strip() != sha256_prefixed(
+        content_hash_payload(panel_content_payload)
+    ):
         reasons.append("return_panel_panel_content_hash_mismatch")
     if panel.get("schema_version") != CANDIDATE_RETURN_PANEL_SCHEMA_VERSION:
         reasons.append("return_panel_schema_version_mismatch")
     evidence_return_unit = evidence.get("return_unit") or report.get("return_unit")
-    if evidence_return_unit is not None and str(evidence_return_unit) != str(panel.get("return_unit") or ""):
+    if evidence_return_unit is not None and str(evidence_return_unit) != str(
+        panel.get("return_unit") or ""
+    ):
         reasons.append("return_panel_return_unit_mismatch")
-    if panel.get("return_unit") == DEFAULT_RETURN_UNIT and panel.get("statistical_evidence_available") is True:
+    if (
+        panel.get("return_unit") == DEFAULT_RETURN_UNIT
+        and panel.get("statistical_evidence_available") is True
+    ):
         reasons.append("return_panel_statistical_evidence_misclassified")
-    if panel.get("statistical_evidence_available") is True and panel.get("return_unit") not in {STATISTICAL_EVIDENCE_RETURN_UNIT, "bar_excess_return"}:
+    if panel.get("statistical_evidence_available") is True and panel.get(
+        "return_unit"
+    ) not in {STATISTICAL_EVIDENCE_RETURN_UNIT, "bar_excess_return"}:
         reasons.append("return_panel_statistical_evidence_misclassified")
     for field in ("manifest_hash", "dataset_content_hash", "dataset_quality_hash"):
         expected = report.get(field)
@@ -355,25 +395,37 @@ def validate_return_panel_binding(
                 reasons.append("return_panel_metadata_mismatch")
                 break
     candidates = report.get("candidates")
-    expected_candidate_ids = sorted(
-        str(candidate.get("parameter_candidate_id") or "")
-        for candidate in candidates
-        if isinstance(candidate, dict)
-    ) if isinstance(candidates, list) else []
+    expected_candidate_ids = (
+        sorted(
+            str(candidate.get("parameter_candidate_id") or "")
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        )
+        if isinstance(candidates, list)
+        else []
+    )
     panel_candidate_ids = sorted(str(item) for item in panel.get("candidate_ids") or [])
     if expected_candidate_ids != panel_candidate_ids:
         reasons.append("return_panel_candidate_mismatch")
     rows = panel.get("candidate_return_series")
     if isinstance(rows, list):
-        if _as_int(panel.get("candidate_count")) != len(panel_candidate_ids) or _as_int(panel.get("candidate_count")) != len(rows):
+        if _as_int(panel.get("candidate_count")) != len(panel_candidate_ids) or _as_int(
+            panel.get("candidate_count")
+        ) != len(rows):
             reasons.append("return_panel_candidate_count_mismatch")
-        row_candidate_ids = sorted(str(row.get("candidate_id") or "") for row in rows if isinstance(row, dict))
+        row_candidate_ids = sorted(
+            str(row.get("candidate_id") or "") for row in rows if isinstance(row, dict)
+        )
         if row_candidate_ids != panel_candidate_ids:
             reasons.append("return_panel_candidate_mismatch")
-        row_observations = [_as_int(row.get("observation_count")) for row in rows if isinstance(row, dict)]
-        if any(value is None for value in row_observations) or _as_int(panel.get("observation_count")) != sum(
-            int(value or 0) for value in row_observations
-        ):
+        row_observations = [
+            _as_int(row.get("observation_count"))
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        if any(value is None for value in row_observations) or _as_int(
+            panel.get("observation_count")
+        ) != sum(int(value or 0) for value in row_observations):
             reasons.append("return_panel_observation_count_mismatch")
         scenario_reasons = _return_panel_scenario_reasons(report=report, rows=rows)
         reasons.extend(scenario_reasons)
@@ -406,7 +458,11 @@ def _return_panel_series_reasons(panel: dict[str, Any]) -> list[str]:
         benchmark_series = row.get("benchmark_return_series_values")
         excess_series = row.get("excess_return_series_values")
         time_index = row.get("time_index")
-        if not isinstance(candidate_series, list) or not isinstance(benchmark_series, list) or not isinstance(excess_series, list):
+        if (
+            not isinstance(candidate_series, list)
+            or not isinstance(benchmark_series, list)
+            or not isinstance(excess_series, list)
+        ):
             reasons.append("return_panel_series_malformed")
             continue
         if not isinstance(time_index, list):
@@ -415,7 +471,9 @@ def _return_panel_series_reasons(panel: dict[str, Any]) -> list[str]:
         observation_count = _as_int(row.get("observation_count"))
         if observation_count is None or observation_count != len(candidate_series):
             reasons.append("return_panel_observation_count_mismatch")
-        if len(candidate_series) != len(benchmark_series) or len(candidate_series) != len(excess_series):
+        if len(candidate_series) != len(benchmark_series) or len(
+            candidate_series
+        ) != len(excess_series):
             reasons.append("return_panel_series_alignment_mismatch")
         candidate_keys = _series_keys(candidate_series)
         benchmark_keys = _series_keys(benchmark_series)
@@ -428,20 +486,26 @@ def _return_panel_series_reasons(panel: dict[str, Any]) -> list[str]:
             or candidate_keys != excess_keys
         ):
             reasons.append("return_panel_series_alignment_mismatch")
-        if candidate_keys is not None and [ts for ts, _seq in candidate_keys] != [_as_int(item) for item in time_index]:
+        if candidate_keys is not None and [ts for ts, _seq in candidate_keys] != [
+            _as_int(item) for item in time_index
+        ]:
             reasons.append("return_panel_time_index_mismatch")
         parsed_time_index = [_as_int(item) for item in time_index]
         if any(item is None for item in parsed_time_index):
             reasons.append("return_panel_time_index_mismatch")
         else:
-            union_index.update(int(item) for item in parsed_time_index if item is not None)
+            union_index.update(
+                int(item) for item in parsed_time_index if item is not None
+            )
         if sha256_prefixed(time_index) != row.get("time_index_hash"):
             reasons.append("return_panel_time_index_mismatch")
         if sha256_prefixed(candidate_series) != row.get("candidate_return_series_hash"):
             reasons.append("return_panel_series_malformed")
         if sha256_prefixed(benchmark_series) != row.get("benchmark_series_hash"):
             reasons.append("return_panel_series_malformed")
-        if sha256_prefixed(excess_series) != row.get("benchmark_excess_return_series_hash"):
+        if sha256_prefixed(excess_series) != row.get(
+            "benchmark_excess_return_series_hash"
+        ):
             reasons.append("return_panel_series_malformed")
     if parsed_ordered_index != sorted(union_index):
         reasons.append("return_panel_time_index_mismatch")
@@ -454,7 +518,9 @@ def _return_panel_series_reasons(panel: dict[str, Any]) -> list[str]:
     return sorted(set(reasons))
 
 
-def _return_panel_scenario_reasons(*, report: dict[str, Any], rows: list[Any]) -> list[str]:
+def _return_panel_scenario_reasons(
+    *, report: dict[str, Any], rows: list[Any]
+) -> list[str]:
     candidates = report.get("candidates")
     if not isinstance(candidates, list):
         return []
@@ -464,7 +530,9 @@ def _return_panel_scenario_reasons(*, report: dict[str, Any], rows: list[Any]) -
             continue
         scenario_ids = _candidate_scenario_ids(candidate)
         if scenario_ids:
-            expected_by_candidate[str(candidate.get("parameter_candidate_id") or "")] = scenario_ids
+            expected_by_candidate[
+                str(candidate.get("parameter_candidate_id") or "")
+            ] = scenario_ids
     reasons: list[str] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -491,11 +559,15 @@ def _series_keys(series: list[Any]) -> list[tuple[int, int]] | None:
     return keys
 
 
-def _candidate_trade_return_series(candidate: dict[str, Any], *, split: str) -> list[dict[str, Any]]:
+def _candidate_trade_return_series(
+    candidate: dict[str, Any], *, split: str
+) -> list[dict[str, Any]]:
     key = f"{split}_closed_trades"
     trades = candidate.get(key)
     source = {
-        "return_panel_scenario_role": candidate.get("primary_scenario_role", "candidate"),
+        "return_panel_scenario_role": candidate.get(
+            "primary_scenario_role", "candidate"
+        ),
         "return_panel_scenario_id": candidate.get("primary_scenario_id"),
         "return_panel_series_source": f"candidate.{key}",
     }
@@ -551,7 +623,12 @@ def _candidate_portfolio_bar_return_series(
         previous_equity = _as_float(previous.get("equity"))
         current_equity = _as_float(current.get("equity"))
         ts = _as_int(current.get("ts"))
-        if previous_equity is None or current_equity is None or ts is None or previous_equity <= 0.0:
+        if (
+            previous_equity is None
+            or current_equity is None
+            or ts is None
+            or previous_equity <= 0.0
+        ):
             return []
         rows.append(
             {
@@ -584,10 +661,14 @@ def _candidate_equity_curve(
                     break
     if not isinstance(curve, list):
         if manager is not None:
-            return _candidate_equity_curve_from_audit_trace(candidate, split=split, manager=manager)
+            return _candidate_equity_curve_from_audit_trace(
+                candidate, split=split, manager=manager
+            )
         return []
     if not curve and manager is not None:
-        traced = _candidate_equity_curve_from_audit_trace(candidate, split=split, manager=manager)
+        traced = _candidate_equity_curve_from_audit_trace(
+            candidate, split=split, manager=manager
+        )
         if traced:
             return traced
     rows: list[dict[str, Any]] = []
@@ -657,7 +738,14 @@ def _candidate_equity_curve_from_audit_trace(
                 asset_qty = _as_float(payload.get("asset_qty"))
                 if ts is None or equity_value is None:
                     return []
-                rows.append({"ts": ts, "equity": equity_value, "cash": cash, "asset_qty": asset_qty})
+                rows.append(
+                    {
+                        "ts": ts,
+                        "equity": equity_value,
+                        "cash": cash,
+                        "asset_qty": asset_qty,
+                    }
+                )
         return sorted(rows, key=lambda row: int(row["ts"]))
     return []
 

@@ -22,7 +22,9 @@ FORBIDDEN = (
 )
 
 
-def test_successful_buy_and_hold_backtest_stays_within_research_import_boundary(tmp_path: Path) -> None:
+def test_successful_buy_and_hold_backtest_stays_within_research_import_boundary(
+    tmp_path: Path,
+) -> None:
     db_path, manifest_path = create_success_fixture(tmp_path)
     root = tmp_path / "research-runtime"
     script = """
@@ -48,19 +50,38 @@ raise SystemExit(rc)
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert json.loads(result.stdout.splitlines()[-1]) == {"rc": 0, "forbidden": []}
-    report = root / "reports" / "research" / "buy_and_hold_success_import_boundary" / "backtest_report.json"
+    report = (
+        root
+        / "reports"
+        / "research"
+        / "buy_and_hold_success_import_boundary"
+        / "backtest_report.json"
+    )
     assert report.is_file()
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["candidate_count"] == 1
     candidate = json.loads(
-        (root / "artifacts" / "derived" / "research" / "buy_and_hold_success_import_boundary" / "backtest_candidates.json").read_text(encoding="utf-8")
+        (
+            root
+            / "artifacts"
+            / "derived"
+            / "research"
+            / "buy_and_hold_success_import_boundary"
+            / "backtest_candidates.json"
+        ).read_text(encoding="utf-8")
     )["candidates"][0]
     assert candidate["strategy_name"] == "buy_and_hold_baseline"
     validation = candidate["scenario_results"][0]
     assert validation["validation_metrics"]["trade_count"] == 0
-    assert validation["validation_resource_usage"]["common_execution_authority"] == "common_simulation_engine"
+    assert (
+        validation["validation_resource_usage"]["common_execution_authority"]
+        == "common_simulation_engine"
+    )
     assert validation["validation_resource_usage"]["open_position_at_end"] is True
-    assert validation["validation_resource_usage"]["final_position_marked_to_market"] is True
+    assert (
+        validation["validation_resource_usage"]["final_position_marked_to_market"]
+        is True
+    )
 
 
 def test_catalog_resolves_buy_and_hold_without_loading_legacy_bridge() -> None:

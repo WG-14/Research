@@ -66,7 +66,9 @@ def test_audit_scope_rejects_existing_trace_without_deleting_it(tmp_path: Path) 
             scenario_id="base",
             scenario_index=0,
             split="validation",
-            artifact_context=ResearchArtifactContext(manager=manager, experiment_id="exp"),
+            artifact_context=ResearchArtifactContext(
+                manager=manager, experiment_id="exp"
+            ),
         )
 
     assert decision_path.read_bytes() == original

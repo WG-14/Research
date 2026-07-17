@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from .contracts import DatasetAdapter, DatasetLoadContext, UnsupportedDatasetAdapterError
+from .contracts import (
+    DatasetAdapter,
+    DatasetLoadContext,
+    UnsupportedDatasetAdapterError,
+)
 from .registry import DatasetAdapterRegistry, default_dataset_adapter_registry
 
 __all__ = [

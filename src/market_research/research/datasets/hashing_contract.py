@@ -41,13 +41,21 @@ class ArtifactCandleRow:
     volume: float
 
     def canonical_payload(self) -> dict[str, object]:
-        return {"pair": self.pair, "interval": self.interval, "ts": self.ts,
-                "open": self.open, "high": self.high, "low": self.low,
-                "close": self.close, "volume": self.volume}
+        return {
+            "pair": self.pair,
+            "interval": self.interval,
+            "ts": self.ts,
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+        }
 
 
-def canonical_artifact_rows(*, market: str | None, interval: str | None,
-                            rows: Iterable[tuple[Any, ...]]) -> list[dict[str, object]]:
+def canonical_artifact_rows(
+    *, market: str | None, interval: str | None, rows: Iterable[tuple[Any, ...]]
+) -> list[dict[str, object]]:
     """Canonical full artifact rows with market and interval in the hash domain.
 
     Callers may pass full 8-column SQLite rows, or explicitly supply market and
@@ -63,12 +71,18 @@ def canonical_artifact_rows(*, market: str | None, interval: str | None,
             ts, open_, high, low, close, volume = row
         else:
             raise ValueError("artifact_content_hash_requires_pair_and_interval")
-        output.append(ArtifactCandleRow(
-            str(pair), str(row_interval), int(ts),
-            finite_candle_value(open_, "open"), finite_candle_value(high, "high"),
-            finite_candle_value(low, "low"), finite_candle_value(close, "close"),
-            finite_candle_value(volume, "volume"),
-        ).canonical_payload())
+        output.append(
+            ArtifactCandleRow(
+                str(pair),
+                str(row_interval),
+                int(ts),
+                finite_candle_value(open_, "open"),
+                finite_candle_value(high, "high"),
+                finite_candle_value(low, "low"),
+                finite_candle_value(close, "close"),
+                finite_candle_value(volume, "volume"),
+            ).canonical_payload()
+        )
     return output
 
 
@@ -87,13 +101,30 @@ def finite_candle_value(value: Any, field: str) -> float:
     return parsed
 
 
-def artifact_content_hash(rows: Iterable[tuple[Any, ...]], *, market: str | None = None,
-                          interval: str | None = None) -> str:
+def artifact_content_hash(
+    rows: Iterable[tuple[Any, ...]],
+    *,
+    market: str | None = None,
+    interval: str | None = None,
+) -> str:
     """Hash complete artifact rows using fixed pair/interval/OHLCV schema."""
     return sha256_prefixed(
-        {"hash_domain": "artifact_content_v2", "artifact_row_schema":
-         ["pair", "interval", "ts", "open", "high", "low", "close", "volume"],
-         "candle_rows": canonical_artifact_rows(market=market, interval=interval, rows=rows)},
+        {
+            "hash_domain": "artifact_content_v2",
+            "artifact_row_schema": [
+                "pair",
+                "interval",
+                "ts",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ],
+            "candle_rows": canonical_artifact_rows(
+                market=market, interval=interval, rows=rows
+            ),
+        },
         label="artifact_content_hash",
     )
 
@@ -108,7 +139,9 @@ def artifact_schema_hash(schema: Mapping[str, Any]) -> str:
 
 def artifact_manifest_hash(manifest: Mapping[str, Any]) -> str:
     """Hash a manifest payload excluding its self-referential hash field."""
-    payload = {key: value for key, value in manifest.items() if key != "artifact_manifest_hash"}
+    payload = {
+        key: value for key, value in manifest.items() if key != "artifact_manifest_hash"
+    }
     return sha256_prefixed(
         {"hash_domain": "artifact_manifest_v1", "manifest": payload},
         label="artifact_manifest_hash",

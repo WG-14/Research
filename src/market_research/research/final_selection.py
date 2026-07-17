@@ -36,7 +36,11 @@ def apply_final_selection_contract(
 ) -> dict[str, Any]:
     contract_payload = _contract_payload(contract)
     if contract_payload is None:
-        reasons = ["final_selection_contract_missing"] if validation_required else [LEGACY_IMPLICIT_FINAL_RANK_WARNING]
+        reasons = (
+            ["final_selection_contract_missing"]
+            if validation_required
+            else [LEGACY_IMPLICIT_FINAL_RANK_WARNING]
+        )
         return {
             "final_selection_schema_version": FINAL_SELECTION_SCHEMA_VERSION,
             "final_selection_contract": None,
@@ -59,7 +63,13 @@ def apply_final_selection_contract(
         str(candidate.get("parameter_candidate_id") or "")
         for candidate in selection_inputs
     ]
-    duplicate_ids = sorted({candidate_id for candidate_id in candidate_ids if candidate_ids.count(candidate_id) > 1})
+    duplicate_ids = sorted(
+        {
+            candidate_id
+            for candidate_id in candidate_ids
+            if candidate_ids.count(candidate_id) > 1
+        }
+    )
     if duplicate_ids:
         return {
             "final_selection_schema_version": FINAL_SELECTION_SCHEMA_VERSION,
@@ -98,7 +108,10 @@ def apply_final_selection_contract(
             str(item["candidate_id"]),
         ),
     )
-    public_scores = [{key: value for key, value in item.items() if key != "_sort_key"} for item in scored]
+    public_scores = [
+        {key: value for key, value in item.items() if key != "_sort_key"}
+        for item in scored
+    ]
     for item in public_scores:
         item["score_hash"] = sha256_prefixed(
             {key: value for key, value in item.items() if key != "score_hash"}
@@ -106,7 +119,9 @@ def apply_final_selection_contract(
     selected_public = None
     if selected is not None:
         selected_public = next(
-            item for item in public_scores if item["candidate_id"] == selected["candidate_id"]
+            item
+            for item in public_scores
+            if item["candidate_id"] == selected["candidate_id"]
         )
     fail_reasons = sorted(
         {
@@ -117,15 +132,21 @@ def apply_final_selection_contract(
         }
     )
     if not eligible:
-        fail_reasons = sorted(set(fail_reasons) | {"final_selection_no_eligible_candidates"})
+        fail_reasons = sorted(
+            set(fail_reasons) | {"final_selection_no_eligible_candidates"}
+        )
     scores_hash = sha256_prefixed(public_scores) if public_scores else None
     return {
         "final_selection_schema_version": FINAL_SELECTION_SCHEMA_VERSION,
         "final_selection_contract": contract_payload,
         "final_selection_contract_hash": contract_hash,
         "candidate_universe": contract_payload.get("candidate_universe"),
-        "selected_candidate_id": selected_public.get("candidate_id") if selected_public else None,
-        "selected_candidate_score_hash": selected_public.get("score_hash") if selected_public else None,
+        "selected_candidate_id": selected_public.get("candidate_id")
+        if selected_public
+        else None,
+        "selected_candidate_score_hash": selected_public.get("score_hash")
+        if selected_public
+        else None,
         "candidate_final_scores_hash": scores_hash,
         "candidate_final_scores": public_scores,
         "gate_result": "PASS" if selected_public is not None else "FAIL",
@@ -201,7 +222,7 @@ def final_selection_candidate_input(
         target_path = metric
         for prefix, replacement in prefixes:
             if metric.startswith(prefix):
-                source_path = replacement + metric[len(prefix):]
+                source_path = replacement + metric[len(prefix) :]
                 target_path = source_path
                 break
         _copy_nested_selection_value(
@@ -214,8 +235,11 @@ def final_selection_candidate_input(
 
 
 def _copy_nested_selection_value(
-    *, source: dict[str, Any], source_path: str,
-    target: dict[str, Any], target_path: str,
+    *,
+    source: dict[str, Any],
+    source_path: str,
+    target: dict[str, Any],
+    target_path: str,
 ) -> None:
     source_parts = source_path.split(".")
     value: Any = source
@@ -301,9 +325,7 @@ def _selection_validation_evidence_hash(
 
 def _selection_parameter_values(candidate: dict[str, Any]) -> dict[str, Any]:
     values = (
-        candidate.get("parameter_values_raw")
-        or candidate.get("parameter_values")
-        or {}
+        candidate.get("parameter_values_raw") or candidate.get("parameter_values") or {}
     )
     return dict(values) if isinstance(values, dict) else {}
 
@@ -331,9 +353,7 @@ def selection_candidate_binding_summary(
     if isinstance(existing, dict):
         return dict(existing)
     candidate_id = str(
-        candidate.get("parameter_candidate_id")
-        or candidate.get("candidate_id")
-        or ""
+        candidate.get("parameter_candidate_id") or candidate.get("candidate_id") or ""
     )
     primary_id = str(candidate.get("primary_scenario_id") or "")
     scenarios = candidate.get("scenario_results") or candidate.get("scenarios")
@@ -383,7 +403,11 @@ def build_selection_artifact(
     """Freeze the pre-holdout selection and all evidence that may affect it."""
     selected_id = str(selection_result.get("selected_candidate_id") or "")
     selected = next(
-        (candidate for candidate in candidates if str(candidate.get("parameter_candidate_id") or "") == selected_id),
+        (
+            candidate
+            for candidate in candidates
+            if str(candidate.get("parameter_candidate_id") or "") == selected_id
+        ),
         None,
     )
     if selected is None:
@@ -405,21 +429,28 @@ def build_selection_artifact(
         "artifact_type": "pre_holdout_candidate_selection",
         "manifest_hash": manifest_hash,
         "selected_candidate_id": selected_id,
-        "parameter_values_hash": sha256_prefixed(
-            _selection_parameter_values(selected)
+        "parameter_values_hash": sha256_prefixed(_selection_parameter_values(selected)),
+        "effective_strategy_parameters_hash": selected.get(
+            "effective_strategy_parameters_hash"
         ),
-        "effective_strategy_parameters_hash": selected.get("effective_strategy_parameters_hash"),
-        "compiled_strategy_contract_hash": selected.get("compiled_strategy_contract_hash"),
+        "compiled_strategy_contract_hash": selected.get(
+            "compiled_strategy_contract_hash"
+        ),
         "selection_universe_hash_semantics": SELECTION_UNIVERSE_HASH_SEMANTICS,
         "selection_universe_hash": sha256_prefixed(selection_candidates),
         "validation_evidence_hash": _selection_validation_evidence_hash(
             selected=selected,
             selected_id=selected_id,
         ),
-        "final_selection_contract_hash": selection_result.get("final_selection_contract_hash"),
+        "final_selection_contract_hash": selection_result.get(
+            "final_selection_contract_hash"
+        ),
         "candidate_scores_hash": candidate_scores_hash,
     }
-    return {**material, "content_hash": sha256_prefixed(material, label="selection_artifact")}
+    return {
+        **material,
+        "content_hash": sha256_prefixed(material, label="selection_artifact"),
+    }
 
 
 def validate_selection_artifact(artifact: dict[str, Any]) -> list[str]:
@@ -428,7 +459,10 @@ def validate_selection_artifact(artifact: dict[str, Any]) -> list[str]:
         reasons.append("selection_artifact_schema_version_unsupported")
     if artifact.get("artifact_type") != "pre_holdout_candidate_selection":
         reasons.append("selection_artifact_type_invalid")
-    if artifact.get("selection_universe_hash_semantics") != SELECTION_UNIVERSE_HASH_SEMANTICS:
+    if (
+        artifact.get("selection_universe_hash_semantics")
+        != SELECTION_UNIVERSE_HASH_SEMANTICS
+    ):
         reasons.append("selection_artifact_universe_hash_semantics_invalid")
     required_hashes = (
         "manifest_hash",
@@ -470,13 +504,14 @@ def validate_selection_artifact_binding(
 
     reasons = validate_selection_artifact(selection_artifact)
     embedded = report.get("selection_artifact")
-    if isinstance(embedded, dict) and embedded.get("content_hash") != selection_artifact.get(
+    if isinstance(embedded, dict) and embedded.get(
         "content_hash"
-    ):
+    ) != selection_artifact.get("content_hash"):
         reasons.append("report_selection_artifact_hash_mismatch")
     report_artifact_hash = report.get("selection_artifact_hash")
-    if report_artifact_hash is not None and report_artifact_hash != selection_artifact.get(
-        "content_hash"
+    if (
+        report_artifact_hash is not None
+        and report_artifact_hash != selection_artifact.get("content_hash")
     ):
         reasons.append("report_selection_artifact_hash_mismatch")
 
@@ -499,7 +534,9 @@ def validate_selection_artifact_binding(
         ),
     ):
         report_value = report.get(report_field)
-        if report_value is not None and report_value != selection_artifact.get(artifact_field):
+        if report_value is not None and report_value != selection_artifact.get(
+            artifact_field
+        ):
             reasons.append(reason)
 
     selected_id = str(selection_artifact.get("selected_candidate_id") or "")
@@ -559,7 +596,9 @@ def validate_selection_artifact_binding(
             "selection_artifact_compiled_contract_hash_mismatch",
         ),
     ):
-        if candidate_binding.get(binding_field) != selection_artifact.get(artifact_field):
+        if candidate_binding.get(binding_field) != selection_artifact.get(
+            artifact_field
+        ):
             reasons.append(reason)
 
     if candidate_binding.get("validation_evidence_hash") != selection_artifact.get(
@@ -612,12 +651,13 @@ def validate_confirmation_artifact(
 ) -> list[str]:
     reasons = validate_selection_artifact(selection_artifact)
     if (
-        confirmation.get("schema_version")
-        != FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION
+        confirmation.get("schema_version") != FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION
         or confirmation.get("artifact_type") != "final_holdout_confirmation"
     ):
         reasons.append("final_holdout_confirmation_contract_invalid")
-    if confirmation.get("selection_artifact_hash") != selection_artifact.get("content_hash"):
+    if confirmation.get("selection_artifact_hash") != selection_artifact.get(
+        "content_hash"
+    ):
         reasons.append("final_holdout_confirmation_selection_hash_mismatch")
     if confirmation.get("manifest_hash") != selection_artifact.get("manifest_hash"):
         reasons.append("final_holdout_confirmation_manifest_hash_mismatch")
@@ -629,7 +669,11 @@ def validate_confirmation_artifact(
     if not isinstance(candidate_results, list) or len(candidate_results) != 1:
         reasons.append("final_holdout_confirmation_candidate_count_invalid")
     else:
-        candidate_id = str(candidate_results[0].get("candidate_id") or "") if isinstance(candidate_results[0], dict) else ""
+        candidate_id = (
+            str(candidate_results[0].get("candidate_id") or "")
+            if isinstance(candidate_results[0], dict)
+            else ""
+        )
         if candidate_id != str(selection_artifact.get("selected_candidate_id") or ""):
             reasons.append("final_holdout_confirmation_candidate_mismatch")
         compiled_hash = (
@@ -646,9 +690,7 @@ def validate_confirmation_artifact(
         != FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION
     ):
         reasons.append("final_holdout_result_hash_schema_version_invalid")
-    recorded_result_hash = str(
-        confirmation.get("final_holdout_result_hash") or ""
-    )
+    recorded_result_hash = str(confirmation.get("final_holdout_result_hash") or "")
     if not recorded_result_hash.startswith("sha256:"):
         reasons.append("final_holdout_result_hash_missing")
     elif recorded_result_hash != compute_final_holdout_result_hash(confirmation):
@@ -684,9 +726,14 @@ def compute_final_holdout_result_hash(payload: dict[str, Any]) -> str:
 
 def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
-    if report.get("final_selection_required") and not isinstance(report.get("final_selection_contract"), dict):
+    if report.get("final_selection_required") and not isinstance(
+        report.get("final_selection_contract"), dict
+    ):
         return ["final_selection_contract_missing"]
-    if not report.get("final_selection_required") and report.get("final_selection_gate_result") == "WARN":
+    if (
+        not report.get("final_selection_required")
+        and report.get("final_selection_gate_result") == "WARN"
+    ):
         return []
     contract = report.get("final_selection_contract")
     if not isinstance(contract, dict):
@@ -696,7 +743,9 @@ def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
     elif sha256_prefixed(contract) != report.get("final_selection_contract_hash"):
         reasons.append("final_selection_contract_hash_mismatch")
     candidates = report.get("candidates")
-    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+    if not isinstance(candidates, list) or not all(
+        isinstance(item, dict) for item in candidates
+    ):
         return sorted(set(reasons) | {"final_selection_score_hash_mismatch"})
     recomputed = apply_final_selection_contract(
         contract=contract,
@@ -705,24 +754,40 @@ def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
         validation_required=bool(report.get("final_selection_required")),
     )
     for field, missing_reason, mismatch_reason in (
-        ("candidate_final_scores_hash", "final_selection_score_hash_missing", "final_selection_score_hash_mismatch"),
-        ("selected_candidate_score_hash", "final_selection_score_hash_missing", "final_selection_score_hash_mismatch"),
+        (
+            "candidate_final_scores_hash",
+            "final_selection_score_hash_missing",
+            "final_selection_score_hash_mismatch",
+        ),
+        (
+            "selected_candidate_score_hash",
+            "final_selection_score_hash_missing",
+            "final_selection_score_hash_mismatch",
+        ),
     ):
         expected = report.get(field)
         if not str(expected or "").startswith("sha256:"):
             reasons.append(missing_reason)
         elif expected != recomputed.get(field):
             reasons.append(mismatch_reason)
-    if report.get("final_selection_contract_hash") != recomputed.get("final_selection_contract_hash"):
+    if report.get("final_selection_contract_hash") != recomputed.get(
+        "final_selection_contract_hash"
+    ):
         reasons.append("final_selection_contract_hash_mismatch")
     if report.get("selected_candidate_id") != recomputed.get("selected_candidate_id"):
         reasons.append("final_selection_selected_candidate_mismatch")
     if report.get("best_candidate_id") != recomputed.get("selected_candidate_id"):
         reasons.append("final_selection_selected_candidate_mismatch")
-    if report.get("final_selection_gate_result") != "PASS" or recomputed.get("gate_result") != "PASS":
+    if (
+        report.get("final_selection_gate_result") != "PASS"
+        or recomputed.get("gate_result") != "PASS"
+    ):
         reasons.append("final_selection_gate_not_passed")
     selection_artifact = report.get("selection_artifact")
-    if report.get("final_selection_gate_result") == "PASS" or selection_artifact is not None:
+    if (
+        report.get("final_selection_gate_result") == "PASS"
+        or selection_artifact is not None
+    ):
         if not isinstance(selection_artifact, dict):
             reasons.append("selection_artifact_missing")
         else:
@@ -735,7 +800,9 @@ def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
     return sorted(set(reasons))
 
 
-def _contract_payload(contract: FinalSelectionContract | dict[str, Any] | None) -> dict[str, Any] | None:
+def _contract_payload(
+    contract: FinalSelectionContract | dict[str, Any] | None,
+) -> dict[str, Any] | None:
     if contract is None:
         return None
     if isinstance(contract, FinalSelectionContract):
@@ -756,7 +823,11 @@ def _score_candidate(
     metric_source_reasons = _metric_source_semantics_reasons(candidate)
     reasons.extend(metric_source_reasons)
     reasons.extend(_fallback_metrics_reasons(candidate))
-    reasons.extend(_must_pass_reasons(contract=contract, candidate=candidate, report_context=report_context))
+    reasons.extend(
+        _must_pass_reasons(
+            contract=contract, candidate=candidate, report_context=report_context
+        )
+    )
     components: list[dict[str, Any]] = []
     sort_key: list[Any] = []
     rank_tuple: list[Any] = []
@@ -767,7 +838,9 @@ def _score_candidate(
         metric = str(rule.get("metric") or "")
         order = str(rule.get("order") or "asc")
         required = bool(rule.get("required", True))
-        null_policy = str(rule.get("null_policy") or contract.get("null_metric_policy") or "")
+        null_policy = str(
+            rule.get("null_policy") or contract.get("null_metric_policy") or ""
+        )
         unsupported_reason = _unsupported_metric_reason(metric)
         value, source = _metric_value(candidate=candidate, metric=metric)
         if unsupported_reason is not None and required:
@@ -781,8 +854,12 @@ def _score_candidate(
             "required": required,
             "null_policy": null_policy,
             "source": source,
-            "primary_metric_source_semantics": candidate.get("primary_metric_source_semantics"),
-            "primary_metric_scenario_role": candidate.get("primary_metric_scenario_role"),
+            "primary_metric_source_semantics": candidate.get(
+                "primary_metric_source_semantics"
+            ),
+            "primary_metric_scenario_role": candidate.get(
+                "primary_metric_scenario_role"
+            ),
             "primary_metric_scenario_id": candidate.get("primary_metric_scenario_id"),
             "aggregate_gate_source": candidate.get("aggregate_gate_source"),
         }
@@ -798,8 +875,12 @@ def _score_candidate(
         "rank_components": components,
         "selection_metric_policy": {
             "primary_metric_source": candidate.get("primary_metric_source"),
-            "primary_metric_source_semantics": candidate.get("primary_metric_source_semantics"),
-            "primary_metric_scenario_role": candidate.get("primary_metric_scenario_role"),
+            "primary_metric_source_semantics": candidate.get(
+                "primary_metric_source_semantics"
+            ),
+            "primary_metric_scenario_role": candidate.get(
+                "primary_metric_scenario_role"
+            ),
             "primary_metric_scenario_id": candidate.get("primary_metric_scenario_id"),
             "aggregate_gate_source": candidate.get("aggregate_gate_source"),
             "candidate_eligibility_gate": "aggregate_acceptance_gate_result",
@@ -808,11 +889,15 @@ def _score_candidate(
     }
 
 
-def _candidate_universe_reasons(*, contract: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
+def _candidate_universe_reasons(
+    *, contract: dict[str, Any], candidate: dict[str, Any]
+) -> list[str]:
     universe = contract.get("candidate_universe")
     if universe != "acceptance_gate_passed_required_scenarios":
         return ["final_selection_candidate_universe_unsupported"]
-    aggregate_gate = candidate.get("aggregate_acceptance_gate_result", candidate.get("acceptance_gate_result"))
+    aggregate_gate = candidate.get(
+        "aggregate_acceptance_gate_result", candidate.get("acceptance_gate_result")
+    )
     if aggregate_gate != "PASS":
         return ["final_selection_acceptance_gate_not_passed"]
     return []
@@ -820,7 +905,10 @@ def _candidate_universe_reasons(*, contract: dict[str, Any], candidate: dict[str
 
 def _metric_source_semantics_reasons(candidate: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
-    if candidate.get("primary_metric_source_semantics") != "primary_base_scenario_alias":
+    if (
+        candidate.get("primary_metric_source_semantics")
+        != "primary_base_scenario_alias"
+    ):
         reasons.append("final_selection_primary_metric_source_semantics_missing")
     if candidate.get("primary_metric_scenario_role") != "base":
         reasons.append("final_selection_primary_metric_scenario_role_missing")
@@ -854,7 +942,9 @@ def _fallback_metrics_reasons(candidate: dict[str, Any]) -> list[str]:
         if metrics.get("metrics_v2_source") == "failure_fallback":
             reasons.append(f"final_selection_{split_key}_failure_fallback")
         if bool(metrics.get("candidate_failed_before_complete_metrics")):
-            reasons.append(f"final_selection_{split_key}_candidate_failed_before_complete_metrics")
+            reasons.append(
+                f"final_selection_{split_key}_candidate_failed_before_complete_metrics"
+            )
     return sorted(set(reasons))
 
 
@@ -865,21 +955,31 @@ def _must_pass_reasons(
     report_context: dict[str, Any],
 ) -> list[str]:
     reasons: list[str] = []
-    must_pass = contract.get("must_pass") if isinstance(contract.get("must_pass"), dict) else {}
+    must_pass = (
+        contract.get("must_pass") if isinstance(contract.get("must_pass"), dict) else {}
+    )
     for field, expected in must_pass.items():
-        actual = _must_pass_value(field=str(field), candidate=candidate, report_context=report_context)
+        actual = _must_pass_value(
+            field=str(field), candidate=candidate, report_context=report_context
+        )
         if actual != expected:
             reasons.append(f"final_selection_must_pass_failed:{field}")
     return reasons
 
 
-def _must_pass_value(*, field: str, candidate: dict[str, Any], report_context: dict[str, Any]) -> Any:
+def _must_pass_value(
+    *, field: str, candidate: dict[str, Any], report_context: dict[str, Any]
+) -> Any:
     if field == "dataset_quality_gate_status":
         return report_context.get("dataset_quality_gate_status")
     if field == "statistical_gate_result":
-        return candidate.get("statistical_gate_result") or report_context.get("statistical_gate_result")
+        return candidate.get("statistical_gate_result") or report_context.get(
+            "statistical_gate_result"
+        )
     if field == "stress_suite_gate_result":
-        return candidate.get("stress_suite_gate_result") or report_context.get("stress_suite_gate_result")
+        return candidate.get("stress_suite_gate_result") or report_context.get(
+            "stress_suite_gate_result"
+        )
     if field == "execution_calibration_policy_result":
         value = candidate.get("execution_calibration_policy_result")
         return value.get("status") if isinstance(value, dict) else value
@@ -890,7 +990,9 @@ def _must_pass_value(*, field: str, candidate: dict[str, Any], report_context: d
 
 def _metric_value(*, candidate: dict[str, Any], metric: str) -> tuple[Any, str]:
     if metric == "parameter_candidate_id":
-        return str(candidate.get("parameter_candidate_id") or ""), "candidate.parameter_candidate_id"
+        return str(
+            candidate.get("parameter_candidate_id") or ""
+        ), "candidate.parameter_candidate_id"
     prefixes = {
         "validation.metrics_v2.": "validation_metrics_v2",
         "validation.stress.": "validation_stress_suite",
@@ -902,10 +1004,13 @@ def _metric_value(*, candidate: dict[str, Any], metric: str) -> tuple[Any, str]:
             if (
                 isinstance(source, dict)
                 and source_key.endswith("metrics_v2")
-                and (source.get("metrics_status") == "unavailable" or source.get("metrics_v2_source") == "failure_fallback")
+                and (
+                    source.get("metrics_status") == "unavailable"
+                    or source.get("metrics_v2_source") == "failure_fallback"
+                )
             ):
                 return None, source_key
-            value = _nested_value(source, metric[len(prefix):])
+            value = _nested_value(source, metric[len(prefix) :])
             return value, source_key
     return _nested_value(candidate, metric), "candidate"
 
@@ -937,9 +1042,17 @@ def _nested_value(payload: Any, dotted: str) -> Any:
 
 
 def _unsupported_metric_reason(metric: str) -> str | None:
-    if metric.endswith("sharpe_ratio") or ".sharpe_ratio" in metric or metric == "sharpe_ratio":
+    if (
+        metric.endswith("sharpe_ratio")
+        or ".sharpe_ratio" in metric
+        or metric == "sharpe_ratio"
+    ):
         return "final_selection_sharpe_unavailable_without_period_return_series"
-    if metric.endswith("sortino_ratio") or ".sortino_ratio" in metric or metric == "sortino_ratio":
+    if (
+        metric.endswith("sortino_ratio")
+        or ".sortino_ratio" in metric
+        or metric == "sortino_ratio"
+    ):
         return "final_selection_sortino_unavailable_without_period_return_series"
     return None
 

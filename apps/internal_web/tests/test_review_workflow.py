@@ -95,14 +95,20 @@ def test_review_routes_deny_users_without_review_or_approval_permission(
     client.force_login(runner_user)
 
     assert client.get(reverse("portal:review-queue")).status_code == 403
-    assert client.post(
-        reverse("portal:review-record", args=(passed_validation_job.pk,)),
-        {"decision": "REJECTED", "rationale": "not supported"},
-    ).status_code == 403
-    assert client.post(
-        reverse("portal:review-approve", args=(passed_validation_job.pk,)),
-        _approval_payload(),
-    ).status_code == 403
+    assert (
+        client.post(
+            reverse("portal:review-record", args=(passed_validation_job.pk,)),
+            {"decision": "REJECTED", "rationale": "not supported"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            reverse("portal:review-approve", args=(passed_validation_job.pk,)),
+            _approval_payload(),
+        ).status_code
+        == 403
+    )
 
 
 def test_reviewer_and_approver_endpoints_remain_separate(
@@ -124,17 +130,23 @@ def test_reviewer_and_approver_endpoints_remain_separate(
     )
     assert response.status_code == 302
     record.assert_called_once()
-    assert client.post(
-        reverse("portal:review-approve", args=(passed_validation_job.pk,)),
-        _approval_payload(),
-    ).status_code == 403
+    assert (
+        client.post(
+            reverse("portal:review-approve", args=(passed_validation_job.pk,)),
+            _approval_payload(),
+        ).status_code
+        == 403
+    )
     approve.assert_not_called()
 
     client.force_login(approver_user)
-    assert client.post(
-        reverse("portal:review-record", args=(passed_validation_job.pk,)),
-        {"decision": "REJECTED", "rationale": "must remain separate"},
-    ).status_code == 403
+    assert (
+        client.post(
+            reverse("portal:review-record", args=(passed_validation_job.pk,)),
+            {"decision": "REJECTED", "rationale": "must remain separate"},
+        ).status_code
+        == 403
+    )
     assert record.call_count == 1
 
 
@@ -222,10 +234,13 @@ def test_approval_form_requires_explicit_approver_duty_role(
         "portal:review-approve",
         args=(passed_validation_job.pk,),
     ) not in response.content.decode("utf-8")
-    assert client.post(
-        reverse("portal:review-approve", args=(passed_validation_job.pk,)),
-        _approval_payload(),
-    ).status_code == 403
+    assert (
+        client.post(
+            reverse("portal:review-approve", args=(passed_validation_job.pk,)),
+            _approval_payload(),
+        ).status_code
+        == 403
+    )
 
     user.groups.add(Group.objects.get(name="research_approver"))
     _clear_permission_cache(user)
@@ -297,9 +312,7 @@ def test_prior_reviewer_cannot_be_final_approver(
 ) -> None:
     monkeypatch.setattr(
         "portal.governance.load_review_context",
-        lambda job: _context(
-            prior_reviews=({"reviewer_id": str(approver_user.pk)},)
-        ),
+        lambda job: _context(prior_reviews=({"reviewer_id": str(approver_user.pk)},)),
     )
     source_path = tmp_path / "source-report.json"
     source_path.write_text(json.dumps({}), encoding="utf-8")
@@ -534,11 +547,17 @@ def test_approved_detail_hides_new_review_and_approval_forms(
     content = response.content.decode("utf-8")
     assert response.status_code == 200
     assert "최종 승인이 기록되었습니다" in content
-    assert reverse(
-        "portal:review-approve",
-        args=(passed_validation_job.pk,),
-    ) not in content
-    assert reverse(
-        "portal:review-record",
-        args=(passed_validation_job.pk,),
-    ) not in content
+    assert (
+        reverse(
+            "portal:review-approve",
+            args=(passed_validation_job.pk,),
+        )
+        not in content
+    )
+    assert (
+        reverse(
+            "portal:review-record",
+            args=(passed_validation_job.pk,),
+        )
+        not in content
+    )

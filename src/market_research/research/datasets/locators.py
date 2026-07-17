@@ -3,6 +3,7 @@
 The locator is deliberately small: integrity is established by the artifact
 manifest, not by a filename or a caller supplied ``immutable`` flag.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,8 +22,11 @@ class ContentAddressedLocal:
     type: str = "content_addressed_local"
 
     def as_dict(self) -> dict[str, str]:
-        return {"type": self.type, "path": self.path,
-                "artifact_content_hash": self.artifact_content_hash}
+        return {
+            "type": self.type,
+            "path": self.path,
+            "artifact_content_hash": self.artifact_content_hash,
+        }
 
 
 ImmutableLocator = ContentAddressedLocal

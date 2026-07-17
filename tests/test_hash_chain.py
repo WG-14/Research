@@ -35,7 +35,9 @@ def _store(tmp_path: Path) -> tuple[ResearchArtifactContext, Path]:
     return ResearchArtifactContext(manager=manager, experiment_id="exp"), path
 
 
-def test_hash_chain_detects_candidate_event_mutation_and_reordering(tmp_path: Path) -> None:
+def test_hash_chain_detects_candidate_event_mutation_and_reordering(
+    tmp_path: Path,
+) -> None:
     store, path = _store(tmp_path)
     first = append_hash_chained_jsonl(
         store=store, path=path, payload={"status": "STARTED"}, label="candidate_event"
@@ -45,7 +47,10 @@ def test_hash_chain_detects_candidate_event_mutation_and_reordering(tmp_path: Pa
     )
 
     assert second["prior_hash"] == first["row_hash"]
-    assert validate_hash_chained_jsonl(path=path, label="candidate_event")["status"] == "PASS"
+    assert (
+        validate_hash_chained_jsonl(path=path, label="candidate_event")["status"]
+        == "PASS"
+    )
 
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     rows[0]["status"] = "COMPLETED"
@@ -106,9 +111,10 @@ def test_idempotent_hash_chain_serializes_concurrent_duplicate_delivery(
 
     assert len({str(row["row_hash"]) for row in rows}) == 1
     assert len(path.read_text(encoding="utf-8").splitlines()) == 1
-    assert validate_hash_chained_jsonl(path=path, label="candidate_event")[
-        "status"
-    ] == "PASS"
+    assert (
+        validate_hash_chained_jsonl(path=path, label="candidate_event")["status"]
+        == "PASS"
+    )
 
 
 def test_hash_chain_rejects_unterminated_final_record_before_adoption_or_append(
@@ -254,13 +260,11 @@ def test_atomic_mutation_stages_hash_bound_rows_as_one_publish(tmp_path: Path) -
     )
 
     assert result.value == result.appended_rows[1]["row_hash"]
+    assert result.appended_rows[1]["review_hash"] == result.appended_rows[0]["row_hash"]
     assert (
-        result.appended_rows[1]["review_hash"]
-        == result.appended_rows[0]["row_hash"]
+        validate_hash_chained_jsonl(path=path, label="candidate_event")["status"]
+        == "PASS"
     )
-    assert validate_hash_chained_jsonl(path=path, label="candidate_event")[
-        "status"
-    ] == "PASS"
 
 
 def test_atomic_mutation_publish_failure_preserves_prior_stream(
@@ -291,9 +295,10 @@ def test_atomic_mutation_publish_failure_preserves_prior_stream(
         )
 
     assert path.read_bytes() == prior
-    assert validate_hash_chained_jsonl(path=path, label="candidate_event")[
-        "status"
-    ] == "PASS"
+    assert (
+        validate_hash_chained_jsonl(path=path, label="candidate_event")["status"]
+        == "PASS"
+    )
 
 
 def test_hash_chain_lock_unavailable_fails_closed(

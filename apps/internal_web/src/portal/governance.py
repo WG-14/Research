@@ -18,15 +18,16 @@ from market_research.application import (
     ResearchGovernanceApplicationService,
     StrategyApprovalRequest,
 )
-from market_research.research.governance import (
+from market_research.application.adapter_contracts import (
     GovernanceError,
     GovernanceSubjectType,
     StrategyCandidateLifecycleState,
+    content_hash_payload,
     governance_registry_path,
     load_governance_rows,
+    sha256_prefixed,
     validate_governance_registry,
 )
-from market_research.research.hashing import content_hash_payload, sha256_prefixed
 
 from .audit import record_web_audit_event
 from .models import (
@@ -206,8 +207,7 @@ def approve_job_candidate(
     prior_reviewer_ids = {
         str(row.get("reviewer_id") or "")
         for row in context["prior_reviews"]
-        if str(row.get("reviewer_id") or "")
-        and row.get("decision") != "APPROVED"
+        if str(row.get("reviewer_id") or "") and row.get("decision") != "APPROVED"
     }
     actor = _actor(user)
     source_path = resolve_artifact_ref(job.result_ref)
@@ -221,9 +221,7 @@ def approve_job_candidate(
         cleaned_data.get("approval_request_id") or correlation_id
     )
     rationale = str(cleaned_data["rationale"])
-    resolved_requirement_ids = tuple(
-        cleaned_data.get("resolved_requirement_ids") or ()
-    )
+    resolved_requirement_ids = tuple(cleaned_data.get("resolved_requirement_ids") or ())
     operation_payload_hash = _governance_command_hash(
         {
             "action": GovernanceDecision.Action.APPROVAL,
@@ -503,7 +501,8 @@ def _approval_ready_subject(
     for row in rows:
         if (
             row.get("event_type") == "lifecycle_transition"
-            and row.get("subject_type") == GovernanceSubjectType.STRATEGY_CANDIDATE.value
+            and row.get("subject_type")
+            == GovernanceSubjectType.STRATEGY_CANDIDATE.value
             and row.get("subject_id") == candidate_id
         ):
             states[str(row.get("subject_version") or "")] = str(
@@ -550,9 +549,7 @@ def _approval_ready_subject(
 
 def _originator_actor_ids(job: ResearchJob) -> frozenset[str]:
     return frozenset(
-        value
-        for value in (str(job.owner_id), str(job.actor_id or "").strip())
-        if value
+        value for value in (str(job.owner_id), str(job.actor_id or "").strip()) if value
     )
 
 

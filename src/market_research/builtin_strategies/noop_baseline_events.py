@@ -7,7 +7,11 @@ from typing import Any
 from market_research.research.dataset_snapshot import DatasetSnapshot
 from market_research.research.decision_event import ResearchDecisionEvent
 from market_research.research.execution_timing import candle_close_ts
-from market_research.research.experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from market_research.research.experiment_manifest import (
+    ExecutionTimingPolicy,
+    PortfolioPolicy,
+)
+
 _STRATEGY_NAME = "noop_baseline"
 _STRATEGY_VERSION = "noop_baseline.research_contract.v1"
 

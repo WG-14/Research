@@ -5,8 +5,14 @@ from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from market_research.research.dataset_snapshot import DatasetQualityReport, DatasetSnapshot
-    from market_research.research.experiment_manifest import DateRange, ExperimentManifest
+    from market_research.research.dataset_snapshot import (
+        DatasetQualityReport,
+        DatasetSnapshot,
+    )
+    from market_research.research.experiment_manifest import (
+        DateRange,
+        ExperimentManifest,
+    )
 
 
 class UnsupportedDatasetAdapterError(ValueError):
@@ -22,6 +28,7 @@ class DatasetLoadContext:
 @dataclass(frozen=True)
 class DatasetResolutionContext:
     """Runtime capabilities only; adapters never read process environment."""
+
     db_path: str | Path | None = None
 
 
@@ -51,10 +58,17 @@ class DatasetRunContext:
     must rescan the artifact, while all splits in this run share one verified
     handle.  Worker processes construct their own context by design.
     """
-    verified_artifacts: dict[tuple[str, str], VerifiedDatasetArtifact] = field(default_factory=dict)
 
-    def resolve_verified(self, adapter: "DatasetArtifactAdapter", reference: DatasetArtifactRef,
-                         context: DatasetResolutionContext) -> VerifiedDatasetArtifact:
+    verified_artifacts: dict[tuple[str, str], VerifiedDatasetArtifact] = field(
+        default_factory=dict
+    )
+
+    def resolve_verified(
+        self,
+        adapter: "DatasetArtifactAdapter",
+        reference: DatasetArtifactRef,
+        context: DatasetResolutionContext,
+    ) -> VerifiedDatasetArtifact:
         key = (reference.artifact_manifest_uri, reference.artifact_manifest_hash)
         verified = self.verified_artifacts.get(key)
         if verified is None:
@@ -81,14 +95,15 @@ class DatasetArtifactAdapter(Protocol):
     requires_runtime_db: bool
     requires_artifact_manifest: bool
 
-    def resolve(self, reference: DatasetArtifactRef, context: DatasetResolutionContext) -> DatasetArtifactHandle:
-        ...
+    def resolve(
+        self, reference: DatasetArtifactRef, context: DatasetResolutionContext
+    ) -> DatasetArtifactHandle: ...
 
-    def verify(self, handle: DatasetArtifactHandle) -> VerifiedDatasetArtifact:
-        ...
+    def verify(self, handle: DatasetArtifactHandle) -> VerifiedDatasetArtifact: ...
 
-    def materialize(self, artifact: VerifiedDatasetArtifact, query: DatasetSliceQuery) -> DatasetSnapshot:
-        ...
+    def materialize(
+        self, artifact: VerifiedDatasetArtifact, query: DatasetSliceQuery
+    ) -> DatasetSnapshot: ...
 
 
 class DatasetAdapter(Protocol):
@@ -102,8 +117,9 @@ class DatasetAdapter(Protocol):
     requires_runtime_db: bool
     requires_artifact_manifest: bool
 
-    def verify_snapshot(self, *, snapshot: DatasetSnapshot, context: DatasetLoadContext) -> Any:
-        ...
+    def verify_snapshot(
+        self, *, snapshot: DatasetSnapshot, context: DatasetLoadContext
+    ) -> Any: ...
 
     def load_range(
         self,
@@ -112,24 +128,21 @@ class DatasetAdapter(Protocol):
         split_name: str,
         date_range: DateRange,
         context: DatasetLoadContext,
-    ) -> DatasetSnapshot:
-        ...
+    ) -> DatasetSnapshot: ...
 
     def quality_report(
         self,
         *,
         snapshot: DatasetSnapshot,
         context: DatasetLoadContext,
-    ) -> DatasetQualityReport:
-        ...
+    ) -> DatasetQualityReport: ...
 
     def provenance(
         self,
         *,
         manifest: ExperimentManifest,
         context: DatasetLoadContext,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class TopOfBookAdapter(Protocol):
@@ -143,8 +156,7 @@ class TopOfBookAdapter(Protocol):
         manifest: ExperimentManifest,
         candles: tuple[Any, ...],
         context: DatasetLoadContext,
-    ) -> tuple[Any | None, ...]:
-        ...
+    ) -> tuple[Any | None, ...]: ...
 
     def load_event_quotes(
         self,
@@ -153,16 +165,14 @@ class TopOfBookAdapter(Protocol):
         candles: tuple[Any, ...],
         execution_quote_lookahead_ms: int,
         context: DatasetLoadContext,
-    ) -> tuple[Any, ...]:
-        ...
+    ) -> tuple[Any, ...]: ...
 
     def provenance(
         self,
         *,
         manifest: ExperimentManifest,
         context: DatasetLoadContext,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class OrderbookDepthAdapter(Protocol):
@@ -177,21 +187,18 @@ class OrderbookDepthAdapter(Protocol):
         candles: tuple[Any, ...],
         execution_depth_lookahead_ms: int,
         context: DatasetLoadContext,
-    ) -> tuple[Any, ...]:
-        ...
+    ) -> tuple[Any, ...]: ...
 
     def quality_summary(
         self,
         *,
         snapshot: DatasetSnapshot,
         context: DatasetLoadContext,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def provenance(
         self,
         *,
         manifest: ExperimentManifest,
         context: DatasetLoadContext,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...

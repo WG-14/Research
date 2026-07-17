@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from django.core.exceptions import PermissionDenied, ValidationError
 
 import portal.audit as audit_module
+from market_research.application import OperatedExecutionDenied
 from market_research.application.capabilities import get_capability
 from market_research.research.hashing import content_hash_payload, sha256_prefixed
 
@@ -38,6 +40,40 @@ def enqueue(runner_user, manifest_record, *, key: str | None = None):
         idempotency_key=key or str(uuid.uuid4()),
         correlation_id=uuid.uuid4(),
     )
+
+
+def test_operated_runtime_rejects_legacy_direct_worker_and_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setenv("RESEARCH_OPERATED_EXECUTION_CAPABILITY", "allow")
+
+    with pytest.raises(
+        OperatedExecutionDenied,
+        match="operated_execution_capability_missing",
+    ):
+        claim_next_job(worker_id="legacy-direct-claim")
+
+    with pytest.raises(
+        OperatedExecutionDenied,
+        match="operated_execution_capability_missing",
+    ):
+        run_worker_once(object())  # type: ignore[arg-type]
+
+
+def test_operated_runtime_rejects_direct_dispatcher_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+
+    with pytest.raises(
+        OperatedExecutionDenied,
+        match="operated_execution_capability_missing",
+    ):
+        ResearchJobDispatcher().execute(
+            SimpleNamespace(pk=uuid.uuid4(), request_hash="sha256:" + "a" * 64),
+            lambda _event: None,
+        )  # type: ignore[arg-type]
 
 
 def complete_preflight(
@@ -244,9 +280,7 @@ def test_validation_source_must_match_manifest_and_canonical_request(
             source_preflight_job=source,
         )
 
-    ResearchJob.objects.filter(pk=source.pk).update(
-        request_hash=f"sha256:{'5' * 64}"
-    )
+    ResearchJob.objects.filter(pk=source.pk).update(request_hash=f"sha256:{'5' * 64}")
     source.refresh_from_db()
     with pytest.raises(
         ValidationError,
@@ -277,8 +311,13 @@ def test_validation_request_binds_source_job_request_and_result_hashes(
 
     assert validation.source_preflight_job_id == source.pk
     assert validation.request_payload["source_preflight_job_id"] == str(source.pk)
-    assert validation.request_payload["source_preflight_request_hash"] == source.request_hash
-    assert validation.request_payload["source_preflight_result_hash"] == source.result_hash
+    assert (
+        validation.request_payload["source_preflight_request_hash"]
+        == source.request_hash
+    )
+    assert (
+        validation.request_payload["source_preflight_result_hash"] == source.result_hash
+    )
 
 
 def test_dispatcher_rechecks_preflight_gate_before_opening_manifest(

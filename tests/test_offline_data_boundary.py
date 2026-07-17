@@ -11,8 +11,13 @@ import pytest
 
 from market_research.market_ids import MarketCodeError, parse_market_id
 from market_research.research.data_plane import _configured_db_path
-from market_research.research.execution_calibration_contract import ExecutionCalibrationThresholds
-from market_research.research.intervals import interval_to_milliseconds, interval_to_minutes
+from market_research.research.execution_calibration_contract import (
+    ExecutionCalibrationThresholds,
+)
+from market_research.research.intervals import (
+    interval_to_milliseconds,
+    interval_to_minutes,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,9 +88,13 @@ def _source_violations(package: Path) -> list[str]:
                     for forbidden in FORBIDDEN_STDLIB_NETWORK_MODULES
                 ):
                     violations.append(f"forbidden import {module!r} in {path}")
-                if module == "urllib" and any(alias.name == "request" for alias in node.names):
+                if module == "urllib" and any(
+                    alias.name == "request" for alias in node.names
+                ):
                     violations.append(f"forbidden import 'urllib.request' in {path}")
-                if module == "http" and any(alias.name == "client" for alias in node.names):
+                if module == "http" and any(
+                    alias.name == "client" for alias in node.names
+                ):
                     violations.append(f"forbidden import 'http.client' in {path}")
             elif isinstance(node, ast.Attribute):
                 dotted_name = _dotted_name(node)
@@ -93,16 +102,26 @@ def _source_violations(package: Path) -> list[str]:
                     _matches_module_or_submodule(dotted_name, forbidden)
                     for forbidden in FORBIDDEN_STDLIB_NETWORK_MODULES
                 ):
-                    violations.append(f"forbidden network module reference {dotted_name!r} in {path}")
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    violations.append(
+                        f"forbidden network module reference {dotted_name!r} in {path}"
+                    )
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
                 if node.name in FORBIDDEN_REMOTE_NAMES:
-                    violations.append(f"forbidden remote symbol {node.name!r} in {path}")
+                    violations.append(
+                        f"forbidden remote symbol {node.name!r} in {path}"
+                    )
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if any(prefix in node.value.lower() for prefix in FORBIDDEN_URL_PREFIXES):
+                if any(
+                    prefix in node.value.lower() for prefix in FORBIDDEN_URL_PREFIXES
+                ):
                     violations.append(f"forbidden URL literal in {path}")
                 for table in FORBIDDEN_SQL_TABLES:
                     if _contains_sql_identifier(node.value, table):
-                        violations.append(f"forbidden operational SQL table {table!r} in {path}")
+                        violations.append(
+                            f"forbidden operational SQL table {table!r} in {path}"
+                        )
     return violations
 
 
@@ -115,7 +134,10 @@ def _matches_module_or_submodule(module: str, forbidden: str) -> bool:
 
 
 def _contains_sql_identifier(value: str, identifier: str) -> bool:
-    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", value) is not None
+    return (
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", value)
+        is not None
+    )
 
 
 def _dotted_name(node: ast.Attribute) -> str:
@@ -130,11 +152,14 @@ def _dotted_name(node: ast.Attribute) -> str:
 
 
 def _runtime_dependencies(pyproject_path: Path) -> set[str]:
-    project = tomllib.loads(pyproject_path.read_text(encoding="utf-8")).get("project", {})
+    project = tomllib.loads(pyproject_path.read_text(encoding="utf-8")).get(
+        "project", {}
+    )
     return {
         _normalize_dependency_name(match.group(1))
         for item in project.get("dependencies", [])
-        if (match := re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", str(item))) is not None
+        if (match := re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", str(item)))
+        is not None
     }
 
 
@@ -146,9 +171,13 @@ def test_offline_package_has_no_public_api_modules() -> None:
     assert not list(PACKAGE.glob("public_api*.py"))
 
 
-def test_offline_boundary_rejects_network_and_operational_reentry(tmp_path: Path) -> None:
+def test_offline_boundary_rejects_network_and_operational_reentry(
+    tmp_path: Path,
+) -> None:
     assert _source_violations(PACKAGE) == []
-    assert not (FORBIDDEN_RUNTIME_DEPENDENCIES & _runtime_dependencies(ROOT / "pyproject.toml"))
+    assert not (
+        FORBIDDEN_RUNTIME_DEPENDENCIES & _runtime_dependencies(ROOT / "pyproject.toml")
+    )
 
     fixture = tmp_path / "fixture"
     fixture.mkdir()
@@ -163,7 +192,9 @@ def test_offline_boundary_rejects_network_and_operational_reentry(tmp_path: Path
         "probe = urllib.request\ndef fetch_remote(): pass\n",
         encoding="utf-8",
     )
-    (fixture / "database.py").write_text("SQL = 'SELECT * FROM orders'\n", encoding="utf-8")
+    (fixture / "database.py").write_text(
+        "SQL = 'SELECT * FROM orders'\n", encoding="utf-8"
+    )
     violations = _source_violations(fixture)
     assert any("requests.sessions" in item for item in violations)
     assert any("aiohttp.client" in item for item in violations)
@@ -206,7 +237,10 @@ def test_configured_db_path_accepts_only_explicit_path_or_research_environment(
     monkeypatch.delenv("RESEARCH_DB_PATH")
     with pytest.raises(ValueError, match="RESEARCH_DB_PATH") as error:
         _configured_db_path(None)
-    assert str(error.value) == "db_path is required; set RESEARCH_DB_PATH for research commands"
+    assert (
+        str(error.value)
+        == "db_path is required; set RESEARCH_DB_PATH for research commands"
+    )
 
 
 def test_market_id_and_interval_helpers_are_local_and_deterministic() -> None:
@@ -222,7 +256,9 @@ def test_market_id_and_interval_helpers_are_local_and_deterministic() -> None:
         interval_to_minutes("1h")
 
 
-def test_execution_calibration_threshold_contract_is_immutable_and_imports_no_runtime_io() -> None:
+def test_execution_calibration_threshold_contract_is_immutable_and_imports_no_runtime_io() -> (
+    None
+):
     thresholds = ExecutionCalibrationThresholds()
     assert thresholds.min_sample == 30
     assert thresholds.max_p90_slippage_bps == 20.0

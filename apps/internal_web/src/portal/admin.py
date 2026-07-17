@@ -52,9 +52,7 @@ class ResearchJobAdmin(admin.ModelAdmin):
     )
     search_fields = ("id", "run_id", "request_hash", "result_hash", "error_code")
     list_filter = ("status", "capability_id", "created_at")
-    readonly_fields = tuple(
-        field.name for field in ResearchJob._meta.fields
-    )
+    readonly_fields = tuple(field.name for field in ResearchJob._meta.fields)
 
     def has_add_permission(self, request):  # type: ignore[no-untyped-def]
         return False
@@ -64,4 +62,3 @@ class ResearchJobAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
         return False
-

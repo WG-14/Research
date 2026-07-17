@@ -49,16 +49,21 @@ class ManifestUpload(models.Model):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if not self._state.adding:
-            original = type(self).objects.filter(pk=self.pk).values(
-                "owner_id",
-                "display_name",
-                "storage_ref",
-                "content_hash",
-                "manifest_hash",
-                "size_bytes",
-                "experiment_id",
-                "strategy_name",
-            ).first()
+            original = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values(
+                    "owner_id",
+                    "display_name",
+                    "storage_ref",
+                    "content_hash",
+                    "manifest_hash",
+                    "size_bytes",
+                    "experiment_id",
+                    "strategy_name",
+                )
+                .first()
+            )
             current = {
                 "owner_id": self.owner_id,
                 "display_name": self.display_name,
@@ -458,8 +463,12 @@ class ResearchJob(models.Model):
     class Meta:
         ordering = ("-created_at",)
         indexes = [
-            models.Index(fields=("status", "created_at"), name="portal_job_status_created"),
-            models.Index(fields=("owner", "created_at"), name="portal_job_owner_created"),
+            models.Index(
+                fields=("status", "created_at"), name="portal_job_status_created"
+            ),
+            models.Index(
+                fields=("owner", "created_at"), name="portal_job_owner_created"
+            ),
             models.Index(fields=("lease_expires_at",), name="portal_job_lease_expires"),
         ]
         constraints = [
@@ -491,8 +500,7 @@ class ResearchJob(models.Model):
             ),
             models.CheckConstraint(
                 condition=(
-                    ~Q(status="SUCCEEDED")
-                    | (~Q(result_ref="") & ~Q(result_hash=""))
+                    ~Q(status="SUCCEEDED") | (~Q(result_ref="") & ~Q(result_hash=""))
                 ),
                 name="portal_job_success_has_result",
             ),

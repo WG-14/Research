@@ -29,7 +29,9 @@ from .intervals import interval_to_milliseconds
 def _configured_db_path(db_path: str | Path | None) -> Path:
     raw = db_path or os.getenv("RESEARCH_DB_PATH")
     if raw is None or not str(raw).strip():
-        raise ValueError("db_path is required; set RESEARCH_DB_PATH for research commands")
+        raise ValueError(
+            "db_path is required; set RESEARCH_DB_PATH for research commands"
+        )
     return Path(raw).expanduser().resolve()
 
 
@@ -39,6 +41,7 @@ def _is_within(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -137,14 +140,20 @@ def build_dataset_quality_report_sql(
 ) -> DatasetQualityReport:
     adapter = default_dataset_adapter_registry().resolve(manifest.dataset.source)
     if not getattr(adapter, "supports_sqlite_streaming_quality_scan", False):
-        raise ValueError(f"dataset_adapter_sqlite_streaming_not_supported:{manifest.dataset.source}")
+        raise ValueError(
+            f"dataset_adapter_sqlite_streaming_not_supported:{manifest.dataset.source}"
+        )
     if manifest.dataset.top_of_book is not None:
-        default_dataset_adapter_registry().resolve_top_of_book(manifest.dataset.top_of_book.source)
+        default_dataset_adapter_registry().resolve_top_of_book(
+            manifest.dataset.top_of_book.source
+        )
     date_range = _split_range(manifest, split_name)
     interval_ms = _interval_ms(manifest.interval)
     start_ts = date_range.start_ts_ms()
     end_ts = date_range.end_ts_ms()
-    expected_count = _expected_bucket_count(start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms)
+    expected_count = _expected_bucket_count(
+        start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms
+    )
     stats = _scan_candles_sql(
         db_path=db_path,
         market=manifest.market,
@@ -196,7 +205,9 @@ def build_dataset_quality_report_sql(
         end_ts=end_ts,
     )
     depth_rows_available = bool(depth_summary["l2_depth_rows_available"])
-    depth_complete_snapshots_available = bool(depth_summary["l2_depth_complete_snapshots_available"])
+    depth_complete_snapshots_available = bool(
+        depth_summary["l2_depth_complete_snapshots_available"]
+    )
     payload: dict[str, Any] = {
         "schema_version": 2,
         "artifact_type": "dataset_quality_report",
@@ -236,8 +247,11 @@ def build_dataset_quality_report_sql(
         "canonical_snapshot_hash": "not_materialized:sqlite_streaming_readiness_scan",
         "source_content_hash": manifest.dataset.source_content_hash
         or "missing:sqlite_streaming_source_content_hash_not_declared",
-        "source_schema_hash": manifest.dataset.source_schema_hash or _safe_db_schema_fingerprint(db_path),
-        "source_hash_status": "present" if manifest.dataset.source_content_hash else "missing_compatibility_streaming_scan",
+        "source_schema_hash": manifest.dataset.source_schema_hash
+        or _safe_db_schema_fingerprint(db_path),
+        "source_hash_status": "present"
+        if manifest.dataset.source_content_hash
+        else "missing_compatibility_streaming_scan",
         "source_schema_hash_status": "present",
         "adapter_provenance": {
             "sqlite": {
@@ -275,7 +289,11 @@ def build_dataset_quality_report_sql(
         "depth_availability_source": (
             "sqlite_orderbook_depth_levels_complete_snapshots"
             if depth_complete_snapshots_available
-            else ("sqlite_orderbook_depth_levels_rows_only" if depth_rows_available else "orderbook_depth_levels_missing_or_empty")
+            else (
+                "sqlite_orderbook_depth_levels_rows_only"
+                if depth_rows_available
+                else "orderbook_depth_levels_missing_or_empty"
+            )
         ),
         **depth_summary,
         "signal_level_depth_coverage_pct": None,
@@ -288,7 +306,9 @@ def build_dataset_quality_report_sql(
         tob_reasons = list(top_of_book.get("top_of_book_gate_reasons") or [])
         if top_of_book.get("top_of_book_gate_status") == "FAIL":
             payload["quality_gate_status"] = "FAIL"
-            payload["quality_gate_reasons"] = list(payload["quality_gate_reasons"]) + tob_reasons
+            payload["quality_gate_reasons"] = (
+                list(payload["quality_gate_reasons"]) + tob_reasons
+            )
     payload["content_hash"] = sha256_prefixed(payload)
     return DatasetQualityReport(payload=payload)
 
@@ -399,7 +419,11 @@ def build_clean_candle_segments_artifact(
 
     def close_run() -> None:
         nonlocal run_start, run_prev, run_count
-        if run_start is not None and run_prev is not None and run_count >= min_segment_minutes:
+        if (
+            run_start is not None
+            and run_prev is not None
+            and run_count >= min_segment_minutes
+        ):
             segments.append(
                 {
                     "start_utc": _format_utc(run_start),
@@ -477,9 +501,12 @@ def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, An
 def readiness_mode_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     validation_required = manifest.research_classification != "research_only"
     return {
-        "readiness_type": "validation_readiness" if validation_required else "research_only_diagnostic",
+        "readiness_type": "validation_readiness"
+        if validation_required
+        else "research_only_diagnostic",
         "validation_required": validation_required,
-        "candle_only_diagnostic": not validation_required and manifest.dataset.top_of_book is None,
+        "candle_only_diagnostic": not validation_required
+        and manifest.dataset.top_of_book is None,
         "validation_gate_statement": (
             "validation-bound readiness requires candle coverage, top_of_book if requested, "
             "execution calibration when required, and walk-forward prerequisites"
@@ -520,7 +547,9 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     }
 
 
-def rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:
+def rolling_walk_forward_windows(
+    manifest: ExperimentManifest,
+) -> list[dict[str, DateRange]]:
     config = manifest.walk_forward
     if config is None:
         return []
@@ -535,10 +564,18 @@ def rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str,
         test_end = test_start + timedelta(days=config.test_window_days - 1)
         if test_end > end:
             return windows
-        windows.append({
-            "train": DateRange(start=train_start.strftime("%Y-%m-%d"), end=train_end.strftime("%Y-%m-%d")),
-            "test": DateRange(start=test_start.strftime("%Y-%m-%d"), end=test_end.strftime("%Y-%m-%d")),
-        })
+        windows.append(
+            {
+                "train": DateRange(
+                    start=train_start.strftime("%Y-%m-%d"),
+                    end=train_end.strftime("%Y-%m-%d"),
+                ),
+                "test": DateRange(
+                    start=test_start.strftime("%Y-%m-%d"),
+                    end=test_end.strftime("%Y-%m-%d"),
+                ),
+            }
+        )
         cursor = cursor + timedelta(days=config.step_days)
 
 
@@ -553,7 +590,9 @@ def _scan_candles_sql(
     max_missing_ranges: int | None,
     max_missing_sample: int,
 ) -> dict[str, Any]:
-    expected_count = _expected_bucket_count(start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms)
+    expected_count = _expected_bucket_count(
+        start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms
+    )
     present_expected = 0
     actual_count = 0
     unexpected_count = 0
@@ -594,7 +633,13 @@ def _scan_candles_sql(
         if active_start is None:
             return
         if max_missing_ranges is None or len(missing_ranges) < max_missing_ranges:
-            missing_ranges.append({"start_ts": active_start, "end_ts": active_prev or active_start, "bucket_count": active_count})
+            missing_ranges.append(
+                {
+                    "start_ts": active_start,
+                    "end_ts": active_prev or active_start,
+                    "bucket_count": active_count,
+                }
+            )
         else:
             ranges_truncated = True
         active_start = None
@@ -662,20 +707,36 @@ def _scan_candles_sql(
                 missing_ohlcv += 1
             else:
                 try:
-                    open_price, high, low, close, volume = (float(value) for value in raw_ohlcv)
+                    open_price, high, low, close, volume = (
+                        float(value) for value in raw_ohlcv
+                    )
                 except (TypeError, ValueError):
                     non_finite_ohlcv += 1
                 else:
-                    if not all(math.isfinite(value) for value in (open_price, high, low, close, volume)):
+                    if not all(
+                        math.isfinite(value)
+                        for value in (open_price, high, low, close, volume)
+                    ):
                         non_finite_ohlcv += 1
                     else:
-                        if not (low <= open_price <= high and low <= close <= high and low <= high):
+                        if not (
+                            low <= open_price <= high
+                            and low <= close <= high
+                            and low <= high
+                        ):
                             ohlc_violations += 1
-                        if open_price <= 0.0 or high <= 0.0 or low <= 0.0 or close <= 0.0:
+                        if (
+                            open_price <= 0.0
+                            or high <= 0.0
+                            or low <= 0.0
+                            or close <= 0.0
+                        ):
                             non_positive_prices += 1
                         if volume < 0.0:
                             negative_volume += 1
-            if not _is_expected_bucket(ts, start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms):
+            if not _is_expected_bucket(
+                ts, start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms
+            ):
                 unexpected_count += 1
                 continue
             while expected_cursor < ts:
@@ -685,7 +746,10 @@ def _scan_candles_sql(
                 continue
             close_missing_range()
             present_expected += 1
-            if previous_distinct_expected_ts is not None and ts - previous_distinct_expected_ts != interval_ms:
+            if (
+                previous_distinct_expected_ts is not None
+                and ts - previous_distinct_expected_ts != interval_ms
+            ):
                 interval_mismatch += 1
             previous_distinct_expected_ts = ts
             seen_expected_ts = ts
@@ -697,7 +761,9 @@ def _scan_candles_sql(
     finally:
         conn.close()
 
-    coverage_pct = round((present_expected / expected_count * 100.0), 8) if expected_count else 0.0
+    coverage_pct = (
+        round((present_expected / expected_count * 100.0), 8) if expected_count else 0.0
+    )
     return {
         "actual_candle_count": actual_count,
         "present_expected_bucket_count": present_expected,
@@ -732,15 +798,27 @@ def _top_of_book_split_sql(
     if spec is None:
         return {}
     if not Path(db_path).expanduser().resolve().exists():
-        return _top_of_book_fail_payload(spec=spec, expected=expected_signal_count, reason="top_of_book_db_missing")
-    conn = sqlite3.connect(f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True)
+        return _top_of_book_fail_payload(
+            spec=spec, expected=expected_signal_count, reason="top_of_book_db_missing"
+        )
+    conn = sqlite3.connect(
+        f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True
+    )
     try:
         table = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_top_snapshots'"
         ).fetchone()
         if table is None:
-            return _top_of_book_fail_payload(spec=spec, expected=expected_signal_count, reason="top_of_book_table_missing")
-        params: list[object] = [manifest.market, start_ts - int(spec.join_tolerance_ms), end_ts + int(spec.join_tolerance_ms)]
+            return _top_of_book_fail_payload(
+                spec=spec,
+                expected=expected_signal_count,
+                reason="top_of_book_table_missing",
+            )
+        params: list[object] = [
+            manifest.market,
+            start_ts - int(spec.join_tolerance_ms),
+            end_ts + int(spec.join_tolerance_ms),
+        ]
         source_predicate = ""
         if spec.quote_source is not None:
             source_predicate = "AND source=?"
@@ -760,8 +838,18 @@ def _top_of_book_split_sql(
             or 0
         )
         if quote_count == 0:
-            return _top_of_book_fail_payload(spec=spec, expected=expected_signal_count, reason="top_of_book_rows_missing")
-        join_params: list[object] = [manifest.market, manifest.interval, start_ts, end_ts, manifest.market]
+            return _top_of_book_fail_payload(
+                spec=spec,
+                expected=expected_signal_count,
+                reason="top_of_book_rows_missing",
+            )
+        join_params: list[object] = [
+            manifest.market,
+            manifest.interval,
+            start_ts,
+            end_ts,
+            manifest.market,
+        ]
         source_clause = ""
         if spec.quote_source is not None:
             source_clause = "AND q.source=?"
@@ -814,7 +902,11 @@ def _top_of_book_split_sql(
     finally:
         conn.close()
 
-    coverage_pct = round((joined / expected_signal_count * 100.0), 8) if expected_signal_count else 0.0
+    coverage_pct = (
+        round((joined / expected_signal_count * 100.0), 8)
+        if expected_signal_count
+        else 0.0
+    )
     reasons: list[str] = []
     if joined < expected_signal_count:
         reasons.append("top_of_book_missing")
@@ -822,7 +914,9 @@ def _top_of_book_split_sql(
         reasons.append("top_of_book_coverage_below_threshold")
     gate_status = "PASS"
     if reasons:
-        gate_status = "FAIL" if spec.required or spec.missing_policy == "fail" else "WARN"
+        gate_status = (
+            "FAIL" if spec.required or spec.missing_policy == "fail" else "WARN"
+        )
     return {
         "top_of_book_requested": True,
         "top_of_book_scan_method": "sqlite_exists_join",
@@ -868,7 +962,9 @@ def _depth_summary_sql(
             "market_impact_model_available": False,
             "intra_candle_path_available": False,
         }
-    conn = sqlite3.connect(f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True)
+    conn = sqlite3.connect(
+        f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True
+    )
     try:
         return summarize_orderbook_depth_evidence(
             conn,
@@ -880,7 +976,9 @@ def _depth_summary_sql(
         conn.close()
 
 
-def _top_of_book_fail_payload(*, spec: Any, expected: int, reason: str) -> dict[str, Any]:
+def _top_of_book_fail_payload(
+    *, spec: Any, expected: int, reason: str
+) -> dict[str, Any]:
     reasons = ["top_of_book_missing", reason, "top_of_book_coverage_below_threshold"]
     gate_status = "FAIL" if spec.required or spec.missing_policy == "fail" else "WARN"
     return {
@@ -926,7 +1024,9 @@ def _sqlite_present_tables(db_path: str | Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def _artifact_range(*, split_name: str, start_ts: int, end_ts: int, bucket_count: int) -> dict[str, Any]:
+def _artifact_range(
+    *, split_name: str, start_ts: int, end_ts: int, bucket_count: int
+) -> dict[str, Any]:
     return {
         "split": split_name,
         "start_ts": start_ts,
@@ -950,10 +1050,14 @@ def _format_kst(ts_ms: int) -> str:
 def _validate_report_artifact_out_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_absolute():
-        raise ValueError(f"research report artifact --out must be an absolute path: {path!r}")
+        raise ValueError(
+            f"research report artifact --out must be an absolute path: {path!r}"
+        )
     resolved = resolved.resolve()
     if _is_within(resolved, Path(__file__).resolve().parents[3]):
-        raise ValueError(f"research report artifact --out must be outside repository: {resolved}")
+        raise ValueError(
+            f"research report artifact --out must be outside repository: {resolved}"
+        )
     return resolved
 
 

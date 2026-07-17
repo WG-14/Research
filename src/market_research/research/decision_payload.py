@@ -82,7 +82,9 @@ class DecisionPayloadBuilder:
         )
         if not active_exit_policy_config_hash:
             active_exit_policy_config_hash = str(exit_policy_config_hash or "")
-        feature_snapshot_hash = str(event.feature_snapshot.get("feature_snapshot_hash") or "").strip()
+        feature_snapshot_hash = str(
+            event.feature_snapshot.get("feature_snapshot_hash") or ""
+        ).strip()
         if not feature_snapshot_hash:
             feature_snapshot_hash = canonical_payload_hash(
                 {
@@ -126,7 +128,9 @@ class DecisionPayloadBuilder:
             "strategy_spec_hash": strategy_spec_hash,
             "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
             "dataset_content_hash": str(dataset_content_hash),
-            "candidate_profile_hash": _context_hash(canonical_context, "candidate_profile_hash")
+            "candidate_profile_hash": _context_hash(
+                canonical_context, "candidate_profile_hash"
+            )
             or canonical_payload_hash(
                 {
                     "strategy_name": str(strategy_plugin.name),
@@ -137,7 +141,9 @@ class DecisionPayloadBuilder:
                 },
                 label="summary_candidate_profile",
             ),
-            "parameter_values_hash": _context_hash(canonical_context, "parameter_values_hash")
+            "parameter_values_hash": _context_hash(
+                canonical_context, "parameter_values_hash"
+            )
             or canonical_payload_hash(
                 parameter_values,
                 label="summary_parameter_values",
@@ -157,8 +163,16 @@ class DecisionPayloadBuilder:
             "final_signal": surface["final_signal"],
             "side": surface["final_signal"],
             "entry_reason": str(risk_decision.reason_code),
-            "blocked": bool(risk_decision.block or (surface["raw_signal"] in {"BUY", "SELL"} and surface["final_signal"] == "HOLD")),
-            "block_reason": str(risk_decision.reason_code) if bool(risk_decision.block) else "",
+            "blocked": bool(
+                risk_decision.block
+                or (
+                    surface["raw_signal"] in {"BUY", "SELL"}
+                    and surface["final_signal"] == "HOLD"
+                )
+            ),
+            "block_reason": str(risk_decision.reason_code)
+            if bool(risk_decision.block)
+            else "",
             "blocked_filters": tuple(surface["blocked_filters"]),
             "feature_snapshot_hash": feature_snapshot_hash,
             "strategy_behavior_hash": strategy_behavior_hash,
@@ -175,16 +189,29 @@ class DecisionPayloadBuilder:
             "regime_block_reason": "",
             "qty": float(qty),
             "sellable_qty": float(sellable_qty),
-            "replay_fingerprint_hash": str(getattr(strategy_envelope, "replay_fingerprint_hash", "") or ""),
+            "replay_fingerprint_hash": str(
+                getattr(strategy_envelope, "replay_fingerprint_hash", "") or ""
+            ),
             "strategy_diagnostics_namespace": strategy_plugin.diagnostics_namespace,
-            "execution_intent": str(surface["final_signal"]).lower() if surface["final_signal"] in {"BUY", "SELL"} else "none",
-            "order_intent": dict(event.order_intent) if event.order_intent is not None else None,
-            "exit_intent": dict(event.exit_intent) if event.exit_intent is not None else None,
-            "research_policy_recomputed_with_simulated_position": policy_decision is not None,
+            "execution_intent": str(surface["final_signal"]).lower()
+            if surface["final_signal"] in {"BUY", "SELL"}
+            else "none",
+            "order_intent": dict(event.order_intent)
+            if event.order_intent is not None
+            else None,
+            "exit_intent": dict(event.exit_intent)
+            if event.exit_intent is not None
+            else None,
+            "research_policy_recomputed_with_simulated_position": policy_decision
+            is not None,
             "research_policy_unsupported": bool(strategy_envelope.unsupported_reason),
             "research_policy_unsupported_reason": strategy_envelope.unsupported_reason,
-            "research_policy_comparable": not bool(strategy_envelope.unsupported_reason),
-            "research_comparable": bool(strategy_envelope.provenance.get("research_comparable")),
+            "research_policy_comparable": not bool(
+                strategy_envelope.unsupported_reason
+            ),
+            "research_comparable": bool(
+                strategy_envelope.provenance.get("research_comparable")
+            ),
         }
         if policy_decision is not None:
             payload["pure_policy_hash"] = policy_decision.policy_hash
@@ -207,14 +234,24 @@ class DecisionPayloadBuilder:
             ):
                 if key in trace:
                     payload[key] = trace[key]
-        statistical_evidence = bool(getattr(strategy_plugin, "is_statistical_evidence", False))
+        statistical_evidence = bool(
+            getattr(strategy_plugin, "is_statistical_evidence", False)
+        )
         payload["statistical_evidence"] = statistical_evidence
         payload["validation_extension_missing_reason"] = (
             ""
             if statistical_evidence
-            else str(getattr(getattr(strategy_plugin, "research_contract", None), "fail_closed_reason", ""))
+            else str(
+                getattr(
+                    getattr(strategy_plugin, "research_contract", None),
+                    "fail_closed_reason",
+                    "",
+                )
+            )
         )
-        payload["recommended_next_action"] = "none" if statistical_evidence else "review_strategy_contract"
+        payload["recommended_next_action"] = (
+            "none" if statistical_evidence else "review_strategy_contract"
+        )
         _attach_common_exit_diagnostic_counts(payload)
         return payload
 
@@ -245,29 +282,49 @@ class DecisionPayloadBuilder:
         canonical_context: Any | None = None,
     ) -> dict[str, object]:
         action = risk_decision.final_signal
-        raw_signal = str(strategy_envelope.provenance.get("raw_signal") or "HOLD").upper()
+        raw_signal = str(
+            strategy_envelope.provenance.get("raw_signal") or "HOLD"
+        ).upper()
         raw_reason = str(strategy_envelope.provenance.get("raw_reason") or event.reason)
-        raw_filter_would_block = bool(strategy_envelope.provenance.get("raw_filter_would_block"))
-        entry_signal = str(strategy_envelope.provenance.get("entry_signal") or raw_signal).upper()
-        exit_signal = str(strategy_envelope.provenance.get("exit_signal") or raw_signal).upper()
-        blocked_filters = list(strategy_envelope.provenance.get("blocked_filters") or ())
+        raw_filter_would_block = bool(
+            strategy_envelope.provenance.get("raw_filter_would_block")
+        )
+        entry_signal = str(
+            strategy_envelope.provenance.get("entry_signal") or raw_signal
+        ).upper()
+        exit_signal = str(
+            strategy_envelope.provenance.get("exit_signal") or raw_signal
+        ).upper()
+        blocked_filters = list(
+            strategy_envelope.provenance.get("blocked_filters") or ()
+        )
         entry_decision = strategy_envelope.provenance.get("entry_decision")
         market_regime_decision = (
             dict(getattr(entry_decision, "candidate_regime_decision"))
             if entry_decision is not None
-            and isinstance(getattr(entry_decision, "candidate_regime_decision", None), dict)
+            and isinstance(
+                getattr(entry_decision, "candidate_regime_decision", None), dict
+            )
             else {"regime_decision": "not_configured"}
         )
         market_regime_blocked = bool(
-            getattr(entry_decision, "market_regime_triggered", False) if entry_decision is not None else False
+            getattr(entry_decision, "market_regime_triggered", False)
+            if entry_decision is not None
+            else False
         )
         candidate_regime_blocked = bool(
-            getattr(entry_decision, "candidate_regime_triggered", False) if entry_decision is not None else False
+            getattr(entry_decision, "candidate_regime_triggered", False)
+            if entry_decision is not None
+            else False
         )
         if policy_decision is not None:
-            protective_exit_overrode_entry = bool(policy_decision.protective_exit_overrode_entry)
+            protective_exit_overrode_entry = bool(
+                policy_decision.protective_exit_overrode_entry
+            )
             entry_blocked = bool(policy_decision.entry_blocked)
-            exit_filter_suppression_prevented = bool(policy_decision.exit_filter_suppression_prevented)
+            exit_filter_suppression_prevented = bool(
+                policy_decision.exit_filter_suppression_prevented
+            )
         elif strategy_envelope.unsupported_reason:
             protective_exit_overrode_entry = False
             entry_blocked = False
@@ -278,7 +335,9 @@ class DecisionPayloadBuilder:
                 and action == "SELL"
                 and risk_decision.exit_rule in {"stop_loss", "max_holding_time"}
             )
-            entry_blocked = bool(raw_signal == "BUY" and action == "HOLD" and raw_filter_would_block)
+            entry_blocked = bool(
+                raw_signal == "BUY" and action == "HOLD" and raw_filter_would_block
+            )
             exit_filter_suppression_prevented = bool(
                 raw_signal == "SELL"
                 and raw_filter_would_block
@@ -300,8 +359,12 @@ class DecisionPayloadBuilder:
         )
         fee_model_hash = _context_hash(canonical_context, "fee_model_hash")
         slippage_model_hash = _context_hash(canonical_context, "slippage_model_hash")
-        candidate_profile_hash = _context_hash(canonical_context, "candidate_profile_hash")
-        parameter_values_hash = _context_hash(canonical_context, "parameter_values_hash")
+        candidate_profile_hash = _context_hash(
+            canonical_context, "candidate_profile_hash"
+        )
+        parameter_values_hash = _context_hash(
+            canonical_context, "parameter_values_hash"
+        )
         fee_authority_hash = _context_hash(canonical_context, "fee_authority_hash")
         order_rules_hash = _context_hash(canonical_context, "order_rules_hash")
         active_exit_policy_config_hash = _context_hash(
@@ -340,7 +403,10 @@ class DecisionPayloadBuilder:
             exit_signal=exit_signal,
             final_signal=action,
             raw_reason=raw_reason,
-            blocked=bool(risk_decision.block or (raw_signal in {"BUY", "SELL"} and action == "HOLD")),
+            blocked=bool(
+                risk_decision.block
+                or (raw_signal in {"BUY", "SELL"} and action == "HOLD")
+            ),
             raw_filter_would_block=raw_filter_would_block,
             entry_blocked=entry_blocked,
             protective_exit_overrode_entry=protective_exit_overrode_entry,
@@ -361,7 +427,9 @@ class DecisionPayloadBuilder:
         statistical_evidence = False
         payload_adapter = getattr(strategy_plugin, "payload_adapter", None)
         if payload_adapter is not None:
-            payload = payload_adapter(payload, policy_decision if policy_decision is not None else event)
+            payload = payload_adapter(
+                payload, policy_decision if policy_decision is not None else event
+            )
         validation_missing_reason = "research_strategy_catalog"
         payload.update(
             {
@@ -369,7 +437,9 @@ class DecisionPayloadBuilder:
                 "strategy_decision_contract_version": strategy_plugin.decision_contract_version,
                 "statistical_evidence": statistical_evidence,
                 "validation_extension_missing_reason": validation_missing_reason,
-                "recommended_next_action": "none" if statistical_evidence else "review_strategy_contract",
+                "recommended_next_action": "none"
+                if statistical_evidence
+                else "review_strategy_contract",
                 "raw_reason": raw_reason,
                 "feature_snapshot": dict(event.feature_snapshot),
                 "strategy_diagnostics_namespace": strategy_plugin.diagnostics_namespace,
@@ -383,18 +453,33 @@ class DecisionPayloadBuilder:
                     "feature_snapshot": dict(event.feature_snapshot),
                     "strategy_diagnostics": dict(event.strategy_diagnostics),
                 },
-                "execution_intent": action.lower() if action in {"BUY", "SELL"} else "none",
-                "order_intent": dict(event.order_intent) if event.order_intent is not None else None,
-                "exit_intent": dict(event.exit_intent) if event.exit_intent is not None else None,
+                "execution_intent": action.lower()
+                if action in {"BUY", "SELL"}
+                else "none",
+                "order_intent": dict(event.order_intent)
+                if event.order_intent is not None
+                else None,
+                "exit_intent": dict(event.exit_intent)
+                if event.exit_intent is not None
+                else None,
                 "research_policy_position_terminal_state": policy_position.terminal_state,
-                "research_policy_recomputed_with_simulated_position": policy_decision is not None,
-                "research_policy_unsupported": bool(strategy_envelope.unsupported_reason),
+                "research_policy_recomputed_with_simulated_position": policy_decision
+                is not None,
+                "research_policy_unsupported": bool(
+                    strategy_envelope.unsupported_reason
+                ),
                 "research_policy_unsupported_reason": strategy_envelope.unsupported_reason,
-                "research_policy_comparable": not bool(strategy_envelope.unsupported_reason),
-                "research_comparable": bool(strategy_envelope.provenance.get("research_comparable")),
+                "research_policy_comparable": not bool(
+                    strategy_envelope.unsupported_reason
+                ),
+                "research_comparable": bool(
+                    strategy_envelope.provenance.get("research_comparable")
+                ),
             }
         )
-        risk_payload = risk_decision.payload if isinstance(risk_decision.payload, dict) else {}
+        risk_payload = (
+            risk_decision.payload if isinstance(risk_decision.payload, dict) else {}
+        )
         for key in (
             "risk_input_hash",
             "risk_policy_hash",
@@ -410,7 +495,10 @@ class DecisionPayloadBuilder:
                 payload[key] = risk_payload[key]
         if "risk_decision" in risk_payload:
             payload["risk_decision"] = risk_payload["risk_decision"]
-        if strategy_plugin.diagnostics_builder is not None and "strategy_diagnostic_counts" not in payload:
+        if (
+            strategy_plugin.diagnostics_builder is not None
+            and "strategy_diagnostic_counts" not in payload
+        ):
             diagnostic_contract = strategy_plugin.diagnostics_builder(payload)
             if not isinstance(diagnostic_contract, dict):
                 raise TypeError("strategy_diagnostics_count_builder_must_return_dict")
@@ -420,7 +508,9 @@ class DecisionPayloadBuilder:
                 payload["strategy_diagnostic_count_defaults"] = defaults
             if isinstance(counts, dict):
                 payload["strategy_diagnostic_counts"] = counts
-            payload["strategy_diagnostic_counts_authority"] = "diagnostic_non_authoritative"
+            payload["strategy_diagnostic_counts_authority"] = (
+                "diagnostic_non_authoritative"
+            )
         _attach_common_exit_diagnostic_counts(payload)
         if policy_decision is not None:
             payload["pure_policy_hash"] = policy_decision.policy_hash
@@ -483,9 +573,10 @@ class DecisionPayloadBuilder:
                 }
             )
             payload["strategy_diagnostics"] = diagnostics
-        if str(exit_policy_config_hash or "").strip() and not str(
-            payload.get("exit_policy_config_hash") or ""
-        ).strip():
+        if (
+            str(exit_policy_config_hash or "").strip()
+            and not str(payload.get("exit_policy_config_hash") or "").strip()
+        ):
             payload["exit_policy_config_hash"] = str(exit_policy_config_hash)
         payload["decision_payload_detail_level"] = "full_canonical"
         return payload
@@ -502,16 +593,28 @@ def _decision_surface(
     action = risk_decision.final_signal
     raw_signal = str(strategy_envelope.provenance.get("raw_signal") or "HOLD").upper()
     raw_reason = str(strategy_envelope.provenance.get("raw_reason") or event.reason)
-    raw_filter_would_block = bool(strategy_envelope.provenance.get("raw_filter_would_block"))
-    entry_signal = str(strategy_envelope.provenance.get("entry_signal") or raw_signal).upper()
-    exit_signal = str(strategy_envelope.provenance.get("exit_signal") or raw_signal).upper()
+    raw_filter_would_block = bool(
+        strategy_envelope.provenance.get("raw_filter_would_block")
+    )
+    entry_signal = str(
+        strategy_envelope.provenance.get("entry_signal") or raw_signal
+    ).upper()
+    exit_signal = str(
+        strategy_envelope.provenance.get("exit_signal") or raw_signal
+    ).upper()
     blocked_filters = list(strategy_envelope.provenance.get("blocked_filters") or ())
     if policy_decision is not None:
         entry_blocked = bool(policy_decision.entry_blocked)
-        protective_exit_overrode_entry = bool(policy_decision.protective_exit_overrode_entry)
-        exit_filter_suppression_prevented = bool(policy_decision.exit_filter_suppression_prevented)
+        protective_exit_overrode_entry = bool(
+            policy_decision.protective_exit_overrode_entry
+        )
+        exit_filter_suppression_prevented = bool(
+            policy_decision.exit_filter_suppression_prevented
+        )
     else:
-        entry_blocked = bool(raw_signal == "BUY" and action == "HOLD" and raw_filter_would_block)
+        entry_blocked = bool(
+            raw_signal == "BUY" and action == "HOLD" and raw_filter_would_block
+        )
         protective_exit_overrode_entry = bool(
             raw_signal == "BUY"
             and action == "SELL"
@@ -552,9 +655,13 @@ def _attach_common_exit_diagnostic_counts(payload: dict[str, object]) -> None:
             continue
         rule = str(evaluation.get("rule") or "")
         if rule == "stop_loss":
-            increments["stop_loss_exit_count"] = increments.get("stop_loss_exit_count", 0) + 1
+            increments["stop_loss_exit_count"] = (
+                increments.get("stop_loss_exit_count", 0) + 1
+            )
         elif rule == "max_holding_time":
-            increments["max_holding_exit_count"] = increments.get("max_holding_exit_count", 0) + 1
+            increments["max_holding_exit_count"] = (
+                increments.get("max_holding_exit_count", 0) + 1
+            )
     if not increments:
         return
     defaults = payload.get("strategy_diagnostic_count_defaults")

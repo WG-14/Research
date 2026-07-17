@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from market_research.research.hashing import content_hash_payload, sha256_prefixed
+from market_research.application.adapter_contracts import (
+    content_hash_payload,
+    sha256_prefixed,
+)
 
 from .models import ResearchJob
 from .storage import verify_result_artifact

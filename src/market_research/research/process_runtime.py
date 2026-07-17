@@ -68,15 +68,22 @@ def resolve_research_process_runtime(
         available_start_methods=available,
     )
     parent_thread_count = _parent_thread_count()
-    unsafe_fork_allowed = allow_unsafe_fork or os.environ.get("RESEARCH_RESEARCH_ALLOW_UNSAFE_FORK") == "1"
-    selectable = tuple(method for method in available if method not in set(unavailable_start_methods))
+    unsafe_fork_allowed = (
+        allow_unsafe_fork
+        or os.environ.get("RESEARCH_RESEARCH_ALLOW_UNSAFE_FORK") == "1"
+    )
+    selectable = tuple(
+        method for method in available if method not in set(unavailable_start_methods)
+    )
     effective = _resolve_effective_start_method(
         requested=requested,
         available=selectable,
         unsafe_fork_allowed=unsafe_fork_allowed,
         parent_thread_count=parent_thread_count,
     )
-    max_workers_requested = _positive_int(requested_max_workers, "requested_max_workers")
+    max_workers_requested = _positive_int(
+        requested_max_workers, "requested_max_workers"
+    )
     max_workers_effective, budget = _resolve_worker_budget(max_workers_requested)
     fallback = _process_start_method_fallback(
         requested=requested,
@@ -103,9 +110,13 @@ def resolve_research_process_runtime(
     )
 
 
-def process_policy_observability(*, requested_start_method: str, requested_max_workers: int) -> dict[str, Any]:
+def process_policy_observability(
+    *, requested_start_method: str, requested_max_workers: int
+) -> dict[str, Any]:
     available = tuple(mp.get_all_start_methods())
-    max_workers_requested = _positive_int(requested_max_workers, "requested_max_workers")
+    max_workers_requested = _positive_int(
+        requested_max_workers, "requested_max_workers"
+    )
     max_workers_effective, budget = _resolve_worker_budget(max_workers_requested)
     return {
         "requested_process_start_method": _normalize_requested_start_method(
@@ -163,7 +174,9 @@ def _resolve_worker_budget(requested_workers: int) -> tuple[int, dict[str, objec
         caps.append(_positive_int(env_cap_raw, "RESEARCH_RESEARCH_MAX_WORKERS"))
     batch_child_cap_raw = os.environ.get("RESEARCH_BATCH_CHILD_WORKER_BUDGET")
     if batch_child_cap_raw:
-        caps.append(_positive_int(batch_child_cap_raw, "RESEARCH_BATCH_CHILD_WORKER_BUDGET"))
+        caps.append(
+            _positive_int(batch_child_cap_raw, "RESEARCH_BATCH_CHILD_WORKER_BUDGET")
+        )
     total_budget_raw = os.environ.get("RESEARCH_TOTAL_PROCESS_BUDGET")
     outer_worker_count = _outer_worker_count()
     if total_budget_raw:
@@ -173,7 +186,9 @@ def _resolve_worker_budget(requested_workers: int) -> tuple[int, dict[str, objec
         else:
             caps.append(total_budget)
     effective = min([requested_workers, *caps]) if caps else requested_workers
-    return effective, _process_budget_metadata(requested_workers, effective_workers=effective)
+    return effective, _process_budget_metadata(
+        requested_workers, effective_workers=effective
+    )
 
 
 def _process_budget_metadata(
@@ -191,10 +206,18 @@ def _process_budget_metadata(
         "outer_worker_id": os.environ.get("PYTEST_XDIST_WORKER"),
         "outer_worker_count": outer_worker_count,
         "research_max_workers_requested": requested_workers,
-        "research_max_workers_effective": effective_workers if effective_workers is not None else None,
-        "research_max_workers_env_cap": int(research_cap_raw) if _is_positive_int(research_cap_raw) else None,
-        "batch_child_worker_budget": int(batch_child_cap_raw) if _is_positive_int(batch_child_cap_raw) else None,
-        "total_process_budget": int(total_budget_raw) if _is_positive_int(total_budget_raw) else None,
+        "research_max_workers_effective": effective_workers
+        if effective_workers is not None
+        else None,
+        "research_max_workers_env_cap": int(research_cap_raw)
+        if _is_positive_int(research_cap_raw)
+        else None,
+        "batch_child_worker_budget": int(batch_child_cap_raw)
+        if _is_positive_int(batch_child_cap_raw)
+        else None,
+        "total_process_budget": int(total_budget_raw)
+        if _is_positive_int(total_budget_raw)
+        else None,
     }
 
 

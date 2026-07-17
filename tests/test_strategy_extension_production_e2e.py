@@ -73,16 +73,13 @@ _STRATEGY_NAME = "momentum_entry_probe_acceptance"
 _STRATEGY_VERSION = "momentum_entry_probe_acceptance.v1"
 _EXPERIMENT_ID = "strategy_extension_production_acceptance"
 _BRIDGE_MODULE_BASENAME = "extension_acceptance_probe"
-_BRIDGE_MODULE_NAME = (
-    f"market_research.builtin_strategies.{_BRIDGE_MODULE_BASENAME}"
-)
+_BRIDGE_MODULE_NAME = f"market_research.builtin_strategies.{_BRIDGE_MODULE_BASENAME}"
 _VALIDATED_STRATEGY_NAME = "validated_daily_momentum_acceptance"
 _VALIDATED_STRATEGY_VERSION = "validated_daily_momentum_acceptance.v1"
 _VALIDATED_EXPERIMENT_ID = "validated_strategy_extension_production_acceptance"
 _VALIDATED_BRIDGE_MODULE_BASENAME = "validated_extension_acceptance_probe"
 _VALIDATED_BRIDGE_MODULE_NAME = (
-    "market_research.builtin_strategies."
-    f"{_VALIDATED_BRIDGE_MODULE_BASENAME}"
+    f"market_research.builtin_strategies.{_VALIDATED_BRIDGE_MODULE_BASENAME}"
 )
 _BUILTIN_STRATEGY_PARAMETERS: dict[str, dict[str, object]] = {
     "buy_and_hold_baseline": {"BUY_HOLD_BUY_INDEX": 1},
@@ -166,9 +163,7 @@ MOMENTUM_ENTRY_PROBE_SPEC = StrategySpec(
                 "MOMENTUM_HOLD_BARS",
             ),
         ),
-        stop_loss=StrategyRuleDeclaration(
-            "stop_loss", "No stop-loss exit.", "never"
-        ),
+        stop_loss=StrategyRuleDeclaration("stop_loss", "No stop-loss exit.", "never"),
         position_sizing=StrategyRuleDeclaration(
             "portfolio_fractional_cash",
             "Use the experiment portfolio buy fraction.",
@@ -223,9 +218,7 @@ def build_momentum_entry_probe_events(
     for local_index, candle in enumerate(dataset.candles):
         candle_index = int(candle_index_offset) + local_index
         previous_close = (
-            float(dataset.candles[local_index - 1].close)
-            if local_index > 0
-            else None
+            float(dataset.candles[local_index - 1].close) if local_index > 0 else None
         )
         close = float(candle.close)
         one_bar_return = (
@@ -386,9 +379,7 @@ VALIDATED_DAILY_MOMENTUM_SPEC = StrategySpec(
             "Exit the full remaining position on the next available causal event.",
             "filled_position_qty > 0 and pending_execution_count == 0",
         ),
-        stop_loss=StrategyRuleDeclaration(
-            "stop_loss", "No stop-loss exit.", "never"
-        ),
+        stop_loss=StrategyRuleDeclaration("stop_loss", "No stop-loss exit.", "never"),
         position_sizing=StrategyRuleDeclaration(
             "portfolio_fractional_cash",
             "Use the experiment portfolio buy fraction.",
@@ -403,10 +394,7 @@ VALIDATED_DAILY_MOMENTUM_SPEC = StrategySpec(
             StrategyRuleDeclaration(
                 "daily_schedule_or_momentum_not_met",
                 "Only the declared UTC hour and momentum threshold can enter.",
-                (
-                    "hour_utc != 4 or one_bar_return_ratio < "
-                    "MOMENTUM_MIN_RETURN_RATIO"
-                ),
+                ("hour_utc != 4 or one_bar_return_ratio < MOMENTUM_MIN_RETURN_RATIO"),
                 ("MOMENTUM_MIN_RETURN_RATIO",),
             ),
         ),
@@ -431,7 +419,9 @@ VALIDATED_DAILY_MOMENTUM_SPEC = StrategySpec(
 )
 
 
-def build_validated_daily_momentum_events(**_: Any) -> tuple[ResearchDecisionEvent, ...]:
+def build_validated_daily_momentum_events(
+    **_: Any,
+) -> tuple[ResearchDecisionEvent, ...]:
     """Compatibility hook; production execution uses the causal runtime below."""
 
     return ()
@@ -464,15 +454,11 @@ class ValidatedDailyMomentumRuntime:
         snapshot = market.causal_snapshot()
         candle = market.current_candle
         previous_close = (
-            float(snapshot.candles[-2].close)
-            if len(snapshot.candles) > 1
-            else None
+            float(snapshot.candles[-2].close) if len(snapshot.candles) > 1 else None
         )
         close = float(candle.close)
         one_bar_return = (
-            close / previous_close - 1.0
-            if previous_close not in {None, 0.0}
-            else None
+            close / previous_close - 1.0 if previous_close not in {None, 0.0} else None
         )
         threshold = float(self.parameters["MOMENTUM_MIN_RETURN_RATIO"])
         hour_utc = datetime.fromtimestamp(
@@ -522,9 +508,7 @@ class ValidatedDailyMomentumRuntime:
                 "one_bar_return_ratio": one_bar_return,
                 "minimum_return_ratio": threshold,
                 "filled_position_qty": float(portfolio.filled_position_qty),
-                "pending_execution_count": int(
-                    portfolio.pending_execution_count
-                ),
+                "pending_execution_count": int(portfolio.pending_execution_count),
             },
             strategy_diagnostics={
                 "schema_version": 1,
@@ -671,9 +655,7 @@ def _write_approved_noop_benchmark(
         "approved-noop-benchmark",
         "1",
     )
-    confirmation_hash = sha256_prefixed(
-        {"fixture": "approved-noop-final-holdout"}
-    )
+    confirmation_hash = sha256_prefixed({"fixture": "approved-noop-final-holdout"})
     report_hash = sha256_prefixed({"fixture": "approved-noop-report"})
     for source, destination, evidence in (
         (None, "DRAFT", {}),
@@ -814,8 +796,7 @@ def _write_validated_extension_manifest(
             price = 100.0
             for index in range(day_count * 6):
                 candle_ts = int(
-                    (segment_start + timedelta(hours=4 * index)).timestamp()
-                    * 1000
+                    (segment_start + timedelta(hours=4 * index)).timestamp() * 1000
                 )
                 candle_timestamps.append(candle_ts)
                 connection.execute(
@@ -847,13 +828,11 @@ def _write_validated_extension_manifest(
                     )
                 price *= 1.02
             close_boundary = int(
-                (segment_start + timedelta(days=day_count)).timestamp()
-                * 1000
+                (segment_start + timedelta(days=day_count)).timestamp() * 1000
             )
             for quote_ts in (close_boundary, close_boundary + 100):
                 connection.execute(
-                    "INSERT INTO orderbook_top_snapshots VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO orderbook_top_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         quote_ts,
                         "KRW-BTC",
@@ -873,9 +852,7 @@ def _write_validated_extension_manifest(
         end_ts=max(candle_timestamps),
         out_dir=(study_root / "frozen").resolve(),
     )
-    source_content_hash = "sha256:" + hashlib.sha256(
-        db_path.read_bytes()
-    ).hexdigest()
+    source_content_hash = "sha256:" + hashlib.sha256(db_path.read_bytes()).hexdigest()
     source_schema_hash = _db_table_schema_fingerprint(
         db_path,
         "orderbook_top_snapshots",
@@ -956,9 +933,7 @@ def _write_validated_extension_manifest(
                 },
             },
         },
-        "parameter_space": {
-            "MOMENTUM_MIN_RETURN_RATIO": [0.0045, 0.005, 0.0055]
-        },
+        "parameter_space": {"MOMENTUM_MIN_RETURN_RATIO": [0.0045, 0.005, 0.0055]},
         "cost_model": {"fee_rate": 0.001, "slippage_bps": [10]},
         "execution_timing": {
             "signal_basis": "closed_candle",
@@ -1071,17 +1046,11 @@ def _write_validated_extension_manifest(
             "required_for_validation": True,
             "random_entry": {
                 "iterations": 8,
-                "seed_policy": (
-                    "derived_from_manifest_split_benchmark_contract_hash"
-                ),
-                "entry_index_policy": (
-                    "uniform_causal_entry_holding_to_split_end"
-                ),
+                "seed_policy": ("derived_from_manifest_split_benchmark_contract_hash"),
+                "entry_index_policy": ("uniform_causal_entry_holding_to_split_end"),
             },
             "same_holding_period": {
-                "holding_period_source": (
-                    "candidate_median_closed_trade_holding_bars"
-                ),
+                "holding_period_source": ("candidate_median_closed_trade_holding_bars"),
                 "entry_policy": "non_overlapping_unconditional_entries",
                 "min_candidate_closed_trades": 5,
             },
@@ -1102,9 +1071,7 @@ def _write_validated_extension_manifest(
             "required_for_validation": True,
             "benchmark": "cash",
             "primary_metric": "return_pct",
-            "selection_universe": (
-                "all_parameter_candidates_all_required_scenarios"
-            ),
+            "selection_universe": ("all_parameter_candidates_all_required_scenarios"),
             "multiple_testing_scope": "experiment",
             "bootstrap": {
                 "method": "white_reality_check_block_bootstrap",
@@ -1126,9 +1093,7 @@ def _write_validated_extension_manifest(
             },
             "trade_order_monte_carlo": {
                 "iterations": 100,
-                "seed_policy": (
-                    "derived_from_manifest_candidate_scenario_split_hash"
-                ),
+                "seed_policy": ("derived_from_manifest_candidate_scenario_split_hash"),
                 "min_survival_probability": 0.8,
                 "ruin_max_drawdown_pct": 50.0,
                 "min_closed_trades": 5,
@@ -1159,9 +1124,7 @@ def _write_validated_extension_manifest(
         "final_selection": {
             "schema_version": 2,
             "required_for_validation": True,
-            "candidate_universe": (
-                "acceptance_gate_passed_required_scenarios"
-            ),
+            "candidate_universe": ("acceptance_gate_passed_required_scenarios"),
             "must_pass": {
                 "dataset_quality_gate_status": "PASS",
                 "statistical_gate_result": "PASS",
@@ -1253,9 +1216,9 @@ def _write_extension_manifest(tmp_path: Path) -> tuple[Path, Path]:
     portfolio_policy = legacy_research_portfolio_policy().as_dict()
     portfolio_policy["source"] = "manifest"
     portfolio_policy["position_sizing"]["buy_fraction"] = 0.01
-    portfolio_policy["position_sizing"][
-        "cash_buffer_policy"
-    ] = "derived_from_buy_fraction_before_fees"
+    portfolio_policy["position_sizing"]["cash_buffer_policy"] = (
+        "derived_from_buy_fraction_before_fees"
+    )
     payload = {
         "experiment_id": _EXPERIMENT_ID,
         "hypothesis": "periodic positive one-bar momentum remains reproducible through the common engine",
@@ -1452,9 +1415,7 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
         builtin_strategy_registry.cache_clear()
 
         expanded_registry = builtin_strategy_registry()
-        assert frozenset(expanded_registry.plugins) == baseline_names | {
-            _STRATEGY_NAME
-        }
+        assert frozenset(expanded_registry.plugins) == baseline_names | {_STRATEGY_NAME}
         assert expanded_registry.content_hash != baseline_registry.content_hash
         assert _stable_builtin_fingerprints(expanded_registry) == baseline_fingerprints
         extension = expanded_registry.resolve(_STRATEGY_NAME)
@@ -1481,47 +1442,49 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
         selected = validation["selected_candidate"]
         compiled = selected["compiled_strategy_contract"]
         assert compiled["strategy_name"] == _STRATEGY_NAME
-        assert (
-            selected["strategy_plugin_contract_hash"]
-            == extension.contract_hash()
-        )
-        assert (
-            compiled["strategy_registry_hash"]
-            == expanded_registry.execution_scope_hash(_STRATEGY_NAME)
-        )
+        assert selected["strategy_plugin_contract_hash"] == extension.contract_hash()
+        assert compiled[
+            "strategy_registry_hash"
+        ] == expanded_registry.execution_scope_hash(_STRATEGY_NAME)
         primary = next(
             item
             for item in selected["scenario_results"]
             if item["scenario_id"] == selected["primary_scenario_id"]
         )
         assert primary["validation_metrics"]["trade_count"] >= 1
-        assert primary["validation_resource_usage"][
-            "common_execution_authority"
-        ] == "common_simulation_engine"
-        assert primary["validation_execution_event_summary"][
-            "portfolio_applied_trade_count"
-        ] >= 2
+        assert (
+            primary["validation_resource_usage"]["common_execution_authority"]
+            == "common_simulation_engine"
+        )
+        assert (
+            primary["validation_execution_event_summary"][
+                "portfolio_applied_trade_count"
+            ]
+            >= 2
+        )
 
         decision_report_path = context.paths.report_path(
             "research",
             _EXPERIMENT_ID,
             "research_candidate_report.json",
         )
-        decision_report = json.loads(
-            decision_report_path.read_text(encoding="utf-8")
-        )
+        decision_report = json.loads(decision_report_path.read_text(encoding="utf-8"))
         assert decision_report["experiment_id"] == _EXPERIMENT_ID
         assert (
             decision_report["content_hash"]
             == validation["research_candidate_report_hash"]
         )
         assert validate_research_decision_report(decision_report) == []
-        assert decision_report["sections"]["hypothesis_and_experiment_conditions"][
-            "strategy_name"
-        ] == _STRATEGY_NAME
-        assert decision_report["sections"]["research_conclusion"][
-            "operational_permission"
-        ] is False
+        assert (
+            decision_report["sections"]["hypothesis_and_experiment_conditions"][
+                "strategy_name"
+            ]
+            == _STRATEGY_NAME
+        )
+        assert (
+            decision_report["sections"]["research_conclusion"]["operational_permission"]
+            is False
+        )
 
         registry_output: list[str] = []
         original_printer = context.printer
@@ -1591,9 +1554,7 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
             )
         finally:
             context.printer = original_printer
-            selection_report_path.write_text(
-                selection_report_text, encoding="utf-8"
-            )
+            selection_report_path.write_text(selection_report_text, encoding="utf-8")
         invalid_selection_validation = json.loads(
             next(
                 message
@@ -1602,8 +1563,9 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
             )
         )
         assert invalid_selection_rc == 1
-        assert "final_selection_selected_candidate_mismatch" in (
-            invalid_selection_validation["artifact_reasons"]
+        assert (
+            "final_selection_selected_candidate_mismatch"
+            in (invalid_selection_validation["artifact_reasons"])
         )
 
         receipt_path = context.paths.report_path(
@@ -1625,9 +1587,7 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
             ],
             context=context,
         )
-        reproduction = json.loads(
-            reproduction_path.read_text(encoding="utf-8")
-        )
+        reproduction = json.loads(reproduction_path.read_text(encoding="utf-8"))
         assert reproduction_rc == 0
         assert reproduction["status"] == "PASS"
         assert reproduction["phase"] == "fingerprint_comparison"
@@ -1640,17 +1600,13 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
         )
         confirmation_text = confirmation_path.read_text(encoding="utf-8")
         forged_confirmation = json.loads(confirmation_text)
-        canonical_registry_path = Path(
-            forged_confirmation["experiment_registry_path"]
-        )
+        canonical_registry_path = Path(forged_confirmation["experiment_registry_path"])
         forged_registry_path = (tmp_path / "forged-experiment-registry.jsonl").resolve()
         forged_registry_path.write_text(
             canonical_registry_path.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
-        forged_confirmation["experiment_registry_path"] = str(
-            forged_registry_path
-        )
+        forged_confirmation["experiment_registry_path"] = str(forged_registry_path)
         forged_material = {
             key: value
             for key, value in forged_confirmation.items()
@@ -1660,9 +1616,7 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
             forged_material,
             label="final_holdout_confirmation",
         )
-        confirmation_path.write_text(
-            json.dumps(forged_confirmation), encoding="utf-8"
-        )
+        confirmation_path.write_text(json.dumps(forged_confirmation), encoding="utf-8")
         forged_registry_output: list[str] = []
         context.printer = forged_registry_output.append
         try:
@@ -1685,8 +1639,9 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
             )
         )
         assert forged_registry_rc == 1
-        assert "experiment_registry_path_mismatch" in (
-            forged_registry_validation["artifact_reasons"]
+        assert (
+            "experiment_registry_path_mismatch"
+            in (forged_registry_validation["artifact_reasons"])
         )
 
         invalid_registry_output: list[str] = []
@@ -1712,8 +1667,9 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
             )
         )
         assert invalid_registry_rc == 1
-        assert "final_holdout_confirmation_must_be_object" in (
-            invalid_registry_validation["artifact_reasons"]
+        assert (
+            "final_holdout_confirmation_must_be_object"
+            in (invalid_registry_validation["artifact_reasons"])
         )
     finally:
         builtin_strategies.__path__ = original_package_path
@@ -1736,9 +1692,7 @@ def _record_validated_candidate_approval_prerequisites(
         "1",
     )
     report_hash = str(validation["content_hash"])
-    confirmation_hash = str(
-        validation["final_holdout_confirmation"]["content_hash"]
-    )
+    confirmation_hash = str(validation["final_holdout_confirmation"]["content_hash"])
     for source, destination, evidence in (
         (None, "DRAFT", {}),
         (
@@ -1788,11 +1742,7 @@ def _record_validated_candidate_approval_prerequisites(
         (
             "IDEA",
             "HYPOTHESIS_DEFINED",
-            {
-                "hypothesis_contract_hash": str(
-                    validation["hypothesis_contract_hash"]
-                )
-            },
+            {"hypothesis_contract_hash": str(validation["hypothesis_contract_hash"])},
         ),
         ("HYPOTHESIS_DEFINED", "EXPLORING", {}),
         (
@@ -1882,32 +1832,39 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         confirmation = validation["final_holdout_confirmation"]
         assert confirmation["confirmation_gate_result"] == "PASS"
         assert len(confirmation["candidate_results"]) == 1
-        assert confirmation["selected_candidate_id"] == validation[
-            "selected_candidate_id"
-        ]
-        assert validate_confirmation_artifact(
-            confirmation,
-            selection_artifact=validation["selection_artifact"],
-        ) == []
-        canonical_experiment_registry = experiment_registry_path(
-            manager=context.paths
+        assert (
+            confirmation["selected_candidate_id"] == validation["selected_candidate_id"]
         )
-        assert validate_experiment_registry_binding(
-            report=confirmation,
-            require_complete=True,
-            expected_registry_path=canonical_experiment_registry,
-        ) == []
+        assert (
+            validate_confirmation_artifact(
+                confirmation,
+                selection_artifact=validation["selection_artifact"],
+            )
+            == []
+        )
+        canonical_experiment_registry = experiment_registry_path(manager=context.paths)
+        assert (
+            validate_experiment_registry_binding(
+                report=confirmation,
+                require_complete=True,
+                expected_registry_path=canonical_experiment_registry,
+            )
+            == []
+        )
         quality_reports = validation["dataset_quality_reports"]
         assert {
             report["top_of_book_source_content_hash"]
             for report in quality_reports.values()
         } == {top_of_book_artifact_hash}
-        assert len(
-            {
-                report["top_of_book_split_content_hash"]
-                for report in quality_reports.values()
-            }
-        ) > 1
+        assert (
+            len(
+                {
+                    report["top_of_book_split_content_hash"]
+                    for report in quality_reports.values()
+                }
+            )
+            > 1
+        )
 
         registry_output: list[str] = []
         original_printer = context.printer
@@ -1976,17 +1933,13 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         package = json.loads(package_path.read_text(encoding="utf-8"))
         assert package["schema_version"] == 5
         assert package["authoritative"] is True
-        assert package["package_authority_status"] == (
-            "CANONICAL_REGISTRIES_VERIFIED"
-        )
+        assert package["package_authority_status"] == ("CANONICAL_REGISTRIES_VERIFIED")
         assert package["package_authority_result"] == "PASS"
         assert package["validation_result"] == "PASS"
-        assert package["source_report_content_hash"] == validation[
-            "content_hash"
-        ]
-        assert package["final_holdout_confirmation_hash"] == confirmation[
-            "content_hash"
-        ]
+        assert package["source_report_content_hash"] == validation["content_hash"]
+        assert (
+            package["final_holdout_confirmation_hash"] == confirmation["content_hash"]
+        )
         required_package_fields = {
             "strategy_spec_hash",
             "decision_contract_version",
@@ -2003,11 +1956,7 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         }
         assert all(package.get(field) is not None for field in required_package_fields)
         assert package["content_hash"] == sha256_prefixed(
-            {
-                key: value
-                for key, value in package.items()
-                if key != "content_hash"
-            }
+            {key: value for key, value in package.items() if key != "content_hash"}
         )
 
         receipt_path = context.paths.report_path(
@@ -2028,9 +1977,7 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             context=context,
         )
         assert reproduction_rc == 0
-        reproduction = json.loads(
-            reproduction_path.read_text(encoding="utf-8")
-        )
+        reproduction = json.loads(reproduction_path.read_text(encoding="utf-8"))
         assert reproduction["status"] == "PASS"
         assert reproduction["phase"] == "fingerprint_comparison"
         assert reproduction["mismatches"] == []

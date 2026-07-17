@@ -28,7 +28,9 @@ def test_batch_child_uses_registered_backtest_arguments_only(
     manifest_path.write_text("{}", encoding="utf-8")
     observed: dict[str, object] = {}
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         observed["command"] = list(command)
         observed["kwargs"] = kwargs
         return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
@@ -50,4 +52,3 @@ def test_batch_child_uses_registered_backtest_arguments_only(
         str(manifest_path),
     ]
     assert result["status"] == "succeeded"
-

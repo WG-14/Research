@@ -22,6 +22,8 @@ def test_fee_is_debited_exactly_once_and_equity_reconciles():
     entry = ledger.apply(run.fills[0])
     assert entry is not None and ledger.snapshot().fee_total == run.fills[0].fee
     snapshot = ledger.snapshot()
-    marked_equity = snapshot.cash + snapshot.asset_qty * float(run.fills[0].avg_fill_price)
+    marked_equity = snapshot.cash + snapshot.asset_qty * float(
+        run.fills[0].avg_fill_price
+    )
     expected_equity = 1_000_000 - run.fills[0].fee
     assert marked_equity == pytest.approx(expected_equity)

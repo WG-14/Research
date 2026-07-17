@@ -79,7 +79,9 @@ def interval_ms(interval: str) -> int:
     try:
         return interval_to_milliseconds(interval)
     except ValueError as exc:
-        raise ManifestValidationError(f"unsupported research interval for execution timing: {interval}") from exc
+        raise ManifestValidationError(
+            f"unsupported research interval for execution timing: {interval}"
+        ) from exc
 
 
 def candle_close_ts(candle: Candle, *, interval: str) -> int:
@@ -121,7 +123,9 @@ def resolve_execution_reference(
 ) -> ExecutionReferenceEvent:
     latency_ms = max(0, int(model_latency_ms))
     submit_ts = int(signal.decision_ts) + latency_ms
-    latency_applied_to_reference = policy.fill_reference_policy == "latency_adjusted_orderbook"
+    latency_applied_to_reference = (
+        policy.fill_reference_policy == "latency_adjusted_orderbook"
+    )
     latency_applied_to_submit_ts = latency_ms > 0
     latency_warning = (
         "execution_latency_not_applied_to_reference_policy"
@@ -152,7 +156,11 @@ def resolve_execution_reference(
         )
     if policy.fill_reference_policy == "next_candle_open":
         next_candle = next(
-            (candle for candle in dataset.candles[signal_index + 1 :] if int(candle.ts) >= submit_ts),
+            (
+                candle
+                for candle in dataset.candles[signal_index + 1 :]
+                if int(candle.ts) >= submit_ts
+            ),
             None,
         )
         if next_candle is None:
@@ -182,9 +190,18 @@ def resolve_execution_reference(
             latency_applied_to_fill_reference=False,
             latency_reference_policy_warning=latency_warning,
         )
-    if policy.fill_reference_policy in {"first_orderbook_after_decision", "latency_adjusted_orderbook"}:
-        target_ts = signal.decision_ts if policy.fill_reference_policy == "first_orderbook_after_decision" else submit_ts
-        quote = first_quote_after_or_equal(dataset=dataset, target_ts=target_ts, max_wait_ms=policy.max_quote_wait_ms)
+    if policy.fill_reference_policy in {
+        "first_orderbook_after_decision",
+        "latency_adjusted_orderbook",
+    }:
+        target_ts = (
+            signal.decision_ts
+            if policy.fill_reference_policy == "first_orderbook_after_decision"
+            else submit_ts
+        )
+        quote = first_quote_after_or_equal(
+            dataset=dataset, target_ts=target_ts, max_wait_ms=policy.max_quote_wait_ms
+        )
         reality = (
             "top_of_book_after_decision"
             if policy.fill_reference_policy == "first_orderbook_after_decision"
@@ -218,7 +235,9 @@ def resolve_execution_reference(
             latency_applied_to_fill_reference=latency_applied_to_reference,
             latency_reference_policy_warning=latency_warning,
         )
-    raise ValueError(f"unsupported fill_reference_policy: {policy.fill_reference_policy}")
+    raise ValueError(
+        f"unsupported fill_reference_policy: {policy.fill_reference_policy}"
+    )
 
 
 def first_quote_after_or_equal(
@@ -227,7 +246,9 @@ def first_quote_after_or_equal(
     target_ts: int,
     max_wait_ms: int,
 ) -> TopOfBookQuote | None:
-    return dataset.first_quote_after_or_equal(target_ts=target_ts, max_wait_ms=max_wait_ms)
+    return dataset.first_quote_after_or_equal(
+        target_ts=target_ts, max_wait_ms=max_wait_ms
+    )
 
 
 def execution_reality_gate(
@@ -243,18 +264,30 @@ def execution_reality_gate(
     status = "PASS"
     if min_level is not None:
         required = REALITY_ORDER[min_level]
-        observed = min((REALITY_ORDER.get(level, -1) for level in observed_levels), default=-1)
+        observed = min(
+            (REALITY_ORDER.get(level, -1) for level in observed_levels), default=-1
+        )
         if observed < required:
             reasons.append("execution_reality_level_below_required")
-    if "candle_close" in fill_reference_sources and not policy.allow_same_candle_close_fill:
+    if (
+        "candle_close" in fill_reference_sources
+        and not policy.allow_same_candle_close_fill
+    ):
         reasons.append("execution_reference_price_candle_close_not_validation_eligible")
-    if policy.fill_reference_policy in {"first_orderbook_after_decision", "latency_adjusted_orderbook"}:
-        if quote_coverage_pct is not None and quote_coverage_pct < 100.0 and (
-            policy.missing_quote_policy == "fail" or min_level is not None
+    if policy.fill_reference_policy in {
+        "first_orderbook_after_decision",
+        "latency_adjusted_orderbook",
+    }:
+        if (
+            quote_coverage_pct is not None
+            and quote_coverage_pct < 100.0
+            and (policy.missing_quote_policy == "fail" or min_level is not None)
         ):
             reasons.append("quote_after_decision_signal_coverage_below_threshold")
     if latency_reference_warnings and (
-        min_level is not None or "execution_latency_not_applied_to_reference_policy" in latency_reference_warnings
+        min_level is not None
+        or "execution_latency_not_applied_to_reference_policy"
+        in latency_reference_warnings
     ):
         reasons.append("execution_latency_not_applied_to_reference_policy")
     if reasons:
@@ -281,24 +314,42 @@ def signal_quote_coverage_summary(
         if item.get("quote_age_ms") is not None
     ]
     fillable = [
-        item for item in execution_metadata
-        if item.get("fill_reference_price") is not None and not item.get("execution_reference_failure_reason")
+        item
+        for item in execution_metadata
+        if item.get("fill_reference_price") is not None
+        and not item.get("execution_reference_failure_reason")
     ]
     missing = [
-        item for item in execution_metadata
+        item
+        for item in execution_metadata
         if item.get("execution_reference_failure_reason")
-        in {"quote_after_decision_missing", "missing_quote_failed", "missing_quote_skipped", "missing_quote_warning"}
+        in {
+            "quote_after_decision_missing",
+            "missing_quote_failed",
+            "missing_quote_skipped",
+            "missing_quote_warning",
+        }
     ]
     skipped = [
-        item for item in execution_metadata
+        item
+        for item in execution_metadata
         if item.get("fill_status") in {"skipped", "skipped_with_warning"}
     ]
     warnings = [
-        item for item in execution_metadata
+        item
+        for item in execution_metadata
         if item.get("execution_reference_failure_reason") == "missing_quote_warning"
     ]
-    submit_latency = [item for item in execution_metadata if item.get("latency_applied_to_submit_ts") is True]
-    reference_latency = [item for item in execution_metadata if item.get("latency_applied_to_fill_reference") is True]
+    submit_latency = [
+        item
+        for item in execution_metadata
+        if item.get("latency_applied_to_submit_ts") is True
+    ]
+    reference_latency = [
+        item
+        for item in execution_metadata
+        if item.get("latency_applied_to_fill_reference") is True
+    ]
     coverage = (len(quote_ages) / signal_count * 100.0) if signal_count else None
     return {
         "signal_event_count": signal_count,
@@ -306,9 +357,13 @@ def signal_quote_coverage_summary(
         "missing_quote_on_signal_count": len(missing),
         "skipped_execution_signal_count": len(skipped),
         "missing_quote_warning_count": len(warnings),
-        "quote_after_decision_coverage_pct": round(coverage, 8) if coverage is not None else None,
+        "quote_after_decision_coverage_pct": round(coverage, 8)
+        if coverage is not None
+        else None,
         "median_quote_age_ms_on_signal": median(quote_ages) if quote_ages else None,
-        "p95_quote_age_ms_on_signal": _percentile(quote_ages, 95) if quote_ages else None,
+        "p95_quote_age_ms_on_signal": _percentile(quote_ages, 95)
+        if quote_ages
+        else None,
         "execution_reference_policy": policy.fill_reference_policy,
         "execution_reality_level": _summary_reality_level(execution_metadata),
         "latency_applied_to_submit_ts_count": len(submit_latency),
@@ -325,7 +380,9 @@ def _failed_reference(
     reason: str,
     model_latency_ms: int = 0,
 ) -> ExecutionReferenceEvent:
-    latency_applied_to_reference = policy.fill_reference_policy == "latency_adjusted_orderbook"
+    latency_applied_to_reference = (
+        policy.fill_reference_policy == "latency_adjusted_orderbook"
+    )
     latency_applied_to_submit_ts = int(model_latency_ms) > 0
     latency_warning = (
         "execution_latency_not_applied_to_reference_policy"
@@ -362,7 +419,11 @@ def _missing_quote_reason(policy: ExecutionTimingPolicy) -> str:
 
 
 def _summary_reality_level(execution_metadata: list[dict[str, Any]]) -> str | None:
-    levels = [str(item.get("execution_reality_level")) for item in execution_metadata if item.get("execution_reality_level")]
+    levels = [
+        str(item.get("execution_reality_level"))
+        for item in execution_metadata
+        if item.get("execution_reality_level")
+    ]
     if not levels:
         return None
     return min(levels, key=lambda level: REALITY_ORDER.get(level, -1))

@@ -30,16 +30,26 @@ def _context(tmp_path: Path) -> ResearchAppContext:
     return ResearchAppContext(settings=settings, paths=manager, printer=lambda _: None)
 
 
-def test_lifecycle_preserves_failed_and_incomplete_runs_in_hash_chain(tmp_path: Path) -> None:
+def test_lifecycle_preserves_failed_and_incomplete_runs_in_hash_chain(
+    tmp_path: Path,
+) -> None:
     context = _context(tmp_path)
-    incomplete = start_run(manager=context.paths, command="research-backtest", command_args={})
-    failed = start_run(manager=context.paths, command="research-backtest", command_args={"manifest": "bad"})
+    incomplete = start_run(
+        manager=context.paths, command="research-backtest", command_args={}
+    )
+    failed = start_run(
+        manager=context.paths,
+        command="research-backtest",
+        command_args={"manifest": "bad"},
+    )
     failed.finish(status="FAILED", exit_code=1, error=ValueError("invalid manifest"))
 
     result = validate_run_lifecycle(context.paths)
     rows = [
         json.loads(line)
-        for line in run_lifecycle_path(context.paths).read_text(encoding="utf-8").splitlines()
+        for line in run_lifecycle_path(context.paths)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
 
     assert result["status"] == "PASS"
@@ -50,7 +60,9 @@ def test_lifecycle_preserves_failed_and_incomplete_runs_in_hash_chain(tmp_path: 
     assert rows[0]["code_provenance_hash"].startswith("sha256:")
 
 
-def test_dispatcher_binds_run_id_and_records_success_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatcher_binds_run_id_and_records_success_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = _context(tmp_path)
     observed: dict[str, object] = {}
 
@@ -70,7 +82,9 @@ def test_dispatcher_binds_run_id_and_records_success_result(tmp_path: Path, monk
     assert execute_research_command("research-backtest", args, context) == 0
     rows = [
         json.loads(line)
-        for line in run_lifecycle_path(context.paths).read_text(encoding="utf-8").splitlines()
+        for line in run_lifecycle_path(context.paths)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
 
     assert observed["run_id"] == context.run_id
@@ -80,7 +94,9 @@ def test_dispatcher_binds_run_id_and_records_success_result(tmp_path: Path, monk
     assert validate_run_lifecycle(context.paths)["status"] == "PASS"
 
 
-def test_dispatcher_records_keyboard_interrupt_as_aborted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatcher_records_keyboard_interrupt_as_aborted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = _context(tmp_path)
 
     def _interrupt(**_: object) -> int:
@@ -98,7 +114,9 @@ def test_dispatcher_records_keyboard_interrupt_as_aborted(tmp_path: Path, monkey
 
     rows = [
         json.loads(line)
-        for line in run_lifecycle_path(context.paths).read_text(encoding="utf-8").splitlines()
+        for line in run_lifecycle_path(context.paths)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert rows[-1]["status"] == "ABORTED"
     assert rows[-1]["exit_code"] == 130

@@ -101,7 +101,9 @@ def reject_symlink_components(path: Path) -> None:
             raise ValidationError("path_symlink_component_rejected")
 
 
-def validate_manifest_reference_paths(payload: dict[str, Any], *, data_root: Path) -> None:
+def validate_manifest_reference_paths(
+    payload: dict[str, Any], *, data_root: Path
+) -> None:
     """Confine every manifest-controlled local locator to the data root."""
 
     def walk(value: Any, *, parent_key: str = "") -> None:
@@ -120,7 +122,9 @@ def validate_manifest_reference_paths(payload: dict[str, Any], *, data_root: Pat
                         walk(item, parent_key=normalized_key)
                         continue
                     if not candidate.is_absolute():
-                        raise ValidationError("manifest_local_reference_must_be_absolute")
+                        raise ValidationError(
+                            "manifest_local_reference_must_be_absolute"
+                        )
                     ensure_path_within_root(candidate, data_root)
                     reject_symlink_components(candidate)
                 walk(item, parent_key=normalized_key)
@@ -136,7 +140,9 @@ def reject_paths_in_job_payload(value: Any) -> None:
 
     if isinstance(value, dict):
         for key, item in value.items():
-            if any(fragment in str(key).lower() for fragment in SENSITIVE_KEY_FRAGMENTS):
+            if any(
+                fragment in str(key).lower() for fragment in SENSITIVE_KEY_FRAGMENTS
+            ):
                 raise ValidationError("job_payload_contains_sensitive_key")
             reject_paths_in_job_payload(item)
         return
@@ -155,7 +161,9 @@ def sanitize_audit_details(value: Any) -> Any:
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             normalized = str(key)
-            if any(fragment in normalized.lower() for fragment in SENSITIVE_KEY_FRAGMENTS):
+            if any(
+                fragment in normalized.lower() for fragment in SENSITIVE_KEY_FRAGMENTS
+            ):
                 sanitized[normalized] = "<redacted>"
             else:
                 sanitized[normalized] = sanitize_audit_details(item)
@@ -183,7 +191,10 @@ def actor_snapshot(user: Any) -> tuple[str, list[str], list[str]]:
         raise ValidationError("authenticated_actor_required")
     roles = sorted(user.groups.values_list("name", flat=True))
     permissions = {str(item) for item in user.get_all_permissions()}
-    for django_permission, application_permissions in _APPLICATION_PERMISSION_MAP.items():
+    for (
+        django_permission,
+        application_permissions,
+    ) in _APPLICATION_PERMISSION_MAP.items():
         if django_permission in permissions:
             permissions.update(application_permissions)
     return str(user.pk), roles, sorted(permissions)

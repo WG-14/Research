@@ -23,7 +23,9 @@ FORBIDDEN = (
 )
 
 
-def test_successful_threshold_backtest_stays_within_research_import_boundary(tmp_path: Path) -> None:
+def test_successful_threshold_backtest_stays_within_research_import_boundary(
+    tmp_path: Path,
+) -> None:
     db_path, manifest_path = create_success_fixture(tmp_path)
     root = tmp_path / "research-runtime"
     script = """
@@ -49,7 +51,13 @@ raise SystemExit(rc)
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert json.loads(result.stdout.splitlines()[-1]) == {"rc": 0, "forbidden": []}
-    report = root / "reports" / "research" / "threshold_success_import_boundary" / "backtest_report.json"
+    report = (
+        root
+        / "reports"
+        / "research"
+        / "threshold_success_import_boundary"
+        / "backtest_report.json"
+    )
     assert report.is_file()
     assert json.loads(report.read_text(encoding="utf-8"))["candidate_count"] == 1
     candidate = json.loads(
@@ -64,9 +72,15 @@ raise SystemExit(rc)
     )["candidates"][0]
     assert candidate["strategy_name"] == "threshold_research_only"
     validation = candidate["scenario_results"][0]
-    assert validation["validation_resource_usage"]["common_execution_authority"] == "common_simulation_engine"
+    assert (
+        validation["validation_resource_usage"]["common_execution_authority"]
+        == "common_simulation_engine"
+    )
     assert validation["validation_resource_usage"]["open_position_at_end"] is True
-    assert validation["validation_resource_usage"]["final_position_marked_to_market"] is True
+    assert (
+        validation["validation_resource_usage"]["final_position_marked_to_market"]
+        is True
+    )
     assert validation["validation_metrics"]["trade_count"] == 0
 
 

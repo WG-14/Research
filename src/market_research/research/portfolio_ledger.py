@@ -50,7 +50,9 @@ class PortfolioSnapshot:
 class PortfolioLedger:
     """Applies filled execution results exactly once and exposes snapshots."""
 
-    def __init__(self, *, starting_cash: float, initial_position_qty: float = 0.0) -> None:
+    def __init__(
+        self, *, starting_cash: float, initial_position_qty: float = 0.0
+    ) -> None:
         self.cash = float(starting_cash)
         self.asset_qty = float(initial_position_qty)
         self.cost_basis = 0.0
@@ -61,10 +63,20 @@ class PortfolioLedger:
         self._fill_ids: set[str] = set()
 
     def snapshot(self) -> PortfolioSnapshot:
-        return PortfolioSnapshot(self.cash, self.asset_qty, self.cost_basis, self.realized_pnl, self.fee_total, self.slippage_total)
+        return PortfolioSnapshot(
+            self.cash,
+            self.asset_qty,
+            self.cost_basis,
+            self.realized_pnl,
+            self.fee_total,
+            self.slippage_total,
+        )
 
     def apply(self, fill: ExecutionFill) -> LedgerEntry | None:
-        if fill.fill_status not in {"filled", "partial"} or float(fill.filled_qty) <= 0.0:
+        if (
+            fill.fill_status not in {"filled", "partial"}
+            or float(fill.filled_qty) <= 0.0
+        ):
             return None
         if not fill.fill_id or not fill.request_id:
             raise ValueError("filled_fill_lineage_missing")
@@ -86,7 +98,9 @@ class PortfolioLedger:
         elif fill.side == "SELL":
             if qty > self.asset_qty + 1e-8:
                 raise ValueError("sell_exceeds_ledger_quantity")
-            proportional_basis = self.cost_basis * (qty / self.asset_qty) if self.asset_qty > 0 else 0.0
+            proportional_basis = (
+                self.cost_basis * (qty / self.asset_qty) if self.asset_qty > 0 else 0.0
+            )
             cash_delta = qty * price - fee
             self.cash += cash_delta
             self.asset_qty = max(0.0, self.asset_qty - qty)
@@ -97,34 +111,74 @@ class PortfolioLedger:
             raise ValueError(f"unsupported_ledger_side:{fill.side}")
         self.fee_total += fee
         self.slippage_total += slippage
-        effective_ts = int(fill.portfolio_effective_ts if fill.portfolio_effective_ts is not None else fill.fill_reference_ts or fill.submit_ts_assumption)
+        effective_ts = int(
+            fill.portfolio_effective_ts
+            if fill.portfolio_effective_ts is not None
+            else fill.fill_reference_ts or fill.submit_ts_assumption
+        )
         entry = LedgerEntry(
-            ledger_entry_id=sha256_prefixed({"fill_id": fill.fill_id, "effective_ts": effective_ts}),
-            fill_id=fill.fill_id, side=fill.side, qty=qty, price=price, notional=qty * price,
-            basis_allocation=(qty * price + fee if fill.side == "BUY" else proportional_basis),
-            cash_delta=cash_delta, fee=fee,
-            slippage=slippage, realized_pnl=realized, effective_ts=effective_ts,
-            cash_before=before.cash, cash_after=self.cash,
-            asset_qty_before=before.asset_qty, asset_qty_after=self.asset_qty,
-            cost_basis_before=before.cost_basis, cost_basis_after=self.cost_basis,
-            realized_pnl_before=before.realized_pnl, realized_pnl_after=self.realized_pnl,
-            fee_total_after=self.fee_total, slippage_total_after=self.slippage_total,
+            ledger_entry_id=sha256_prefixed(
+                {"fill_id": fill.fill_id, "effective_ts": effective_ts}
+            ),
+            fill_id=fill.fill_id,
+            side=fill.side,
+            qty=qty,
+            price=price,
+            notional=qty * price,
+            basis_allocation=(
+                qty * price + fee if fill.side == "BUY" else proportional_basis
+            ),
+            cash_delta=cash_delta,
+            fee=fee,
+            slippage=slippage,
+            realized_pnl=realized,
+            effective_ts=effective_ts,
+            cash_before=before.cash,
+            cash_after=self.cash,
+            asset_qty_before=before.asset_qty,
+            asset_qty_after=self.asset_qty,
+            cost_basis_before=before.cost_basis,
+            cost_basis_after=self.cost_basis,
+            realized_pnl_before=before.realized_pnl,
+            realized_pnl_after=self.realized_pnl,
+            fee_total_after=self.fee_total,
+            slippage_total_after=self.slippage_total,
         )
         self.entries.append(entry)
         self._fill_ids.add(fill.fill_id)
         return entry
 
     @classmethod
-    def replay(cls, *, starting_cash: float, entries: tuple[LedgerEntry, ...] | list[LedgerEntry], initial_position_qty: float = 0.0) -> PortfolioSnapshot:
+    def replay(
+        cls,
+        *,
+        starting_cash: float,
+        entries: tuple[LedgerEntry, ...] | list[LedgerEntry],
+        initial_position_qty: float = 0.0,
+    ) -> PortfolioSnapshot:
         """Reconstruct and validate the portfolio solely from authoritative entries."""
-        snapshot = PortfolioSnapshot(float(starting_cash), float(initial_position_qty), 0.0, 0.0, 0.0, 0.0)
+        snapshot = PortfolioSnapshot(
+            float(starting_cash), float(initial_position_qty), 0.0, 0.0, 0.0, 0.0
+        )
         seen: set[str] = set()
         for entry in entries:
-            if entry.ledger_entry_id in seen: raise ValueError("duplicate_ledger_entry_id")
+            if entry.ledger_entry_id in seen:
+                raise ValueError("duplicate_ledger_entry_id")
             seen.add(entry.ledger_entry_id)
-            expected = (entry.cash_before, entry.asset_qty_before, entry.cost_basis_before, entry.realized_pnl_before)
-            actual = (snapshot.cash, snapshot.asset_qty, snapshot.cost_basis, snapshot.realized_pnl)
-            if any(abs(a-b) > 1e-8 for a, b in zip(expected, actual)): raise ValueError("ledger_replay_before_state_mismatch")
+            expected = (
+                entry.cash_before,
+                entry.asset_qty_before,
+                entry.cost_basis_before,
+                entry.realized_pnl_before,
+            )
+            actual = (
+                snapshot.cash,
+                snapshot.asset_qty,
+                snapshot.cost_basis,
+                snapshot.realized_pnl,
+            )
+            if any(abs(a - b) > 1e-8 for a, b in zip(expected, actual)):
+                raise ValueError("ledger_replay_before_state_mismatch")
             qty = float(entry.qty)
             price = float(entry.price)
             fee = float(entry.fee)
@@ -141,7 +195,11 @@ class PortfolioLedger:
             elif entry.side == "SELL":
                 if qty > snapshot.asset_qty + 1e-8:
                     raise ValueError("ledger_replay_sell_exceeds_quantity")
-                expected_basis = snapshot.cost_basis * (qty / snapshot.asset_qty) if snapshot.asset_qty else 0.0
+                expected_basis = (
+                    snapshot.cost_basis * (qty / snapshot.asset_qty)
+                    if snapshot.asset_qty
+                    else 0.0
+                )
                 cash_delta = qty * price - fee
                 asset_qty = max(0.0, snapshot.asset_qty - qty)
                 cost_basis = max(0.0, snapshot.cost_basis - expected_basis)
@@ -151,19 +209,32 @@ class PortfolioLedger:
             if abs(float(entry.basis_allocation) - expected_basis) > 1e-8:
                 raise ValueError("ledger_replay_basis_allocation_mismatch")
             calculated = PortfolioSnapshot(
-                snapshot.cash + cash_delta, asset_qty, cost_basis,
+                snapshot.cash + cash_delta,
+                asset_qty,
+                cost_basis,
                 snapshot.realized_pnl + realized_delta,
-                snapshot.fee_total + fee, snapshot.slippage_total + float(entry.slippage),
+                snapshot.fee_total + fee,
+                snapshot.slippage_total + float(entry.slippage),
             )
             if abs(float(entry.cash_delta) - cash_delta) > 1e-8:
                 raise ValueError("ledger_replay_cash_delta_mismatch")
-            recorded = (entry.cash_after, entry.asset_qty_after, entry.cost_basis_after,
-                        entry.realized_pnl_after, entry.fee_total_after, entry.slippage_total_after)
-            if any(abs(a-b) > 1e-8 for a, b in zip(recorded, calculated.__dict__.values())):
+            recorded = (
+                entry.cash_after,
+                entry.asset_qty_after,
+                entry.cost_basis_after,
+                entry.realized_pnl_after,
+                entry.fee_total_after,
+                entry.slippage_total_after,
+            )
+            if any(
+                abs(a - b) > 1e-8
+                for a, b in zip(recorded, calculated.__dict__.values())
+            ):
                 raise ValueError("ledger_replay_after_state_mismatch")
             expected_realized = realized_delta if entry.side == "SELL" else None
             if entry.realized_pnl != expected_realized:
                 raise ValueError("ledger_replay_realized_pnl_mismatch")
             snapshot = calculated
-            if snapshot.cash < -1e-8 or snapshot.asset_qty < -1e-8: raise ValueError("ledger_replay_invalid_state")
+            if snapshot.cash < -1e-8 or snapshot.asset_qty < -1e-8:
+                raise ValueError("ledger_replay_invalid_state")
         return snapshot

@@ -189,9 +189,7 @@ def verify_hash_chained_jsonl_event(
             raise ValueError("hash_chain_duplicate_event_id")
         existing = matches[0]
         existing_payload = {
-            key: value
-            for key, value in existing.items()
-            if key not in _CHAIN_FIELDS
+            key: value for key, value in existing.items() if key not in _CHAIN_FIELDS
         }
         if canonical_json_bytes(existing_payload) != canonical_json_bytes(
             expected_payload
@@ -221,20 +219,14 @@ def mutate_hash_chained_jsonl_atomic(
         rows = _read_rows(path)
         validation = _validate_rows(rows=rows, label=label)
         if validation["status"] != "PASS":
-            raise ValueError(
-                f"hash_chain_invalid:{','.join(validation['reasons'])}"
-            )
+            raise ValueError(f"hash_chain_invalid:{','.join(validation['reasons'])}")
         staged: list[dict[str, Any]] = []
 
         def stage(payload: dict[str, Any]) -> dict[str, Any]:
             if _CHAIN_FIELDS.intersection(payload):
                 raise ValueError("hash_chain_payload_contains_reserved_field")
             detached_payload = deepcopy(payload)
-            prior_hash = (
-                staged[-1]["row_hash"]
-                if staged
-                else validation["stream_hash"]
-            )
+            prior_hash = staged[-1]["row_hash"] if staged else validation["stream_hash"]
             material = {
                 **detached_payload,
                 "sequence": len(rows) + len(staged),
@@ -286,9 +278,7 @@ def _validate_rows(*, rows: list[dict[str, Any]], label: str) -> dict[str, Any]:
         if row.get("prior_hash") != prior_hash:
             reasons.append(f"prior_hash_mismatch:{index}")
         material = {key: value for key, value in row.items() if key != "row_hash"}
-        expected = sha256_prefixed(
-            content_hash_payload(material), label=f"{label}_row"
-        )
+        expected = sha256_prefixed(content_hash_payload(material), label=f"{label}_row")
         if row.get("row_hash") != expected:
             reasons.append(f"row_hash_mismatch:{index}")
         prior_hash = str(row.get("row_hash") or "")

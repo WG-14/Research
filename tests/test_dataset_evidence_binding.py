@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from market_research.research.dataset_snapshot import Candle, DatasetSnapshot, build_dataset_quality_report
+from market_research.research.dataset_snapshot import (
+    Candle,
+    DatasetSnapshot,
+    build_dataset_quality_report,
+)
 from market_research.research.experiment_manifest import DateRange
 from market_research.research.experiment_registry import (
     EXPERIMENT_REGISTRY_SCHEMA_VERSION,
@@ -13,10 +17,25 @@ from market_research.research.experiment_registry import (
 
 
 def test_report_binds_artifact_and_split_evidence() -> None:
-    snapshot = DatasetSnapshot("s", "frozen_sqlite_candles", "KRW-BTC", "1m", "train", DateRange("2026-01-01","2026-01-01"), (Candle(1767225600000,1,1,1,1,1),), artifact_id="a", artifact_content_hash="sha256:"+"a"*64, artifact_schema_hash="sha256:"+"b"*64, artifact_manifest_hash="sha256:"+"c"*64)
+    snapshot = DatasetSnapshot(
+        "s",
+        "frozen_sqlite_candles",
+        "KRW-BTC",
+        "1m",
+        "train",
+        DateRange("2026-01-01", "2026-01-01"),
+        (Candle(1767225600000, 1, 1, 1, 1, 1),),
+        artifact_id="a",
+        artifact_content_hash="sha256:" + "a" * 64,
+        artifact_schema_hash="sha256:" + "b" * 64,
+        artifact_manifest_hash="sha256:" + "c" * 64,
+    )
     report = build_dataset_quality_report(db_path="/unused", snapshot=snapshot).payload
     assert report["artifact_manifest_hash"] == snapshot.artifact_manifest_hash
-    assert report["dataset_content_hash_semantics"] == "snapshot_fingerprint_compatibility_alias"
+    assert (
+        report["dataset_content_hash_semantics"]
+        == "snapshot_fingerprint_compatibility_alias"
+    )
 
 
 _COMPLETED_REUSE_EVIDENCE_FIELDS = (
@@ -78,13 +97,17 @@ def _canonical_research_freedom_payload() -> dict[str, object]:
 
 
 @pytest.mark.parametrize("field", _COMPLETED_REUSE_EVIDENCE_FIELDS)
-def test_registry_reuse_key_changes_for_each_completed_evidence_field(field: str) -> None:
+def test_registry_reuse_key_changes_for_each_completed_evidence_field(
+    field: str,
+) -> None:
     common = _complete_reuse_key_arguments()
     base = final_holdout_reuse_key_hash_v2_from_parts(**common)
     assert EXPERIMENT_REGISTRY_SCHEMA_VERSION == 3
     assert FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION == 4
     assert base is not None
-    assert base != final_holdout_reuse_key_hash_v2_from_parts(**{**common, field: "sha256:" + "f" * 64})
+    assert base != final_holdout_reuse_key_hash_v2_from_parts(
+        **{**common, field: "sha256:" + "f" * 64}
+    )
 
 
 @pytest.mark.parametrize("field", _COMPLETED_REUSE_EVIDENCE_FIELDS)
@@ -94,11 +117,17 @@ def test_completed_reuse_key_rejects_missing_materialized_evidence(field: str) -
 
 
 @pytest.mark.parametrize("field", _COMPLETED_REUSE_EVIDENCE_FIELDS)
-def test_research_freedom_hash_changes_for_each_canonical_evidence_field(field: str) -> None:
+def test_research_freedom_hash_changes_for_each_canonical_evidence_field(
+    field: str,
+) -> None:
     payload = _canonical_research_freedom_payload()
-    assert research_freedom_hash(payload) != research_freedom_hash({**payload, field: "sha256:" + "f" * 64})
+    assert research_freedom_hash(payload) != research_freedom_hash(
+        {**payload, field: "sha256:" + "f" * 64}
+    )
 
 
 def test_research_freedom_hash_ignores_absolute_registry_path() -> None:
     payload = _canonical_research_freedom_payload()
-    assert research_freedom_hash(payload) == research_freedom_hash({**payload, "experiment_registry_path": "/another/path"})
+    assert research_freedom_hash(payload) == research_freedom_hash(
+        {**payload, "experiment_registry_path": "/another/path"}
+    )

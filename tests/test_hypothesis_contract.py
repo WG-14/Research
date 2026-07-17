@@ -84,8 +84,16 @@ def _enabled_validation_risk_policy():
 
 @pytest.mark.parametrize(
     "field",
-    ("hypothesis_id", "version", "phenomenon", "mechanism", "observation_conditions",
-     "comparison_target", "falsification_criteria", "experiment_family_id"),
+    (
+        "hypothesis_id",
+        "version",
+        "phenomenon",
+        "mechanism",
+        "observation_conditions",
+        "comparison_target",
+        "falsification_criteria",
+        "experiment_family_id",
+    ),
 )
 def test_structured_hypothesis_rejects_missing_required_field(field):
     payload = _manifest_payload()
@@ -105,9 +113,9 @@ def test_hypothesis_version_changes_manifest_hash_and_registry_identity():
     assert first.manifest_hash() != second.manifest_hash()
     assert research_identity_from_manifest(first)["hypothesis_version"] == "1.0.0"
     assert research_identity_from_manifest(second)["hypothesis_version"] == "2.0.0"
-    assert research_freedom_hash(research_identity_from_manifest(first)) != research_freedom_hash(
-        research_identity_from_manifest(second)
-    )
+    assert research_freedom_hash(
+        research_identity_from_manifest(first)
+    ) != research_freedom_hash(research_identity_from_manifest(second))
 
 
 def test_semantic_fingerprint_ignores_labels_and_formatting_but_changes_with_claim():
@@ -116,9 +124,13 @@ def test_semantic_fingerprint_ignores_labels_and_formatting_but_changes_with_cla
     alias_payload["hypothesis_spec"]["hypothesis_id"] = "another-label"
     alias_payload["hypothesis_spec"]["version"] = "9.0.0"
     alias_payload["hypothesis_spec"]["experiment_family_id"] = "another-family"
-    alias_payload["hypothesis_spec"]["phenomenon"] = "  SMA CROSSOVERS  have positive conditional expectancy. "
+    alias_payload["hypothesis_spec"]["phenomenon"] = (
+        "  SMA CROSSOVERS  have positive conditional expectancy. "
+    )
     changed_payload = copy.deepcopy(first_payload)
-    changed_payload["hypothesis_spec"]["mechanism"] = "A materially different causal mechanism."
+    changed_payload["hypothesis_spec"]["mechanism"] = (
+        "A materially different causal mechanism."
+    )
 
     first = parse_builtin_manifest(first_payload).hypothesis_spec
     alias = parse_builtin_manifest(alias_payload).hypothesis_spec
@@ -126,9 +138,12 @@ def test_semantic_fingerprint_ignores_labels_and_formatting_but_changes_with_cla
     assert first is not None and alias is not None and changed is not None
     assert first.semantic_fingerprint() == alias.semantic_fingerprint()
     assert first.semantic_fingerprint() != changed.semantic_fingerprint()
-    assert research_identity_from_manifest(parse_builtin_manifest(first_payload))[
-        "hypothesis_semantic_fingerprint"
-    ] == first.semantic_fingerprint()
+    assert (
+        research_identity_from_manifest(parse_builtin_manifest(first_payload))[
+            "hypothesis_semantic_fingerprint"
+        ]
+        == first.semantic_fingerprint()
+    )
 
 
 def test_legacy_hypothesis_is_explicitly_unregistered_and_not_pre_registered():
@@ -142,7 +157,9 @@ def test_legacy_hypothesis_is_explicitly_unregistered_and_not_pre_registered():
 def test_pre_registration_requires_complete_evidence():
     payload = _manifest_payload()
     payload["hypothesis_spec"] = _hypothesis_spec(registration_status="pre_registered")
-    with pytest.raises(ManifestValidationError, match="pre_registered hypothesis requires"):
+    with pytest.raises(
+        ManifestValidationError, match="pre_registered hypothesis requires"
+    ):
         parse_builtin_manifest(payload)
 
 

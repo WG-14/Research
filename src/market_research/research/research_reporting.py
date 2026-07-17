@@ -15,7 +15,9 @@ class ResearchReportingError(ValueError):
 
 def compare_research_decision_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     if len(reports) < 2:
-        raise ResearchReportingError("research_comparison_requires_at_least_two_reports")
+        raise ResearchReportingError(
+            "research_comparison_requires_at_least_two_reports"
+        )
     for index, report in enumerate(reports):
         reasons = validate_research_decision_report(report)
         if reasons:
@@ -24,9 +26,14 @@ def compare_research_decision_reports(reports: list[dict[str, Any]]) -> dict[str
             )
     ordered = sorted(
         reports,
-        key=lambda item: (str(item.get("experiment_id") or ""), str(item.get("content_hash") or "")),
+        key=lambda item: (
+            str(item.get("experiment_id") or ""),
+            str(item.get("content_hash") or ""),
+        ),
     )
-    conditions = [item["sections"]["hypothesis_and_experiment_conditions"] for item in ordered]
+    conditions = [
+        item["sections"]["hypothesis_and_experiment_conditions"] for item in ordered
+    ]
     dimensions = {
         name: sorted({str(item.get(name)) for item in conditions})
         for name in ("market", "interval", "strategy_name", "strategy_version")
@@ -53,13 +60,20 @@ def compare_research_decision_reports(reports: list[dict[str, Any]]) -> dict[str
             for item in ordered
         ],
     }
-    return {**material, "content_hash": sha256_prefixed(content_hash_payload(material), label="research_report_comparison")}
+    return {
+        **material,
+        "content_hash": sha256_prefixed(
+            content_hash_payload(material), label="research_report_comparison"
+        ),
+    }
 
 
 def render_research_decision_report_markdown(report: dict[str, Any]) -> str:
     reasons = validate_research_decision_report(report)
     if reasons:
-        raise ResearchReportingError("research_render_report_invalid:" + ",".join(reasons))
+        raise ResearchReportingError(
+            "research_render_report_invalid:" + ",".join(reasons)
+        )
     lines = [
         f"# Research Decision Report: {report['experiment_id']}",
         "",
@@ -72,8 +86,13 @@ def render_research_decision_report_markdown(report: dict[str, Any]) -> str:
     for section_name in REPORT_SECTIONS:
         title = section_name.replace("_", " ").title()
         lines.extend((f"## {title}", "", "```json"))
-        lines.extend(json.dumps(
-            report["sections"][section_name], ensure_ascii=False, sort_keys=True, indent=2,
-        ).splitlines())
+        lines.extend(
+            json.dumps(
+                report["sections"][section_name],
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            ).splitlines()
+        )
         lines.extend(("```", ""))
     return "\n".join(lines)

@@ -19,8 +19,12 @@ class DiagnosticAvailability:
     def __post_init__(self) -> None:
         if self.status not in {"available", "degraded", "unavailable"}:
             raise ValueError(f"invalid diagnostic availability status={self.status!r}")
-        if self.status == "available" and (self.sample_count <= 0 or self.target_count <= 0):
-            raise ValueError("available diagnostics require positive target and sample counts")
+        if self.status == "available" and (
+            self.sample_count <= 0 or self.target_count <= 0
+        ):
+            raise ValueError(
+                "available diagnostics require positive target and sample counts"
+            )
         if self.status == "unavailable" and not self.fail_reasons:
             raise ValueError("unavailable diagnostics require fail_reasons")
 

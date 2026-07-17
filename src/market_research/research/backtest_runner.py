@@ -6,7 +6,11 @@ from typing import Any
 from .backtest_types import BacktestRun, BacktestRunContext
 from .dataset_snapshot import DatasetSnapshot
 from .execution_model import ExecutionModel
-from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy, legacy_research_portfolio_policy
+from .experiment_manifest import (
+    ExecutionTimingPolicy,
+    PortfolioPolicy,
+    legacy_research_portfolio_policy,
+)
 
 
 def run_plugin_backtest(
@@ -23,12 +27,23 @@ def run_plugin_backtest(
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
     from .simulation_engine import run_common_simulation_backtest
+
     policy = portfolio_policy or legacy_research_portfolio_policy()
-    return _with_portfolio_policy_evidence(run_common_simulation_backtest(
-        plugin=plugin, dataset=dataset, parameter_values=parameter_values, fee_rate=fee_rate,
-        slippage_bps=slippage_bps, parameter_stability_score=parameter_stability_score,
-        execution_model=execution_model, execution_timing_policy=execution_timing_policy,
-        portfolio_policy=policy, context=context), policy=policy)
+    return _with_portfolio_policy_evidence(
+        run_common_simulation_backtest(
+            plugin=plugin,
+            dataset=dataset,
+            parameter_values=parameter_values,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            parameter_stability_score=parameter_stability_score,
+            execution_model=execution_model,
+            execution_timing_policy=execution_timing_policy,
+            portfolio_policy=policy,
+            context=context,
+        ),
+        policy=policy,
+    )
 
 
 def _empty_plugin_backtest_result(
@@ -64,7 +79,9 @@ def _empty_plugin_backtest_result(
         execution_event_summary=support.empty_execution_event_summary(),
         decisions=(),
         equity_curve=(),
-        resource_usage=accumulator.resource_usage(candles_processed=len(dataset.candles)),
+        resource_usage=accumulator.resource_usage(
+            candles_processed=len(dataset.candles)
+        ),
         strategy_diagnostics=accumulator.strategy_diagnostics(trades=[]),
         retained_detail_summary=support.retained_detail_summary(
             accumulator,
@@ -80,7 +97,9 @@ def _portfolio_policy_evidence(policy: PortfolioPolicy) -> dict[str, Any]:
     return support.portfolio_policy_evidence(policy)
 
 
-def _with_portfolio_policy_evidence(run: BacktestRun, *, policy: PortfolioPolicy) -> BacktestRun:
+def _with_portfolio_policy_evidence(
+    run: BacktestRun, *, policy: PortfolioPolicy
+) -> BacktestRun:
     resource_usage = dict(run.resource_usage or {})
     resource_usage.update(_portfolio_policy_evidence(policy))
     warnings = set(run.warnings)

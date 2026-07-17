@@ -7,7 +7,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
@@ -16,87 +15,196 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='ManifestUpload',
+            name="ManifestUpload",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('display_name', models.CharField(max_length=255)),
-                ('storage_ref', models.CharField(max_length=1024)),
-                ('content_hash', models.CharField(max_length=71)),
-                ('manifest_hash', models.CharField(max_length=71)),
-                ('size_bytes', models.PositiveBigIntegerField()),
-                ('experiment_id', models.CharField(max_length=255)),
-                ('strategy_name', models.CharField(max_length=255)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('owner', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='research_manifest_uploads', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                ("display_name", models.CharField(max_length=255)),
+                ("storage_ref", models.CharField(max_length=1024)),
+                ("content_hash", models.CharField(max_length=71)),
+                ("manifest_hash", models.CharField(max_length=71)),
+                ("size_bytes", models.PositiveBigIntegerField()),
+                ("experiment_id", models.CharField(max_length=255)),
+                ("strategy_name", models.CharField(max_length=255)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "owner",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="research_manifest_uploads",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
-                'ordering': ('-created_at',),
-                'permissions': [('upload_research_manifest', 'Can upload a research manifest'), ('view_all_research_manifests', 'Can view all research manifests')],
+                "ordering": ("-created_at",),
+                "permissions": [
+                    ("upload_research_manifest", "Can upload a research manifest"),
+                    ("view_all_research_manifests", "Can view all research manifests"),
+                ],
             },
         ),
         migrations.CreateModel(
-            name='ResearchJob',
+            name="ResearchJob",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('capability_id', models.CharField(choices=[('research-readiness', 'Readiness'), ('research-workload-estimate', 'Workload estimate'), ('research-backtest', 'Backtest'), ('research-walk-forward', 'Walk-forward'), ('research-validate', 'Validation'), ('research-reproduce-run', 'Reproduction')], max_length=64)),
-                ('status', models.CharField(choices=[('QUEUED', 'Queued'), ('RUNNING', 'Running'), ('SUCCEEDED', 'Succeeded'), ('FAILED', 'Failed'), ('CANCEL_REQUESTED', 'Cancel requested'), ('CANCELLED', 'Cancelled')], default='QUEUED', max_length=24)),
-                ('request_payload', models.JSONField(default=dict)),
-                ('request_hash', models.CharField(max_length=71)),
-                ('idempotency_key', models.CharField(max_length=64)),
-                ('actor_id', models.CharField(max_length=255)),
-                ('actor_roles', models.JSONField(default=list)),
-                ('correlation_id', models.UUIDField(default=uuid.uuid4, editable=False)),
-                ('progress_stage', models.CharField(blank=True, max_length=128)),
-                ('progress_details', models.JSONField(default=dict)),
-                ('heartbeat_at', models.DateTimeField(blank=True, null=True)),
-                ('lease_token', models.UUIDField(blank=True, editable=False, null=True)),
-                ('lease_expires_at', models.DateTimeField(blank=True, null=True)),
-                ('attempt_count', models.PositiveIntegerField(default=0)),
-                ('version', models.PositiveBigIntegerField(default=0)),
-                ('run_id', models.CharField(blank=True, max_length=128)),
-                ('result_ref', models.CharField(blank=True, max_length=1024)),
-                ('result_hash', models.CharField(blank=True, max_length=71)),
-                ('error_code', models.CharField(blank=True, max_length=128)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('queued_at', models.DateTimeField(auto_now_add=True)),
-                ('started_at', models.DateTimeField(blank=True, null=True)),
-                ('cancel_requested_at', models.DateTimeField(blank=True, null=True)),
-                ('finished_at', models.DateTimeField(blank=True, null=True)),
-                ('manifest', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='jobs', to='portal.manifestupload')),
-                ('owner', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='research_jobs', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                (
+                    "capability_id",
+                    models.CharField(
+                        choices=[
+                            ("research-readiness", "Readiness"),
+                            ("research-workload-estimate", "Workload estimate"),
+                            ("research-backtest", "Backtest"),
+                            ("research-walk-forward", "Walk-forward"),
+                            ("research-validate", "Validation"),
+                            ("research-reproduce-run", "Reproduction"),
+                        ],
+                        max_length=64,
+                    ),
+                ),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("QUEUED", "Queued"),
+                            ("RUNNING", "Running"),
+                            ("SUCCEEDED", "Succeeded"),
+                            ("FAILED", "Failed"),
+                            ("CANCEL_REQUESTED", "Cancel requested"),
+                            ("CANCELLED", "Cancelled"),
+                        ],
+                        default="QUEUED",
+                        max_length=24,
+                    ),
+                ),
+                ("request_payload", models.JSONField(default=dict)),
+                ("request_hash", models.CharField(max_length=71)),
+                ("idempotency_key", models.CharField(max_length=64)),
+                ("actor_id", models.CharField(max_length=255)),
+                ("actor_roles", models.JSONField(default=list)),
+                (
+                    "correlation_id",
+                    models.UUIDField(default=uuid.uuid4, editable=False),
+                ),
+                ("progress_stage", models.CharField(blank=True, max_length=128)),
+                ("progress_details", models.JSONField(default=dict)),
+                ("heartbeat_at", models.DateTimeField(blank=True, null=True)),
+                (
+                    "lease_token",
+                    models.UUIDField(blank=True, editable=False, null=True),
+                ),
+                ("lease_expires_at", models.DateTimeField(blank=True, null=True)),
+                ("attempt_count", models.PositiveIntegerField(default=0)),
+                ("version", models.PositiveBigIntegerField(default=0)),
+                ("run_id", models.CharField(blank=True, max_length=128)),
+                ("result_ref", models.CharField(blank=True, max_length=1024)),
+                ("result_hash", models.CharField(blank=True, max_length=71)),
+                ("error_code", models.CharField(blank=True, max_length=128)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("queued_at", models.DateTimeField(auto_now_add=True)),
+                ("started_at", models.DateTimeField(blank=True, null=True)),
+                ("cancel_requested_at", models.DateTimeField(blank=True, null=True)),
+                ("finished_at", models.DateTimeField(blank=True, null=True)),
+                (
+                    "manifest",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="jobs",
+                        to="portal.manifestupload",
+                    ),
+                ),
+                (
+                    "owner",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="research_jobs",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
-                'ordering': ('-created_at',),
-                'permissions': [('submit_research_job', 'Can submit a research job'), ('cancel_own_research_job', 'Can cancel an owned research job'), ('rerun_research_job', 'Can deliberately rerun a research job'), ('view_all_research_jobs', 'Can view all research jobs'), ('record_research_review', 'Can record a research review'), ('approve_research_candidate', 'Can approve a research candidate'), ('manage_research_web', 'Can administer the research web portal')],
+                "ordering": ("-created_at",),
+                "permissions": [
+                    ("submit_research_job", "Can submit a research job"),
+                    ("cancel_own_research_job", "Can cancel an owned research job"),
+                    ("rerun_research_job", "Can deliberately rerun a research job"),
+                    ("view_all_research_jobs", "Can view all research jobs"),
+                    ("record_research_review", "Can record a research review"),
+                    ("approve_research_candidate", "Can approve a research candidate"),
+                    ("manage_research_web", "Can administer the research web portal"),
+                ],
             },
         ),
         migrations.AddConstraint(
-            model_name='manifestupload',
-            constraint=models.UniqueConstraint(fields=('owner', 'content_hash'), name='portal_manifest_owner_content_uniq'),
+            model_name="manifestupload",
+            constraint=models.UniqueConstraint(
+                fields=("owner", "content_hash"),
+                name="portal_manifest_owner_content_uniq",
+            ),
         ),
         migrations.AddIndex(
-            model_name='researchjob',
-            index=models.Index(fields=['status', 'created_at'], name='portal_job_status_created'),
+            model_name="researchjob",
+            index=models.Index(
+                fields=["status", "created_at"], name="portal_job_status_created"
+            ),
         ),
         migrations.AddIndex(
-            model_name='researchjob',
-            index=models.Index(fields=['owner', 'created_at'], name='portal_job_owner_created'),
+            model_name="researchjob",
+            index=models.Index(
+                fields=["owner", "created_at"], name="portal_job_owner_created"
+            ),
         ),
         migrations.AddIndex(
-            model_name='researchjob',
-            index=models.Index(fields=['lease_expires_at'], name='portal_job_lease_expires'),
+            model_name="researchjob",
+            index=models.Index(
+                fields=["lease_expires_at"], name="portal_job_lease_expires"
+            ),
         ),
         migrations.AddConstraint(
-            model_name='researchjob',
-            constraint=models.UniqueConstraint(fields=('owner', 'idempotency_key'), name='portal_job_owner_idempotency_uniq'),
+            model_name="researchjob",
+            constraint=models.UniqueConstraint(
+                fields=("owner", "idempotency_key"),
+                name="portal_job_owner_idempotency_uniq",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='researchjob',
-            constraint=models.UniqueConstraint(condition=models.Q(('status__in', ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED'))), fields=('owner', 'request_hash'), name='portal_job_owner_active_request_uniq'),
+            model_name="researchjob",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(
+                    ("status__in", ("QUEUED", "RUNNING", "CANCEL_REQUESTED"))
+                ),
+                fields=("owner", "request_hash"),
+                name="portal_job_owner_active_request_uniq",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='researchjob',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('status', 'SUCCEEDED'), _negated=True), models.Q(models.Q(('result_ref', ''), _negated=True), models.Q(('result_hash', ''), _negated=True)), _connector='OR'), name='portal_job_success_has_result'),
+            model_name="researchjob",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    models.Q(("status", "SUCCEEDED"), _negated=True),
+                    models.Q(
+                        models.Q(("result_ref", ""), _negated=True),
+                        models.Q(("result_hash", ""), _negated=True),
+                    ),
+                    _connector="OR",
+                ),
+                name="portal_job_success_has_result",
+            ),
         ),
     ]

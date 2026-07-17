@@ -5,14 +5,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from market_research.research.artifact_contract import apply_artifact_contract
-from market_research.research.experiment_manifest import ManifestValidationError, load_manifest_with_registry
+from market_research.research.experiment_manifest import (
+    ManifestValidationError,
+    load_manifest_with_registry,
+)
 from market_research.research.strategy_registry import StrategyRegistry
-from market_research.research.forward_diagnostics import ForwardDiagnosticsUnavailableError, run_forward_diagnostics
+from market_research.research.forward_diagnostics import (
+    ForwardDiagnosticsUnavailableError,
+    run_forward_diagnostics,
+)
 from market_research.research.forward_diagnostics_failure_report import (
     FAILURE_ARTIFACT_TYPE,
     write_forward_diagnostics_failure_artifact,
 )
-from market_research.research.forward_diagnostics_report import write_forward_diagnostics_report
+from market_research.research.forward_diagnostics_report import (
+    write_forward_diagnostics_report,
+)
 from market_research.research.forward_diagnostics_policy_denial import (
     build_forward_diagnostics_policy_denial_payload,
     write_forward_diagnostics_policy_denial_artifact,
@@ -52,7 +60,9 @@ def cmd_research_forward_diagnostics(
         split = _normalize_split(split_name)
         feature_names = _normalize_features(features)
         horizon_steps = _normalize_horizons(horizons)
-        manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
+        manifest = load_manifest_with_registry(
+            manifest_path, registry=strategy_registry
+        )
         result = run_forward_diagnostics(
             manifest=manifest,
             db_path=active_db_path,
@@ -62,14 +72,20 @@ def cmd_research_forward_diagnostics(
             bucket_method=str(bucket),
             entry_price_mode=str(entry_price),
             min_bucket_count=int(min_bucket_count),
-            final_holdout_diagnostic_override=bool(allow_final_holdout_diagnostics and split == "final_holdout"),
+            final_holdout_diagnostic_override=bool(
+                allow_final_holdout_diagnostics and split == "final_holdout"
+            ),
             degraded_override=bool(allow_degraded_diagnostics),
         )
-        report = write_forward_diagnostics_report(manager=active_manager, manifest=manifest, result=result)
+        report = write_forward_diagnostics_report(
+            manager=active_manager, manifest=manifest, result=result
+        )
         if out_path:
             _write_explicit_json(Path(out_path), report, manager=active_manager)
         if as_json:
-            context.printer(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
+            context.printer(
+                json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
+            )
         else:
             context.printer(
                 "[RESEARCH-FORWARD-DIAGNOSTICS] "
@@ -92,19 +108,27 @@ def cmd_research_forward_diagnostics(
                 availability=exc.availability,
             )
         else:
-            failure_payload = apply_artifact_contract({
-                "schema_version": 1,
-                "artifact_type": "forward_return_diagnostic_failure",
-                "diagnostic_status": "unavailable",
-                "fail_reasons": list(exc.fail_reasons),
-                "split_name": split,
-                "feature_names": list(feature_names),
-                "horizon_steps": list(horizon_steps),
-            })
+            failure_payload = apply_artifact_contract(
+                {
+                    "schema_version": 1,
+                    "artifact_type": "forward_return_diagnostic_failure",
+                    "diagnostic_status": "unavailable",
+                    "fail_reasons": list(exc.fail_reasons),
+                    "split_name": split,
+                    "feature_names": list(feature_names),
+                    "horizon_steps": list(horizon_steps),
+                }
+            )
         if out_path:
-            _write_explicit_json(Path(out_path), failure_payload, manager=active_manager)
+            _write_explicit_json(
+                Path(out_path), failure_payload, manager=active_manager
+            )
         if as_json:
-            context.printer(json.dumps(failure_payload, ensure_ascii=False, sort_keys=True, indent=2))
+            context.printer(
+                json.dumps(
+                    failure_payload, ensure_ascii=False, sort_keys=True, indent=2
+                )
+            )
         else:
             context.printer(f"[RESEARCH-FORWARD-DIAGNOSTICS] error={exc}")
         return 1
@@ -127,9 +151,15 @@ def cmd_research_forward_diagnostics(
                 horizon_steps=horizon_steps,
             )
         if out_path:
-            _write_explicit_json(Path(out_path), failure_payload, manager=active_manager)
+            _write_explicit_json(
+                Path(out_path), failure_payload, manager=active_manager
+            )
         if as_json:
-            context.printer(json.dumps(failure_payload, ensure_ascii=False, sort_keys=True, indent=2))
+            context.printer(
+                json.dumps(
+                    failure_payload, ensure_ascii=False, sort_keys=True, indent=2
+                )
+            )
         else:
             context.printer(f"[RESEARCH-FORWARD-DIAGNOSTICS] error={exc.reason}")
         return 1
@@ -141,7 +171,11 @@ def cmd_research_forward_diagnostics(
                 feature_names=feature_names,
                 horizon_steps=horizon_steps,
             )
-            context.printer(json.dumps(failure_payload, ensure_ascii=False, sort_keys=True, indent=2))
+            context.printer(
+                json.dumps(
+                    failure_payload, ensure_ascii=False, sort_keys=True, indent=2
+                )
+            )
         else:
             context.printer(f"[RESEARCH-FORWARD-DIAGNOSTICS] error={exc}")
         return 1
@@ -156,7 +190,9 @@ def _normalize_split(split_name: str) -> str:
 
 
 def _normalize_features(features: tuple[str, ...]) -> tuple[str, ...]:
-    normalized = tuple(str(feature).strip() for feature in features if str(feature).strip())
+    normalized = tuple(
+        str(feature).strip() for feature in features if str(feature).strip()
+    )
     if not normalized:
         raise ValueError("features must not be empty")
     return normalized
@@ -195,20 +231,24 @@ def _generic_failure_payload(
     horizon_steps: tuple[int, ...],
 ) -> dict[str, Any]:
     error_type = type(exc).__name__
-    return apply_artifact_contract({
-        "schema_version": 1,
-        "artifact_type": FAILURE_ARTIFACT_TYPE,
-        "diagnostic_status": "unavailable",
-        "fail_reasons": [_generic_failure_reason(exc)],
-        "error_type": error_type,
-        "error": str(exc),
-        "split_name": split_name,
-        "feature_names": list(feature_names),
-        "horizon_steps": list(horizon_steps),
-    })
+    return apply_artifact_contract(
+        {
+            "schema_version": 1,
+            "artifact_type": FAILURE_ARTIFACT_TYPE,
+            "diagnostic_status": "unavailable",
+            "fail_reasons": [_generic_failure_reason(exc)],
+            "error_type": error_type,
+            "error": str(exc),
+            "split_name": split_name,
+            "feature_names": list(feature_names),
+            "horizon_steps": list(horizon_steps),
+        }
+    )
 
 
-def _generic_failure_reason(exc: ManifestValidationError | OSError | ValueError | IndexError) -> str:
+def _generic_failure_reason(
+    exc: ManifestValidationError | OSError | ValueError | IndexError,
+) -> str:
     if isinstance(exc, ManifestValidationError):
         return "manifest_validation_error"
     if isinstance(exc, OSError):

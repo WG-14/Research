@@ -3,7 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 
-from market_research.research.walk_forward_selection import build_walk_forward_selection_evidence
+from market_research.research.walk_forward_selection import (
+    build_walk_forward_selection_evidence,
+)
 
 
 GATE = SimpleNamespace(
@@ -14,7 +16,12 @@ GATE = SimpleNamespace(
 )
 
 
-def _candidate(candidate_id: str, parameter: int, train_returns: list[float], test_returns: list[float]):
+def _candidate(
+    candidate_id: str,
+    parameter: int,
+    train_returns: list[float],
+    test_returns: list[float],
+):
     return {
         "candidate_id": candidate_id,
         "parameter_values": {"lookback": parameter},
@@ -22,8 +29,14 @@ def _candidate(candidate_id: str, parameter: int, train_returns: list[float], te
             "windows": [
                 {
                     "window_id": f"window_{index:03d}",
-                    "train_date_range": {"start": f"202{index}-01-01", "end": f"202{index}-06-30"},
-                    "test_date_range": {"start": f"202{index}-07-01", "end": f"202{index}-12-31"},
+                    "train_date_range": {
+                        "start": f"202{index}-01-01",
+                        "end": f"202{index}-06-30",
+                    },
+                    "test_date_range": {
+                        "start": f"202{index}-07-01",
+                        "end": f"202{index}-12-31",
+                    },
                     "train_metrics": {
                         "return_pct": train_return,
                         "max_drawdown_pct": 5.0,
@@ -37,13 +50,17 @@ def _candidate(candidate_id: str, parameter: int, train_returns: list[float], te
                         "trade_count": 10,
                     },
                 }
-                for index, (train_return, test_return) in enumerate(zip(train_returns, test_returns), start=1)
+                for index, (train_return, test_return) in enumerate(
+                    zip(train_returns, test_returns), start=1
+                )
             ]
         },
     }
 
 
-def test_walk_forward_selects_on_train_only_and_test_mutation_cannot_change_selection() -> None:
+def test_walk_forward_selects_on_train_only_and_test_mutation_cannot_change_selection() -> (
+    None
+):
     candidates = [
         _candidate("slow", 20, [10.0, 1.0], [2.0, 100.0]),
         _candidate("fast", 5, [1.0, 10.0], [100.0, 2.0]),
@@ -63,8 +80,14 @@ def test_walk_forward_selects_on_train_only_and_test_mutation_cannot_change_sele
         min_windows=2,
     )
 
-    assert [window["selected_candidate_id"] for window in first["windows"]] == ["slow", "fast"]
-    assert [window["selected_candidate_id"] for window in second["windows"]] == ["slow", "fast"]
+    assert [window["selected_candidate_id"] for window in first["windows"]] == [
+        "slow",
+        "fast",
+    ]
+    assert [window["selected_candidate_id"] for window in second["windows"]] == [
+        "slow",
+        "fast",
+    ]
     assert [window["selection_artifact_hash"] for window in first["windows"]] == [
         window["selection_artifact_hash"] for window in second["windows"]
     ]

@@ -1,4 +1,5 @@
 """Common incremental runtime adapter for pure strategy event builders."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -36,7 +37,9 @@ class EventBuilderStrategyRuntime:
     def initialize(self, context: Any) -> dict[str, object]:
         return {}
 
-    def on_market_event(self, market: Any, portfolio: Any, state: Any) -> tuple[Any, ...]:
+    def on_market_event(
+        self, market: Any, portfolio: Any, state: Any
+    ) -> tuple[Any, ...]:
         if self.suppress_while_positioned and (
             portfolio.filled_position_qty > 0 or portfolio.pending_execution_count > 0
         ):
@@ -69,7 +72,9 @@ class EventBuilderStrategyRuntime:
         if self.pass_candle_index_offset:
             inputs["candle_index_offset"] = offset
         events = tuple(self.event_builder(**inputs))
-        return tuple(event for event in events if event.candle_ts == market.current_candle.ts)
+        return tuple(
+            event for event in events if event.candle_ts == market.current_candle.ts
+        )
 
 
 def make_event_builder_runtime_factory(
@@ -87,7 +92,9 @@ def make_event_builder_runtime_factory(
         parameters = dict(values["compiled_contract"].materialized_parameters)
         return EventBuilderStrategyRuntime(
             event_builder=event_builder,
-            window_rows=(window_rows_builder(parameters) if window_rows_builder else None),
+            window_rows=(
+                window_rows_builder(parameters) if window_rows_builder else None
+            ),
             current_candle_only=current_candle_only,
             pass_candle_index_offset=pass_candle_index_offset,
             suppress_while_positioned=suppress_while_positioned,

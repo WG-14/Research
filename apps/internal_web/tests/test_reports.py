@@ -396,7 +396,10 @@ def test_report_views_require_permission_and_post_requires_csrf(
 
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(runner_user)
-    assert csrf_client.post(
-        compare_url,
-        {"report_ids": ["report_" + "1" * 64, "report_" + "2" * 64]},
-    ).status_code == 403
+    assert (
+        csrf_client.post(
+            compare_url,
+            {"report_ids": ["report_" + "1" * 64, "report_" + "2" * 64]},
+        ).status_code
+        == 403
+    )

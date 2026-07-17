@@ -11,6 +11,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pip-audit==2.10.1",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
     "ruff>=0.15,<1",
@@ -22,9 +23,20 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+market_research = ["_build_provenance.json"]
+
+[tool.uv.workspace]
+members = [
+    "apps/internal_web",
+    "services/research_operations",
+]
+
 [project.scripts]
 market-research = "market_research.research_bootstrap:run_cli"
 

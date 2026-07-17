@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
-from market_research.research.experiment_manifest import DateRange, ExecutionTimingPolicy
+from market_research.research.experiment_manifest import (
+    DateRange,
+    ExecutionTimingPolicy,
+)
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research_composition import resolve_builtin_strategy
 from tests.test_common_simulation_engine import SpyModel, _dataset, _run
@@ -12,7 +15,12 @@ from tests.test_common_simulation_engine import SpyModel, _dataset, _run
 def test_next_open_fill_occurs_after_close_decision():
     run = _run(SpyModel())
     fill = run.fills[0]
-    assert fill.decision_ts <= fill.submit_ts_assumption <= fill.fill_reference_ts <= fill.portfolio_effective_ts
+    assert (
+        fill.decision_ts
+        <= fill.submit_ts_assumption
+        <= fill.fill_reference_ts
+        <= fill.portfolio_effective_ts
+    )
     assert fill.fill_reference_source == "next_candle_open"
 
 
@@ -38,7 +46,11 @@ def test_default_timing_never_fills_a_close_signal_at_the_same_close():
 
 def test_next_open_gap_fill_is_not_marked_with_the_previous_close():
     dataset = DatasetSnapshot(
-        "engine", "gap-fixture", "KRW-BTC", "1m", "validation",
+        "engine",
+        "gap-fixture",
+        "KRW-BTC",
+        "1m",
+        "validation",
         DateRange("2026-01-01", "2026-01-01"),
         (
             Candle(0, 100, 100, 100, 100, 1),
@@ -47,8 +59,11 @@ def test_next_open_gap_fill_is_not_marked_with_the_previous_close():
         ),
     )
     run = run_common_simulation_backtest(
-        plugin=resolve_builtin_strategy("buy_and_hold_baseline"), dataset=dataset,
-        parameter_values={"BUY_HOLD_BUY_INDEX": 0}, fee_rate=0.0, slippage_bps=0.0,
+        plugin=resolve_builtin_strategy("buy_and_hold_baseline"),
+        dataset=dataset,
+        parameter_values={"BUY_HOLD_BUY_INDEX": 0},
+        fee_rate=0.0,
+        slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(),
     )
     assert run.fills[0].avg_fill_price == 200.0

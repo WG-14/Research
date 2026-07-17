@@ -8,7 +8,10 @@ from market_research.research.dataset_snapshot import DatasetSnapshot
 from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.execution_timing import candle_close_ts
-from market_research.research.experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from market_research.research.experiment_manifest import (
+    ExecutionTimingPolicy,
+    PortfolioPolicy,
+)
 from .threshold_research_only import THRESHOLD_RESEARCH_ONLY_SPEC
 
 
@@ -32,13 +35,27 @@ def build_threshold_research_only_events(
         close = float(candle.close)
         is_buy = close > threshold
         signal = "BUY" if is_buy else "HOLD"
-        decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(execution_timing_policy.decision_guard_ms)
+        decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(
+            execution_timing_policy.decision_guard_ms
+        )
         reason = "threshold_close_above" if is_buy else "threshold_not_met"
-        features = {"candle_index": int(index), "close": close, "threshold_close_above": threshold}
-        decision_id = sha256_prefixed({"strategy_name": THRESHOLD_RESEARCH_ONLY_SPEC.strategy_name,
-            "strategy_version": THRESHOLD_RESEARCH_ONLY_SPEC.strategy_version, "candle_ts": int(candle.ts),
-            "decision_ts": decision_ts, "raw_signal": signal, "final_signal": signal, "reason": reason,
-            "feature_snapshot": features})
+        features = {
+            "candle_index": int(index),
+            "close": close,
+            "threshold_close_above": threshold,
+        }
+        decision_id = sha256_prefixed(
+            {
+                "strategy_name": THRESHOLD_RESEARCH_ONLY_SPEC.strategy_name,
+                "strategy_version": THRESHOLD_RESEARCH_ONLY_SPEC.strategy_version,
+                "candle_ts": int(candle.ts),
+                "decision_ts": decision_ts,
+                "raw_signal": signal,
+                "final_signal": signal,
+                "reason": reason,
+                "feature_snapshot": features,
+            }
+        )
         events.append(
             ResearchDecisionEvent(
                 candle_ts=int(candle.ts),
@@ -57,9 +74,12 @@ def build_threshold_research_only_events(
                     "close_above_threshold": is_buy,
                 },
                 order_intent=(
-                    OrderIntent.from_decision(decision_id=decision_id, side="BUY",
+                    OrderIntent.from_decision(
+                        decision_id=decision_id,
+                        side="BUY",
                         sizing="portfolio_policy_fractional_cash",
-                        reason=reason)
+                        reason=reason,
+                    )
                     if is_buy
                     else None
                 ),

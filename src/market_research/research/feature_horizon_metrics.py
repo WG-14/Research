@@ -6,7 +6,9 @@ from typing import Iterable
 
 from market_research.research.feature_bucket_metrics import FeatureObservation
 from market_research.research.feature_provider_registry import FeatureProviderSpec
-from market_research.research.forward_targets import forward_diagnostics_measurement_contract
+from market_research.research.forward_targets import (
+    forward_diagnostics_measurement_contract,
+)
 
 
 @dataclass(frozen=True)
@@ -80,7 +82,9 @@ def compute_feature_horizon_metrics(
     grouped: dict[tuple[str, str], list[FeatureObservation]] = {}
     for observation in observations:
         if observation.feature.name not in allowed_features:
-            raise ValueError(f"missing feature horizon policy for feature={observation.feature.name!r}")
+            raise ValueError(
+                f"missing feature horizon policy for feature={observation.feature.name!r}"
+            )
         key = (observation.feature.name, observation.target.horizon_label)
         grouped.setdefault(key, []).append(observation)
 
@@ -199,5 +203,7 @@ def _percentile(values: tuple[float, ...], fraction: float) -> float:
     ordered = sorted(values)
     if len(ordered) == 1:
         return float(ordered[0])
-    position = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * float(fraction)))))
+    position = max(
+        0, min(len(ordered) - 1, int(round((len(ordered) - 1) * float(fraction))))
+    )
     return float(ordered[position])

@@ -216,9 +216,7 @@ class HumanReviewRequest(ApplicationRequest):
 
     @field_validator("prohibited_actor_ids")
     @classmethod
-    def _normalize_prohibited_actor_ids(
-        cls, values: frozenset[str]
-    ) -> frozenset[str]:
+    def _normalize_prohibited_actor_ids(cls, values: frozenset[str]) -> frozenset[str]:
         return frozenset(
             _normalize_unique_identifiers(
                 tuple(values),
@@ -241,7 +239,9 @@ class StrategyApprovalRequest(ApplicationRequest):
     )
     prohibited_actor_ids: frozenset[str] = frozenset()
 
-    @field_validator("source_report_path", "subject_version", "rationale", "output_path")
+    @field_validator(
+        "source_report_path", "subject_version", "rationale", "output_path"
+    )
     @classmethod
     def _normalize_required_values(cls, value: str) -> str:
         normalized = value.strip()
@@ -261,9 +261,7 @@ class StrategyApprovalRequest(ApplicationRequest):
 
     @field_validator("prohibited_actor_ids")
     @classmethod
-    def _normalize_prohibited_actor_ids(
-        cls, values: frozenset[str]
-    ) -> frozenset[str]:
+    def _normalize_prohibited_actor_ids(cls, values: frozenset[str]) -> frozenset[str]:
         return frozenset(
             _normalize_unique_identifiers(
                 tuple(values),
@@ -330,7 +328,9 @@ class ReportComparisonResult(ApplicationResult):
             raise ValueError("report_comparison_sources_must_be_unique")
         if self.status is ResultStatus.SUCCEEDED:
             if not 2 <= len(self.sources) <= 10:
-                raise ValueError("report_comparison_success_requires_two_to_ten_sources")
+                raise ValueError(
+                    "report_comparison_success_requires_two_to_ten_sources"
+                )
             if self.comparison is None:
                 raise ValueError("report_comparison_success_payload_required")
             if self.content_hash != self.comparison.get("content_hash"):
@@ -381,7 +381,9 @@ def _normalize_unique_identifiers(
     error: str,
 ) -> tuple[str, ...]:
     normalized = tuple(str(value).strip() for value in values)
-    if any(not value for value in normalized) or len(set(normalized)) != len(normalized):
+    if any(not value for value in normalized) or len(set(normalized)) != len(
+        normalized
+    ):
         raise ValueError(error)
     return normalized
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule coherent Research Operations backups
+PartOf=research-operations.target
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=30min
+AccuracySec=1min
+Persistent=true
+Unit=research-operations-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule Research Operations retention dry-run audits
+PartOf=research-operations.target
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+RandomizedDelaySec=30min
+AccuracySec=1min
+Persistent=true
+Unit=research-operations-retention-audit.service
+
+[Install]
+WantedBy=timers.target

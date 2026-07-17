@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from market_research.research.backtest_types import BacktestRunContext
 from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
-from market_research.research.decision_stream_perturbation import EntrySignalOmissionTransformer
-from market_research.research.experiment_manifest import DateRange, ExecutionTimingPolicy
+from market_research.research.decision_stream_perturbation import (
+    EntrySignalOmissionTransformer,
+)
+from market_research.research.experiment_manifest import (
+    DateRange,
+    ExecutionTimingPolicy,
+)
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research_composition import builtin_strategy_registry
 
@@ -23,7 +28,10 @@ def test_entry_signal_omission_occurs_before_execution_requests() -> None:
     )
     transformer = EntrySignalOmissionTransformer(
         omission_rate_pct=100.0,
-        seed_material={"manifest_hash": "sha256:" + "a" * 64, "candidate_id": "candidate"},
+        seed_material={
+            "manifest_hash": "sha256:" + "a" * 64,
+            "candidate_id": "candidate",
+        },
     )
     registry = builtin_strategy_registry()
     run = run_common_simulation_backtest(

@@ -9,15 +9,24 @@ from market_research.research.dataset_snapshot import (
     build_dataset_quality_report,
     load_dataset_split,
 )
-from market_research.research.diagnostic_availability import DiagnosticAvailability, build_diagnostic_availability
-from market_research.research.diagnostic_coverage import FeatureHorizonCoverage, build_feature_horizon_coverage
+from market_research.research.diagnostic_availability import (
+    DiagnosticAvailability,
+    build_diagnostic_availability,
+)
+from market_research.research.diagnostic_coverage import (
+    FeatureHorizonCoverage,
+    build_feature_horizon_coverage,
+)
 from market_research.research.experiment_manifest import ExperimentManifest
 from market_research.research.feature_bucket_metrics import (
     FeatureBucketMetric,
     FeatureObservation,
     compute_feature_bucket_metrics,
 )
-from market_research.research.feature_horizon_metrics import FeatureHorizonMetric, compute_feature_horizon_metrics
+from market_research.research.feature_horizon_metrics import (
+    FeatureHorizonMetric,
+    compute_feature_horizon_metrics,
+)
 from market_research.research.feature_diagnostic_features import (
     AsOfCandleView,
     FeatureValue,
@@ -172,18 +181,33 @@ class ForwardDiagnosticsResult:
             object.__setattr__(
                 self,
                 "horizon_durations",
-                build_horizon_durations(interval=self.interval, horizon_steps=self.horizon_steps),
+                build_horizon_durations(
+                    interval=self.interval, horizon_steps=self.horizon_steps
+                ),
             )
         if self.availability.status == "available" and self.sample_count <= 0:
             raise ValueError("available diagnostics require positive sample_count")
         if self.diagnostic_status != self.availability.status:
-            raise ValueError("diagnostic_status must be sourced from availability.status")
+            raise ValueError(
+                "diagnostic_status must be sourced from availability.status"
+            )
         if tuple(self.fail_reasons) != tuple(self.availability.fail_reasons):
-            raise ValueError("fail_reasons must be sourced from availability.fail_reasons")
+            raise ValueError(
+                "fail_reasons must be sourced from availability.fail_reasons"
+            )
         if self.measurement_contract != forward_diagnostics_measurement_contract():
-            raise ValueError("forward diagnostics result measurement_contract must be gross-only diagnostics")
-        if self.diagnostic_status == "degraded" and "allow_degraded_diagnostics" not in self.degraded_exit_policy:
-            object.__setattr__(self, "degraded_exit_policy", _degraded_exit_policy(self.degraded_override))
+            raise ValueError(
+                "forward diagnostics result measurement_contract must be gross-only diagnostics"
+            )
+        if (
+            self.diagnostic_status == "degraded"
+            and "allow_degraded_diagnostics" not in self.degraded_exit_policy
+        ):
+            object.__setattr__(
+                self,
+                "degraded_exit_policy",
+                _degraded_exit_policy(self.degraded_override),
+            )
 
     @property
     def diagnostic_status(self) -> str:
@@ -214,10 +238,16 @@ class ForwardDiagnosticsResult:
             "target_count": self.target_count,
             "availability": self.availability.as_dict(),
             "coverage": {"feature_horizon": [row.as_dict() for row in self.coverage]},
-            "feature_provider_specs": [spec.as_report_dict() for spec in self.feature_provider_specs],
+            "feature_provider_specs": [
+                spec.as_report_dict() for spec in self.feature_provider_specs
+            ],
             "dataset_quality": self.dataset_quality.as_dict(),
-            "feature_bucket_metrics": [metric.as_dict() for metric in self.feature_bucket_metrics],
-            "feature_horizon_metrics": [metric.as_dict() for metric in self.feature_horizon_metrics],
+            "feature_bucket_metrics": [
+                metric.as_dict() for metric in self.feature_bucket_metrics
+            ],
+            "feature_horizon_metrics": [
+                metric.as_dict() for metric in self.feature_horizon_metrics
+            ],
             "warnings": list(self.warnings),
             "dataset": self.dataset.as_dict(),
             "diagnostic_status": self.diagnostic_status,
@@ -251,7 +281,9 @@ def run_forward_diagnostics(
         manifest=manifest,
         split_name=split_name,
     )
-    dataset_quality_report = build_dataset_quality_report(db_path=db_path, snapshot=snapshot)
+    dataset_quality_report = build_dataset_quality_report(
+        db_path=db_path, snapshot=snapshot
+    )
     result = run_forward_diagnostics_on_snapshot(
         snapshot=snapshot,
         experiment_id=manifest.experiment_id,
@@ -290,12 +322,16 @@ def run_forward_diagnostics_on_snapshot(
     )
     features = _normalize_feature_names(feature_names)
     horizons = _normalize_horizons(horizon_steps)
-    horizon_durations = build_horizon_durations(interval=snapshot.interval, horizon_steps=horizons)
+    horizon_durations = build_horizon_durations(
+        interval=snapshot.interval, horizon_steps=horizons
+    )
     provider_specs = feature_provider_specs_for_names(features)
     observations: list[FeatureObservation] = []
     target_count = 0
     feature_value_count = 0
-    target_counts_by_horizon: dict[str, int] = {f"{horizon}c": 0 for horizon in horizons}
+    target_counts_by_horizon: dict[str, int] = {
+        f"{horizon}c": 0 for horizon in horizons
+    }
     computed_counts: dict[tuple[str, str], int] = {}
     for index in range(len(snapshot.candles)):
         targets = compute_forward_targets(
@@ -323,7 +359,9 @@ def run_forward_diagnostics_on_snapshot(
                 key = (spec.name, target.horizon_label)
                 computed_counts[key] = computed_counts.get(key, 0) + 1
         feature_value_count += len(values)
-        observations.extend(_observations_for_values(values=tuple(values), targets=targets))
+        observations.extend(
+            _observations_for_values(values=tuple(values), targets=targets)
+        )
 
     coverage = build_feature_horizon_coverage(
         feature_names=features,
@@ -331,7 +369,9 @@ def run_forward_diagnostics_on_snapshot(
         target_counts_by_horizon=target_counts_by_horizon,
         computed_counts=computed_counts,
     )
-    diagnostic_dataset_quality = dataset_quality or forward_diagnostics_dataset_quality(snapshot=snapshot)
+    diagnostic_dataset_quality = dataset_quality or forward_diagnostics_dataset_quality(
+        snapshot=snapshot
+    )
     availability_warnings = _availability_warnings(
         coverage=coverage,
         dataset_quality=diagnostic_dataset_quality,
@@ -345,7 +385,9 @@ def run_forward_diagnostics_on_snapshot(
         warnings=availability_warnings,
     )
     if availability.status == "unavailable":
-        raise ForwardDiagnosticsUnavailableError(availability.fail_reasons, availability=availability)
+        raise ForwardDiagnosticsUnavailableError(
+            availability.fail_reasons, availability=availability
+        )
 
     bucket_metrics = compute_feature_bucket_metrics(
         observations=observations,
@@ -360,7 +402,9 @@ def run_forward_diagnostics_on_snapshot(
     )
     metric_warnings = tuple(_metric_warning_rows(bucket_metrics))
     metric_warnings += tuple(
-        row for row in _metric_warning_rows(horizon_metrics) if row not in metric_warnings
+        row
+        for row in _metric_warning_rows(horizon_metrics)
+        if row not in metric_warnings
     )
     calculation_policy = forward_target_calculation_policy(entry_price_mode)
     return ForwardDiagnosticsResult(
@@ -404,7 +448,9 @@ def _availability_warnings(
     return tuple(dict.fromkeys(warnings))
 
 
-def _metric_warning_rows(metrics: tuple[FeatureBucketMetric, ...]) -> tuple[dict[str, object], ...]:
+def _metric_warning_rows(
+    metrics: tuple[FeatureBucketMetric, ...],
+) -> tuple[dict[str, object], ...]:
     rows: list[dict[str, object]] = []
     for metric in metrics:
         for warning in metric.warnings:
@@ -424,7 +470,11 @@ def _observations_for_values(
     values: tuple[FeatureValue, ...],
     targets: tuple[ForwardTarget, ...],
 ) -> tuple[FeatureObservation, ...]:
-    return tuple(FeatureObservation(feature=value, target=target) for value in values for target in targets)
+    return tuple(
+        FeatureObservation(feature=value, target=target)
+        for value in values
+        for target in targets
+    )
 
 
 def _normalize_feature_names(feature_names: tuple[str, ...]) -> tuple[str, ...]:
@@ -444,7 +494,11 @@ def _normalize_horizons(horizon_steps: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def dataset_provenance(snapshot: DatasetSnapshot) -> DatasetProvenance:
-    adapter_hash = sha256_prefixed(snapshot.adapter_provenance) if snapshot.adapter_provenance else None
+    adapter_hash = (
+        sha256_prefixed(snapshot.adapter_provenance)
+        if snapshot.adapter_provenance
+        else None
+    )
     return DatasetProvenance(
         snapshot_id=snapshot.snapshot_id,
         source=snapshot.source,
@@ -476,10 +530,12 @@ def forward_diagnostics_dataset_quality(
             dataset_quality_report_hash=quality_report.content_hash,
             dataset_quality_report_payload=payload,
             dataset_content_hash=str(
-                quality_report.payload.get("snapshot_fingerprint_hash") or snapshot.snapshot_fingerprint_hash()
+                quality_report.payload.get("snapshot_fingerprint_hash")
+                or snapshot.snapshot_fingerprint_hash()
             ),
             canonical_snapshot_hash=str(
-                quality_report.payload.get("snapshot_fingerprint_hash") or snapshot.snapshot_fingerprint_hash()
+                quality_report.payload.get("snapshot_fingerprint_hash")
+                or snapshot.snapshot_fingerprint_hash()
             ),
             source_content_hash_status=str(
                 quality_report.payload.get("source_content_hash_status")
@@ -487,10 +543,12 @@ def forward_diagnostics_dataset_quality(
                 or _source_content_hash_status(snapshot)
             ),
             source_schema_hash_status=str(
-                quality_report.payload.get("source_schema_hash_status") or _source_schema_hash_status(snapshot)
+                quality_report.payload.get("source_schema_hash_status")
+                or _source_schema_hash_status(snapshot)
             ),
             source_locator_policy=str(
-                quality_report.payload.get("source_locator_policy") or _source_locator_policy(snapshot)
+                quality_report.payload.get("source_locator_policy")
+                or _source_locator_policy(snapshot)
             ),
         )
     dataset_content_hash = snapshot.snapshot_fingerprint_hash()

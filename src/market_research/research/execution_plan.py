@@ -7,8 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .dataset_snapshot import DatasetQualityReport, DatasetSnapshot, combined_dataset_quality_hash
-from .experiment_manifest import ExecutionScenario, ExperimentManifest, required_execution_scenarios
+from .dataset_snapshot import (
+    DatasetQualityReport,
+    DatasetSnapshot,
+    combined_dataset_quality_hash,
+)
+from .experiment_manifest import (
+    ExecutionScenario,
+    ExperimentManifest,
+    required_execution_scenarios,
+)
 from .hashing import sha256_prefixed
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .process_runtime import process_policy_observability
@@ -17,7 +25,9 @@ from .resource_planner import plan_research_resources
 from .backtest_types import resolve_tick_observability_policy
 
 
-def parallel_work_task_count(*, candidate_count: int, scenario_count: int, split_count: int, work_unit: str) -> int:
+def parallel_work_task_count(
+    *, candidate_count: int, scenario_count: int, split_count: int, work_unit: str
+) -> int:
     normalized = str(work_unit or "candidate_scenario").strip().lower()
     if normalized == "candidate_scenario_split":
         return int(candidate_count) * int(scenario_count) * int(split_count)
@@ -36,7 +46,10 @@ def parallel_efficiency_payload(
     worker_observation_warning_reasons: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     requested = max(1, int(requested_max_workers or 1))
-    effective = max(1, int(effective_max_workers if effective_max_workers is not None else requested))
+    effective = max(
+        1,
+        int(effective_max_workers if effective_max_workers is not None else requested),
+    )
     available = max(0, int(available_work_tasks))
     ratio = round(float(available) / float(effective), 6)
     expected_utilization = round(min(1.0, ratio) * 100.0, 6)
@@ -65,7 +78,9 @@ def parallel_efficiency_payload(
             effective_max_workers=effective,
             work_unit=work_unit,
         ),
-        "worker_warning_reasons": sorted(set(str(item) for item in (worker_warning_reasons or ()))),
+        "worker_warning_reasons": sorted(
+            set(str(item) for item in (worker_warning_reasons or ()))
+        ),
         "worker_observation_warning_reasons": sorted(
             set(str(item) for item in (worker_observation_warning_reasons or ()))
         ),
@@ -73,15 +88,21 @@ def parallel_efficiency_payload(
     if observed_worker_count is None:
         payload["observed_worker_count"] = None
         payload["observed_worker_utilization_pct"] = None
-        payload["observed_worker_utilization_unavailable_reason"] = "worker_observation_pending"
+        payload["observed_worker_utilization_unavailable_reason"] = (
+            "worker_observation_pending"
+        )
     else:
         observed = max(0, int(observed_worker_count))
         payload["observed_worker_count"] = observed
-        payload["observed_worker_utilization_pct"] = round(min(1.0, observed / float(effective)) * 100.0, 6)
+        payload["observed_worker_utilization_pct"] = round(
+            min(1.0, observed / float(effective)) * 100.0, 6
+        )
     return payload
 
 
-def _parallelism_limiting_factor(*, available_work_tasks: int, effective_max_workers: int, work_unit: str) -> str:
+def _parallelism_limiting_factor(
+    *, available_work_tasks: int, effective_max_workers: int, work_unit: str
+) -> str:
     if int(available_work_tasks) >= int(effective_max_workers):
         return "available_work_tasks_match_or_exceed_effective_workers"
     normalized = str(work_unit or "candidate_scenario").strip().lower()
@@ -97,7 +118,12 @@ def _parallel_efficiency_suggested_actions(
 ) -> list[str]:
     if int(available_work_tasks) >= int(effective_max_workers):
         return []
-    actions = ["increase_candidate_count", "increase_scenario_count", "run_research_batch", "profile_single_candidate"]
+    actions = [
+        "increase_candidate_count",
+        "increase_scenario_count",
+        "run_research_batch",
+        "profile_single_candidate",
+    ]
     if str(work_unit or "").strip().lower() != "candidate_scenario_split":
         actions.insert(2, "use_candidate_scenario_split")
     return actions
@@ -150,7 +176,9 @@ class ResearchExecutionPlan:
 
 
 def scenario_id(scenario: ExecutionScenario, scenario_index: int) -> str:
-    return sha256_prefixed({"index": scenario_index, "scenario": scenario.as_dict()})[:24]
+    return sha256_prefixed({"index": scenario_index, "scenario": scenario.as_dict()})[
+        :24
+    ]
 
 
 def build_research_execution_plan(
@@ -165,15 +193,24 @@ def build_research_execution_plan(
     strategy_registry: Any,
 ) -> ResearchExecutionPlan:
     candidates = iter_parameter_candidates(manifest.parameter_space)
-    execution_scenarios = required_execution_scenarios(manifest.execution_model.scenarios)
+    execution_scenarios = required_execution_scenarios(
+        manifest.execution_model.scenarios
+    )
     split_names = _ordered_split_names(snapshots)
     dataset_hashes = precompute_dataset_hashes(snapshots)
     split_count = len(split_names)
-    walk_forward_split_count = sum(1 for split_name in split_names if split_name.startswith("window_"))
+    walk_forward_split_count = sum(
+        1 for split_name in split_names if split_name.startswith("window_")
+    )
     strategy_run_count = len(candidates) * len(execution_scenarios) * split_count
     if include_walk_forward:
-        strategy_run_count = len(candidates) * len(execution_scenarios) * (
-            max(0, split_count - walk_forward_split_count) + walk_forward_split_count
+        strategy_run_count = (
+            len(candidates)
+            * len(execution_scenarios)
+            * (
+                max(0, split_count - walk_forward_split_count)
+                + walk_forward_split_count
+            )
         )
     dataset_candles = sum(len(snapshot.candles) for snapshot in snapshots.values())
     plugin_complexity = _plugin_complexity_metadata(
@@ -227,23 +264,27 @@ def build_research_execution_plan(
         "simulation_seed_scope_hash": manifest.simulation_seed_scope_hash(),
         "experiment_id": manifest.experiment_id,
         "dataset_hashes": {name: dataset_hashes[name] for name in split_names},
-        "dataset_quality_hash": combined_dataset_quality_hash(tuple(quality_reports.values())),
+        "dataset_quality_hash": combined_dataset_quality_hash(
+            tuple(quality_reports.values())
+        ),
         "candidate_count": len(candidates),
         "scenario_count": len(execution_scenarios),
         "split_count": split_count,
         "split_names": split_names,
         "estimated_strategy_runs": strategy_run_count,
         "available_parallel_work_tasks": available_parallel_work_tasks,
-        "parallel_task_to_worker_ratio": parallel_capacity["parallel_task_to_worker_ratio"],
-        "expected_worker_utilization_pct": parallel_capacity["expected_worker_utilization_pct"],
+        "parallel_task_to_worker_ratio": parallel_capacity[
+            "parallel_task_to_worker_ratio"
+        ],
+        "expected_worker_utilization_pct": parallel_capacity[
+            "expected_worker_utilization_pct"
+        ],
         "parallelism_limiting_factor": parallel_capacity["parallelism_limiting_factor"],
         "effective_worker_source": effective_worker_source,
         "dataset_candles": dataset_candles,
         "estimated_candles": dataset_candles,
         "estimated_candle_evaluations": (
-            dataset_candles
-            * len(candidates)
-            * len(execution_scenarios)
+            dataset_candles * len(candidates) * len(execution_scenarios)
         ),
         "plugin_complexity": plugin_complexity,
         "estimated_plugin_runtime_us": estimated_plugin_runtime_us,
@@ -294,9 +335,11 @@ def build_research_execution_plan(
             else "research_exploratory"
         ),
     )
-    pre_parallel_dataset_hash_payload_bytes = _estimated_pre_parallel_dataset_hash_payload_bytes(
-        snapshots=snapshots,
-        split_names=split_names,
+    pre_parallel_dataset_hash_payload_bytes = (
+        _estimated_pre_parallel_dataset_hash_payload_bytes(
+            snapshots=snapshots,
+            split_names=split_names,
+        )
     )
     pre_parallel_work_unit_count = len(candidates) * len(execution_scenarios)
     pre_parallel_split_hash_count = split_count
@@ -315,9 +358,13 @@ def build_research_execution_plan(
     max_artifact_bytes = manifest.research_run.resource_limits.max_artifact_bytes
     artifact_budget_reasons: list[str] = []
     artifact_budget_status = "PASS"
-    if max_artifact_bytes is not None and estimated_artifact_bytes > int(max_artifact_bytes):
+    if max_artifact_bytes is not None and estimated_artifact_bytes > int(
+        max_artifact_bytes
+    ):
         artifact_budget_status = "WARN"
-        artifact_budget_reasons.append("estimated_artifact_bytes_exceed_max_artifact_bytes")
+        artifact_budget_reasons.append(
+            "estimated_artifact_bytes_exceed_max_artifact_bytes"
+        )
     memory_estimate = _estimated_memory_budget(
         snapshots=snapshots,
         split_names=split_names,
@@ -335,7 +382,9 @@ def build_research_execution_plan(
         dataset_hashes=dataset_hashes,
         split_names=split_names,
         memory_budget_mb=resource_plan.memory_budget_mb,
-        estimated_total_memory_bytes=memory_estimate.get("estimated_total_memory_bytes"),
+        estimated_total_memory_bytes=memory_estimate.get(
+            "estimated_total_memory_bytes"
+        ),
         effective_max_workers=resource_plan.effective_max_workers,
     ).as_dict()
     plan["data_plane_policy"] = data_plane_policy
@@ -408,7 +457,9 @@ def build_research_work_unit(
         if snapshots is None:
             raise ValueError("dataset_hashes_required")
         dataset_hashes = _compat_dataset_hashes_from_snapshot_metadata(snapshots)
-    ordered_dataset_hashes = {name: dataset_hashes[name] for name in sorted(dataset_hashes)}
+    ordered_dataset_hashes = {
+        name: dataset_hashes[name] for name in sorted(dataset_hashes)
+    }
     seed_context = {
         "simulation_seed_scope_hash": simulation_seed_scope_hash or manifest_hash,
         "scenario_id": scenario_id,
@@ -464,7 +515,9 @@ def build_run_environment(
     db_path: str | Path | None,
     repository_version: str | None,
 ) -> dict[str, Any]:
-    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path is not None else None
+    resolved_db_path = (
+        str(Path(db_path).expanduser().resolve()) if db_path is not None else None
+    )
     code_provenance = collect_code_provenance(Path(__file__).resolve().parents[3])
     return {
         "repository_version": repository_version or "unknown",
@@ -482,7 +535,9 @@ def build_run_environment(
             requested_max_workers=manifest.research_run.execution.max_workers,
         ),
         "work_unit_type": manifest.research_run.execution.work_unit,
-        "db_path_fingerprint": (sha256_prefixed({"db_path": resolved_db_path}) if resolved_db_path else None),
+        "db_path_fingerprint": (
+            sha256_prefixed({"db_path": resolved_db_path}) if resolved_db_path else None
+        ),
         "manifest_hash": manifest.manifest_hash(),
     }
 
@@ -494,7 +549,9 @@ def precompute_dataset_hashes(snapshots: dict[str, DatasetSnapshot]) -> dict[str
     }
 
 
-def _compat_dataset_hashes_from_snapshot_metadata(snapshots: dict[str, DatasetSnapshot]) -> dict[str, str]:
+def _compat_dataset_hashes_from_snapshot_metadata(
+    snapshots: dict[str, DatasetSnapshot],
+) -> dict[str, str]:
     return {
         split_name: str(
             snapshot.source_content_hash
@@ -529,13 +586,16 @@ def _logical_plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ordered_split_names(snapshots: dict[str, DatasetSnapshot]) -> list[str]:
-    preferred = [name for name in ("train", "validation", "final_holdout") if name in snapshots]
+    preferred = [
+        name for name in ("train", "validation", "final_holdout") if name in snapshots
+    ]
     window_names: list[str] = []
     window_ids = sorted(
         {
             name.rsplit("_", 1)[0]
             for name in snapshots
-            if name.startswith("window_") and (name.endswith("_train") or name.endswith("_test"))
+            if name.startswith("window_")
+            and (name.endswith("_train") or name.endswith("_test"))
         }
     )
     for window_id in window_ids:
@@ -543,7 +603,9 @@ def _ordered_split_names(snapshots: dict[str, DatasetSnapshot]) -> list[str]:
             split_name = f"{window_id}_{suffix}"
             if split_name in snapshots:
                 window_names.append(split_name)
-    remaining = sorted(name for name in snapshots if name not in set(preferred) | set(window_names))
+    remaining = sorted(
+        name for name in snapshots if name not in set(preferred) | set(window_names)
+    )
     return preferred + window_names + remaining
 
 
@@ -572,8 +634,16 @@ def _estimated_artifact_write_count(
     audit_files = 0
     if audit_mode == "complete_external":
         audit_files = 1 + int(work_unit_count) * int(split_count) * 3
-    decision_jsonl = int(work_unit_count) * int(split_count) if full_decisions_external_jsonl else 0
-    return report_and_derived + candidate_event_stream + candidate_result_files + audit_files + decision_jsonl
+    decision_jsonl = (
+        int(work_unit_count) * int(split_count) if full_decisions_external_jsonl else 0
+    )
+    return (
+        report_and_derived
+        + candidate_event_stream
+        + candidate_result_files
+        + audit_files
+        + decision_jsonl
+    )
 
 
 def _estimated_hash_payload_bytes(
@@ -621,7 +691,12 @@ def estimate_canonical_observability_cost(
     estimated_calls = (
         tick_events * calls_per_tick
         if policy.full_tick_canonical_enabled
-        else max(0, min(tick_events, int(policy.diagnostic_sample_limit)) if policy.name == "diagnostic_sampled" else 0)
+        else max(
+            0,
+            min(tick_events, int(policy.diagnostic_sample_limit))
+            if policy.name == "diagnostic_sampled"
+            else 0,
+        )
     )
     estimated_payload_bytes = int(estimated_calls * payload_bytes_per_tick)
     return {
@@ -629,7 +704,9 @@ def estimate_canonical_observability_cost(
         "estimated_tick_canonical_hash_payload_bytes": estimated_payload_bytes,
         "estimated_decision_payload_bytes": int(decision_payload_bytes),
         "estimated_observability_mode": policy.name,
-        "estimated_full_tick_canonical_enabled": bool(policy.full_tick_canonical_enabled),
+        "estimated_full_tick_canonical_enabled": bool(
+            policy.full_tick_canonical_enabled
+        ),
     }
 
 
@@ -668,13 +745,23 @@ def _estimated_artifact_bytes(
     hash_payload_bytes = int(estimated_hash_payload_bytes)
     audit_bytes = 0
     if audit_mode == "complete_external":
-        audit_bytes = int(estimated_audit_stream_rows) * 512 + int(estimated_artifact_write_count) * 1024
+        audit_bytes = (
+            int(estimated_audit_stream_rows) * 512
+            + int(estimated_artifact_write_count) * 1024
+        )
     decision_jsonl_bytes = (
         work_unit_count * int(split_count) * 8 * 1024
         if full_decisions_external_jsonl
         else 0
     )
-    return int(report_bytes + candidate_json_bytes + candidate_journal_bytes + hash_payload_bytes + audit_bytes + decision_jsonl_bytes)
+    return int(
+        report_bytes
+        + candidate_json_bytes
+        + candidate_journal_bytes
+        + hash_payload_bytes
+        + audit_bytes
+        + decision_jsonl_bytes
+    )
 
 
 def _plugin_complexity_metadata(
@@ -756,8 +843,12 @@ def _estimated_memory_budget(
     max_split_candles = max(split_candle_counts.values(), default=0)
     total_candles = sum(split_candle_counts.values())
     snapshot_bytes = total_candles * 160
-    effective_workers = max(1, int(max_workers) if str(execution_mode) == "parallel" else 1)
-    event_bytes = max_split_candles * int(plugin_complexity.get("expected_decision_payload_bytes_per_event") or 384)
+    effective_workers = max(
+        1, int(max_workers) if str(execution_mode) == "parallel" else 1
+    )
+    event_bytes = max_split_candles * int(
+        plugin_complexity.get("expected_decision_payload_bytes_per_event") or 384
+    )
     tick_bytes = 0
     stage_trace_bytes = min(max_split_candles * 6, 128) * 512
     behavior_evidence_bytes = 8 * 1024
@@ -774,14 +865,20 @@ def _estimated_memory_budget(
     budget_mb = getattr(resource_limits, "max_total_memory_mb", None)
     if budget_mb is None:
         budget_mb = getattr(resource_limits, "max_rss_mb", None)
-    budget_bytes = int(float(budget_mb) * 1024 * 1024) if budget_mb is not None else None
+    budget_bytes = (
+        int(float(budget_mb) * 1024 * 1024) if budget_mb is not None else None
+    )
     safe_workers = effective_workers
     status = "NOT_EVALUATED"
     reasons: list[str] = []
     if budget_bytes is not None:
         non_worker_bytes = estimated_total - parallel_fanout_bytes
         per_worker = max(1, snapshot_bytes)
-        safe_workers = max(1, int((budget_bytes - non_worker_bytes) // per_worker)) if budget_bytes > non_worker_bytes else 1
+        safe_workers = (
+            max(1, int((budget_bytes - non_worker_bytes) // per_worker))
+            if budget_bytes > non_worker_bytes
+            else 1
+        )
         safe_workers = min(effective_workers, safe_workers)
         status = "PASS" if estimated_total <= budget_bytes else "WARN"
         if estimated_total > budget_bytes:

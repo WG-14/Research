@@ -48,11 +48,15 @@ PAIR_CONTEXT_FIELDS = ("market", "interval", "cost_model_hash", "portfolio_polic
 def build_rootcause_report(payload: Any) -> dict[str, object]:
     rows = _variant_rows(payload)
     if not rows:
-        raise ValueError("channel_breakout root-cause report requires variant rows with closed_trades")
+        raise ValueError(
+            "channel_breakout root-cause report requires variant rows with closed_trades"
+        )
     trades: list[dict[str, object]] = []
     for row in rows:
         variant = str(row.get("variant") or row.get("candidate_id") or "unknown")
-        period = str(row.get("period") or row.get("split") or row.get("window") or "unknown")
+        period = str(
+            row.get("period") or row.get("split") or row.get("window") or "unknown"
+        )
         closed = row.get("closed_trades") or row.get("final_holdout_closed_trades")
         if not isinstance(closed, list) or not closed:
             raise ValueError(f"variant={variant} period={period} has no closed_trades")
@@ -116,15 +120,21 @@ def classify_acceptance(payload: Any) -> dict[str, object]:
         blockers.append("trade_count_collapse")
     if not _notional_approximately_99000(first_entry_notional):
         blockers.append("first_entry_notional_not_approximately_99000")
-    if _required_float(candidate, "sum_reclaim_pnl") < _required_float(control, "sum_reclaim_pnl"):
+    if _required_float(candidate, "sum_reclaim_pnl") < _required_float(
+        control, "sum_reclaim_pnl"
+    ):
         blockers.append("sum_reclaim_pnl_not_improved")
-    if _required_float(candidate, "sum_max_hold_pnl") < _required_float(control, "sum_max_hold_pnl"):
+    if _required_float(candidate, "sum_max_hold_pnl") < _required_float(
+        control, "sum_max_hold_pnl"
+    ):
         blockers.append("sum_max_hold_pnl_worse")
 
     if blockers:
         classification = (
             "loss_reduction_only"
-            if policy_mismatch == 0 and candidate_return <= 0.0 and candidate_return > control_return
+            if policy_mismatch == 0
+            and candidate_return <= 0.0
+            and candidate_return > control_return
             else "fail"
         )
     else:
@@ -147,7 +157,10 @@ def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
         role_hint = str(row.get("variant_role") or "").lower()
         for field in missing:
             blockers.append(f"missing_required_summary_field:{row_id}:{field}")
-            if role_hint == "candidate" and field in CANDIDATE_REQUIRED_ACCEPTANCE_FIELDS:
+            if (
+                role_hint == "candidate"
+                and field in CANDIDATE_REQUIRED_ACCEPTANCE_FIELDS
+            ):
                 blockers.append(f"missing_required_acceptance_field:{field}")
             if role_hint == "control" and field in CONTROL_REQUIRED_ACCEPTANCE_FIELDS:
                 blockers.append(f"missing_required_acceptance_field:{field}")
@@ -163,7 +176,10 @@ def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
             row, "final_holdout_missing_count", blockers=blockers, row_id=row_id
         )
         interval_mismatch_count = _normalize_int_field(
-            row, "final_holdout_interval_mismatch_count", blockers=blockers, row_id=row_id
+            row,
+            "final_holdout_interval_mismatch_count",
+            blockers=blockers,
+            row_id=row_id,
         )
         quality_status = row.get("quality_status")
         coverage_pct = row.get("coverage_pct")
@@ -174,11 +190,21 @@ def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
             row_id=row_id,
         )
         numeric_values = {
-            "avg_return_pct": _normalize_float_field(row, "avg_return_pct", blockers=blockers, row_id=row_id),
-            "positive_periods": _normalize_int_field(row, "positive_periods", blockers=blockers, row_id=row_id),
-            "sum_trades": _normalize_float_field(row, "sum_trades", blockers=blockers, row_id=row_id),
-            "sum_reclaim_pnl": _normalize_float_field(row, "sum_reclaim_pnl", blockers=blockers, row_id=row_id),
-            "sum_max_hold_pnl": _normalize_float_field(row, "sum_max_hold_pnl", blockers=blockers, row_id=row_id),
+            "avg_return_pct": _normalize_float_field(
+                row, "avg_return_pct", blockers=blockers, row_id=row_id
+            ),
+            "positive_periods": _normalize_int_field(
+                row, "positive_periods", blockers=blockers, row_id=row_id
+            ),
+            "sum_trades": _normalize_float_field(
+                row, "sum_trades", blockers=blockers, row_id=row_id
+            ),
+            "sum_reclaim_pnl": _normalize_float_field(
+                row, "sum_reclaim_pnl", blockers=blockers, row_id=row_id
+            ),
+            "sum_max_hold_pnl": _normalize_float_field(
+                row, "sum_max_hold_pnl", blockers=blockers, row_id=row_id
+            ),
             "policy_mismatch_sum": _normalize_int_field(
                 row, "policy_mismatch_sum", blockers=blockers, row_id=row_id
             ),
@@ -203,14 +229,20 @@ def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
         if quality_status is not None and str(quality_status) != "PASS":
             blockers.append(f"quality_status_not_pass:{row_id}")
         if coverage_pct is not None:
-            normalized_coverage = _normalize_float_field(row, "coverage_pct", blockers=blockers, row_id=row_id)
+            normalized_coverage = _normalize_float_field(
+                row, "coverage_pct", blockers=blockers, row_id=row_id
+            )
             if normalized_coverage is not None and normalized_coverage != 100.0:
                 blockers.append(f"coverage_pct_not_100:{row_id}")
         if first_entry_verified is not True:
             blockers.append(f"first_entry_notional_verification_not_true:{row_id}")
         if any(value is None for value in numeric_values.values()):
             continue
-        if missing_count is None or interval_mismatch_count is None or first_entry_verified is None:
+        if (
+            missing_count is None
+            or interval_mismatch_count is None
+            or first_entry_verified is None
+        ):
             continue
         if context_values is None:
             continue
@@ -229,7 +261,11 @@ def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
             normalized_row["period_count"] = period_count
         normalized.append(normalized_row)
 
-    controls_by_period = {str(row["period"]): row for row in normalized if row["variant_role"] == "control"}
+    controls_by_period = {
+        str(row["period"]): row
+        for row in normalized
+        if row["variant_role"] == "control"
+    }
     for candidate in [row for row in normalized if row["variant_role"] == "candidate"]:
         control = controls_by_period.get(str(candidate["period"]))
         if control is None:
@@ -237,7 +273,9 @@ def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
             continue
         for field in (*PAIR_CONTEXT_FIELDS, "scenario_key", "scenario_value"):
             if candidate[field] != control[field]:
-                blockers.append(f"paired_context_mismatch:{candidate['period']}:{field}")
+                blockers.append(
+                    f"paired_context_mismatch:{candidate['period']}:{field}"
+                )
     if not normalized:
         blockers.append("missing_paired_ab_summary_rows")
     if not any(row["variant_role"] == "candidate" for row in normalized):
@@ -267,7 +305,11 @@ def _summary_rows(payload: Any) -> list[dict[str, object]]:
     if isinstance(payload, list):
         return [row for row in payload if isinstance(row, dict)]
     if isinstance(payload, dict):
-        value = payload.get("summary_rows") or payload.get("rows") or payload.get("variants")
+        value = (
+            payload.get("summary_rows")
+            or payload.get("rows")
+            or payload.get("variants")
+        )
         if isinstance(value, list):
             return [row for row in value if isinstance(row, dict)]
     return []
@@ -275,14 +317,26 @@ def _summary_rows(payload: Any) -> list[dict[str, object]]:
 
 def _summary_row(rows: list[dict[str, object]], role: str) -> dict[str, object]:
     for row in rows:
-        if str(row.get("variant_role") or row.get("role") or row.get("variant") or "").lower() == role:
+        if (
+            str(
+                row.get("variant_role") or row.get("role") or row.get("variant") or ""
+            ).lower()
+            == role
+        ):
             return row
     raise ValueError(f"channel_breakout acceptance requires a {role} summary row")
 
 
 def _row_id(row: dict[str, object], index: int) -> str:
-    role = str(row.get("variant_role") or row.get("role") or row.get("variant") or f"row{index}")
-    period = str(row.get("period") or row.get("split") or row.get("window") or f"index{index}")
+    role = str(
+        row.get("variant_role")
+        or row.get("role")
+        or row.get("variant")
+        or f"row{index}"
+    )
+    period = str(
+        row.get("period") or row.get("split") or row.get("window") or f"index{index}"
+    )
     return f"{role}:{period}"
 
 
@@ -301,7 +355,9 @@ def _normalize_pair_context(
     elif "scenario_id" in row:
         scenario_key = "scenario_id"
     else:
-        blockers.append(f"missing_required_pair_context_field:{row_id}:execution_scenario_or_scenario_id")
+        blockers.append(
+            f"missing_required_pair_context_field:{row_id}:execution_scenario_or_scenario_id"
+        )
     if missing or not scenario_key:
         return None
     return {
@@ -360,7 +416,9 @@ def _normalize_bool_field(
     return None
 
 
-def _aggregate_acceptance_rows(rows: list[dict[str, object]], *, role: str) -> dict[str, object]:
+def _aggregate_acceptance_rows(
+    rows: list[dict[str, object]], *, role: str
+) -> dict[str, object]:
     if not rows:
         return {}
     if role == "candidate":
@@ -369,26 +427,48 @@ def _aggregate_acceptance_rows(rows: list[dict[str, object]], *, role: str) -> d
         if first_period_count is not None:
             period_count = int(first_period_count)
         return {
-            "avg_return_pct": fmean(_required_float(row, "avg_return_pct") for row in rows),
-            "positive_periods": sum(_required_int(row, "positive_periods") for row in rows),
+            "avg_return_pct": fmean(
+                _required_float(row, "avg_return_pct") for row in rows
+            ),
+            "positive_periods": sum(
+                _required_int(row, "positive_periods") for row in rows
+            ),
             "period_count": period_count,
-            "sum_reclaim_pnl": sum(_required_float(row, "sum_reclaim_pnl") for row in rows),
-            "sum_max_hold_pnl": sum(_required_float(row, "sum_max_hold_pnl") for row in rows),
+            "sum_reclaim_pnl": sum(
+                _required_float(row, "sum_reclaim_pnl") for row in rows
+            ),
+            "sum_max_hold_pnl": sum(
+                _required_float(row, "sum_max_hold_pnl") for row in rows
+            ),
             "sum_trades": sum(_required_float(row, "sum_trades") for row in rows),
-            "policy_mismatch_sum": sum(_required_int(row, "policy_mismatch_sum") for row in rows),
+            "policy_mismatch_sum": sum(
+                _required_int(row, "policy_mismatch_sum") for row in rows
+            ),
             "first_entry_notional": _required_float(rows[0], "first_entry_notional"),
         }
     return {
         "avg_return_pct": fmean(_required_float(row, "avg_return_pct") for row in rows),
         "sum_reclaim_pnl": sum(_required_float(row, "sum_reclaim_pnl") for row in rows),
-        "sum_max_hold_pnl": sum(_required_float(row, "sum_max_hold_pnl") for row in rows),
+        "sum_max_hold_pnl": sum(
+            _required_float(row, "sum_max_hold_pnl") for row in rows
+        ),
         "sum_trades": sum(_required_float(row, "sum_trades") for row in rows),
     }
 
 
-def _missing_acceptance_field_blockers(row: dict[str, object], *, role: str) -> list[str]:
-    required = CANDIDATE_REQUIRED_ACCEPTANCE_FIELDS if role == "candidate" else CONTROL_REQUIRED_ACCEPTANCE_FIELDS
-    return [f"missing_required_acceptance_field:{field}" for field in required if field not in row]
+def _missing_acceptance_field_blockers(
+    row: dict[str, object], *, role: str
+) -> list[str]:
+    required = (
+        CANDIDATE_REQUIRED_ACCEPTANCE_FIELDS
+        if role == "candidate"
+        else CONTROL_REQUIRED_ACCEPTANCE_FIELDS
+    )
+    return [
+        f"missing_required_acceptance_field:{field}"
+        for field in required
+        if field not in row
+    ]
 
 
 def _required_float(row: dict[str, object], field: str) -> float:
@@ -421,16 +501,23 @@ def _require_trade_fields(trade: dict[str, object]) -> None:
     required = ("net_pnl", "exit_reason", "holding_minutes", "mfe_pct", "mae_pct")
     missing = [key for key in required if key not in trade]
     if missing:
-        raise ValueError("closed trade missing required root-cause field(s): " + ",".join(missing))
+        raise ValueError(
+            "closed trade missing required root-cause field(s): " + ",".join(missing)
+        )
 
 
-def _summary_by(trades: list[dict[str, object]], keys: tuple[str, ...]) -> list[dict[str, object]]:
+def _summary_by(
+    trades: list[dict[str, object]], keys: tuple[str, ...]
+) -> list[dict[str, object]]:
     grouped: dict[tuple[str, ...], list[dict[str, object]]] = defaultdict(list)
     for trade in trades:
         grouped[tuple(str(trade.get(key) or "unknown") for key in keys)].append(trade)
     rows: list[dict[str, object]] = []
     for group_key, group_trades in sorted(grouped.items()):
-        row = {key.removeprefix("_"): value for key, value in zip(keys, group_key, strict=True)}
+        row = {
+            key.removeprefix("_"): value
+            for key, value in zip(keys, group_key, strict=True)
+        }
         row.update(_trade_summary(group_trades))
         rows.append(row)
     return rows
@@ -441,8 +528,16 @@ def _trade_summary(trades: list[dict[str, object]]) -> dict[str, object]:
     holding = [float(trade.get("holding_minutes") or 0.0) for trade in trades]
     mfe = [float(trade.get("mfe_pct") or 0.0) for trade in trades]
     mae = [float(trade.get("mae_pct") or 0.0) for trade in trades]
-    reclaim = [float(trade.get("net_pnl") or 0.0) for trade in trades if _exit_key(trade) == "reclaim"]
-    maxhold = [float(trade.get("net_pnl") or 0.0) for trade in trades if _exit_key(trade) == "maxhold"]
+    reclaim = [
+        float(trade.get("net_pnl") or 0.0)
+        for trade in trades
+        if _exit_key(trade) == "reclaim"
+    ]
+    maxhold = [
+        float(trade.get("net_pnl") or 0.0)
+        for trade in trades
+        if _exit_key(trade) == "maxhold"
+    ]
     return {
         "trades": len(trades),
         "sum_pnl": sum(pnls),
@@ -461,8 +556,13 @@ def _trade_summary(trades: list[dict[str, object]]) -> dict[str, object]:
 def _holding_bucket_summary(trades: list[dict[str, object]]) -> list[dict[str, object]]:
     grouped = {bucket: [] for bucket in HOLDING_BUCKETS}
     for trade in trades:
-        grouped[_holding_bucket(float(trade.get("holding_minutes") or 0.0))].append(trade)
-    return [{"holding_bucket": bucket, **_trade_summary(grouped[bucket])} for bucket in HOLDING_BUCKETS]
+        grouped[_holding_bucket(float(trade.get("holding_minutes") or 0.0))].append(
+            trade
+        )
+    return [
+        {"holding_bucket": bucket, **_trade_summary(grouped[bucket])}
+        for bucket in HOLDING_BUCKETS
+    ]
 
 
 def _holding_bucket(minutes: float) -> str:
@@ -486,13 +586,18 @@ def _exit_key(trade: dict[str, object]) -> str:
     return "other"
 
 
-def _trade_samples(trades: list[dict[str, object]], limit: int = 3) -> dict[str, object]:
+def _trade_samples(
+    trades: list[dict[str, object]], limit: int = 3
+) -> dict[str, object]:
     ordered = sorted(trades, key=lambda trade: float(trade.get("net_pnl") or 0.0))
     return {"worst": ordered[:limit], "best": list(reversed(ordered[-limit:]))}
 
 
 def _notional_approximately_99000(value: float) -> bool:
-    return abs(float(value) - FIRST_ENTRY_NOTIONAL_TARGET) <= FIRST_ENTRY_NOTIONAL_TOLERANCE
+    return (
+        abs(float(value) - FIRST_ENTRY_NOTIONAL_TARGET)
+        <= FIRST_ENTRY_NOTIONAL_TOLERANCE
+    )
 
 
 def _load_json(path: str) -> Any:
@@ -503,7 +608,11 @@ def main_rootcause(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     args = parser.parse_args(argv)
-    print(json.dumps(build_rootcause_report(_load_json(args.input)), sort_keys=True, indent=2))
+    print(
+        json.dumps(
+            build_rootcause_report(_load_json(args.input)), sort_keys=True, indent=2
+        )
+    )
     return 0
 
 
@@ -511,5 +620,9 @@ def main_acceptance(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--summary", required=True)
     args = parser.parse_args(argv)
-    print(json.dumps(classify_acceptance(_load_json(args.summary)), sort_keys=True, indent=2))
+    print(
+        json.dumps(
+            classify_acceptance(_load_json(args.summary)), sort_keys=True, indent=2
+        )
+    )
     return 0

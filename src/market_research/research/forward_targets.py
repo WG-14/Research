@@ -8,7 +8,9 @@ from market_research.research.dataset_snapshot import Candle
 
 ENTRY_PRICE_NEXT_OPEN = "next_open"
 ENTRY_PRICE_SIGNAL_CLOSE = "signal_close"
-SUPPORTED_ENTRY_PRICE_MODES = frozenset({ENTRY_PRICE_NEXT_OPEN, ENTRY_PRICE_SIGNAL_CLOSE})
+SUPPORTED_ENTRY_PRICE_MODES = frozenset(
+    {ENTRY_PRICE_NEXT_OPEN, ENTRY_PRICE_SIGNAL_CLOSE}
+)
 PATH_START_ENTRY_CANDLE = "entry_candle"
 PATH_START_NEXT_CANDLE_AFTER_SIGNAL_CLOSE = "next_candle_after_signal_close"
 MFE_MAE_BASIS_ENTRY_TO_EXIT_OHLC = "ohlc_entry_to_exit_candles"
@@ -31,19 +33,29 @@ class ForwardDiagnosticsMeasurementContract:
 
     def __post_init__(self) -> None:
         if self.return_basis != FORWARD_DIAGNOSTICS_RETURN_BASIS:
-            raise ValueError("forward diagnostics measurement_contract.return_basis must be gross_forward_return")
+            raise ValueError(
+                "forward diagnostics measurement_contract.return_basis must be gross_forward_return"
+            )
         if self.cost_adjustment != FORWARD_DIAGNOSTICS_COST_ADJUSTMENT:
-            raise ValueError("forward diagnostics measurement_contract.cost_adjustment must be none")
+            raise ValueError(
+                "forward diagnostics measurement_contract.cost_adjustment must be none"
+            )
         if self.diagnostic_cost_model != FORWARD_DIAGNOSTICS_COST_MODEL:
-            raise ValueError("forward diagnostics measurement_contract.diagnostic_cost_model must be none")
+            raise ValueError(
+                "forward diagnostics measurement_contract.diagnostic_cost_model must be none"
+            )
         if self.execution_simulation is not False:
             raise ValueError("forward diagnostics must not enable execution_simulation")
         if self.fill_simulation is not False:
             raise ValueError("forward diagnostics must not enable fill_simulation")
         if self.order_lifecycle_simulation is not False:
-            raise ValueError("forward diagnostics must not enable order_lifecycle_simulation")
+            raise ValueError(
+                "forward diagnostics must not enable order_lifecycle_simulation"
+            )
         if self.operator_interpretation != FORWARD_DIAGNOSTICS_OPERATOR_INTERPRETATION:
-            raise ValueError("forward diagnostics measurement_contract.operator_interpretation mismatch")
+            raise ValueError(
+                "forward diagnostics measurement_contract.operator_interpretation mismatch"
+            )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -177,7 +189,11 @@ def build_forward_target_window(
     else:
         entry_price_index = index
         path_start_index = index + 1
-    if entry_price_index >= len(candles) or path_start_index >= len(candles) or exit_index >= len(candles):
+    if (
+        entry_price_index >= len(candles)
+        or path_start_index >= len(candles)
+        or exit_index >= len(candles)
+    ):
         return None
 
     policy = forward_target_calculation_policy(mode)
@@ -272,5 +288,7 @@ def _normalize_entry_price_mode(entry_price_mode: str) -> str:
     mode = str(entry_price_mode or "").strip()
     if mode not in SUPPORTED_ENTRY_PRICE_MODES:
         allowed = ", ".join(sorted(SUPPORTED_ENTRY_PRICE_MODES))
-        raise ValueError(f"unknown entry_price_mode={entry_price_mode!r}; allowed values: {allowed}")
+        raise ValueError(
+            f"unknown entry_price_mode={entry_price_mode!r}; allowed values: {allowed}"
+        )
     return mode

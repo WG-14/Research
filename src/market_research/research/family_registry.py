@@ -16,7 +16,9 @@ EMPTY_REGISTRY_HASH = sha256_prefixed([])
 FAMILY_TRIAL_REGISTRY_BUDGET_POLICY = "registry_append_only_budget_exempt"
 
 
-def family_trial_registry_path(*, manager: ResearchPathManager, experiment_family_id: str) -> Path:
+def family_trial_registry_path(
+    *, manager: ResearchPathManager, experiment_family_id: str
+) -> Path:
     """Return the managed append-only family registry path.
 
     Family registries are cross-experiment research audit ledgers under
@@ -25,10 +27,19 @@ def family_trial_registry_path(*, manager: ResearchPathManager, experiment_famil
     registry evidence and are covered by repo-local artifact checks.
     """
     safe_family_id = _safe_path_segment(experiment_family_id)
-    path = manager.data_dir() / "reports" / "research" / "families" / safe_family_id / "trial_registry.jsonl"
+    path = (
+        manager.data_dir()
+        / "reports"
+        / "research"
+        / "families"
+        / safe_family_id
+        / "trial_registry.jsonl"
+    )
     project_root = manager.project_root.resolve()
     if ResearchPathManager.is_within(path.resolve(), project_root):
-        raise ValueError(f"family trial registry path must be outside repository: {path.resolve()}")
+        raise ValueError(
+            f"family trial registry path must be outside repository: {path.resolve()}"
+        )
     return path
 
 
@@ -65,7 +76,9 @@ def append_family_trial_registry_row(
     result_status: str,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    path = family_trial_registry_path(manager=manager, experiment_family_id=experiment_family_id)
+    path = family_trial_registry_path(
+        manager=manager, experiment_family_id=experiment_family_id
+    )
     prior_hash = registry_content_hash(path)
     row: dict[str, Any] = {
         "schema_version": FAMILY_TRIAL_REGISTRY_SCHEMA_VERSION,
@@ -102,14 +115,28 @@ def validate_family_registry_binding(
     report: dict[str, Any],
     evidence: dict[str, Any],
 ) -> list[str]:
-    contract = evidence.get("statistical_validation_contract") or report.get("statistical_validation_contract")
-    path_value = str(evidence.get("family_trial_registry_path") or report.get("family_trial_registry_path") or "").strip()
-    prior_hash = str(evidence.get("family_trial_registry_prior_hash") or report.get("family_trial_registry_prior_hash") or "").strip()
-    row_hash = str(evidence.get("family_trial_registry_row_hash") or report.get("family_trial_registry_row_hash") or "").strip()
+    contract = evidence.get("statistical_validation_contract") or report.get(
+        "statistical_validation_contract"
+    )
+    path_value = str(
+        evidence.get("family_trial_registry_path")
+        or report.get("family_trial_registry_path")
+        or ""
+    ).strip()
+    prior_hash = str(
+        evidence.get("family_trial_registry_prior_hash")
+        or report.get("family_trial_registry_prior_hash")
+        or ""
+    ).strip()
+    row_hash = str(
+        evidence.get("family_trial_registry_row_hash")
+        or report.get("family_trial_registry_row_hash")
+        or ""
+    ).strip()
     registry_declared = bool(path_value or prior_hash or row_hash)
-    if (
-        not registry_declared
-        and (not isinstance(contract, dict) or contract.get("multiple_testing_scope") != "experiment_family")
+    if not registry_declared and (
+        not isinstance(contract, dict)
+        or contract.get("multiple_testing_scope") != "experiment_family"
     ):
         return []
     reasons: list[str] = []
@@ -127,35 +154,59 @@ def validate_family_registry_binding(
     for row in rows:
         if row.get("row_hash") != row_hash:
             continue
-        computed_row_hash = sha256_prefixed(content_hash_payload({k: v for k, v in row.items() if k != "row_hash"}))
+        computed_row_hash = sha256_prefixed(
+            content_hash_payload({k: v for k, v in row.items() if k != "row_hash"})
+        )
         if computed_row_hash != row_hash:
             reasons.append("experiment_family_registry_row_hash_mismatch")
         expected_fields = {
-            "experiment_family_id": evidence.get("experiment_family_id") or report.get("experiment_family_id"),
-            "experiment_id": evidence.get("experiment_id") or report.get("experiment_id"),
-            "manifest_hash": evidence.get("manifest_hash") or report.get("manifest_hash"),
-            "dataset_content_hash": evidence.get("dataset_content_hash") or report.get("dataset_content_hash"),
-            "attempt_index": evidence.get("attempt_index") or report.get("attempt_index"),
-            "holdout_reuse_count": evidence.get("holdout_reuse_count") or report.get("holdout_reuse_count"),
+            "experiment_family_id": evidence.get("experiment_family_id")
+            or report.get("experiment_family_id"),
+            "experiment_id": evidence.get("experiment_id")
+            or report.get("experiment_id"),
+            "manifest_hash": evidence.get("manifest_hash")
+            or report.get("manifest_hash"),
+            "dataset_content_hash": evidence.get("dataset_content_hash")
+            or report.get("dataset_content_hash"),
+            "attempt_index": evidence.get("attempt_index")
+            or report.get("attempt_index"),
+            "holdout_reuse_count": evidence.get("holdout_reuse_count")
+            or report.get("holdout_reuse_count"),
         }
         for field, expected in expected_fields.items():
             if str(row.get(field) or "") != str(expected or ""):
                 reasons.append("experiment_family_registry_stale")
                 break
-        if str(row.get("return_panel_hash") or "") != str(evidence.get("return_panel_hash") or ""):
+        if str(row.get("return_panel_hash") or "") != str(
+            evidence.get("return_panel_hash") or ""
+        ):
             reasons.append("experiment_family_registry_return_panel_hash_mismatch")
-        expected_evidence_hash = str(evidence.get("content_hash") or report.get("statistical_evidence_hash") or "")
+        expected_evidence_hash = str(
+            evidence.get("content_hash")
+            or report.get("statistical_evidence_hash")
+            or ""
+        )
         if row.get("statistical_evidence_hash_phase") == "pre_registry_evidence_hash":
-            expected_evidence_hash = str(evidence.get("family_trial_registry_bound_evidence_hash") or "")
+            expected_evidence_hash = str(
+                evidence.get("family_trial_registry_bound_evidence_hash") or ""
+            )
             if not expected_evidence_hash.startswith("sha256:"):
-                reasons.append("experiment_family_registry_statistical_evidence_hash_missing")
+                reasons.append(
+                    "experiment_family_registry_statistical_evidence_hash_missing"
+                )
         if str(row.get("statistical_evidence_hash") or "") != expected_evidence_hash:
-            reasons.append("experiment_family_registry_statistical_evidence_hash_mismatch")
+            reasons.append(
+                "experiment_family_registry_statistical_evidence_hash_mismatch"
+            )
         if str(row.get("prior_registry_hash") or "") != prior_hash:
             reasons.append("experiment_family_registry_prior_hash_mismatch")
-        if str(row.get("parameter_space_hash") or "") != str(report.get("parameter_space_hash") or ""):
+        if str(row.get("parameter_space_hash") or "") != str(
+            report.get("parameter_space_hash") or ""
+        ):
             reasons.append("experiment_family_registry_stale")
-        if int(row.get("candidate_count") or -1) != int(report.get("candidate_count") or -2):
+        if int(row.get("candidate_count") or -1) != int(
+            report.get("candidate_count") or -2
+        ):
             reasons.append("experiment_family_registry_stale")
         return sorted(set(reasons))
     return ["experiment_family_registry_row_hash_mismatch"]
@@ -175,5 +226,8 @@ def _load_registry_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _safe_path_segment(value: str) -> str:
-    out = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in str(value).strip())
+    out = "".join(
+        ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+        for ch in str(value).strip()
+    )
     return out or "unknown_family"

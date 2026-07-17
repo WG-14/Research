@@ -14,7 +14,10 @@ def test_each_stream_has_complete_decision_to_ledger_lineage():
     assert all(intent.decision_id in decisions for intent in intents.values())
     assert all(request.intent_id in intents for request in requests.values())
     assert all(fill.request_id in requests and fill.fill_id for fill in run.fills)
-    assert all(entry.fill_id in {fill.fill_id for fill in run.fills} for entry in run.ledger_entries)
+    assert all(
+        entry.fill_id in {fill.fill_id for fill in run.fills}
+        for entry in run.ledger_entries
+    )
 
 
 def test_duplicate_execution_ids_are_rejected():

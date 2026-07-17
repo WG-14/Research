@@ -1,0 +1,46 @@
+[project]
+name = "research-operations"
+version = "0.1.0"
+description = "Isolated operational trust domain in the market-research monorepo"
+requires-python = ">=3.12"
+dependencies = [
+    "Django>=5.2,<5.3",
+    "gunicorn>=23,<24",
+    "market-research",
+    "market-research-internal-web",
+    "psycopg[binary]>=3.2,<4",
+]
+
+[project.scripts]
+research-ops = "research_operations.cli:main"
+research-job-worker = "research_operations.research_job_worker:main"
+research-outbox-worker = "research_operations.worker:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.12,<1",
+]
+
+[tool.uv.sources]
+market-research = { workspace = true }
+market-research-internal-web = { workspace = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "postgresql: requires the explicitly configured live PostgreSQL database",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

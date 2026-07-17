@@ -90,9 +90,7 @@ def _raw_execution_scenario_count(payload: dict[str, Any], *, limit: int) -> int
         _non_empty_list_length(execution_model.get("latency_ms")),
         _non_empty_list_length(execution_model.get("partial_fill_rate")),
         _non_empty_list_length(execution_model.get("order_failure_rate")),
-        _non_empty_list_length(
-            execution_model.get("market_order_extra_cost_bps")
-        ),
+        _non_empty_list_length(execution_model.get("market_order_extra_cost_bps")),
     )
     return _bounded_product(
         dimensions,

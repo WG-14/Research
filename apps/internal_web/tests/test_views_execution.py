@@ -155,11 +155,21 @@ def test_job_and_manifest_object_access_is_owner_scoped(
     )
     other.groups.add(Group.objects.get(name="research_viewer"))
     client.force_login(other)
-    assert client.get(reverse("portal:manifest-detail", args=(manifest_record.pk,))).status_code == 404
+    assert (
+        client.get(
+            reverse("portal:manifest-detail", args=(manifest_record.pk,))
+        ).status_code
+        == 404
+    )
     assert client.get(reverse("portal:job-detail", args=(job.pk,))).status_code == 404
 
     client.force_login(reviewer_user)
-    assert client.get(reverse("portal:manifest-detail", args=(manifest_record.pk,))).status_code == 200
+    assert (
+        client.get(
+            reverse("portal:manifest-detail", args=(manifest_record.pk,))
+        ).status_code
+        == 200
+    )
     assert client.get(reverse("portal:job-detail", args=(job.pk,))).status_code == 200
     review_queue = client.get(reverse("portal:review-queue"))
     assert review_queue.status_code == 200
@@ -203,7 +213,9 @@ def test_review_queue_contains_only_passed_validation_outcomes(
     assert response.status_code == 200
     visible_ids = {job.pk for job in response.context["jobs"]}
     assert visible_ids == {jobs[ResearchJob.ResearchOutcome.PASS].pk}
-    assert "실행자와 검토·승인자는 서로 달라야 합니다" in response.content.decode("utf-8")
+    assert "실행자와 검토·승인자는 서로 달라야 합니다" in response.content.decode(
+        "utf-8"
+    )
     dashboard = client.get(reverse("portal:dashboard"))
     assert dashboard.context["metrics"]["review"] == 1
 
@@ -298,7 +310,9 @@ def test_real_validation_engine_writes_hash_verified_web_result(
     )
 
 
-def test_status_endpoint_exposes_no_server_path(client, runner_user, manifest_record) -> None:
+def test_status_endpoint_exposes_no_server_path(
+    client, runner_user, manifest_record
+) -> None:
     job = enqueue_research_job(
         owner=runner_user,
         manifest=manifest_record,
@@ -321,4 +335,6 @@ def test_status_endpoint_exposes_no_server_path(client, runner_user, manifest_re
         "terminal",
         "version",
     }
-    assert str(settings.RESEARCH_PATHS.data_root) not in response.content.decode("utf-8")
+    assert str(settings.RESEARCH_PATHS.data_root) not in response.content.decode(
+        "utf-8"
+    )

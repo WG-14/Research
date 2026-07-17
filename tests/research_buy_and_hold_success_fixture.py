@@ -23,7 +23,16 @@ def create_success_fixture(root: Path) -> tuple[Path, Path]:
             for index, price in enumerate(PRICES):
                 conn.execute(
                     "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    ("KRW-BTC", "1m", base + index * 60_000, price, price, price, price, 1.0),
+                    (
+                        "KRW-BTC",
+                        "1m",
+                        base + index * 60_000,
+                        price,
+                        price,
+                        price,
+                        price,
+                        1.0,
+                    ),
                 )
     manifest = {
         "experiment_id": "buy_and_hold_success_import_boundary",

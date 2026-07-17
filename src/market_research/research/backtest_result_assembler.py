@@ -4,7 +4,10 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from .hashing import canonical_payload_hash
-from market_research.market_regime import aggregate_regime_coverage, aggregate_regime_performance
+from market_research.market_regime import (
+    aggregate_regime_coverage,
+    aggregate_regime_performance,
+)
 
 from . import backtest_support as support
 from .artifact_store import ArtifactBudgetExceeded
@@ -68,7 +71,11 @@ class BacktestResultAssembler:
     ) -> support.BacktestRun:
         last = candles[-1]
         final_equity = ledger.cash + ledger.qty * float(last.close)
-        return_pct = ((final_equity / starting_cash) - 1.0) * 100.0 if starting_cash > 0.0 else 0.0
+        return_pct = (
+            ((final_equity / starting_cash) - 1.0) * 100.0
+            if starting_cash > 0.0
+            else 0.0
+        )
         metrics = support.metrics(
             return_pct=return_pct,
             max_drawdown_pct=ledger.max_drawdown * 100.0,
@@ -84,7 +91,9 @@ class BacktestResultAssembler:
             derived_open_cost_basis,
         ) = support.metrics_v2_ledgers_from_trades(trades=ledger.trade_ledger)
         coverage = (
-            aggregate_regime_coverage(snapshots=regime_snapshots, trades=ledger.trade_ledger)
+            aggregate_regime_coverage(
+                snapshots=regime_snapshots, trades=ledger.trade_ledger
+            )
             if accumulator.retain_full_detail()
             else regime_coverage_accumulator.coverage(trades=ledger.trade_ledger)
         )
@@ -98,24 +107,33 @@ class BacktestResultAssembler:
             final_cash=ledger.cash,
             final_asset_qty=ledger.qty,
             final_mark_price=last.close,
-            final_open_cost_basis=ledger.entry_cost_basis if ledger.qty > 0.0 else derived_open_cost_basis,
+            final_open_cost_basis=ledger.entry_cost_basis
+            if ledger.qty > 0.0
+            else derived_open_cost_basis,
             equity_curve=tuple(ledger.equity_curve),
             position_intervals=position_intervals,
             closed_trades=closed_trade_records,
             execution_records=execution_records,
             decision_records=tuple(decisions),
-            participation_count_basis=str(getattr(run_context, "participation_count_basis", None) or "filled"),
+            participation_count_basis=str(
+                getattr(run_context, "participation_count_basis", None) or "filled"
+            ),
             **(
                 {}
                 if accumulator.retain_full_detail()
-                else accumulator.metrics_summary_inputs(max_drawdown_pct=ledger.max_drawdown * 100.0)
+                else accumulator.metrics_summary_inputs(
+                    max_drawdown_pct=ledger.max_drawdown * 100.0
+                )
             ),
         )
         if not accumulator.retain_full_detail():
             metrics_v2 = replace(
                 metrics_v2,
                 limitation_reasons=tuple(
-                    sorted(set(metrics_v2.limitation_reasons) | {"bounded_detail_equity_curve_not_retained"})
+                    sorted(
+                        set(metrics_v2.limitation_reasons)
+                        | {"bounded_detail_equity_curve_not_retained"}
+                    )
                 ),
             )
         audit_trace_index = _complete_audit_trace_observability(
@@ -123,7 +141,9 @@ class BacktestResultAssembler:
             warnings=warnings,
             status="completed",
         )
-        accumulator.trade_ledger_hash_material = [support.trade_hash_payload(trade) for trade in ledger.trade_ledger]
+        accumulator.trade_ledger_hash_material = [
+            support.trade_hash_payload(trade) for trade in ledger.trade_ledger
+        ]
         accumulator.equity_curve_hash_material = [
             {
                 "ts": int(point.ts),
@@ -133,11 +153,17 @@ class BacktestResultAssembler:
             }
             for point in ledger.equity_curve
         ]
-        strategy_diagnostics = accumulator.strategy_diagnostics(trades=ledger.trade_ledger)
-        resource_usage = accumulator.resource_usage(candles_processed=accumulator.decision_count)
+        strategy_diagnostics = accumulator.strategy_diagnostics(
+            trades=ledger.trade_ledger
+        )
+        resource_usage = accumulator.resource_usage(
+            candles_processed=accumulator.decision_count
+        )
         resource_usage["strategy_diagnostics"] = strategy_diagnostics
         resource_usage.update(dict(stage_trace_evidence))
-        resource_usage.setdefault("stage_trace_hash", canonical_payload_hash(stage_trace_evidence))
+        resource_usage.setdefault(
+            "stage_trace_hash", canonical_payload_hash(stage_trace_evidence)
+        )
         return support.BacktestRun(
             metrics=metrics,
             metrics_v2=metrics_v2,
@@ -146,7 +172,9 @@ class BacktestResultAssembler:
             warnings=tuple(warnings),
             regime_performance=performance,
             regime_coverage=coverage,
-            execution_event_summary=support.execution_event_summary(ledger.trade_ledger),
+            execution_event_summary=support.execution_event_summary(
+                ledger.trade_ledger
+            ),
             decisions=tuple(decisions),
             equity_curve=tuple(ledger.equity_curve),
             position_intervals=position_intervals,

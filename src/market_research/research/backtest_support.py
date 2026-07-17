@@ -9,7 +9,6 @@ from market_research.market_regime import RegimeCoverageRow
 
 from .backtest_types import (
     BacktestResourceLimitExceeded,
-    BacktestRun,
     BacktestRunContext,
     MemorySample,
 )
@@ -43,7 +42,9 @@ class BacktestAccumulator:
         default_factory=lambda: StreamingEvidenceDigest("common_behavior_hash_material")
     )
     strategy_behavior_hash_material: StreamingEvidenceDigest = field(
-        default_factory=lambda: StreamingEvidenceDigest("strategy_behavior_hash_material")
+        default_factory=lambda: StreamingEvidenceDigest(
+            "strategy_behavior_hash_material"
+        )
     )
     trade_ledger_hash_material: list[dict[str, object]] = field(default_factory=list)
     equity_curve_hash_material: list[dict[str, object]] = field(default_factory=list)
@@ -100,10 +101,12 @@ class BacktestAccumulator:
         for key, value in _diagnostic_count_defaults(payload).items():
             self.strategy_diagnostic_counts.setdefault(key, int(value))
         for key, value in _diagnostic_count_increments(payload).items():
-            self.strategy_diagnostic_counts[key] = (
-                int(self.strategy_diagnostic_counts.get(key, 0)) + int(value)
-            )
-        self.decision_hash_material.update(str(payload.get("replay_fingerprint_hash") or ""))
+            self.strategy_diagnostic_counts[key] = int(
+                self.strategy_diagnostic_counts.get(key, 0)
+            ) + int(value)
+        self.decision_hash_material.update(
+            str(payload.get("replay_fingerprint_hash") or "")
+        )
         self.behavior_hash_material.update(
             {
                 "candle_ts": payload.get("candle_ts"),
@@ -155,15 +158,27 @@ class BacktestAccumulator:
             self.retained_decision_count += 1
 
     def record_canonical_observability(self, observed: dict[str, Any]) -> None:
-        self.canonical_payload_hash_call_count += int(observed.get("canonical_payload_hash_call_count") or 0)
-        self.canonical_hash_payload_bytes += int(observed.get("canonical_hash_payload_bytes") or 0)
-        self.stable_value_call_count += int(observed.get("stable_value_call_count") or 0)
-        self.stable_value_wall_seconds += float(observed.get("stable_value_wall_seconds") or 0.0)
-        self.canonical_json_wall_seconds += float(observed.get("canonical_json_wall_seconds") or 0.0)
+        self.canonical_payload_hash_call_count += int(
+            observed.get("canonical_payload_hash_call_count") or 0
+        )
+        self.canonical_hash_payload_bytes += int(
+            observed.get("canonical_hash_payload_bytes") or 0
+        )
+        self.stable_value_call_count += int(
+            observed.get("stable_value_call_count") or 0
+        )
+        self.stable_value_wall_seconds += float(
+            observed.get("stable_value_wall_seconds") or 0.0
+        )
+        self.canonical_json_wall_seconds += float(
+            observed.get("canonical_json_wall_seconds") or 0.0
+        )
         largest = int(observed.get("largest_canonical_hash_payload_bytes") or 0)
         if largest > self.largest_canonical_hash_payload_bytes:
             self.largest_canonical_hash_payload_bytes = largest
-            self.largest_canonical_hash_label = str(observed.get("largest_canonical_hash_label") or "")
+            self.largest_canonical_hash_label = str(
+                observed.get("largest_canonical_hash_label") or ""
+            )
 
     def record_decision_payload_build_time(self, elapsed: float) -> None:
         self.decision_payload_build_wall_seconds += float(elapsed)
@@ -186,7 +201,9 @@ class BacktestAccumulator:
         if retained:
             self.retained_equity_point_count += 1
 
-    def record_equity_point(self, *, ts: int, equity: float, cash: float, asset_qty: float) -> None:
+    def record_equity_point(
+        self, *, ts: int, equity: float, cash: float, asset_qty: float
+    ) -> None:
         self.equity_curve_hash_material.append(
             {
                 "ts": int(ts),
@@ -212,7 +229,9 @@ class BacktestAccumulator:
         now = time.perf_counter()
         interval = self.context.heartbeat.interval_s
         bar_interval = self.context.heartbeat.bar_interval
-        by_time = interval is not None and now - self.last_heartbeat_s >= float(interval)
+        by_time = interval is not None and now - self.last_heartbeat_s >= float(
+            interval
+        )
         by_bar = (
             bar_interval is not None
             and int(bar_interval) > 0
@@ -224,7 +243,9 @@ class BacktestAccumulator:
         self.last_heartbeat_bar = candles_processed
         callback(self.heartbeat_payload(candles_processed=candles_processed))
 
-    def heartbeat_payload(self, *, candles_processed: int, memory: dict[str, Any] | None = None) -> dict[str, Any]:
+    def heartbeat_payload(
+        self, *, candles_processed: int, memory: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         memory = memory if memory is not None else self.memory_payload()
         return {
             "stage": "heartbeat",
@@ -266,25 +287,32 @@ class BacktestAccumulator:
             "rss_delta_mb": delta,
         }
 
-    def check_limits(self, *, candles_processed: int, trades: list[dict[str, object]]) -> None:
+    def check_limits(
+        self, *, candles_processed: int, trades: list[dict[str, object]]
+    ) -> None:
         self.update_trades(trades)
         limits = self.context.resource_limits
         reasons: list[str] = []
         elapsed = time.perf_counter() - self.context.started_at
         memory = self.memory_payload()
         rss_delta = memory["rss_delta_mb"]
-        if (
-            limits.max_runtime_s_per_candidate_split is not None
-            and elapsed > float(limits.max_runtime_s_per_candidate_split)
+        if limits.max_runtime_s_per_candidate_split is not None and elapsed > float(
+            limits.max_runtime_s_per_candidate_split
         ):
             reasons.append("max_runtime_exceeded")
         if limits.max_trades is not None and self.trade_count > int(limits.max_trades):
             reasons.append("max_trades_exceeded")
-        if limits.max_rss_mb is not None and rss_delta is not None and rss_delta > float(limits.max_rss_mb):
+        if (
+            limits.max_rss_mb is not None
+            and rss_delta is not None
+            and rss_delta > float(limits.max_rss_mb)
+        ):
             reasons.append("max_rss_exceeded")
         if not reasons:
             return
-        evidence = self.heartbeat_payload(candles_processed=candles_processed, memory=memory)
+        evidence = self.heartbeat_payload(
+            candles_processed=candles_processed, memory=memory
+        )
         evidence.update(self.initialized_portfolio_policy_evidence)
         evidence.update(
             {
@@ -298,8 +326,12 @@ class BacktestAccumulator:
             }
         )
         if self.context.audit_trace is not None:
-            evidence["audit_trace_index"] = self.context.audit_trace.complete(status="failed")
-        raise BacktestResourceLimitExceeded("candidate_resource_limit_exceeded", evidence)
+            evidence["audit_trace_index"] = self.context.audit_trace.complete(
+                status="failed"
+            )
+        raise BacktestResourceLimitExceeded(
+            "candidate_resource_limit_exceeded", evidence
+        )
 
     def resource_usage(self, *, candles_processed: int) -> dict[str, Any]:
         payload = self.heartbeat_payload(candles_processed=candles_processed)
@@ -308,12 +340,16 @@ class BacktestAccumulator:
         payload.pop("rss_mb", None)
         payload["applied_resource_limits"] = self.context.resource_limits.as_dict()
         payload["resource_policy"] = self.context.resource_limits.as_dict()
-        payload["memory_sampling_policy"] = self.context.resource_limits.as_dict()["memory_sampling_policy"]
+        payload["memory_sampling_policy"] = self.context.resource_limits.as_dict()[
+            "memory_sampling_policy"
+        ]
         policy = self.context.tick_observability_policy()
         payload["canonical_evidence_policy"] = policy.name
         payload["observability_policy"] = policy.name
         payload["tick_observability_policy"] = policy.as_dict()
-        payload["estimated_full_tick_canonical_enabled"] = bool(policy.full_tick_canonical_enabled)
+        payload["estimated_full_tick_canonical_enabled"] = bool(
+            policy.full_tick_canonical_enabled
+        )
         payload["decision_hash"] = self.decision_hash_material.hash
         payload["decision_hash_material_count"] = int(self.decision_hash_material.count)
         payload.update(self.initialized_portfolio_policy_evidence)
@@ -333,15 +369,23 @@ class BacktestAccumulator:
                 "behavior_hash_material_retention_policy": self.behavior_hash_material.finalize()[
                     "retention_policy"
                 ],
-                "behavior_hash_material_sample_count": int(self.behavior_hash_material.finalize()["sample_count"]),
-                "canonical_payload_hash_call_count": int(self.canonical_payload_hash_call_count),
+                "behavior_hash_material_sample_count": int(
+                    self.behavior_hash_material.finalize()["sample_count"]
+                ),
+                "canonical_payload_hash_call_count": int(
+                    self.canonical_payload_hash_call_count
+                ),
                 "canonical_hash_payload_bytes": int(self.canonical_hash_payload_bytes),
-                "largest_canonical_hash_payload_bytes": int(self.largest_canonical_hash_payload_bytes),
+                "largest_canonical_hash_payload_bytes": int(
+                    self.largest_canonical_hash_payload_bytes
+                ),
                 "largest_canonical_hash_label": str(self.largest_canonical_hash_label),
                 "stable_value_call_count": int(self.stable_value_call_count),
                 "stable_value_wall_seconds": float(self.stable_value_wall_seconds),
                 "canonical_json_wall_seconds": float(self.canonical_json_wall_seconds),
-                "decision_payload_build_wall_seconds": float(self.decision_payload_build_wall_seconds),
+                "decision_payload_build_wall_seconds": float(
+                    self.decision_payload_build_wall_seconds
+                ),
                 "observability_wall_seconds": float(self.observability_wall_seconds),
                 "retained_decision_count": int(self.retained_decision_count),
                 "audit_decision_event_count": int(self.audit_decision_event_count),
@@ -364,7 +408,9 @@ class BacktestAccumulator:
             "summary_active_bar_count": int(self.active_bar_count),
         }
 
-    def strategy_diagnostics(self, *, trades: list[dict[str, object]]) -> dict[str, object]:
+    def strategy_diagnostics(
+        self, *, trades: list[dict[str, object]]
+    ) -> dict[str, object]:
         payload = _generic_strategy_diagnostics_from_trades(
             namespace=self.diagnostics_namespace,
             trades=trades,
@@ -382,9 +428,14 @@ class BacktestAccumulator:
         payload.setdefault("blocked_filter_distribution", {})
         payload.setdefault("entry_reason_distribution", {})
         payload.setdefault("exit_reason_distribution", {})
-        payload.setdefault("p95_mfe_pct", _percentile(list(payload.get("mfe_pct_by_trade") or []), 0.95))
+        payload.setdefault(
+            "p95_mfe_pct",
+            _percentile(list(payload.get("mfe_pct_by_trade") or []), 0.95),
+        )
         strategy_specific = dict(payload)
-        payload["strategy_specific_diagnostics"] = {self.diagnostics_namespace: strategy_specific}
+        payload["strategy_specific_diagnostics"] = {
+            self.diagnostics_namespace: strategy_specific
+        }
         return payload
 
 
@@ -395,7 +446,8 @@ def portfolio_policy_evidence(policy: Any) -> dict[str, Any]:
         "ledger_starting_cash_krw": float(policy.starting_cash_krw),
         "ledger_initial_position_qty": float(policy.initial_position_qty),
         "position_sizing_policy": policy.position_sizing.as_dict(),
-        "legacy_research_portfolio_policy_used": policy.source == "legacy_research_default",
+        "legacy_research_portfolio_policy_used": policy.source
+        == "legacy_research_default",
     }
 
 
@@ -406,27 +458,51 @@ class RegimeCoverageAccumulator:
 
     def update(self, snapshot: dict[str, object]) -> None:
         self.total += 1
-        for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+        for dimension in (
+            "price_regime",
+            "volatility_bucket",
+            "volume_bucket",
+            "composite_regime",
+        ):
             bucket = str(snapshot.get(dimension) or "unknown")
             dimension_counts = self.counts.setdefault(dimension, {})
             dimension_counts[bucket] = dimension_counts.get(bucket, 0) + 1
 
-    def coverage(self, *, trades: list[dict[str, object]]) -> tuple[RegimeCoverageRow, ...]:
+    def coverage(
+        self, *, trades: list[dict[str, object]]
+    ) -> tuple[RegimeCoverageRow, ...]:
         trade_counts: dict[tuple[str, str], int] = {}
         for trade in trades:
-            if not _trade_is_effective(trade) or str(trade.get("side") or "").upper() != "BUY":
+            if (
+                not _trade_is_effective(trade)
+                or str(trade.get("side") or "").upper() != "BUY"
+            ):
                 continue
             snapshot = trade.get("entry_regime_snapshot")
-            for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+            for dimension in (
+                "price_regime",
+                "volatility_bucket",
+                "volume_bucket",
+                "composite_regime",
+            ):
                 regime = _regime_snapshot_value(snapshot, dimension)
                 key = (dimension, regime)
                 trade_counts[key] = trade_counts.get(key, 0) + 1
         rows: list[RegimeCoverageRow] = []
-        for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+        for dimension in (
+            "price_regime",
+            "volatility_bucket",
+            "volume_bucket",
+            "composite_regime",
+        ):
             candle_counts = self.counts.get(dimension, {})
             regimes = sorted(
                 set(candle_counts)
-                | {regime for item_dimension, regime in trade_counts if item_dimension == dimension}
+                | {
+                    regime
+                    for item_dimension, regime in trade_counts
+                    if item_dimension == dimension
+                }
             )
             for regime in regimes:
                 candles = int(candle_counts.get(regime, 0))
@@ -552,11 +628,17 @@ def _generic_strategy_diagnostics_from_trades(
         return_group["count"] = int(return_group["count"]) + 1
         if trade.get("return_pct") is not None:
             return_group["return_pct"].append(float(trade.get("return_pct") or 0.0))  # type: ignore[union-attr]
-        pnl = trade.get("net_pnl") if trade.get("net_pnl") is not None else trade.get("closed_trade_pnl")
+        pnl = (
+            trade.get("net_pnl")
+            if trade.get("net_pnl") is not None
+            else trade.get("closed_trade_pnl")
+        )
         if pnl is not None:
             return_group["pnl"].append(float(pnl))  # type: ignore[union-attr]
         if trade.get("holding_minutes") is not None:
-            holding_minutes_by_reason.setdefault(reason, []).append(float(trade.get("holding_minutes") or 0.0))
+            holding_minutes_by_reason.setdefault(reason, []).append(
+                float(trade.get("holding_minutes") or 0.0)
+            )
         excursion_group = excursion_groups.setdefault(
             reason,
             {"count": 0, "mae_pct": [], "mfe_pct": []},
@@ -571,7 +653,11 @@ def _generic_strategy_diagnostics_from_trades(
             mfe_pct = float(trade.get("mfe_pct") or 0.0)
             mfe_pct_by_trade.append(mfe_pct)
             excursion_group["mfe_pct"].append(mfe_pct)  # type: ignore[union-attr]
-        if pnl is not None and float(pnl) < 0.0 and trade.get("holding_minutes") is not None:
+        if (
+            pnl is not None
+            and float(pnl) < 0.0
+            and trade.get("holding_minutes") is not None
+        ):
             loss_holding_minutes.append(float(trade.get("holding_minutes") or 0.0))
     payload = {
         "schema_version": 1,
@@ -648,7 +734,9 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
     ordered = sorted(float(value) for value in values)
-    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * float(percentile)))))
+    index = min(
+        len(ordered) - 1, max(0, int(round((len(ordered) - 1) * float(percentile))))
+    )
     return ordered[index]
 
 
@@ -660,14 +748,20 @@ def _behavior_hashes(
     trade_material: list[dict[str, object]],
     equity_material: list[dict[str, object]],
 ) -> dict[str, str | int | object]:
-    decision_final = _finalize_behavior_material(decision_material, label="behavior_hash_material")
+    decision_final = _finalize_behavior_material(
+        decision_material, label="behavior_hash_material"
+    )
     common_final = (
-        _finalize_behavior_material(common_decision_material, label="common_behavior_hash_material")
+        _finalize_behavior_material(
+            common_decision_material, label="common_behavior_hash_material"
+        )
         if common_decision_material is not None
         else StreamingEvidenceDigest("empty_common_behavior_hash_material").finalize()
     )
     strategy_final = (
-        _finalize_behavior_material(strategy_decision_material, label="strategy_behavior_hash_material")
+        _finalize_behavior_material(
+            strategy_decision_material, label="strategy_behavior_hash_material"
+        )
         if strategy_decision_material is not None
         else StreamingEvidenceDigest("empty_strategy_behavior_hash_material").finalize()
     )
@@ -703,7 +797,9 @@ def _behavior_hashes(
         "behavior_hash_material_count": int(decision_final["count"]),
         "common_behavior_hash_material_count": int(common_final["count"]),
         "strategy_behavior_hash_material_count": int(strategy_final["count"]),
-        "behavior_hash_material_retention_policy": str(decision_final["retention_policy"]),
+        "behavior_hash_material_retention_policy": str(
+            decision_final["retention_policy"]
+        ),
         "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
         "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
     }
@@ -736,140 +832,170 @@ def _trade_is_effective(trade: dict[str, object]) -> bool:
     execution = trade.get("execution")
     if isinstance(execution, dict):
         status = str(execution.get("fill_status") or "")
-        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {"filled", "partial"}
+        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {
+            "filled",
+            "partial",
+        }
     return float(trade.get("qty") or 0.0) > 0.0
 
 
 def create_exit_rules(**kwargs: Any):
     from .backtest_common import create_exit_rules as impl
+
     return impl(**kwargs)
 
 
 def retained_detail_summary(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import retained_detail_summary as impl
+
     return impl(*args, **kwargs)
 
 
 def trade_hash_payload(trade: dict[str, object]) -> dict[str, object]:
     from .backtest_common import trade_hash_payload as impl
+
     return impl(trade)
 
 
 def trace_decision(*args: Any, **kwargs: Any) -> None:
     from .backtest_common import trace_decision as impl
+
     return impl(*args, **kwargs)
 
 
 def trace_equity_mark(*args: Any, **kwargs: Any) -> None:
     from .backtest_common import trace_equity_mark as impl
+
     return impl(*args, **kwargs)
 
 
 def trace_execution(*args: Any, **kwargs: Any) -> None:
     from .backtest_common import trace_execution as impl
+
     return impl(*args, **kwargs)
 
 
 def complete_audit_trace(*args: Any, **kwargs: Any) -> dict[str, object] | None:
     from .backtest_common import complete_audit_trace as impl
+
     return impl(*args, **kwargs)
 
 
 def record_equity_mark(*args: Any, **kwargs: Any):
     from .backtest_common import record_equity_mark as impl
+
     return impl(*args, **kwargs)
 
 
 def fill_applies_to_mark(*args: Any, **kwargs: Any) -> bool:
     from .backtest_common import fill_applies_to_mark as impl
+
     return impl(*args, **kwargs)
 
 
 def timing_request_fields(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import timing_request_fields as impl
+
     return impl(*args, **kwargs)
 
 
 def depth_request_fields(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import depth_request_fields as impl
+
     return impl(*args, **kwargs)
 
 
 def research_decision_payload(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import research_decision_payload as impl
+
     return impl(*args, **kwargs)
 
 
 def research_order_rules_payload(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import research_order_rules_payload as impl
+
     return impl(*args, **kwargs)
 
 
 def model_latency_ms(*args: Any, **kwargs: Any) -> int:
     from .backtest_common import model_latency_ms as impl
+
     return impl(*args, **kwargs)
 
 
 def failed_fill(*args: Any, **kwargs: Any):
     from .backtest_common import failed_fill as impl
+
     return impl(*args, **kwargs)
 
 
 def trade_from_fill(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import trade_from_fill as impl
+
     return impl(*args, **kwargs)
 
 
 def pending_trade_from_fill(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import pending_trade_from_fill as impl
+
     return impl(*args, **kwargs)
 
 
 def fill_effective_ts(*args: Any, **kwargs: Any) -> int:
     from .backtest_common import fill_effective_ts as impl
+
     return impl(*args, **kwargs)
 
 
 def mark_pending_fills_at_end(*args: Any, **kwargs: Any) -> None:
     from .backtest_common import mark_pending_fills_at_end as impl
+
     return impl(*args, **kwargs)
 
 
 def execution_event_summary(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import execution_event_summary as impl
+
     return impl(*args, **kwargs)
 
 
 def empty_execution_event_summary() -> dict[str, object]:
     from .backtest_common import empty_execution_event_summary as impl
+
     return impl()
 
 
 def empty_metrics_v2(*args: Any, **kwargs: Any):
     from .backtest_common import empty_metrics_v2 as impl
+
     return impl(*args, **kwargs)
 
 
 def metrics_v2_ledgers_from_trades(*args: Any, **kwargs: Any):
     from .backtest_common import metrics_v2_ledgers_from_trades as impl
+
     return impl(*args, **kwargs)
 
 
 def closed_trade_diagnostics(*args: Any, **kwargs: Any):
     from .backtest_common import closed_trade_diagnostics as impl
+
     return impl(*args, **kwargs)
 
 
 def execution_reference_warnings(*args: Any, **kwargs: Any):
     from .backtest_common import execution_reference_warnings as impl
+
     return impl(*args, **kwargs)
 
 
 def empty_metrics(*args: Any, **kwargs: Any):
     from .backtest_common import empty_metrics as impl
+
     return impl(*args, **kwargs)
 
 
 def metrics(*args: Any, **kwargs: Any):
     from .backtest_common import metrics as impl
+
     return impl(*args, **kwargs)

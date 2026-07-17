@@ -11,7 +11,11 @@ from market_research.paths import ResearchPathManager
 from .backtest_types import BacktestRunContext
 from .benchmark_schedule import build_internal_schedule_benchmark_plugin
 from .dataset_snapshot import DatasetSnapshot
-from .execution_model import DepthWalkExecutionModel, FixedBpsExecutionModel, StressExecutionModel
+from .execution_model import (
+    DepthWalkExecutionModel,
+    FixedBpsExecutionModel,
+    StressExecutionModel,
+)
 from .experiment_manifest import ExecutionScenario, ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 from .governance import governance_registry_path, validate_strategy_approval
@@ -45,7 +49,9 @@ class BenchmarkSuiteRunner:
             for split_name, snapshot in sorted(items)
         }
 
-    def _run_split(self, snapshot: DatasetSnapshot, *, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    def _run_split(
+        self, snapshot: DatasetSnapshot, *, candidates: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         scenario_index, scenario = self._base_scenario()
         scenario_hash = sha256_prefixed(scenario.as_dict())
         scenario_id = f"benchmark_base_{scenario_hash.split(':', 1)[1][:12]}"
@@ -66,7 +72,9 @@ class BenchmarkSuiteRunner:
         execution_contract = {
             "simulation_policy_hash": self.manifest.simulation_policy_hash(),
             "execution_scenario_hash": scenario_hash,
-            "execution_timing_hash": sha256_prefixed(self.manifest.execution_timing.as_dict()),
+            "execution_timing_hash": sha256_prefixed(
+                self.manifest.execution_timing.as_dict()
+            ),
             "portfolio_policy_hash": self.manifest.portfolio_policy_hash(),
             "risk_policy_hash": self.manifest.risk_policy_hash(),
         }
@@ -80,7 +88,9 @@ class BenchmarkSuiteRunner:
             "buy_and_hold_compiled_contract_hash": run.compiled_strategy_contract_hash,
             "buy_and_hold_metrics_hash": run.metrics_hash,
             "buy_and_hold_equity_curve": buy_and_hold_equity_curve,
-            "buy_and_hold_equity_curve_hash": sha256_prefixed(buy_and_hold_equity_curve),
+            "buy_and_hold_equity_curve_hash": sha256_prefixed(
+                buy_and_hold_equity_curve
+            ),
             "benchmark_execution_contract": execution_contract,
             "benchmark_execution_contract_hash": sha256_prefixed(execution_contract),
             "dataset_snapshot_hash": snapshot.snapshot_fingerprint_hash(),
@@ -88,19 +98,23 @@ class BenchmarkSuiteRunner:
         contract = getattr(self.manifest, "benchmark_suite", None)
         if contract is not None:
             payload["benchmark_suite_contract"] = contract.as_dict()
-            payload["benchmark_suite_contract_hash"] = sha256_prefixed(contract.as_dict())
+            payload["benchmark_suite_contract_hash"] = sha256_prefixed(
+                contract.as_dict()
+            )
             payload["random_entry"] = self._random_entry_benchmark(
                 snapshot=snapshot,
                 scenario=scenario,
                 scenario_index=scenario_index,
                 scenario_id=scenario_id,
             )
-            payload["same_holding_period_by_candidate"] = self._same_holding_period_benchmarks(
-                snapshot=snapshot,
-                candidates=candidates,
-                scenario=scenario,
-                scenario_index=scenario_index,
-                scenario_id=scenario_id,
+            payload["same_holding_period_by_candidate"] = (
+                self._same_holding_period_benchmarks(
+                    snapshot=snapshot,
+                    candidates=candidates,
+                    scenario=scenario,
+                    scenario_index=scenario_index,
+                    scenario_id=scenario_id,
+                )
             )
             payload["simpler_strategy"] = self._strategy_reference_benchmark(
                 reference=contract.simpler_strategy,
@@ -275,7 +289,8 @@ class BenchmarkSuiteRunner:
             "return_pct_p05": _percentile(returns, 5.0),
             "return_pct_median": _percentile(returns, 50.0),
             "return_pct_p95": _percentile(returns, 95.0),
-            "positive_return_probability": sum(value > 0.0 for value in returns) / len(returns),
+            "positive_return_probability": sum(value > 0.0 for value in returns)
+            / len(returns),
             "samples": samples,
             "samples_hash": sha256_prefixed(samples),
             "fail_reasons": [],
@@ -295,16 +310,38 @@ class BenchmarkSuiteRunner:
         plugin = build_internal_schedule_benchmark_plugin()
         out: dict[str, dict[str, Any]] = {}
         for candidate in candidates:
-            candidate_id = str(candidate.get("parameter_candidate_id") or candidate.get("candidate_id") or "")
+            candidate_id = str(
+                candidate.get("parameter_candidate_id")
+                or candidate.get("candidate_id")
+                or ""
+            )
             metrics_v2 = candidate.get(f"{snapshot.split_name}_metrics_v2")
-            trade_quality = metrics_v2.get("trade_quality") if isinstance(metrics_v2, dict) else None
-            time_exposure = metrics_v2.get("time_exposure") if isinstance(metrics_v2, dict) else None
-            trade_count = int(trade_quality.get("closed_trade_count") or 0) if isinstance(trade_quality, dict) else 0
-            median_ms = time_exposure.get("median_holding_time_ms") if isinstance(time_exposure, dict) else None
+            trade_quality = (
+                metrics_v2.get("trade_quality")
+                if isinstance(metrics_v2, dict)
+                else None
+            )
+            time_exposure = (
+                metrics_v2.get("time_exposure")
+                if isinstance(metrics_v2, dict)
+                else None
+            )
+            trade_count = (
+                int(trade_quality.get("closed_trade_count") or 0)
+                if isinstance(trade_quality, dict)
+                else 0
+            )
+            median_ms = (
+                time_exposure.get("median_holding_time_ms")
+                if isinstance(time_exposure, dict)
+                else None
+            )
             if trade_count < contract.min_candidate_closed_trades or median_ms is None:
                 out[candidate_id] = {
                     "status": "FAIL",
-                    "fail_reasons": ["same_holding_period_candidate_evidence_insufficient"],
+                    "fail_reasons": [
+                        "same_holding_period_candidate_evidence_insufficient"
+                    ],
                     "candidate_closed_trade_count": trade_count,
                 }
                 continue
@@ -405,7 +442,9 @@ def _load_approval_artifact(
     if not isinstance(payload, dict):
         raise ValueError("approved_strategy_artifact_invalid")
     actual_hash = sha256_prefixed(
-        content_hash_payload({key: value for key, value in payload.items() if key != "content_hash"})
+        content_hash_payload(
+            {key: value for key, value in payload.items() if key != "content_hash"}
+        )
     )
     if payload.get("content_hash") != actual_hash or actual_hash != expected_hash:
         raise ValueError("approved_strategy_artifact_hash_mismatch")
@@ -419,9 +458,13 @@ def _load_approval_artifact(
         "strategy_plugin_contract_hash": plugin.contract_hash(),
         "parameter_values_hash": sha256_prefixed(reference.parameter_values),
     }
-    mismatches = sorted(key for key, value in expected.items() if payload.get(key) != value)
+    mismatches = sorted(
+        key for key, value in expected.items() if payload.get(key) != value
+    )
     if mismatches:
-        raise ValueError("approved_strategy_artifact_binding_mismatch:" + ",".join(mismatches))
+        raise ValueError(
+            "approved_strategy_artifact_binding_mismatch:" + ",".join(mismatches)
+        )
     approval = payload.get("research_approval")
     if not isinstance(approval, dict):
         raise ValueError("approved_strategy_governance_approval_missing")
@@ -429,7 +472,9 @@ def _load_approval_artifact(
         approval,
         source_report_hash=str(approval.get("source_report_hash") or ""),
         selected_candidate_id=str(approval.get("subject_id") or ""),
-        final_holdout_confirmation_hash=str(approval.get("final_holdout_confirmation_hash") or ""),
+        final_holdout_confirmation_hash=str(
+            approval.get("final_holdout_confirmation_hash") or ""
+        ),
         hypothesis_id=str(approval.get("hypothesis_id") or ""),
         hypothesis_version=str(approval.get("hypothesis_version") or ""),
         hypothesis_contract_hash=str(approval.get("hypothesis_contract_hash") or ""),
@@ -446,7 +491,10 @@ def _load_approval_artifact(
         expected_registry_path=expected_governance_registry_path,
     )
     if approval_reasons:
-        raise ValueError("approved_strategy_governance_approval_invalid:" + ",".join(approval_reasons))
+        raise ValueError(
+            "approved_strategy_governance_approval_invalid:"
+            + ",".join(approval_reasons)
+        )
     return {
         "approval_artifact_path": str(artifact_path),
         "approval_artifact_hash": actual_hash,

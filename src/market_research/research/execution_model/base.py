@@ -32,7 +32,9 @@ class ExecutionCostBreakdown:
     def from_fill(cls, fill: Any) -> "ExecutionCostBreakdown":
         qty = max(0.0, float(fill.filled_qty or 0.0))
         reference = float(fill.reference_price or 0.0)
-        execution = float(fill.avg_fill_price if fill.avg_fill_price is not None else reference)
+        execution = float(
+            fill.avg_fill_price if fill.avg_fill_price is not None else reference
+        )
         slippage = abs(execution - reference) * qty
         spread: float | None = None
         unavailable: list[str] = []
@@ -71,8 +73,10 @@ class ExecutionCostBreakdown:
             "borrow_cash_debit": self.borrow_cash_debit,
             "rollover_cash_debit": self.rollover_cash_debit,
             "cash_debit_total": (
-                self.fee_cash_debit + self.tax_cash_debit
-                + self.borrow_cash_debit + self.rollover_cash_debit
+                self.fee_cash_debit
+                + self.tax_cash_debit
+                + self.borrow_cash_debit
+                + self.rollover_cash_debit
             ),
             "not_applicable_components": list(self.not_applicable_components),
             "unavailable_components": list(self.unavailable_components),
@@ -87,6 +91,7 @@ class ExecutionRequest:
     decision, ``submit_ts_assumption`` the simulated submission, and
     ``fill_reference_ts`` the market data reference used by the model.
     """
+
     signal_ts: int
     decision_ts: int
     side: str
@@ -151,7 +156,11 @@ class ExecutionRequest:
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(self, field_name, deep_freeze(value))
-        object.__setattr__(self, "execution_realism_limitations", tuple(self.execution_realism_limitations))
+        object.__setattr__(
+            self,
+            "execution_realism_limitations",
+            tuple(self.execution_realism_limitations),
+        )
         payload = self.as_dict()
         recorded = str(payload.pop("request_id") or "")
         calculated = sha256_prefixed(payload)
@@ -165,18 +174,28 @@ class ExecutionRequest:
         depth = self.orderbook_depth_snapshot
         if depth is not None:
             payload["orderbook_depth_snapshot"] = {
-                "ts": int(depth.ts), "pair": str(depth.pair), "source": str(depth.source),
+                "ts": int(depth.ts),
+                "pair": str(depth.pair),
+                "source": str(depth.source),
                 "observed_at_epoch_sec": depth.observed_at_epoch_sec,
                 "bids": [
-                    {"level_index": int(level.level_index), "price": float(level.price),
-                     "size": float(level.size), "cumulative_size": float(level.cumulative_size),
-                     "cumulative_notional": float(level.cumulative_notional)}
+                    {
+                        "level_index": int(level.level_index),
+                        "price": float(level.price),
+                        "size": float(level.size),
+                        "cumulative_size": float(level.cumulative_size),
+                        "cumulative_notional": float(level.cumulative_notional),
+                    }
                     for level in depth.bids
                 ],
                 "asks": [
-                    {"level_index": int(level.level_index), "price": float(level.price),
-                     "size": float(level.size), "cumulative_size": float(level.cumulative_size),
-                     "cumulative_notional": float(level.cumulative_notional)}
+                    {
+                        "level_index": int(level.level_index),
+                        "price": float(level.price),
+                        "size": float(level.size),
+                        "cumulative_size": float(level.cumulative_size),
+                        "cumulative_notional": float(level.cumulative_notional),
+                    }
                     for level in depth.asks
                 ],
             }
@@ -186,6 +205,7 @@ class ExecutionRequest:
 @dataclass(frozen=True)
 class ExecutionFill:
     """Model result.  Portfolio application is a separate ledger operation."""
+
     signal_ts: int
     decision_ts: int
     submit_ts_assumption: int
@@ -261,11 +281,19 @@ class ExecutionFill:
     exit_reason: str | None = None
 
     def __post_init__(self) -> None:
-        for field_name in ("feature_snapshot", "regime_snapshot", "seed_derivation_inputs"):
+        for field_name in (
+            "feature_snapshot",
+            "regime_snapshot",
+            "seed_derivation_inputs",
+        ):
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(self, field_name, deep_freeze(value))
-        object.__setattr__(self, "execution_realism_limitations", tuple(self.execution_realism_limitations))
+        object.__setattr__(
+            self,
+            "execution_realism_limitations",
+            tuple(self.execution_realism_limitations),
+        )
         if self.request_id:
             payload = self.as_dict()
             recorded = str(payload.pop("fill_id") or "")
@@ -344,8 +372,10 @@ class ExecutionFill:
             "derived_seed_hash": self.derived_seed_hash,
             "seed_derivation_inputs": canonical_mutable(self.seed_derivation_inputs),
             "portfolio_effective_ts": self.portfolio_effective_ts,
-            "decision_id": self.decision_id, "intent_id": self.intent_id,
-            "exit_rule": self.exit_rule, "exit_reason": self.exit_reason,
+            "decision_id": self.decision_id,
+            "intent_id": self.intent_id,
+            "exit_rule": self.exit_rule,
+            "exit_reason": self.exit_reason,
             "cost_breakdown": self.cost_breakdown().as_dict(),
         }
 
@@ -354,11 +384,9 @@ class ExecutionModel(Protocol):
     name: str
     version: str
 
-    def params_payload(self) -> dict[str, Any]:
-        ...
+    def params_payload(self) -> dict[str, Any]: ...
 
-    def simulate(self, request: ExecutionRequest) -> ExecutionFill:
-        ...
+    def simulate(self, request: ExecutionRequest) -> ExecutionFill: ...
 
 
 def model_params_hash(payload: dict[str, Any]) -> str:

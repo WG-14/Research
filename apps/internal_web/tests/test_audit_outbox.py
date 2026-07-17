@@ -93,7 +93,9 @@ def test_projection_failure_leaves_detectable_committed_intent(
     validation = validate_web_audit_outbox()
     assert validation["status"] == "FAIL"
     assert validation["pending_event_count"] == 1
-    assert any(reason.startswith("audit_intent_pending:") for reason in validation["reasons"])
+    assert any(
+        reason.startswith("audit_intent_pending:") for reason in validation["reasons"]
+    )
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
@@ -386,10 +388,7 @@ def test_segmented_audit_full_reconciliation_detects_sealed_corruption(
     first_segment = segment_root / "segments" / "segment-00000000.jsonl"
     rows = first_segment.read_text(encoding="utf-8").splitlines()
     first_segment.write_text(
-        rows[0].replace("test_state_changed", "tampered_state")
-        + "\n"
-        + rows[1]
-        + "\n",
+        rows[0].replace("test_state_changed", "tampered_state") + "\n" + rows[1] + "\n",
         encoding="utf-8",
     )
 

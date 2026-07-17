@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from .base import ExecutionCostBreakdown, ExecutionFill, ExecutionModel, ExecutionRequest, model_params_hash
+from .base import (
+    ExecutionCostBreakdown,
+    ExecutionFill,
+    ExecutionModel,
+    ExecutionRequest,
+    model_params_hash,
+)
 from .fixed_bps import FixedBpsExecutionModel
 from .stress import StressExecutionModel
 from .depth_walk import DepthWalkExecutionModel

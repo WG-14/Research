@@ -28,7 +28,11 @@ class FixedBpsExecutionModel:
         if side == "BUY":
             avg_fill_price = request.reference_price * (1.0 + slip)
             requested_qty = (
-                (float(request.requested_notional or 0.0) * (1.0 - float(self.fee_rate))) / avg_fill_price
+                (
+                    float(request.requested_notional or 0.0)
+                    * (1.0 - float(self.fee_rate))
+                )
+                / avg_fill_price
                 if avg_fill_price > 0.0
                 else 0.0
             )
@@ -44,7 +48,11 @@ class FixedBpsExecutionModel:
         return ExecutionFill(
             signal_ts=int(request.signal_ts),
             decision_ts=int(request.decision_ts),
-            submit_ts_assumption=int(request.submit_ts_assumption if request.submit_ts_assumption is not None else request.decision_ts),
+            submit_ts_assumption=int(
+                request.submit_ts_assumption
+                if request.submit_ts_assumption is not None
+                else request.decision_ts
+            ),
             side=side,
             order_type=request.order_type,
             reference_price=float(request.reference_price),

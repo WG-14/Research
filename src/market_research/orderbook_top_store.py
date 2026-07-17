@@ -83,7 +83,9 @@ def build_orderbook_top_snapshot(
     )
 
 
-def snapshot_from_best_quote(*, ts: int, quote: BestQuote, requested_pair: str) -> OrderbookTopSnapshot:
+def snapshot_from_best_quote(
+    *, ts: int, quote: BestQuote, requested_pair: str
+) -> OrderbookTopSnapshot:
     requested_market = parse_market_id(requested_pair)
     quote_market = parse_market_id(quote.market)
     if quote_market != requested_market:
@@ -101,7 +103,9 @@ def snapshot_from_best_quote(*, ts: int, quote: BestQuote, requested_pair: str) 
     )
 
 
-def upsert_orderbook_top_snapshot(conn: sqlite3.Connection, snapshot: OrderbookTopSnapshot) -> int:
+def upsert_orderbook_top_snapshot(
+    conn: sqlite3.Connection, snapshot: OrderbookTopSnapshot
+) -> int:
     validated = build_orderbook_top_snapshot(
         ts=snapshot.ts,
         pair=snapshot.pair,

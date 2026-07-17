@@ -18,5 +18,7 @@ from market_research.research_cli.main import build_parser
 build_parser()
 assert any(name.startswith("market_research") for name in sys.modules)
 """
-    result = subprocess.run([sys.executable, "-c", script], text=True, capture_output=True, check=False)
+    result = subprocess.run(
+        [sys.executable, "-c", script], text=True, capture_output=True, check=False
+    )
     assert result.returncode == 0, result.stderr

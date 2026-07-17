@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from market_research.orderbook_depth_store import OrderbookDepthLevel, OrderbookDepthSnapshot
+from market_research.orderbook_depth_store import (
+    OrderbookDepthLevel,
+    OrderbookDepthSnapshot,
+)
 
 from .base import ExecutionFill, ExecutionRequest, model_params_hash
 
@@ -21,7 +24,9 @@ class DepthWalkExecutionModel:
             "type": self.name,
             "version": self.version,
             "fee_rate": float(self.fee_rate),
-            "depth_ref": self.depth_snapshot.depth_ref() if self.depth_snapshot is not None else "per_request_depth_snapshot",
+            "depth_ref": self.depth_snapshot.depth_ref()
+            if self.depth_snapshot is not None
+            else "per_request_depth_snapshot",
             "queue_position_mode": "unavailable",
             "market_impact_mode": "unavailable",
         }
@@ -74,21 +79,29 @@ class DepthWalkExecutionModel:
         slippage_bps = 0.0
         if avg_fill_price is not None and float(request.reference_price) > 0.0:
             if side == "BUY":
-                slippage_bps = ((avg_fill_price - float(request.reference_price)) / float(request.reference_price)) * 10_000.0
+                slippage_bps = (
+                    (avg_fill_price - float(request.reference_price))
+                    / float(request.reference_price)
+                ) * 10_000.0
             else:
-                slippage_bps = ((float(request.reference_price) - avg_fill_price) / float(request.reference_price)) * 10_000.0
+                slippage_bps = (
+                    (float(request.reference_price) - avg_fill_price)
+                    / float(request.reference_price)
+                ) * 10_000.0
 
         depth_age_ms = (
             int(depth_snapshot.ts) - int(request.fill_reference_ts)
             if request.fill_reference_ts is not None
-            else (
-                int(depth_snapshot.ts) - int(request.decision_ts)
-            )
+            else (int(depth_snapshot.ts) - int(request.decision_ts))
         )
         return ExecutionFill(
             signal_ts=int(request.signal_ts),
             decision_ts=int(request.decision_ts),
-            submit_ts_assumption=int(request.submit_ts_assumption if request.submit_ts_assumption is not None else request.decision_ts),
+            submit_ts_assumption=int(
+                request.submit_ts_assumption
+                if request.submit_ts_assumption is not None
+                else request.decision_ts
+            ),
             side=side,
             order_type=request.order_type,
             reference_price=float(request.reference_price),
@@ -132,7 +145,9 @@ class DepthWalkExecutionModel:
                 "market_impact_model_unavailable",
                 "trade_ticks_unavailable",
                 "intra_candle_path_reconstruction_unavailable",
-            ) if reason is None else (
+            )
+            if reason is None
+            else (
                 reason,
                 "queue_position_unavailable",
                 "market_impact_model_unavailable",
@@ -145,7 +160,8 @@ class DepthWalkExecutionModel:
             fill_reference_policy=request.fill_reference_policy,
             top_of_book_source=request.top_of_book_source or request.quote_source,
             top_of_book_is_full_depth=False,
-            execution_reference_failure_reason=reason or request.execution_reference_failure_reason,
+            execution_reference_failure_reason=reason
+            or request.execution_reference_failure_reason,
             latency_applied_to_reference=request.latency_applied_to_reference,
             latency_applied_to_submit_ts=request.latency_applied_to_submit_ts,
             latency_applied_to_fill_reference=request.latency_applied_to_fill_reference,
@@ -166,12 +182,21 @@ def _missing_depth_fill(
 ) -> ExecutionFill:
     requested_qty = float(request.requested_qty or 0.0)
     requested_notional = request.requested_notional
-    if side == "BUY" and requested_qty <= 0.0 and requested_notional is not None and float(request.reference_price) > 0.0:
+    if (
+        side == "BUY"
+        and requested_qty <= 0.0
+        and requested_notional is not None
+        and float(request.reference_price) > 0.0
+    ):
         requested_qty = float(requested_notional) / float(request.reference_price)
     return ExecutionFill(
         signal_ts=int(request.signal_ts),
         decision_ts=int(request.decision_ts),
-        submit_ts_assumption=int(request.submit_ts_assumption if request.submit_ts_assumption is not None else request.decision_ts),
+        submit_ts_assumption=int(
+            request.submit_ts_assumption
+            if request.submit_ts_assumption is not None
+            else request.decision_ts
+        ),
         side=side,
         order_type=request.order_type,
         reference_price=float(request.reference_price),
@@ -200,7 +225,9 @@ def _missing_depth_fill(
         best_ask=request.best_ask,
         spread_bps=request.spread_bps,
         orderbook_depth_ref=request.orderbook_depth_ref,
-        requested_notional=None if requested_notional is None else float(requested_notional),
+        requested_notional=None
+        if requested_notional is None
+        else float(requested_notional),
         filled_notional=0.0,
         depth_snapshot_ts=request.depth_snapshot_ts,
         depth_snapshot_age_ms=request.depth_snapshot_age_ms,

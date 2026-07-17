@@ -5,8 +5,14 @@ from typing import Any
 
 from market_research.paths import ResearchPathManager
 from market_research.research.experiment_manifest import ExperimentManifest
-from market_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
-from market_research.research.hashing import report_content_hash_payload, sha256_prefixed
+from market_research.research.artifact_contract import (
+    apply_artifact_contract,
+    validate_artifact_contract,
+)
+from market_research.research.hashing import (
+    report_content_hash_payload,
+    sha256_prefixed,
+)
 from market_research.storage_io import write_json_atomic
 
 
@@ -15,8 +21,16 @@ POLICY_DENIAL_STATUS = "policy_denied"
 POLICY_DENIAL_NEXT_ACTION = "rerun_with_explicit_override_or_use_train_validation"
 
 
-def forward_diagnostics_policy_denial_path(*, manager: ResearchPathManager, experiment_id: str) -> Path:
-    return manager.data_dir() / "reports" / "research" / experiment_id / "forward_diagnostics_policy_denial.json"
+def forward_diagnostics_policy_denial_path(
+    *, manager: ResearchPathManager, experiment_id: str
+) -> Path:
+    return (
+        manager.data_dir()
+        / "reports"
+        / "research"
+        / experiment_id
+        / "forward_diagnostics_policy_denial.json"
+    )
 
 
 def build_forward_diagnostics_policy_denial_payload(
@@ -27,16 +41,18 @@ def build_forward_diagnostics_policy_denial_payload(
     feature_names: tuple[str, ...],
     horizon_steps: tuple[int, ...],
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = apply_artifact_contract({
-        "schema_version": 1,
-        "artifact_type": POLICY_DENIAL_ARTIFACT_TYPE,
-        "diagnostic_status": POLICY_DENIAL_STATUS,
-        "reason": str(reason),
-        "split_name": str(split_name),
-        "feature_names": list(feature_names),
-        "horizon_steps": list(horizon_steps),
-        "researcher_next_action": POLICY_DENIAL_NEXT_ACTION,
-    })
+    payload: dict[str, Any] = apply_artifact_contract(
+        {
+            "schema_version": 1,
+            "artifact_type": POLICY_DENIAL_ARTIFACT_TYPE,
+            "diagnostic_status": POLICY_DENIAL_STATUS,
+            "reason": str(reason),
+            "split_name": str(split_name),
+            "feature_names": list(feature_names),
+            "horizon_steps": list(horizon_steps),
+            "researcher_next_action": POLICY_DENIAL_NEXT_ACTION,
+        }
+    )
     if manifest is not None:
         payload["experiment_id"] = manifest.experiment_id
         payload["manifest_hash"] = manifest.manifest_hash()
@@ -54,7 +70,9 @@ def write_forward_diagnostics_policy_denial_artifact(
     feature_names: tuple[str, ...],
     horizon_steps: tuple[int, ...],
 ) -> dict[str, Any]:
-    path = forward_diagnostics_policy_denial_path(manager=manager, experiment_id=manifest.experiment_id)
+    path = forward_diagnostics_policy_denial_path(
+        manager=manager, experiment_id=manifest.experiment_id
+    )
     payload = build_forward_diagnostics_policy_denial_payload(
         manifest=manifest,
         reason=reason,
@@ -73,5 +91,7 @@ def validate_forward_diagnostics_policy_denial_flags(payload: dict[str, Any]) ->
     if payload.get("artifact_type") != POLICY_DENIAL_ARTIFACT_TYPE:
         raise ValueError("forward diagnostics policy denial artifact_type required")
     if payload.get("diagnostic_status") != POLICY_DENIAL_STATUS:
-        raise ValueError("forward diagnostics policy denial must use policy_denied status")
+        raise ValueError(
+            "forward diagnostics policy denial must use policy_denied status"
+        )
     validate_artifact_contract(payload)

@@ -9,14 +9,20 @@ from market_research.strategy_sdk.runtime import EventBuilderStrategyRuntime
 def test_runtime_class_method_change_changes_plugin_contract_hash(monkeypatch):
     plugin = builtin_strategy_registry().resolve("sma_with_filter")
     before = plugin.contract_hash()
-    monkeypatch.setattr(EventBuilderStrategyRuntime, "on_market_event", lambda self, market, portfolio, state: ())
+    monkeypatch.setattr(
+        EventBuilderStrategyRuntime,
+        "on_market_event",
+        lambda self, market, portfolio, state: (),
+    )
     assert plugin.contract_hash() != before
 
 
 def test_transitive_exit_helper_change_changes_source_binding(monkeypatch):
     plugin = builtin_strategy_registry().resolve("sma_with_filter")
     before = plugin.contract_hash()
-    monkeypatch.setattr(sma_with_filter, "evaluate_sma_exit_policy", lambda **values: None)
+    monkeypatch.setattr(
+        sma_with_filter, "evaluate_sma_exit_policy", lambda **values: None
+    )
     assert plugin.contract_hash() != before
 
 
@@ -44,8 +50,12 @@ def test_external_plugin_hook_behavior_is_source_bound():
         runtime_factory=None,
     )
 
-    first_hook = first.contract_payload()["behavior_hooks"]["event_builder_compatibility"]
-    changed_hook = changed.contract_payload()["behavior_hooks"]["event_builder_compatibility"]
+    first_hook = first.contract_payload()["behavior_hooks"][
+        "event_builder_compatibility"
+    ]
+    changed_hook = changed.contract_payload()["behavior_hooks"][
+        "event_builder_compatibility"
+    ]
 
     assert first_hook["module"] == changed_hook["module"]
     assert first_hook["qualname"] == changed_hook["qualname"]

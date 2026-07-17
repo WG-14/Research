@@ -122,9 +122,10 @@ def test_review_state_and_outbox_intent_commit_in_one_database_transaction(
     assert decision.subject == state
     assert decision.action == GovernanceDecision.Action.REVIEW
     assert decision.review_row_hash == row_hash
-    assert set(
-        GovernanceDutyClaim.objects.values_list("duty", flat=True)
-    ) == {"ORIGINATOR", "REVIEWER"}
+    assert set(GovernanceDutyClaim.objects.values_list("duty", flat=True)) == {
+        "ORIGINATOR",
+        "REVIEWER",
+    }
     assert audit.payload["object_type"] == "governance_decision"
     assert audit.payload["object_id"] == str(decision.pk)
     assert audit.projected_at is None
@@ -191,9 +192,9 @@ def test_database_unique_claim_enforces_separation_of_duties(
             duty=GovernanceDutyClaim.Duty.APPROVER,
         )
 
-    assert list(
-        GovernanceDutyClaim.objects.values_list("duty", flat=True)
-    ) == ["ORIGINATOR"]
+    assert list(GovernanceDutyClaim.objects.values_list("duty", flat=True)) == [
+        "ORIGINATOR"
+    ]
 
 
 def test_review_context_uses_database_decisions_after_authority_is_established(

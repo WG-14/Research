@@ -1,0 +1,401 @@
+# NON-OFFICIAL REFERENCE ONLY. deploy/native is the sole supported deployment.
+name: research-operations-reference
+
+x-app-base: &app-base
+  image: ${RESEARCH_OPS_IMAGE:?immutable RESEARCH_OPS_IMAGE is required}
+  env_file: ../config/runtime.env
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+    - /run/research-ops:rw,noexec,nosuid,size=8m,mode=0700
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  networks:
+    - app
+    - database
+
+x-app-volumes: &app-volumes
+  - ${RESEARCH_DATA_ROOT_HOST:?required}:/srv/research/data:ro
+  - ${RESEARCH_MANIFEST_ROOT_HOST:?required}:/srv/research/data/_internal_web/manifests:rw
+  - ${RESEARCH_ARTIFACT_ROOT_HOST:?required}:/srv/research/artifacts:rw
+  - ${RESEARCH_REPORT_ROOT_HOST:?required}:/srv/research/reports:rw
+  - ${RESEARCH_CACHE_ROOT_HOST:?required}:/srv/research/cache:rw
+  - ${RESEARCH_REGISTRY_ROOT_HOST:?required}:/srv/research/registry:rw
+  - ${FILESYSTEM_QUALIFICATION_RECEIPT_HOST:?required}:/etc/research-ops/filesystem-qualification.json:ro
+  - ../scripts:/opt/research-ops/scripts:ro
+  - ../config:/opt/research-ops/config:ro
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?immutable POSTGRES_IMAGE is required}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/research-ops/scripts/postgres-tls-entrypoint.sh"]
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?required}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:?required}
+      POSTGRES_OWNER_USER: ${POSTGRES_OWNER_USER:?required}
+      POSTGRES_RUNTIME_USER: ${POSTGRES_RUNTIME_USER:?required}
+      POSTGRES_DIAGNOSTICS_USER: ${POSTGRES_DIAGNOSTICS_USER:?required}
+      POSTGRES_BACKUP_USER: ${POSTGRES_BACKUP_USER:?required}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_owner_password
+    secrets:
+      - postgres_owner_password
+      - postgres_runtime_password
+      - postgres_diagnostics_password
+      - postgres_validator_password
+      - postgres_backup_password
+      - database_ca
+      - database_server_cert
+      - database_server_key
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../scripts:/opt/research-ops/scripts:ro
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ../scripts/initialize-postgresql.sh:/docker-entrypoint-initdb.d/10-research-roles.sh:ro
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 60s
+
+  migrate:
+    <<: *app-base
+    restart: "no"
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["/bin/sh", "/opt/research-ops/scripts/apply-migrations.sh"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: owner
+      DJANGO_SETTINGS_MODULE: market_research_web.settings
+      POSTGRES_OWNER_PASSWORD_FILE: /run/secrets/postgres_owner_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+    secrets:
+      - postgres_owner_password
+      - django_secret_key
+      - database_ca
+    volumes: *app-volumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *app-base
+    restart: unless-stopped
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["gunicorn", "--config", "/opt/research-ops/config/gunicorn-web.conf.py", "research_operations.runtime:guarded_web_application"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: runtime
+      POSTGRES_RUNTIME_PASSWORD_FILE: /run/secrets/postgres_runtime_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+    secrets:
+      - postgres_runtime_password
+      - django_secret_key
+      - database_ca
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',8080),2); s.close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    stop_grace_period: 45s
+
+  ops-api:
+    <<: *app-base
+    restart: unless-stopped
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["gunicorn", "--config", "/opt/research-ops/config/gunicorn-ops.conf.py", "research_operations.runtime:operations_application"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: diagnostics
+      POSTGRES_DIAGNOSTICS_PASSWORD_FILE: /run/secrets/postgres_diagnostics_password
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+    networks:
+      - management
+      - database
+    secrets:
+      - postgres_diagnostics_password
+      - database_ca
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 20s
+
+  outbox-worker:
+    <<: *app-base
+    restart: unless-stopped
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["research-ops", "outbox-worker", "--worker-id", "outbox:worker-1", "--poll-interval", "1", "--batch-size", "100", "--lease-seconds", "30", "--max-attempts", "8"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: runtime
+      POSTGRES_RUNTIME_PASSWORD_FILE: /run/secrets/postgres_runtime_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+    secrets:
+      - postgres_runtime_password
+      - django_secret_key
+      - database_ca
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 45s
+
+  research-job-worker:
+    <<: *app-base
+    restart: unless-stopped
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["research-ops", "research-job-worker", "--worker-id", "research-job:worker-1", "--poll-interval", "1", "--admission-lease-seconds", "60"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: runtime
+      POSTGRES_RUNTIME_PASSWORD_FILE: /run/secrets/postgres_runtime_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+    secrets:
+      - postgres_runtime_password
+      - django_secret_key
+      - database_ca
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 135s
+
+  audit-validator:
+    <<: *app-base
+    restart: unless-stopped
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["/bin/sh", "/opt/research-ops/scripts/audit-validator-loop.sh"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: validator
+      POSTGRES_VALIDATOR_PASSWORD_FILE: /run/secrets/postgres_validator_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+      RESEARCH_OPS_AUDIT_VALIDATION_INTERVAL_SECONDS: "60"
+    secrets:
+      - postgres_validator_password
+      - django_secret_key
+      - database_ca
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
+
+  backup:
+    <<: *app-base
+    profiles: ["backup"]
+    restart: "no"
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command: ["/bin/sh", "/opt/research-ops/scripts/create-backup.sh"]
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: backup
+      POSTGRES_BACKUP_PASSWORD_FILE: /run/secrets/postgres_backup_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+      RESEARCH_OPS_BACKUP_SIGNING_KEY_FILE: /run/secrets/backup_signing_key
+      RESEARCH_OPS_BACKUP_VERIFICATION_KEY_FILE: /run/secrets/backup_verification_key
+      BACKUP_ROOT: /srv/research-backups
+      BACKUP_OPERATOR_ID: scheduled-backup
+    secrets:
+      - postgres_backup_password
+      - django_secret_key
+      - database_ca
+      - backup_signing_key
+      - backup_verification_key
+    volumes:
+      - ${RESEARCH_DATA_ROOT_HOST:?required}:/srv/research/data:ro
+      - ${RESEARCH_MANIFEST_ROOT_HOST:?required}:/srv/research/data/_internal_web/manifests:ro
+      - ${RESEARCH_ARTIFACT_ROOT_HOST:?required}:/srv/research/artifacts:ro
+      - ${RESEARCH_REPORT_ROOT_HOST:?required}:/srv/research/reports:ro
+      - ${RESEARCH_CACHE_ROOT_HOST:?required}:/srv/research/cache:ro
+      - ${RESEARCH_REGISTRY_ROOT_HOST:?required}:/srv/research/registry:ro
+      - ${RESEARCH_BACKUP_ROOT_HOST:?required}:/srv/research-backups:rw
+      - ../scripts:/opt/research-ops/scripts:ro
+      - ../config:/opt/research-ops/config:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      outbox-worker:
+        condition: service_started
+      research-job-worker:
+        condition: service_started
+    stop_grace_period: 300s
+
+  restore-postgres:
+    image: ${POSTGRES_IMAGE:?immutable POSTGRES_IMAGE is required}
+    profiles: ["restore"]
+    restart: "no"
+    entrypoint: ["/bin/sh", "/opt/research-ops/scripts/postgres-tls-entrypoint.sh"]
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
+    environment:
+      POSTGRES_DB: ${RESEARCH_OPS_RECOVERY_DATABASE_NAME:-research_restore}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:?required}
+      POSTGRES_OWNER_USER: ${POSTGRES_OWNER_USER:?required}
+      POSTGRES_RUNTIME_USER: ${POSTGRES_RUNTIME_USER:?required}
+      POSTGRES_DIAGNOSTICS_USER: ${POSTGRES_DIAGNOSTICS_USER:?required}
+      POSTGRES_VALIDATOR_USER: ${POSTGRES_VALIDATOR_USER:?required}
+      POSTGRES_BACKUP_USER: ${POSTGRES_BACKUP_USER:?required}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_owner_password
+    secrets:
+      - postgres_owner_password
+      - postgres_runtime_password
+      - postgres_diagnostics_password
+      - postgres_validator_password
+      - postgres_backup_password
+      - database_ca
+      - database_server_cert
+      - database_server_key
+    volumes:
+      - restore-postgres-data:/var/lib/postgresql/data
+      - ../scripts:/opt/research-ops/scripts:ro
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ../scripts/initialize-postgresql.sh:/docker-entrypoint-initdb.d/10-research-roles.sh:ro
+    networks:
+      restore-database:
+        aliases: ["postgres"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  restore-rehearsal:
+    <<: *app-base
+    profiles: ["restore"]
+    restart: "no"
+    entrypoint: ["python3", "/opt/research-ops/scripts/runtime-entrypoint.py"]
+    command:
+      - /bin/sh
+      - /opt/research-ops/scripts/restore-rehearsal.sh
+      - /srv/research-backups/${RESTORE_BACKUP_ID:?required}
+      - /srv/research-restore/${RESTORE_BACKUP_ID:?required}
+      - /srv/research-restore/${RESTORE_BACKUP_ID:?required}.receipt.json
+    environment:
+      RESEARCH_OPS_DATABASE_ROLE: owner
+      POSTGRES_OWNER_PASSWORD_FILE: /run/secrets/postgres_owner_password
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret_key
+      INTERNAL_WEB_DATABASE_HOST: postgres
+      INTERNAL_WEB_DATABASE_NAME: ${RESEARCH_OPS_RECOVERY_DATABASE_NAME:-research_restore}
+      INTERNAL_WEB_DATABASE_SSLROOTCERT: /run/secrets/database_ca
+      RESEARCH_OPS_RECOVERY_DATABASE_NAME: ${RESEARCH_OPS_RECOVERY_DATABASE_NAME:-research_restore}
+      RESEARCH_OPS_BACKUP_SIGNING_KEY_FILE: /run/secrets/backup_signing_key
+      RESEARCH_OPS_BACKUP_VERIFICATION_KEY_FILE: /run/secrets/backup_verification_key
+      RESEARCH_OPS_CONTROL_DATABASE_URL_FILE: /run/secrets/control_database_url
+    secrets:
+      - postgres_owner_password
+      - django_secret_key
+      - database_ca
+      - backup_signing_key
+      - backup_verification_key
+      - control_database_url
+    volumes:
+      - ${RESEARCH_BACKUP_ROOT_HOST:?required}:/srv/research-backups:ro
+      - ${RESEARCH_RESTORE_ROOT_HOST:?required}:/srv/research-restore:rw
+      - ../scripts:/opt/research-ops/scripts:ro
+      - ../config:/opt/research-ops/config:ro
+    networks:
+      - restore-database
+      - edge
+    depends_on:
+      restore-postgres:
+        condition: service_healthy
+
+  proxy:
+    image: ${NGINX_IMAGE:?immutable NGINX_IMAGE is required}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m
+      - /var/run:rw,noexec,nosuid,size=8m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      EMPLOYEE_SERVER_NAME: ${EMPLOYEE_SERVER_NAME:?required}
+    secrets:
+      - proxy_server_cert
+      - proxy_server_key
+      - ops_client_ca
+      - ops_htpasswd
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${RESEARCH_STATIC_ROOT_HOST:?required}:/srv/static:ro
+    ports:
+      - "${EMPLOYEE_BIND_ADDRESS:-0.0.0.0}:${EMPLOYEE_HTTP_PORT:-8080}:8082"
+      - "${EMPLOYEE_BIND_ADDRESS:-0.0.0.0}:${EMPLOYEE_HTTPS_PORT:-8443}:8443"
+      - "${OPS_BIND_ADDRESS:-127.0.0.1}:${OPS_HTTPS_PORT:-9443}:9443"
+    networks:
+      - edge
+      - app
+      - management
+    depends_on:
+      web:
+        condition: service_healthy
+      ops-api:
+        condition: service_started
+    stop_grace_period: 30s
+
+networks:
+  edge: {}
+  app:
+    internal: true
+  database:
+    internal: true
+  management:
+    internal: true
+  restore-database:
+    internal: true
+
+volumes:
+  postgres-data: {}
+  restore-postgres-data: {}
+
+secrets:
+  postgres_owner_password:
+    file: ${POSTGRES_OWNER_PASSWORD_FILE:?required}
+  postgres_runtime_password:
+    file: ${POSTGRES_RUNTIME_PASSWORD_FILE:?required}
+  postgres_diagnostics_password:
+    file: ${POSTGRES_DIAGNOSTICS_PASSWORD_FILE:?required}
+  postgres_validator_password:
+    file: ${POSTGRES_VALIDATOR_PASSWORD_FILE:?required}
+  postgres_backup_password:
+    file: ${POSTGRES_BACKUP_PASSWORD_FILE:?required}
+  django_secret_key:
+    file: ${DJANGO_SECRET_KEY_FILE:?required}
+  database_ca:
+    file: ${DATABASE_CA_FILE:?required}
+  database_server_cert:
+    file: ${DATABASE_SERVER_CERT_FILE:?required}
+  database_server_key:
+    file: ${DATABASE_SERVER_KEY_FILE:?required}
+  proxy_server_cert:
+    file: ${PROXY_SERVER_CERT_FILE:?required}
+  proxy_server_key:
+    file: ${PROXY_SERVER_KEY_FILE:?required}
+  ops_client_ca:
+    file: ${OPS_CLIENT_CA_FILE:?required}
+  ops_htpasswd:
+    file: ${OPS_HTPASSWD_FILE:?required}
+  backup_signing_key:
+    file: ${BACKUP_SIGNING_KEY_FILE:?required}
+  backup_verification_key:
+    file: ${BACKUP_VERIFICATION_KEY_FILE:?required}
+  control_database_url:
+    file: ${CONTROL_DATABASE_URL_FILE:?required}

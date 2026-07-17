@@ -5,6 +5,11 @@ from typing import Any, Protocol
 
 from django.core.exceptions import ValidationError
 
+from market_research.application import (
+    LEGACY_WEB_WORKER_SCOPE,
+    require_operated_execution_capability,
+)
+
 from .jobs import (
     JobCancellationRequested,
     JobExecutionResult,
@@ -22,8 +27,7 @@ class JobDispatcher(Protocol):
         self,
         job: ResearchJob,
         progress: "JobProgressReporter",
-    ) -> JobExecutionResult:
-        ...
+    ) -> JobExecutionResult: ...
 
 
 class PublicJobError(RuntimeError):
@@ -55,6 +59,7 @@ def run_worker_once(
 ) -> ResearchJob | None:
     """Claim and execute at most one job through a direct Python dispatcher."""
 
+    require_operated_execution_capability(LEGACY_WEB_WORKER_SCOPE)
     job = claim_next_job(worker_id=worker_id)
     if job is None:
         return None

@@ -75,7 +75,9 @@ def tracked_files() -> list[Path]:
         capture_output=True,
         text=True,
     )
-    return [PROJECT_ROOT / line for line in completed.stdout.splitlines() if line.strip()]
+    return [
+        PROJECT_ROOT / line for line in completed.stdout.splitlines() if line.strip()
+    ]
 
 
 def is_relevant_text_file(path: Path) -> bool:
@@ -94,7 +96,7 @@ def is_relevant_text_file(path: Path) -> bool:
 
 def _is_allowed_technical_identifier(path: Path, line: str) -> bool:
     stripped = line.strip()
-    if path.name == "check_text_hygiene.py" and stripped.startswith("r\""):
+    if path.name == "check_text_hygiene.py" and stripped.startswith('r"'):
         # Regex fragments inside this scanner intentionally contain the byte-
         # pattern text that the scanner must detect elsewhere.
         return True
@@ -152,8 +154,12 @@ def scan_paths(paths: list[Path] | None = None) -> list[Violation]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Check tracked text files for language/mojibake hygiene.")
-    parser.add_argument("paths", nargs="*", help="Optional paths to scan instead of all tracked files.")
+    parser = argparse.ArgumentParser(
+        description="Check tracked text files for language/mojibake hygiene."
+    )
+    parser.add_argument(
+        "paths", nargs="*", help="Optional paths to scan instead of all tracked files."
+    )
     args = parser.parse_args(argv)
 
     paths = [Path(item) for item in args.paths] if args.paths else None

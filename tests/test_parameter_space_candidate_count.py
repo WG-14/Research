@@ -40,10 +40,7 @@ def test_candidate_count_handles_empty_and_large_dimensions_without_iteration(
         "iter_parameter_candidates",
         forbidden_iteration,
     )
-    large_space = {
-        f"PARAMETER_{index:03d}": (0, 1, 2, 3, 4)
-        for index in range(128)
-    }
+    large_space = {f"PARAMETER_{index:03d}": (0, 1, 2, 3, 4) for index in range(128)}
 
     assert count_parameter_candidates({}) == 1
     assert count_parameter_candidates({"EMPTY": ()}) == 0
@@ -77,6 +74,4 @@ def test_workload_estimate_does_not_iterate_parameter_candidates(
     estimate = workload_estimate_module.build_manifest_workload_estimate(manifest)
 
     assert estimate["candidate_count"] == expected_count == 81
-    assert estimate["work_unit_count"] == (
-        expected_count * estimate["scenario_count"]
-    )
+    assert estimate["work_unit_count"] == (expected_count * estimate["scenario_count"])

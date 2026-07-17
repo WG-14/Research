@@ -160,7 +160,9 @@ def detect_resource_contract(
     env_cap = _positive_env_int("RESEARCH_RESEARCH_MAX_WORKERS")
     batch_child_cap = _positive_env_int("RESEARCH_BATCH_CHILD_WORKER_BUDGET")
     if batch_child_cap is not None:
-        env_cap = min(env_cap, batch_child_cap) if env_cap is not None else batch_child_cap
+        env_cap = (
+            min(env_cap, batch_child_cap) if env_cap is not None else batch_child_cap
+        )
     return ResourceContract(
         cpu_limit=max(1, int(cpu_limit)) if cpu_limit is not None else None,
         memory_limit_mb=memory_limit_mb,
@@ -202,14 +204,20 @@ def plan_research_resources(
     )
     auto_worker_cap = contract.cpu_limit or os.cpu_count() or 1
     max_workers_explicit = _manifest_execution_field_explicit(manifest, "max_workers")
-    requested_workers = max(1, int(execution.max_workers if max_workers_explicit else auto_worker_cap))
-    caps: list[tuple[str, int]] = [("manifest_requested_max_workers", requested_workers)]
+    requested_workers = max(
+        1, int(execution.max_workers if max_workers_explicit else auto_worker_cap)
+    )
+    caps: list[tuple[str, int]] = [
+        ("manifest_requested_max_workers", requested_workers)
+    ]
     if contract.cpu_limit is not None:
         caps.append(("detected_cpu_limit", max(1, int(contract.cpu_limit))))
     if contract.env_worker_cap is not None:
         caps.append(("env_worker_cap", max(1, int(contract.env_worker_cap))))
     if contract.total_process_budget is not None:
-        caps.append(("total_process_budget", max(1, int(contract.total_process_budget))))
+        caps.append(
+            ("total_process_budget", max(1, int(contract.total_process_budget)))
+        )
     if effective_execution_mode != "parallel":
         caps.append(("serial_execution_mode", 1))
     effective_workers = min(value for _, value in caps)
@@ -223,7 +231,9 @@ def plan_research_resources(
         if "env_worker_cap" in cap_names or "total_process_budget" in cap_names:
             max_workers_source = "env_cap"
 
-    memory_budget = getattr(manifest.research_run.resource_limits, "max_total_memory_mb", None)
+    memory_budget = getattr(
+        manifest.research_run.resource_limits, "max_total_memory_mb", None
+    )
     if memory_budget is None:
         memory_budget = contract.memory_limit_mb
     memory_budget_mb = int(float(memory_budget)) if memory_budget is not None else None
@@ -237,7 +247,10 @@ def plan_research_resources(
         effective_max_workers=effective_workers,
     )
     work_unit_source = "user_explicit" if work_unit_explicit else "parser_default"
-    if work_unit_selection.effective_work_unit_type != work_unit_selection.requested_work_unit_type:
+    if (
+        work_unit_selection.effective_work_unit_type
+        != work_unit_selection.requested_work_unit_type
+    ):
         work_unit_source = "resource_planner"
     execution_mode_source = "user_explicit" if mode_explicit else "resource_planner"
     return ResearchResourcePlan(
@@ -253,7 +266,9 @@ def plan_research_resources(
         resource_contract=contract,
         work_unit_selection=work_unit_selection,
         selection_reasons=tuple(selection_reasons),
-        fallback_reasons=tuple(sorted(set(contract.fallback_reasons + tuple(mode_fallbacks)))),
+        fallback_reasons=tuple(
+            sorted(set(contract.fallback_reasons + tuple(mode_fallbacks)))
+        ),
         execution_policy_source=execution_mode_source,
         execution_mode_source=execution_mode_source,
         max_workers_source=max_workers_source,
@@ -274,7 +289,9 @@ def select_work_unit_granularity(
     requested = str(requested_work_unit_type or "candidate_scenario").strip().lower()
     split_tuple = tuple(str(name) for name in (split_names or ()))
     final_holdout_present = "final_holdout" in split_tuple
-    candidate_scenario_tasks = max(0, int(candidate_count)) * max(0, int(scenario_count))
+    candidate_scenario_tasks = max(0, int(candidate_count)) * max(
+        0, int(scenario_count)
+    )
     split_tasks = candidate_scenario_tasks * max(1, int(split_count))
     rejected: list[dict[str, Any]] = []
     split_supported, split_reject_reasons = _candidate_scenario_split_capability(
@@ -284,7 +301,9 @@ def select_work_unit_granularity(
     if requested == "candidate_scenario_split":
         if not split_supported:
             for reason in split_reject_reasons:
-                rejected.append({"work_unit_type": "candidate_scenario_split", "reason": reason})
+                rejected.append(
+                    {"work_unit_type": "candidate_scenario_split", "reason": reason}
+                )
             return WorkUnitSelection(
                 requested_work_unit_type=requested,
                 effective_work_unit_type="candidate_scenario",
@@ -296,7 +315,12 @@ def select_work_unit_granularity(
                 include_walk_forward=include_walk_forward,
                 final_holdout_present=final_holdout_present,
             )
-        rejected.append({"work_unit_type": "candidate_scenario", "reason": "manifest_requested_split_work_unit"})
+        rejected.append(
+            {
+                "work_unit_type": "candidate_scenario",
+                "reason": "manifest_requested_split_work_unit",
+            }
+        )
         return WorkUnitSelection(
             requested_work_unit_type=requested,
             effective_work_unit_type="candidate_scenario_split",
@@ -310,7 +334,9 @@ def select_work_unit_granularity(
         )
     if not split_supported:
         for reason in split_reject_reasons:
-            rejected.append({"work_unit_type": "candidate_scenario_split", "reason": reason})
+            rejected.append(
+                {"work_unit_type": "candidate_scenario_split", "reason": reason}
+            )
         return WorkUnitSelection(
             requested_work_unit_type=requested,
             effective_work_unit_type="candidate_scenario",
@@ -322,7 +348,10 @@ def select_work_unit_granularity(
             include_walk_forward=include_walk_forward,
             final_holdout_present=final_holdout_present,
         )
-    if candidate_scenario_tasks < int(effective_max_workers) <= split_tasks and int(split_count) > 1:
+    if (
+        candidate_scenario_tasks < int(effective_max_workers) <= split_tasks
+        and int(split_count) > 1
+    ):
         rejected.append(
             {
                 "work_unit_type": "candidate_scenario",
@@ -400,12 +429,23 @@ def _select_execution_mode(
         return requested, f"manifest_explicit_{requested}", ()
     if auto_parallel_block_reasons:
         return "serial", "auto_serial_fallback", auto_parallel_block_reasons
-    task_count = max(0, int(candidate_count)) * max(0, int(scenario_count)) * max(1, int(split_count))
+    task_count = (
+        max(0, int(candidate_count))
+        * max(0, int(scenario_count))
+        * max(1, int(split_count))
+    )
     cpu_limit = resource_contract.cpu_limit
     capped_cpu_limit = cpu_limit
-    for cap in (resource_contract.env_worker_cap, resource_contract.total_process_budget):
+    for cap in (
+        resource_contract.env_worker_cap,
+        resource_contract.total_process_budget,
+    ):
         if cap is not None:
-            capped_cpu_limit = min(int(capped_cpu_limit), int(cap)) if capped_cpu_limit is not None else int(cap)
+            capped_cpu_limit = (
+                min(int(capped_cpu_limit), int(cap))
+                if capped_cpu_limit is not None
+                else int(cap)
+            )
     if capped_cpu_limit is not None and int(capped_cpu_limit) >= 2 and task_count >= 2:
         return "parallel", "auto_parallel_detected_resources_and_workload", ()
     fallback_reasons: list[str] = []
@@ -433,7 +473,9 @@ def _auto_parallel_block_reasons(
     audit_trail = getattr(getattr(manifest, "research_run", None), "audit_trail", None)
     if bool(getattr(audit_trail, "complete_external", False)):
         reasons.append("auto_parallel_complete_external_audit_not_supported")
-    artifact_policy = getattr(getattr(manifest, "research_run", None), "artifact_policy", None)
+    artifact_policy = getattr(
+        getattr(manifest, "research_run", None), "artifact_policy", None
+    )
     if bool(getattr(artifact_policy, "full_decisions_external_jsonl", False)):
         reasons.append("auto_parallel_full_decisions_external_not_supported")
     return tuple(reasons)
@@ -453,7 +495,11 @@ def _candidate_scenario_split_capability(
         missing = [name for name in ("train", "validation") if name not in split_names]
         if missing:
             reasons.append("candidate_scenario_split_missing_required_splits")
-        extra = [name for name in split_names if name not in {"train", "validation", "final_holdout"}]
+        extra = [
+            name
+            for name in split_names
+            if name not in {"train", "validation", "final_holdout"}
+        ]
         if extra and not any(name.startswith("window_") for name in extra):
             reasons.append("candidate_scenario_split_unknown_split_not_supported")
     return not reasons, tuple(reasons)
@@ -493,7 +539,11 @@ def _read_cgroup_memory_limit_mb(path: Path) -> int | None:
 def _read_proc_cpu_count(path: Path) -> int | None:
     if not path.exists():
         return None
-    count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("processor"))
+    count = sum(
+        1
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("processor")
+    )
     return count or None
 
 

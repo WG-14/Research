@@ -85,15 +85,33 @@ class ResearchSettings:
     @classmethod
     def from_env(cls) -> "ResearchSettings":
         root = _default_root()
-        artifact_root = _external_absolute_path("RESEARCH_ARTIFACT_ROOT", os.getenv("RESEARCH_ARTIFACT_ROOT"), root / "artifacts")
+        artifact_root = _external_absolute_path(
+            "RESEARCH_ARTIFACT_ROOT",
+            os.getenv("RESEARCH_ARTIFACT_ROOT"),
+            root / "artifacts",
+        )
         return cls(
-            data_root=_external_absolute_path("RESEARCH_DATA_ROOT", os.getenv("RESEARCH_DATA_ROOT"), root / "datasets"),
+            data_root=_external_absolute_path(
+                "RESEARCH_DATA_ROOT", os.getenv("RESEARCH_DATA_ROOT"), root / "datasets"
+            ),
             artifact_root=artifact_root,
-            report_root=_external_absolute_path("RESEARCH_REPORT_ROOT", os.getenv("RESEARCH_REPORT_ROOT"), root / "reports"),
-            cache_root=_external_absolute_path("RESEARCH_CACHE_ROOT", os.getenv("RESEARCH_CACHE_ROOT"), root / "cache"),
-            db_path=_optional_external_absolute_path("RESEARCH_DB_PATH", os.getenv("RESEARCH_DB_PATH")),
-            max_workers=_positive_int("RESEARCH_MAX_WORKERS", os.getenv("RESEARCH_MAX_WORKERS"), 1),
-            random_seed=_int("RESEARCH_RANDOM_SEED", os.getenv("RESEARCH_RANDOM_SEED"), 0),
+            report_root=_external_absolute_path(
+                "RESEARCH_REPORT_ROOT",
+                os.getenv("RESEARCH_REPORT_ROOT"),
+                root / "reports",
+            ),
+            cache_root=_external_absolute_path(
+                "RESEARCH_CACHE_ROOT", os.getenv("RESEARCH_CACHE_ROOT"), root / "cache"
+            ),
+            db_path=_optional_external_absolute_path(
+                "RESEARCH_DB_PATH", os.getenv("RESEARCH_DB_PATH")
+            ),
+            max_workers=_positive_int(
+                "RESEARCH_MAX_WORKERS", os.getenv("RESEARCH_MAX_WORKERS"), 1
+            ),
+            random_seed=_int(
+                "RESEARCH_RANDOM_SEED", os.getenv("RESEARCH_RANDOM_SEED"), 0
+            ),
             experiment_identity_registry_path=_optional_external_absolute_path(
                 "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
                 os.getenv("RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH"),

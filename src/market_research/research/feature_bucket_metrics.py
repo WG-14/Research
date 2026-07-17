@@ -11,7 +11,9 @@ from market_research.research.feature_provider_registry import (
     FeatureProviderSpec,
 )
 from market_research.research.forward_targets import ForwardTarget
-from market_research.research.forward_targets import forward_diagnostics_measurement_contract
+from market_research.research.forward_targets import (
+    forward_diagnostics_measurement_contract,
+)
 
 
 @dataclass(frozen=True)
@@ -126,10 +128,14 @@ def compute_feature_bucket_metrics(
         try:
             policy = policies[feature_name]
         except KeyError as exc:
-            raise ValueError(f"missing feature bucket policy for feature={feature_name!r}") from exc
+            raise ValueError(
+                f"missing feature bucket policy for feature={feature_name!r}"
+            ) from exc
         value_types = {row.feature.value_type for row in rows}
         if len(value_types) != 1:
-            raise ValueError(f"mixed feature value types for feature={feature_name!r} horizon={horizon_label!r}")
+            raise ValueError(
+                f"mixed feature value types for feature={feature_name!r} horizon={horizon_label!r}"
+            )
         value_type = next(iter(value_types))
         if value_type != policy.value_type:
             raise ValueError(
@@ -142,9 +148,11 @@ def compute_feature_bucket_metrics(
                     f"category bucketizer requires categorical value_type for feature={feature_name!r}"
                 )
             category_buckets = _category_buckets(rows)
-            unknown_categories = tuple(
-                sorted(set(category_buckets) - set(policy.category_universe))
-            ) if policy.category_universe else ()
+            unknown_categories = (
+                tuple(sorted(set(category_buckets) - set(policy.category_universe)))
+                if policy.category_universe
+                else ()
+            )
             category_keys = set(category_buckets)
             category_keys.update(policy.category_universe)
             for category_key in sorted(category_keys):
@@ -167,14 +175,22 @@ def compute_feature_bucket_metrics(
             continue
 
         if policy.bucketizer_type != "quantile":
-            raise ValueError(f"unsupported bucketizer_type={policy.bucketizer_type!r} for feature={feature_name!r}")
+            raise ValueError(
+                f"unsupported bucketizer_type={policy.bucketizer_type!r} for feature={feature_name!r}"
+            )
         if not _is_numeric_value_type(policy.value_type):
-            raise ValueError(f"quantile bucketizer requires numeric value_type for feature={feature_name!r}")
+            raise ValueError(
+                f"quantile bucketizer requires numeric value_type for feature={feature_name!r}"
+            )
         for row in rows:
             if not _is_numeric_value_type(row.feature.value_type):
-                raise ValueError(f"quantile bucketizer requires numeric observations for feature={feature_name!r}")
+                raise ValueError(
+                    f"quantile bucketizer requires numeric observations for feature={feature_name!r}"
+                )
             if not isinstance(row.feature.value, int | float):
-                raise ValueError(f"quantile bucketizer requires numeric values for feature={feature_name!r}")
+                raise ValueError(
+                    f"quantile bucketizer requires numeric values for feature={feature_name!r}"
+                )
         sorted_rows = sorted(rows, key=_observation_sort_key)
         buckets = _bucket_observations(sorted_rows, bucket_count=bucket_count)
         for bucket_index in range(bucket_count):
@@ -199,7 +215,9 @@ def build_bucket_policies_from_specs(
     policies: dict[str, FeatureBucketPolicy] = {}
     for spec in feature_specs:
         if spec.name in policies:
-            raise ValueError(f"duplicate feature bucket policy for feature={spec.name!r}")
+            raise ValueError(
+                f"duplicate feature bucket policy for feature={spec.name!r}"
+            )
         policy = FeatureBucketPolicy(
             feature_name=spec.name,
             value_type=str(spec.value_type),
@@ -214,15 +232,23 @@ def build_bucket_policies_from_specs(
 def _validate_bucket_policy(policy: FeatureBucketPolicy) -> None:
     if policy.bucketizer_type == "quantile":
         if not _is_numeric_value_type(policy.value_type):
-            raise ValueError(f"quantile bucketizer requires numeric value_type for feature={policy.feature_name!r}")
+            raise ValueError(
+                f"quantile bucketizer requires numeric value_type for feature={policy.feature_name!r}"
+            )
         if policy.category_universe:
-            raise ValueError(f"quantile bucketizer must not declare category_universe for feature={policy.feature_name!r}")
+            raise ValueError(
+                f"quantile bucketizer must not declare category_universe for feature={policy.feature_name!r}"
+            )
         return
     if policy.bucketizer_type == "category":
         if not _is_category_value_type(policy.value_type):
-            raise ValueError(f"category bucketizer requires categorical value_type for feature={policy.feature_name!r}")
+            raise ValueError(
+                f"category bucketizer requires categorical value_type for feature={policy.feature_name!r}"
+            )
         return
-    raise ValueError(f"unsupported bucketizer_type={policy.bucketizer_type!r} for feature={policy.feature_name!r}")
+    raise ValueError(
+        f"unsupported bucketizer_type={policy.bucketizer_type!r} for feature={policy.feature_name!r}"
+    )
 
 
 def _parse_bucket_method(bucket_method: str) -> int:
@@ -238,12 +264,19 @@ def _parse_bucket_method(bucket_method: str) -> int:
     return count
 
 
-def _observation_sort_key(observation: FeatureObservation) -> tuple[str, float | str, int, str]:
+def _observation_sort_key(
+    observation: FeatureObservation,
+) -> tuple[str, float | str, int, str]:
     value = observation.feature.value
     if not _is_numeric_value_type(observation.feature.value_type):
         raise ValueError("categorical observations must not be quantile sorted")
     comparable = float(value)
-    return (observation.feature.value_type, comparable, observation.target.entry_ts, observation.target.horizon_label)
+    return (
+        observation.feature.value_type,
+        comparable,
+        observation.target.entry_ts,
+        observation.target.horizon_label,
+    )
 
 
 def _bucket_observations(
@@ -251,7 +284,9 @@ def _bucket_observations(
     *,
     bucket_count: int,
 ) -> dict[int, list[FeatureObservation]]:
-    buckets: dict[int, list[FeatureObservation]] = {index: [] for index in range(bucket_count)}
+    buckets: dict[int, list[FeatureObservation]] = {
+        index: [] for index in range(bucket_count)
+    }
     total = len(rows)
     if total == 0:
         return buckets
@@ -296,7 +331,9 @@ def _metric_for_rows(
             mean_mae=None,
             median_mae=None,
             mfe_mae_ratio=None,
-            warnings=tuple(dict.fromkeys(("low_sample_count",) + tuple(extra_warnings))),
+            warnings=tuple(
+                dict.fromkeys(("low_sample_count",) + tuple(extra_warnings))
+            ),
         )
 
     returns = tuple(float(row.target.gross_forward_return) for row in rows)
@@ -352,7 +389,9 @@ def _is_category_value_type(value_type: str) -> bool:
     return str(value_type).lower() in CATEGORY_FEATURE_VALUE_TYPES
 
 
-def _category_buckets(rows: list[FeatureObservation]) -> dict[str, list[FeatureObservation]]:
+def _category_buckets(
+    rows: list[FeatureObservation],
+) -> dict[str, list[FeatureObservation]]:
     buckets: dict[str, list[FeatureObservation]] = {}
     for row in rows:
         category = _category_value(row.feature.value, value_type=row.feature.value_type)
@@ -410,5 +449,7 @@ def _percentile(values: tuple[float, ...], fraction: float) -> float:
     ordered = sorted(values)
     if len(ordered) == 1:
         return float(ordered[0])
-    position = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * float(fraction)))))
+    position = max(
+        0, min(len(ordered) - 1, int(round((len(ordered) - 1) * float(fraction))))
+    )
     return float(ordered[position])

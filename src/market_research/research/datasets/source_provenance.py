@@ -1,4 +1,5 @@
 """Strict provenance contract for externally prepared candle datasets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,21 +12,48 @@ from ..hashing import sha256_prefixed
 
 
 SOURCE_PROVENANCE_SCHEMA_VERSION = 1
-_TOP_LEVEL_FIELDS = frozenset({
-    "schema_version", "artifact_type", "sources", "source_priority",
-    "semantics", "lineage", "provenance_manifest_hash",
-})
-_SOURCE_FIELDS = frozenset({
-    "provider_id", "dataset_id", "release_id", "acquired_at",
-    "coverage_start_ts", "coverage_end_ts", "content_hash",
-})
-_SEMANTICS_FIELDS = frozenset({
-    "asset_class", "instrument_scope", "observation_calendar", "timezone",
-    "price_adjustment", "corporate_actions", "universe",
-})
-_LINEAGE_FIELDS = frozenset({
-    "layer", "artifact_id", "content_hash", "schema_version", "transformation_id",
-})
+_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "sources",
+        "source_priority",
+        "semantics",
+        "lineage",
+        "provenance_manifest_hash",
+    }
+)
+_SOURCE_FIELDS = frozenset(
+    {
+        "provider_id",
+        "dataset_id",
+        "release_id",
+        "acquired_at",
+        "coverage_start_ts",
+        "coverage_end_ts",
+        "content_hash",
+    }
+)
+_SEMANTICS_FIELDS = frozenset(
+    {
+        "asset_class",
+        "instrument_scope",
+        "observation_calendar",
+        "timezone",
+        "price_adjustment",
+        "corporate_actions",
+        "universe",
+    }
+)
+_LINEAGE_FIELDS = frozenset(
+    {
+        "layer",
+        "artifact_id",
+        "content_hash",
+        "schema_version",
+        "transformation_id",
+    }
+)
 _REQUIRED_LAYERS = ("raw", "cleaned", "standardized")
 _REQUIRED_SEMANTICS = {
     "asset_class": "spot",
@@ -103,11 +131,18 @@ class DatasetSourceProvenance:
         }
 
     def as_dict(self) -> dict[str, object]:
-        return {**self.identity_payload(), "provenance_manifest_hash": self.provenance_manifest_hash}
+        return {
+            **self.identity_payload(),
+            "provenance_manifest_hash": self.provenance_manifest_hash,
+        }
 
 
 def source_provenance_hash(payload: dict[str, Any]) -> str:
-    material = {key: value for key, value in payload.items() if key != "provenance_manifest_hash"}
+    material = {
+        key: value
+        for key, value in payload.items()
+        if key != "provenance_manifest_hash"
+    }
     return sha256_prefixed(
         {"hash_domain": "dataset_source_provenance_v1", "provenance": material},
         label="dataset_source_provenance_hash",
@@ -175,16 +210,23 @@ def parse_dataset_source_provenance(payload: Any) -> DatasetSourceProvenance:
     if not isinstance(raw_semantics, dict):
         raise SourceProvenanceError("source_provenance_semantics_required")
     _reject_unknown(raw_semantics, _SEMANTICS_FIELDS, "source_provenance.semantics")
-    semantics = {key: _text(raw_semantics.get(key), f"semantics.{key}") for key in _SEMANTICS_FIELDS}
+    semantics = {
+        key: _text(raw_semantics.get(key), f"semantics.{key}")
+        for key in _SEMANTICS_FIELDS
+    }
     if semantics != _REQUIRED_SEMANTICS:
-        raise SourceProvenanceError("source_provenance_semantics_outside_supported_scope")
+        raise SourceProvenanceError(
+            "source_provenance_semantics_outside_supported_scope"
+        )
 
     raw_lineage = payload.get("lineage")
     if not isinstance(raw_lineage, list):
         raise SourceProvenanceError("source_provenance_lineage_required")
     lineage = tuple(_parse_lineage(value) for value in raw_lineage)
     if tuple(stage.layer for stage in lineage) != _REQUIRED_LAYERS:
-        raise SourceProvenanceError("source_provenance_lineage_layers_must_be_raw_cleaned_standardized")
+        raise SourceProvenanceError(
+            "source_provenance_lineage_layers_must_be_raw_cleaned_standardized"
+        )
 
     return DatasetSourceProvenance(
         schema_version=SOURCE_PROVENANCE_SCHEMA_VERSION,
@@ -197,10 +239,17 @@ def parse_dataset_source_provenance(payload: Any) -> DatasetSourceProvenance:
     )
 
 
-def validate_source_coverage(provenance: DatasetSourceProvenance, *, start_ts: int, end_ts: int) -> None:
+def validate_source_coverage(
+    provenance: DatasetSourceProvenance, *, start_ts: int, end_ts: int
+) -> None:
     for source in provenance.sources:
-        if int(start_ts) < source.coverage_start_ts or int(end_ts) > source.coverage_end_ts:
-            raise SourceProvenanceError("source_provenance_requested_range_outside_source_coverage")
+        if (
+            int(start_ts) < source.coverage_start_ts
+            or int(end_ts) > source.coverage_end_ts
+        ):
+            raise SourceProvenanceError(
+                "source_provenance_requested_range_outside_source_coverage"
+            )
 
 
 def _parse_source(value: Any) -> SourceRecord:
@@ -216,7 +265,9 @@ def _parse_source(value: Any) -> SourceRecord:
         parsed_time = datetime.fromisoformat(acquired_at.replace("Z", "+00:00"))
     except ValueError as exc:
         raise SourceProvenanceError("source_provenance_acquired_at_invalid") from exc
-    if parsed_time.tzinfo is None or parsed_time.utcoffset() != timezone.utc.utcoffset(parsed_time):
+    if parsed_time.tzinfo is None or parsed_time.utcoffset() != timezone.utc.utcoffset(
+        parsed_time
+    ):
         raise SourceProvenanceError("source_provenance_acquired_at_must_be_utc")
     return SourceRecord(
         provider_id=_text(value.get("provider_id"), "source.provider_id"),
@@ -241,18 +292,26 @@ def _parse_lineage(value: Any) -> LineageStage:
         artifact_id=_text(value.get("artifact_id"), "lineage.artifact_id"),
         content_hash=_hash(value.get("content_hash")),
         schema_version=version,
-        transformation_id=_text(value.get("transformation_id"), "lineage.transformation_id"),
+        transformation_id=_text(
+            value.get("transformation_id"), "lineage.transformation_id"
+        ),
     )
 
 
-def _reject_unknown(value: dict[str, Any], allowed: frozenset[str], context: str) -> None:
+def _reject_unknown(
+    value: dict[str, Any], allowed: frozenset[str], context: str
+) -> None:
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise SourceProvenanceError(f"{context}_unknown_field:{','.join(unknown)}")
 
 
 def _hash(value: Any) -> str:
-    if not isinstance(value, str) or len(value) != 71 or not value.startswith("sha256:"):
+    if (
+        not isinstance(value, str)
+        or len(value) != 71
+        or not value.startswith("sha256:")
+    ):
         raise SourceProvenanceError("source_provenance_hash_invalid")
     if any(char not in "0123456789abcdef" for char in value[7:]):
         raise SourceProvenanceError("source_provenance_hash_invalid")

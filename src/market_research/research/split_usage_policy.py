@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 
-FINAL_HOLDOUT_DIAGNOSTIC_OVERRIDE_REQUIRED = "final_holdout_diagnostic_override_required"
-FINAL_HOLDOUT_DIAGNOSTIC_CONTAMINATION_RISK = "final_holdout_diagnostic_contamination_risk"
+FINAL_HOLDOUT_DIAGNOSTIC_OVERRIDE_REQUIRED = (
+    "final_holdout_diagnostic_override_required"
+)
+FINAL_HOLDOUT_DIAGNOSTIC_CONTAMINATION_RISK = (
+    "final_holdout_diagnostic_contamination_risk"
+)
 
 
 class SplitUsagePolicyError(ValueError):

@@ -6,7 +6,9 @@ from typing import Mapping
 SMOKE_ONLY_EVIDENCE_SCOPE = "smoke_only_not_manifest_backed"
 SMOKE_EVIDENCE_RESEARCHER_NEXT_ACTION = "use_manifest_backed_research_validation"
 DIAGNOSTIC_FEATURE_MINING_SCOPE = "diagnostic_feature_mining"
-DIAGNOSTIC_FEATURE_MINING_RESEARCHER_NEXT_ACTION = "run_research_validate_from_fixed_manifest"
+DIAGNOSTIC_FEATURE_MINING_RESEARCHER_NEXT_ACTION = (
+    "run_research_validate_from_fixed_manifest"
+)
 DIAGNOSTIC_FEATURE_MINING_FORBIDDEN_USES = (
     "final_candidate_selection",
     "validation_pass_claim",
@@ -28,7 +30,9 @@ def diagnostic_feature_mining_taxonomy(
     }
 
 
-def smoke_only_evidence_rejection_reasons(payload: Mapping[str, object] | None) -> tuple[str, ...]:
+def smoke_only_evidence_rejection_reasons(
+    payload: Mapping[str, object] | None,
+) -> tuple[str, ...]:
     if not isinstance(payload, Mapping):
         return ()
     reasons: list[str] = []
@@ -54,14 +58,20 @@ def evidence_rejection_reasons(payload: Mapping[str, object] | None) -> tuple[st
     return tuple(sorted(set(reasons)))
 
 
-def smoke_only_evidence_rejection_context(payload: Mapping[str, object] | None) -> dict[str, object]:
+def smoke_only_evidence_rejection_context(
+    payload: Mapping[str, object] | None,
+) -> dict[str, object]:
     reasons = smoke_only_evidence_rejection_reasons(payload)
     return {
         "accepted_for_validation": not reasons,
         "accepted_for_candidate_selection": not reasons,
         "reason_codes": list(reasons),
-        "researcher_next_action": SMOKE_EVIDENCE_RESEARCHER_NEXT_ACTION if reasons else "none",
+        "researcher_next_action": SMOKE_EVIDENCE_RESEARCHER_NEXT_ACTION
+        if reasons
+        else "none",
         "recommended_command": (
-            "uv run market-research research-validate --manifest <path>" if reasons else "none"
+            "uv run market-research research-validate --manifest <path>"
+            if reasons
+            else "none"
         ),
     }

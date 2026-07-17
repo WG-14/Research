@@ -23,7 +23,7 @@ from market_research.application import (
     ReportComparisonRequest,
     ResearchApplicationService,
 )
-from market_research.research.governance import GovernanceError
+from market_research.application.adapter_contracts import GovernanceError
 from market_research.research_composition import builtin_strategy_registry
 
 from .audit import append_web_audit_event
@@ -44,7 +44,11 @@ from .jobs import (
 )
 from .login_throttle import ThrottledAuthenticationForm
 from .models import ManifestUpload, ResearchJob
-from .presenters import build_safe_download_payload, load_safe_result, safe_error_message
+from .presenters import (
+    build_safe_download_payload,
+    load_safe_result,
+    safe_error_message,
+)
 from .reports import compare_visible_reports, list_visible_reports
 from .security import actor_snapshot
 from .storage import read_verified_manifest_bytes
@@ -191,7 +195,11 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     return render(
         request,
         "portal/dashboard.html",
-        {**_base_context(request, active_nav="dashboard"), "metrics": metrics, "jobs": jobs},
+        {
+            **_base_context(request, active_nav="dashboard"),
+            "metrics": metrics,
+            "jobs": jobs,
+        },
     )
 
 
@@ -211,11 +219,15 @@ def manifest_upload(request: HttpRequest) -> HttpResponse:
                 "동일한 연구 식별값이 이미 등록되어 있습니다. 새 식별값으로 다시 등록해 주세요.",
             )
         except (PermissionDenied, ValidationError, ValueError):
-            form.add_error(None, "파일을 안전하게 저장하지 못했습니다. 입력 내용을 확인해 주세요.")
+            form.add_error(
+                None, "파일을 안전하게 저장하지 못했습니다. 입력 내용을 확인해 주세요."
+            )
         else:
             messages.success(
                 request,
-                "연구 정의 파일을 등록했습니다." if created else "동일한 원본 파일을 다시 사용합니다.",
+                "연구 정의 파일을 등록했습니다."
+                if created
+                else "동일한 원본 파일을 다시 사용합니다.",
             )
             return redirect("portal:manifest-detail", pk=record.pk)
     return render(
@@ -264,7 +276,10 @@ def _enqueue_and_redirect(
     try:
         key = str(uuid.UUID(str(request.POST.get("idempotency_key") or "")))
     except ValueError:
-        messages.error(request, "요청 식별값이 만료되었습니다. 화면을 새로 고쳐 다시 시도해 주세요.")
+        messages.error(
+            request,
+            "요청 식별값이 만료되었습니다. 화면을 새로 고쳐 다시 시도해 주세요.",
+        )
         return redirect("portal:manifest-detail", pk=manifest.pk)
 
     active = ResearchJob.objects.filter(
@@ -276,7 +291,10 @@ def _enqueue_and_redirect(
         ),
     ).first()
     if active is not None:
-        messages.error(request, "이미 진행 중인 작업이 있습니다. 완료 또는 취소 후 다시 요청해 주세요.")
+        messages.error(
+            request,
+            "이미 진행 중인 작업이 있습니다. 완료 또는 취소 후 다시 요청해 주세요.",
+        )
         return redirect("portal:job-detail", pk=active.pk)
 
     try:
@@ -322,7 +340,9 @@ def job_list(request: HttpRequest) -> HttpResponse:
         {
             **_base_context(request, active_nav="jobs"),
             "page_obj": page,
-            "status_choices": [(value, STATUS_LABELS[value]) for value in ResearchJob.Status.values],
+            "status_choices": [
+                (value, STATUS_LABELS[value]) for value in ResearchJob.Status.values
+            ],
             "current_status": current_status,
         },
     )
@@ -375,7 +395,9 @@ def job_status(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
         {
             "status": job.status,
             "status_label": STATUS_LABELS.get(job.status, job.status),
-            "stage": STAGE_LABELS.get(job.progress_stage, job.progress_stage or "대기 중"),
+            "stage": STAGE_LABELS.get(
+                job.progress_stage, job.progress_stage or "대기 중"
+            ),
             "message": job.progress_message,
             "updated_at": timezone.localtime(job.updated_at).strftime("%H:%M:%S"),
             "terminal": job.is_terminal,
@@ -408,24 +430,36 @@ def job_cancel(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
 @require_POST
 def job_submit_validation(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
     source = _job_for_request(request, pk)
-    if source.capability_id != ResearchJob.Capability.PREFLIGHT or source.status != ResearchJob.Status.SUCCEEDED:
+    if (
+        source.capability_id != ResearchJob.Capability.PREFLIGHT
+        or source.status != ResearchJob.Status.SUCCEEDED
+    ):
         raise PermissionDenied("validation_requires_completed_preflight")
     try:
         _summary, payload = load_safe_result(source)
     except ValidationError as exc:
         raise PermissionDenied("preflight_result_integrity_failed") from exc
-    if payload.get("report_kind") != "internal_web_preflight" or payload.get("status") != "PASS":
+    if (
+        payload.get("report_kind") != "internal_web_preflight"
+        or payload.get("status") != "PASS"
+    ):
         messages.error(request, "사전 점검의 보완 항목을 해결한 뒤 검증할 수 있습니다.")
         return redirect("portal:job-detail", pk=pk)
 
     # Current engine artifacts are experiment-scoped.  Until a reviewed
     # run-scoped namespace exists, repeated validation is deliberately blocked.
-    prior = ResearchJob.objects.filter(
-        manifest=source.manifest,
-        capability_id=ResearchJob.Capability.VALIDATE,
-    ).order_by("created_at").first()
+    prior = (
+        ResearchJob.objects.filter(
+            manifest=source.manifest,
+            capability_id=ResearchJob.Capability.VALIDATE,
+        )
+        .order_by("created_at")
+        .first()
+    )
     if prior is not None:
-        messages.info(request, "이 입력의 검증 작업이 이미 존재하여 해당 기록으로 이동합니다.")
+        messages.info(
+            request, "이 입력의 검증 작업이 이미 존재하여 해당 기록으로 이동합니다."
+        )
         return redirect("portal:job-detail", pk=prior.pk)
     return _enqueue_and_redirect(
         request,

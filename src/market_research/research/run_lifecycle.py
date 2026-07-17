@@ -21,7 +21,13 @@ TERMINAL_RUN_STATUSES = frozenset({"SUCCEEDED", "FAILED", "ABORTED"})
 
 
 def run_lifecycle_path(manager: ResearchPathManager) -> Path:
-    return manager.data_dir() / "reports" / "research" / "_registry" / "run_lifecycle.jsonl"
+    return (
+        manager.data_dir()
+        / "reports"
+        / "research"
+        / "_registry"
+        / "run_lifecycle.jsonl"
+    )
 
 
 @dataclass(frozen=True)
@@ -77,7 +83,9 @@ def start_run(
             "command": command,
             "status": "STARTED",
             "recorded_at": _utc_now(),
-            "command_args_hash": sha256_prefixed(command_args, label="run_command_args"),
+            "command_args_hash": sha256_prefixed(
+                command_args, label="run_command_args"
+            ),
             "code_provenance": provenance,
             "code_provenance_hash": provenance["code_provenance_hash"],
         }
@@ -99,7 +107,9 @@ def validate_run_lifecycle(manager: ResearchPathManager) -> dict[str, Any]:
     terminals: set[str] = set()
     for index, row in enumerate(rows):
         material = {key: value for key, value in row.items() if key != "row_hash"}
-        expected = sha256_prefixed(content_hash_payload(material), label="run_lifecycle_row")
+        expected = sha256_prefixed(
+            content_hash_payload(material), label="run_lifecycle_row"
+        )
         if row.get("row_hash") != expected:
             reasons.append(f"row_hash_mismatch:{index}")
         if row.get("prior_hash") != prior_hash:
@@ -132,7 +142,9 @@ def validate_run_lifecycle(manager: ResearchPathManager) -> dict[str, Any]:
     }
 
 
-def _append_event(manager: ResearchPathManager, event: dict[str, Any]) -> dict[str, Any]:
+def _append_event(
+    manager: ResearchPathManager, event: dict[str, Any]
+) -> dict[str, Any]:
     path = run_lifecycle_path(manager)
     with _locked_registry(path):
         return _append_event_locked(path, _read_rows(path), event)

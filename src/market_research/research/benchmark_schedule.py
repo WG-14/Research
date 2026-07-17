@@ -36,8 +36,12 @@ _SPEC = StrategySpec(
             "candle_index in ENTRY_INDICES",
             ("ENTRY_INDICES",),
         ),
-        take_profit=StrategyRuleDeclaration("take_profit", "No take-profit exit.", "never"),
-        edge_invalidation=StrategyRuleDeclaration("edge_invalidation", "No edge exit.", "never"),
+        take_profit=StrategyRuleDeclaration(
+            "take_profit", "No take-profit exit.", "never"
+        ),
+        edge_invalidation=StrategyRuleDeclaration(
+            "edge_invalidation", "No edge exit.", "never"
+        ),
         time_exit=StrategyRuleDeclaration(
             "scheduled_holding_period_exit",
             "Exit at each predeclared holding-period index.",
@@ -71,7 +75,9 @@ class _ScheduleRuntime:
         **_: Any,
     ) -> None:
         parameters = dict(compiled_contract.materialized_parameters)
-        self.entry_indices = frozenset(int(item) for item in parameters["ENTRY_INDICES"])
+        self.entry_indices = frozenset(
+            int(item) for item in parameters["ENTRY_INDICES"]
+        )
         self.exit_indices = frozenset(int(item) for item in parameters["EXIT_INDICES"])
         self.timing = execution_timing_policy
         self.portfolio_policy = portfolio_policy
@@ -79,7 +85,9 @@ class _ScheduleRuntime:
     def initialize(self, context: Any) -> dict[str, object]:
         return {}
 
-    def on_market_event(self, market: Any, portfolio: Any, state: Any) -> tuple[ResearchDecisionEvent, ...]:
+    def on_market_event(
+        self, market: Any, portfolio: Any, state: Any
+    ) -> tuple[ResearchDecisionEvent, ...]:
         del state
         index = int(market.current_index)
         has_position = float(portfolio.filled_position_qty) > 0.0
@@ -91,11 +99,15 @@ class _ScheduleRuntime:
             side = "BUY"
         signal = side or "HOLD"
         candle = market.current_candle
-        decision_ts = candle_close_ts(candle, interval=market.causal_snapshot().interval) + int(
-            self.timing.decision_guard_ms
-        )
-        reason = "unconditional_schedule_entry" if side == "BUY" else (
-            "same_holding_period_exit" if side == "SELL" else "schedule_no_action"
+        decision_ts = candle_close_ts(
+            candle, interval=market.causal_snapshot().interval
+        ) + int(self.timing.decision_guard_ms)
+        reason = (
+            "unconditional_schedule_entry"
+            if side == "BUY"
+            else (
+                "same_holding_period_exit" if side == "SELL" else "schedule_no_action"
+            )
         )
         features = {
             "candle_index": index,

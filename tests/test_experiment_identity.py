@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 import market_research.research.hash_chain as hash_chain_module
-from market_research.application.contracts import ActorContext, ResearchValidationRequest
+from market_research.application.contracts import (
+    ActorContext,
+    ResearchValidationRequest,
+)
 from market_research.application.service import (
     ResearchApplicationService as AdapterApplicationService,
 )
@@ -53,9 +56,7 @@ def test_validation_identity_binding_is_deterministic_and_idempotent(
     manager = _manager(tmp_path)
 
     assert experiment_identity_registry_path(manager=manager) == (
-        tmp_path
-        / "_registry"
-        / "research_validate_experiment_identity.jsonl"
+        tmp_path / "_registry" / "research_validate_experiment_identity.jsonl"
     )
 
     first = bind_research_validation_experiment(
@@ -155,13 +156,16 @@ def test_validation_identity_binding_serializes_concurrent_calls(
         status == ("bound" if manifest_hash == winner else "conflict")
         for status, manifest_hash, _row_hash in outcomes
     )
-    assert len(
-        {
-            row_hash
-            for status, _manifest_hash, row_hash in outcomes
-            if status == "bound"
-        }
-    ) == 1
+    assert (
+        len(
+            {
+                row_hash
+                for status, _manifest_hash, row_hash in outcomes
+                if status == "bound"
+            }
+        )
+        == 1
+    )
     assert publications == [experiment_identity_registry_path(manager=manager)]
 
 
@@ -195,11 +199,7 @@ def test_split_output_roots_require_an_explicit_identity_authority(
 def test_split_adapters_with_one_authority_reject_conflicting_manifests(
     tmp_path: Path,
 ) -> None:
-    authority = (
-        tmp_path
-        / "authority"
-        / "research_validate_experiment_identity.jsonl"
-    )
+    authority = tmp_path / "authority" / "research_validate_experiment_identity.jsonl"
 
     def manager(adapter: str) -> ResearchPathManager:
         return ResearchPathManager.from_settings(

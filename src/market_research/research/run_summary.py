@@ -49,9 +49,15 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
     first_walk_forward_metrics: dict[str, Any] | None = None
 
     for candidate in candidates:
-        gate_counts[_safe_label(candidate.get("acceptance_gate_result"), default="UNKNOWN")] += 1
-        primary_scenario_role = primary_scenario_role or _safe_optional_label(candidate.get("primary_scenario_role"))
-        primary_metric_source = primary_metric_source or _safe_optional_label(candidate.get("primary_metric_source"))
+        gate_counts[
+            _safe_label(candidate.get("acceptance_gate_result"), default="UNKNOWN")
+        ] += 1
+        primary_scenario_role = primary_scenario_role or _safe_optional_label(
+            candidate.get("primary_scenario_role")
+        )
+        primary_metric_source = primary_metric_source or _safe_optional_label(
+            candidate.get("primary_metric_source")
+        )
         scenario_results = candidate.get("scenario_results")
         if not isinstance(scenario_results, list):
             scenario_results = []
@@ -59,8 +65,14 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
             if not isinstance(scenario, dict):
                 continue
             role = scenario.get("scenario_role")
-            gate = _safe_label(scenario.get("scenario_acceptance_gate_result"), default="UNKNOWN")
-            cost_model = scenario.get("cost_model") if isinstance(scenario.get("cost_model"), dict) else {}
+            gate = _safe_label(
+                scenario.get("scenario_acceptance_gate_result"), default="UNKNOWN"
+            )
+            cost_model = (
+                scenario.get("cost_model")
+                if isinstance(scenario.get("cost_model"), dict)
+                else {}
+            )
             fee_rate = _safe_float(cost_model.get("fee_rate"))
             if role == "base":
                 base_gate_counts[gate] += 1
@@ -91,76 +103,116 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
     )
     final_selection_gate_value = report.get("final_selection_gate_result")
     final_selection_gate_failed = (
-        (report.get("final_selection_required") is True or final_selection_gate_value is not None)
-        and final_selection_gate_value != "PASS"
+        report.get("final_selection_required") is True
+        or final_selection_gate_value is not None
+    ) and final_selection_gate_value != "PASS"
+    validation_eligibility_failed = (
+        report.get("validation_eligibility_gate_result") == "FAIL"
     )
-    validation_eligibility_failed = report.get("validation_eligibility_gate_result") == "FAIL"
-    validation_required = requires_candidate_validation(report.get("research_classification"))
+    validation_required = requires_candidate_validation(
+        report.get("research_classification")
+    )
     registry_gate_value = report.get("registry_gate_result")
     registry_gate_failed = validation_required and (
         registry_gate_value != "PASS"
-        or not str(report.get("experiment_registry_row_hash") or "").startswith("sha256:")
+        or not str(report.get("experiment_registry_row_hash") or "").startswith(
+            "sha256:"
+        )
         or bool(report.get("registry_gate_fail_reasons"))
     )
     validation_allowed = (
         bool(report.get("best_candidate_id"))
-        and report.get("validation_eligibility_gate_result", report.get("gate_result")) == "PASS"
+        and report.get("validation_eligibility_gate_result", report.get("gate_result"))
+        == "PASS"
         and not statistical_gate_failed
         and not final_selection_gate_failed
         and not registry_gate_failed
         and not bool(report.get("diagnostic_only"))
-        and str(report.get("diagnostic_mode") or "candidate_validation") != "exploratory"
+        and str(report.get("diagnostic_mode") or "candidate_validation")
+        != "exploratory"
     )
-    has_pass_candidate = any(candidate.get("acceptance_gate_result") == "PASS" for candidate in candidates)
+    has_pass_candidate = any(
+        candidate.get("acceptance_gate_result") == "PASS" for candidate in candidates
+    )
     nearest_candidate = candidates[0] if candidates and not has_pass_candidate else None
     diagnostic_candidate = _primary_candidate(report, candidates)
     diagnostics_summary = _strategy_diagnostics_summary(diagnostic_candidate or report)
     has_entry_exit_diagnostics = bool(
-        diagnostics_summary.get("validation_raw_sell_filter_blocked_while_in_position_count")
-        or diagnostics_summary.get("final_holdout_raw_sell_filter_blocked_while_in_position_count")
+        diagnostics_summary.get(
+            "validation_raw_sell_filter_blocked_while_in_position_count"
+        )
+        or diagnostics_summary.get(
+            "final_holdout_raw_sell_filter_blocked_while_in_position_count"
+        )
     )
 
     return ResearchRunSummary(
         candidate_gate_counts=_ordered_gate_counts(gate_counts) if candidates else {},
-        base_gate_counts=_ordered_gate_counts(base_gate_counts) if base_gate_counts else {},
-        stress_gate_counts=_ordered_gate_counts(stress_gate_counts) if stress_gate_counts else {},
+        base_gate_counts=_ordered_gate_counts(base_gate_counts)
+        if base_gate_counts
+        else {},
+        stress_gate_counts=_ordered_gate_counts(stress_gate_counts)
+        if stress_gate_counts
+        else {},
         base_fee_rate=base_fee_rate,
         stress_fee_rates=tuple(sorted(stress_fee_rates)),
         primary_scenario_role=primary_scenario_role,
         primary_metric_source=primary_metric_source,
         top_fail_reasons=_ordered_counts(fail_reasons),
         top_window_fail_reasons=_ordered_counts(window_fail_reasons),
-        walk_forward_window_count=_safe_int(first_walk_forward_metrics.get("window_count"))
+        walk_forward_window_count=_safe_int(
+            first_walk_forward_metrics.get("window_count")
+        )
         if first_walk_forward_metrics is not None
         else None,
-        walk_forward_pass_window_count=_safe_int(first_walk_forward_metrics.get("pass_window_count"))
+        walk_forward_pass_window_count=_safe_int(
+            first_walk_forward_metrics.get("pass_window_count")
+        )
         if first_walk_forward_metrics is not None
         else None,
-        walk_forward_fail_window_count=_safe_int(first_walk_forward_metrics.get("fail_window_count"))
+        walk_forward_fail_window_count=_safe_int(
+            first_walk_forward_metrics.get("fail_window_count")
+        )
         if first_walk_forward_metrics is not None
         else None,
         validation_allowed=validation_allowed,
         nearest_failed_candidate_id=_candidate_id(nearest_candidate),
-        nearest_failed_candidate_fail_reasons=tuple(_string_items(nearest_candidate.get("gate_fail_reasons")))
+        nearest_failed_candidate_fail_reasons=tuple(
+            _string_items(nearest_candidate.get("gate_fail_reasons"))
+        )
         if nearest_candidate is not None
         else (),
         strategy_diagnostics_summary=diagnostics_summary,
         top_exit_reasons=dict(diagnostics_summary.get("top_exit_reasons") or {}),
         validation_raw_sell_filter_blocked_while_in_position_count=_safe_int(
-            diagnostics_summary.get("validation_raw_sell_filter_blocked_while_in_position_count")
+            diagnostics_summary.get(
+                "validation_raw_sell_filter_blocked_while_in_position_count"
+            )
         ),
         final_holdout_raw_sell_filter_blocked_while_in_position_count=_safe_int(
-            diagnostics_summary.get("final_holdout_raw_sell_filter_blocked_while_in_position_count")
+            diagnostics_summary.get(
+                "final_holdout_raw_sell_filter_blocked_while_in_position_count"
+            )
         ),
-        validation_p95_mae_pct=_safe_float(diagnostics_summary.get("validation_p95_mae_pct")),
-        final_holdout_p95_mae_pct=_safe_float(diagnostics_summary.get("final_holdout_p95_mae_pct")),
-        validation_worst_trade_mae_pct=_safe_float(diagnostics_summary.get("validation_worst_trade_mae_pct")),
-        final_holdout_worst_trade_mae_pct=_safe_float(diagnostics_summary.get("final_holdout_worst_trade_mae_pct")),
+        validation_p95_mae_pct=_safe_float(
+            diagnostics_summary.get("validation_p95_mae_pct")
+        ),
+        final_holdout_p95_mae_pct=_safe_float(
+            diagnostics_summary.get("final_holdout_p95_mae_pct")
+        ),
+        validation_worst_trade_mae_pct=_safe_float(
+            diagnostics_summary.get("validation_worst_trade_mae_pct")
+        ),
+        final_holdout_worst_trade_mae_pct=_safe_float(
+            diagnostics_summary.get("final_holdout_worst_trade_mae_pct")
+        ),
         next_action=_next_action(
             validation_allowed=validation_allowed,
             has_candidates=bool(candidates),
             top_fail_reasons=fail_reasons,
-            gate_result="EXPLORATORY" if report.get("diagnostic_only") else report.get("gate_result"),
+            gate_result="EXPLORATORY"
+            if report.get("diagnostic_only")
+            else report.get("gate_result"),
             statistical_gate_failed=statistical_gate_failed,
             final_selection_gate_failed=final_selection_gate_failed,
             validation_eligibility_failed=validation_eligibility_failed,
@@ -235,7 +287,9 @@ def _ordered_gate_counts(counts: Counter[str]) -> dict[str, int]:
     return ordered
 
 
-def _primary_candidate(report: dict[str, object], candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _primary_candidate(
+    report: dict[str, object], candidates: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     preferred_ids = [
         str(report.get("selected_candidate_id") or "").strip(),
         str(report.get("best_candidate_id") or "").strip(),
@@ -263,7 +317,11 @@ def _strategy_diagnostics_summary(container: dict[str, Any]) -> dict[str, object
     final_holdout = _diagnostics_dict(container, "final_holdout_strategy_diagnostics")
     top_exit_reasons = Counter()
     for diagnostics in (validation, final_holdout or {}):
-        distribution = diagnostics.get("exit_reason_distribution") if isinstance(diagnostics, dict) else None
+        distribution = (
+            diagnostics.get("exit_reason_distribution")
+            if isinstance(diagnostics, dict)
+            else None
+        )
         if not isinstance(distribution, dict):
             continue
         for reason, count in distribution.items():
@@ -274,17 +332,25 @@ def _strategy_diagnostics_summary(container: dict[str, Any]) -> dict[str, object
             validation.get("raw_sell_filter_blocked_while_in_position_count")
         ),
         "final_holdout_raw_sell_filter_blocked_while_in_position_count": (
-            _safe_int(final_holdout.get("raw_sell_filter_blocked_while_in_position_count"))
+            _safe_int(
+                final_holdout.get("raw_sell_filter_blocked_while_in_position_count")
+            )
             if final_holdout is not None
             else None
         ),
         "validation_p95_mae_pct": _safe_float(validation.get("p95_mae_pct")),
         "final_holdout_p95_mae_pct": (
-            _safe_float(final_holdout.get("p95_mae_pct")) if final_holdout is not None else None
+            _safe_float(final_holdout.get("p95_mae_pct"))
+            if final_holdout is not None
+            else None
         ),
-        "validation_worst_trade_mae_pct": _safe_float(validation.get("worst_trade_mae_pct")),
+        "validation_worst_trade_mae_pct": _safe_float(
+            validation.get("worst_trade_mae_pct")
+        ),
         "final_holdout_worst_trade_mae_pct": (
-            _safe_float(final_holdout.get("worst_trade_mae_pct")) if final_holdout is not None else None
+            _safe_float(final_holdout.get("worst_trade_mae_pct"))
+            if final_holdout is not None
+            else None
         ),
     }
 
@@ -319,7 +385,10 @@ def _next_action(
         return "run_walk_forward_before_validation"
     if "walk_forward_failed" in top_fail_reasons:
         return "candidate_not_selected_review_walk_forward_windows"
-    if "profit_factor_failed" in top_fail_reasons or "min_trade_count_failed" in top_fail_reasons:
+    if (
+        "profit_factor_failed" in top_fail_reasons
+        or "min_trade_count_failed" in top_fail_reasons
+    ):
         return "candidate_not_selected_revise_strategy_hypothesis"
     if has_entry_exit_diagnostics:
         return "review_entry_exit_channel_diagnostics"

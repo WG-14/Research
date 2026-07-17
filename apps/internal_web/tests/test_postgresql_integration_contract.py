@@ -177,8 +177,7 @@ def test_postgresql_supports_required_database_primitives(
         "portal_job_one_active_uniq",
     }
     assert all(
-        " WHERE " in definition.upper()
-        for definition in partial_indexes.values()
+        " WHERE " in definition.upper() for definition in partial_indexes.values()
     )
 
     with transaction.atomic():

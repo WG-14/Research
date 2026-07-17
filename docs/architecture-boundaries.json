@@ -1,17 +1,133 @@
 {
-  "schema_version": 5,
-  "entrypoints": ["src/market_research/research_bootstrap.py", "src/market_research/research_cli"],
-  "research_core": ["src/market_research/research_core", "src/market_research/research/simulation_engine.py", "src/market_research/research/portfolio_ledger.py"],
-  "strategy_sdk": ["src/market_research/strategy_sdk", "src/market_research/research/strategy_contract.py", "src/market_research/research/strategy_registry.py", "src/market_research/research/strategy_compiler.py", "src/market_research/research/strategy_spec.py", "src/market_research/research/exit_decision.py", "src/market_research/research/immutable_contract.py"],
-  "builtin_strategies": ["src/market_research/builtin_strategies"],
-  "compatibility_strategy_event_adapters": ["src/market_research/research/strategies"],
-  "compatibility_strategy_adapters": ["src/market_research/research/exit_rules.py", "src/market_research/research/strategy_catalog.py", "src/market_research/research/builtin_registry.py"],
-  "composition_root": ["src/market_research/research_composition"],
-  "dependency_rules": {
-    "research_core_forbids": ["builtin_strategies", "research_composition"],
-    "strategy_sdk_forbids": ["builtin_strategies", "research_composition"],
-    "concrete_plugin_imports_allowed_from": ["composition_root"]
+  "schema_version": 6,
+  "distributions": {
+    "research": {
+      "name": "market-research",
+      "root": "src/market_research",
+      "responsibility": "offline_research_engine"
+    },
+    "web": {
+      "name": "market-research-internal-web",
+      "root": "apps/internal_web",
+      "responsibility": "authenticated_internal_web_adapter"
+    },
+    "operations": {
+      "name": "research-operations",
+      "root": "services/research_operations",
+      "responsibility": "operational_trust_domain"
+    }
   },
-  "offline_data_helpers": ["src/market_research/market_ids.py", "src/market_research/research/intervals.py"],
-  "forbidden_domains": ["private_exchange_access", "account_connected_runtime", "order_submission", "account_access", "state_repair", "reviewed_account_profile", "network_market_data_collection", "operational_order_fill_database_ingestion", "exchange_raw_order_semantics_inference", "retry_backfill_source_probe"]
+  "entrypoints": [
+    "src/market_research/research_bootstrap.py",
+    "src/market_research/research_cli"
+  ],
+  "public_adapter_contracts": [
+    "src/market_research/application/adapter_contracts.py",
+    "src/market_research/application/cli_execution.py",
+    "src/market_research/application/release.py",
+    "apps/internal_web/src/market_research_web/operations_contract.py"
+  ],
+  "research_core": [
+    "src/market_research/research_core",
+    "src/market_research/research/simulation_engine.py",
+    "src/market_research/research/portfolio_ledger.py"
+  ],
+  "strategy_sdk": [
+    "src/market_research/strategy_sdk",
+    "src/market_research/research/strategy_contract.py",
+    "src/market_research/research/strategy_registry.py",
+    "src/market_research/research/strategy_compiler.py",
+    "src/market_research/research/strategy_spec.py",
+    "src/market_research/research/exit_decision.py",
+    "src/market_research/research/immutable_contract.py"
+  ],
+  "builtin_strategies": [
+    "src/market_research/builtin_strategies"
+  ],
+  "compatibility_strategy_event_adapters": [
+    "src/market_research/research/strategies"
+  ],
+  "compatibility_strategy_adapters": [
+    "src/market_research/research/exit_rules.py",
+    "src/market_research/research/strategy_catalog.py",
+    "src/market_research/research/builtin_registry.py"
+  ],
+  "composition_root": [
+    "src/market_research/research_composition"
+  ],
+  "web_adapter": [
+    "apps/internal_web/src/market_research_web",
+    "apps/internal_web/src/portal"
+  ],
+  "operations_adapter": [
+    "services/research_operations/src/research_operations"
+  ],
+  "official_deployment": [
+    "services/research_operations/deploy/native"
+  ],
+  "dependency_rules": {
+    "research_core_forbids": [
+      "builtin_strategies",
+      "research_composition"
+    ],
+    "strategy_sdk_forbids": [
+      "builtin_strategies",
+      "research_composition"
+    ],
+    "concrete_plugin_imports_allowed_from": [
+      "composition_root"
+    ],
+    "research_distribution_forbids": [
+      "django",
+      "portal",
+      "market_research_web",
+      "research_operations"
+    ],
+    "web_core_access_allowed_through": [
+      "market_research.application",
+      "market_research.application.adapter_contracts",
+      "market_research.research_composition"
+    ],
+    "operations_web_access_allowed_through": [
+      "market_research_web.operations_contract"
+    ],
+    "operations_core_access_allowed_through": [
+      "market_research.application",
+      "market_research.application.adapter_contracts"
+    ]
+  },
+  "runtime_state_policy": {
+    "location": "repository_external_absolute_paths",
+    "forbidden_in_git": [
+      "credentials",
+      "private_keys",
+      "certificates",
+      "databases",
+      "datasets",
+      "artifacts",
+      "reports",
+      "backups",
+      "restore_namespaces",
+      "offsite_receipts"
+    ]
+  },
+  "offline_data_helpers": [
+    "src/market_research/market_ids.py",
+    "src/market_research/research/intervals.py"
+  ],
+  "forbidden_domains": [
+    "private_exchange_access",
+    "account_connected_runtime",
+    "order_submission",
+    "order_management",
+    "account_access",
+    "state_repair",
+    "reviewed_account_profile",
+    "network_market_data_collection",
+    "operational_order_fill_database_ingestion",
+    "exchange_raw_order_semantics_inference",
+    "retry_backfill_source_probe",
+    "runtime_trading_strategy",
+    "emergency_account_control"
+  ]
 }

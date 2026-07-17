@@ -41,7 +41,9 @@ class ResearchWorkResult:
                     "status": self.status,
                     "failure_reason": self.failure_reason,
                     "failure_evidence_hash": (
-                        sha256_prefixed(self.failure_evidence) if self.failure_evidence is not None else None
+                        sha256_prefixed(self.failure_evidence)
+                        if self.failure_evidence is not None
+                        else None
                     ),
                 }
             ),
@@ -65,7 +67,9 @@ ResearchWorker = Callable[[Any], ResearchWorkResult]
 ResearchResultCallback = Callable[[ResearchWorkResult], None]
 
 
-def _copy_resource_guard_summary(payload: dict[str, Any], resource_guard: dict[str, Any]) -> None:
+def _copy_resource_guard_summary(
+    payload: dict[str, Any], resource_guard: dict[str, Any]
+) -> None:
     if "elapsed_s" in resource_guard:
         payload.setdefault("wall_seconds", resource_guard.get("elapsed_s"))
     if "candles_processed" in resource_guard:
@@ -82,7 +86,9 @@ def _worker_process_evidence(result: ResearchWorkResult) -> dict[str, Any]:
     input_hash = result.work_unit.work_result_input_hash or result.work_unit_hash
     output_hash = result.content_hash
     exit_status = 0 if result.status == "completed" else 1
-    resource_guard = result.failure_evidence if result.failure_evidence is not None else {}
+    resource_guard = (
+        result.failure_evidence if result.failure_evidence is not None else {}
+    )
     return {
         "schema_version": 1,
         "worker_pid": worker_pid,
@@ -140,7 +146,10 @@ def execute_research_work_units_parallel(
             result_callback=result_callback,
         )
     except PermissionError:
-        if runtime.requested_start_method not in {"auto_safe", "auto"} or runtime.effective_start_method != "forkserver":
+        if (
+            runtime.requested_start_method not in {"auto_safe", "auto"}
+            or runtime.effective_start_method != "forkserver"
+        ):
             raise
         runtime = resolve_research_process_runtime(
             requested_start_method=process_start_method,
@@ -174,7 +183,9 @@ def _execute_with_runtime(
     result_callback: ResearchResultCallback | None = None,
 ) -> list[ResearchWorkResult]:
     results: list[ResearchWorkResult] = []
-    task_iter = iter(tasks if tasks is not None else task_list if task_list is not None else ())
+    task_iter = iter(
+        tasks if tasks is not None else task_list if task_list is not None else ()
+    )
     pending_exhausted = False
     max_in_flight = _resolve_max_in_flight_tasks(
         max_in_flight_tasks=max_in_flight_tasks,
@@ -239,7 +250,9 @@ def _execute_with_runtime(
     return results
 
 
-def _resolve_max_in_flight_tasks(*, max_in_flight_tasks: int | None, max_workers: int) -> int:
+def _resolve_max_in_flight_tasks(
+    *, max_in_flight_tasks: int | None, max_workers: int
+) -> int:
     if max_in_flight_tasks is not None:
         return max(1, int(max_in_flight_tasks))
     return max(1, int(max_workers) * 2)
@@ -247,7 +260,9 @@ def _resolve_max_in_flight_tasks(*, max_in_flight_tasks: int | None, max_workers
 
 def _future_exception_result(*, task: Any, exc: Exception) -> ResearchWorkResult:
     work_unit = _task_work_unit(task)
-    candidate_index = int(_task_value(task, "candidate_index", work_unit.candidate_index))
+    candidate_index = int(
+        _task_value(task, "candidate_index", work_unit.candidate_index)
+    )
     scenario_index = int(_task_value(task, "scenario_index", work_unit.scenario_index))
     evidence = {
         "status": "ERROR",
@@ -291,7 +306,9 @@ def _task_value(task: Any, key: str, default: Any) -> Any:
     return default
 
 
-def sort_work_results_deterministically(results: Iterable[ResearchWorkResult]) -> list[ResearchWorkResult]:
+def sort_work_results_deterministically(
+    results: Iterable[ResearchWorkResult],
+) -> list[ResearchWorkResult]:
     return sorted(
         results,
         key=lambda result: (
@@ -302,7 +319,9 @@ def sort_work_results_deterministically(results: Iterable[ResearchWorkResult]) -
     )
 
 
-def canonical_work_results_payload(results: Iterable[ResearchWorkResult]) -> list[dict[str, Any]]:
+def canonical_work_results_payload(
+    results: Iterable[ResearchWorkResult],
+) -> list[dict[str, Any]]:
     return [
         {
             "work_unit_hash": result.work_unit_hash,
@@ -315,7 +334,9 @@ def canonical_work_results_payload(results: Iterable[ResearchWorkResult]) -> lis
             "status": result.status,
             "failure_reason": result.failure_reason,
             "failure_evidence_hash": (
-                sha256_prefixed(result.failure_evidence) if result.failure_evidence is not None else None
+                sha256_prefixed(result.failure_evidence)
+                if result.failure_evidence is not None
+                else None
             ),
             "content_hash": result.content_hash,
         }

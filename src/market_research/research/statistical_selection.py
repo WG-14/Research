@@ -24,22 +24,43 @@ STATISTICAL_EVIDENCE_WRC = "STATISTICAL_EVIDENCE_WRC"
 STATISTICAL_EVIDENCE_WRC_SPA_DSR = "STATISTICAL_EVIDENCE_WRC_SPA_DSR"
 SCREENING_METHOD = "metric_centered_max_bootstrap"
 SCREENING_METHOD_DETAIL = "summary_metric_centered_max_bootstrap"
-STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING = "statistical_evidence_statistical_generation_unavailable"
-STATISTICAL_EVIDENCE_EVIDENCE_GRADES = {STATISTICAL_EVIDENCE_WRC, STATISTICAL_EVIDENCE_WRC_SPA_DSR}
-STATISTICAL_EVIDENCE_METHODS = {"white_reality_check_block_bootstrap", "white_reality_check_stationary_bootstrap"}
-SUPPORTED_STATISTICAL_EVIDENCE_METHODS: set[str] = {"white_reality_check_block_bootstrap"}
+STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING = (
+    "statistical_evidence_statistical_generation_unavailable"
+)
+STATISTICAL_EVIDENCE_EVIDENCE_GRADES = {
+    STATISTICAL_EVIDENCE_WRC,
+    STATISTICAL_EVIDENCE_WRC_SPA_DSR,
+}
+STATISTICAL_EVIDENCE_METHODS = {
+    "white_reality_check_block_bootstrap",
+    "white_reality_check_stationary_bootstrap",
+}
+SUPPORTED_STATISTICAL_EVIDENCE_METHODS: set[str] = {
+    "white_reality_check_block_bootstrap"
+}
 STATISTICAL_EVIDENCE_RETURN_UNITS = {"bar_excess_return", "portfolio_bar_return"}
 
 
-def statistical_validation_required(manifest_or_payload: ExperimentManifest | dict[str, Any]) -> bool:
+def statistical_validation_required(
+    manifest_or_payload: ExperimentManifest | dict[str, Any],
+) -> bool:
     if isinstance(manifest_or_payload, ExperimentManifest):
         if manifest_or_payload.statistical_validation is not None:
-            return bool(manifest_or_payload.statistical_validation.required_for_validation)
-        return requires_candidate_validation(manifest_or_payload.research_classification)
+            return bool(
+                manifest_or_payload.statistical_validation.required_for_validation
+            )
+        return requires_candidate_validation(
+            manifest_or_payload.research_classification
+        )
     contract = manifest_or_payload.get("statistical_validation_contract")
-    if isinstance(contract, dict) and contract.get("required_for_validation") is not None:
+    if (
+        isinstance(contract, dict)
+        and contract.get("required_for_validation") is not None
+    ):
         return bool(contract.get("required_for_validation"))
-    return requires_candidate_validation(manifest_or_payload.get("research_classification"))
+    return requires_candidate_validation(
+        manifest_or_payload.get("research_classification")
+    )
 
 
 def selection_universe_hash(
@@ -69,9 +90,14 @@ def selection_universe_hash(
                     "candidate_id": str(candidate.get("parameter_candidate_id") or ""),
                     "parameter_values": candidate.get("parameter_values") or {},
                 }
-                for candidate in sorted(candidates, key=lambda item: str(item.get("parameter_candidate_id") or ""))
+                for candidate in sorted(
+                    candidates,
+                    key=lambda item: str(item.get("parameter_candidate_id") or ""),
+                )
             ],
-            "required_scenario_ids": sorted(str(item) for item in required_scenario_ids),
+            "required_scenario_ids": sorted(
+                str(item) for item in required_scenario_ids
+            ),
             "primary_metric_source": primary_metric_source,
             "benchmark": benchmark,
             "statistical_validation_contract": statistical_validation_contract,
@@ -88,9 +114,15 @@ def candidate_metric_universe_payload(
     benchmark: str,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
-    for candidate in sorted(candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")):
+    for candidate in sorted(
+        candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")
+    ):
         metrics = candidate.get(primary_metric_source)
-        value = _metric_value(metrics, primary_metric, benchmark) if isinstance(metrics, dict) else None
+        value = (
+            _metric_value(metrics, primary_metric, benchmark)
+            if isinstance(metrics, dict)
+            else None
+        )
         candidate_required_scenarios = candidate.get("required_scenario_ids")
         if not isinstance(candidate_required_scenarios, list):
             candidate_required_scenarios = required_scenario_ids
@@ -99,7 +131,9 @@ def candidate_metric_universe_payload(
                 "candidate_id": str(candidate.get("parameter_candidate_id") or ""),
                 "parameter_values": candidate.get("parameter_values") or {},
                 "scenario_policy": candidate.get("scenario_policy"),
-                "required_scenario_ids": sorted(str(item) for item in candidate_required_scenarios),
+                "required_scenario_ids": sorted(
+                    str(item) for item in candidate_required_scenarios
+                ),
                 "primary_metric": primary_metric,
                 "primary_metric_source": primary_metric_source,
                 "primary_metric_source_semantics": candidate.get(
@@ -114,7 +148,9 @@ def candidate_metric_universe_payload(
                     "primary_metric_scenario_id",
                     candidate.get("primary_scenario_id"),
                 ),
-                "aggregate_gate_source": candidate.get("aggregate_gate_source", AGGREGATE_GATE_SOURCE),
+                "aggregate_gate_source": candidate.get(
+                    "aggregate_gate_source", AGGREGATE_GATE_SOURCE
+                ),
                 "validation_metric_value": value,
                 "validation_metric_missing": value is None,
                 "acceptance_gate_result": candidate.get("acceptance_gate_result"),
@@ -162,7 +198,9 @@ def recompute_candidate_metric_values_hash_from_report(
     primary_metric = evidence.get("primary_metric")
     primary_metric_source = evidence.get("primary_metric_source")
     benchmark = evidence.get("benchmark")
-    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+    if not isinstance(candidates, list) or not all(
+        isinstance(item, dict) for item in candidates
+    ):
         return None
     if not isinstance(required_scenario_ids, list):
         return None
@@ -234,12 +272,20 @@ def build_statistical_selection_evidence(
     sampling_contract = _bootstrap_sampling_contract(
         contract=contract,
         selection_hash=selection_hash,
-        observation_count=int(return_panel.get("observation_count") or 0) if isinstance(return_panel, dict) else 0,
-        return_unit=str(return_panel.get("return_unit") or "unavailable") if isinstance(return_panel, dict) else "unavailable",
+        observation_count=int(return_panel.get("observation_count") or 0)
+        if isinstance(return_panel, dict)
+        else 0,
+        return_unit=str(return_panel.get("return_unit") or "unavailable")
+        if isinstance(return_panel, dict)
+        else "unavailable",
         benchmark=contract.benchmark,
     )
     screening_p_value: float | None = None
-    seed: int | None = sampling_contract.get("derived_seed") if isinstance(sampling_contract.get("derived_seed"), int) else None
+    seed: int | None = (
+        sampling_contract.get("derived_seed")
+        if isinstance(sampling_contract.get("derived_seed"), int)
+        else None
+    )
     wrc_p_value: float | None = None
     statistical_evidence_generation_available = False
     evidence_grade = SCREENING_SUMMARY_BOOTSTRAP
@@ -260,15 +306,29 @@ def build_statistical_selection_evidence(
             sampling_contract=sampling_contract,
         )
         statistical_evidence_generation_available = wrc_p_value is not None
-        evidence_grade = STATISTICAL_EVIDENCE_WRC if statistical_evidence_generation_available else SCREENING_SUMMARY_BOOTSTRAP
-        statistical_method = contract.bootstrap.method if statistical_evidence_generation_available else SCREENING_METHOD_DETAIL
-        white_reality_check_method = contract.bootstrap.method if statistical_evidence_generation_available else None
+        evidence_grade = (
+            STATISTICAL_EVIDENCE_WRC
+            if statistical_evidence_generation_available
+            else SCREENING_SUMMARY_BOOTSTRAP
+        )
+        statistical_method = (
+            contract.bootstrap.method
+            if statistical_evidence_generation_available
+            else SCREENING_METHOD_DETAIL
+        )
+        white_reality_check_method = (
+            contract.bootstrap.method
+            if statistical_evidence_generation_available
+            else None
+        )
         white_reality_check_available = statistical_evidence_generation_available
         method_provenance = (
             {
                 "implementation": "market_research.research.statistical_selection.recompute_white_reality_check_block_bootstrap",
                 "panel_source": "official_candidate_return_panel",
-                "return_unit": return_panel.get("return_unit") if isinstance(return_panel, dict) else None,
+                "return_unit": return_panel.get("return_unit")
+                if isinstance(return_panel, dict)
+                else None,
                 "recomputable": True,
             }
             if statistical_evidence_generation_available
@@ -285,7 +345,10 @@ def build_statistical_selection_evidence(
         metric_values=metric_values,
         candidate_count=len(candidates),
     )
-    if contract.bootstrap.method in STATISTICAL_EVIDENCE_METHODS and not statistical_evidence_generation_available:
+    if (
+        contract.bootstrap.method in STATISTICAL_EVIDENCE_METHODS
+        and not statistical_evidence_generation_available
+    ):
         gate_reasons = sorted(
             set(gate_reasons)
             | {
@@ -328,10 +391,18 @@ def build_statistical_selection_evidence(
         "parameter_grid_size": parameter_grid_size,
         "attempt_index": attempt_index,
         "holdout_reuse_count": holdout_reuse_count,
-        "computed_attempt_index": (experiment_registry or {}).get("computed_attempt_index", attempt_index),
-        "computed_holdout_reuse_count": (experiment_registry or {}).get("computed_holdout_reuse_count", holdout_reuse_count),
-        "declared_attempt_index": (experiment_registry or {}).get("declared_attempt_index"),
-        "declared_holdout_reuse_count": (experiment_registry or {}).get("declared_holdout_reuse_count"),
+        "computed_attempt_index": (experiment_registry or {}).get(
+            "computed_attempt_index", attempt_index
+        ),
+        "computed_holdout_reuse_count": (experiment_registry or {}).get(
+            "computed_holdout_reuse_count", holdout_reuse_count
+        ),
+        "declared_attempt_index": (experiment_registry or {}).get(
+            "declared_attempt_index"
+        ),
+        "declared_holdout_reuse_count": (experiment_registry or {}).get(
+            "declared_holdout_reuse_count"
+        ),
         "dataset_reuse_policy": dataset_reuse_policy,
         "benchmark": contract.benchmark,
         "primary_metric": contract.primary_metric,
@@ -353,38 +424,84 @@ def build_statistical_selection_evidence(
         "minimum_validation_evidence_grade": STATISTICAL_EVIDENCE_WRC,
         "statistical_evidence_available": statistical_evidence_generation_available,
         "official_statistical_evidence_wrc_generation_available": statistical_evidence_generation_available,
-        "warnings": [] if statistical_evidence_generation_available else [STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING],
+        "warnings": []
+        if statistical_evidence_generation_available
+        else [STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING],
         "bootstrap_sampling_contract": sampling_contract,
         "bootstrap_sampling_contract_hash": sampling_contract["content_hash"],
-        "return_panel_path": str(return_panel_path.resolve()) if return_panel_path else None,
-        "return_panel_hash": return_panel.get("content_hash") if isinstance(return_panel, dict) else None,
-        "return_panel_artifact_type": return_panel.get("artifact_type") if isinstance(return_panel, dict) else None,
-        "return_panel_split": return_panel.get("split") if isinstance(return_panel, dict) else None,
-        "return_unit": return_panel.get("return_unit") if isinstance(return_panel, dict) else "unavailable",
-        "return_panel_observation_count": return_panel.get("observation_count") if isinstance(return_panel, dict) else 0,
-        "family_trial_registry_path": str(family_trial_registry_path.resolve()) if family_trial_registry_path else None,
+        "return_panel_path": str(return_panel_path.resolve())
+        if return_panel_path
+        else None,
+        "return_panel_hash": return_panel.get("content_hash")
+        if isinstance(return_panel, dict)
+        else None,
+        "return_panel_artifact_type": return_panel.get("artifact_type")
+        if isinstance(return_panel, dict)
+        else None,
+        "return_panel_split": return_panel.get("split")
+        if isinstance(return_panel, dict)
+        else None,
+        "return_unit": return_panel.get("return_unit")
+        if isinstance(return_panel, dict)
+        else "unavailable",
+        "return_panel_observation_count": return_panel.get("observation_count")
+        if isinstance(return_panel, dict)
+        else 0,
+        "family_trial_registry_path": str(family_trial_registry_path.resolve())
+        if family_trial_registry_path
+        else None,
         "family_trial_registry_prior_hash": family_trial_registry_prior_hash,
         "family_trial_registry_row_hash": family_trial_registry_row_hash,
         "family_trial_registry_bound_evidence_hash": None,
-        "experiment_registry_path": (experiment_registry or {}).get("experiment_registry_path"),
-        "experiment_registry_prior_hash": (experiment_registry or {}).get("experiment_registry_prior_hash"),
-        "experiment_registry_row_hash": (experiment_registry or {}).get("experiment_registry_row_hash"),
-        "experiment_registry_completion_row_hash": (experiment_registry or {}).get("experiment_registry_completion_row_hash"),
-        "experiment_registry_bound_evidence_hash": (experiment_registry or {}).get("experiment_registry_bound_evidence_hash"),
-        "experiment_registry_evidence_hash_phase": (experiment_registry or {}).get("experiment_registry_evidence_hash_phase"),
-        "final_holdout_fingerprint": (experiment_registry or {}).get("final_holdout_fingerprint"),
-        "final_holdout_identity_hash": (experiment_registry or {}).get("final_holdout_identity_hash"),
-        "final_holdout_content_hash": (experiment_registry or {}).get("final_holdout_content_hash"),
-        "final_holdout_reuse_key_hash_v1": (experiment_registry or {}).get("final_holdout_reuse_key_hash_v1"),
-        "final_holdout_reuse_key_hash": (experiment_registry or {}).get("final_holdout_reuse_key_hash"),
+        "experiment_registry_path": (experiment_registry or {}).get(
+            "experiment_registry_path"
+        ),
+        "experiment_registry_prior_hash": (experiment_registry or {}).get(
+            "experiment_registry_prior_hash"
+        ),
+        "experiment_registry_row_hash": (experiment_registry or {}).get(
+            "experiment_registry_row_hash"
+        ),
+        "experiment_registry_completion_row_hash": (experiment_registry or {}).get(
+            "experiment_registry_completion_row_hash"
+        ),
+        "experiment_registry_bound_evidence_hash": (experiment_registry or {}).get(
+            "experiment_registry_bound_evidence_hash"
+        ),
+        "experiment_registry_evidence_hash_phase": (experiment_registry or {}).get(
+            "experiment_registry_evidence_hash_phase"
+        ),
+        "final_holdout_fingerprint": (experiment_registry or {}).get(
+            "final_holdout_fingerprint"
+        ),
+        "final_holdout_identity_hash": (experiment_registry or {}).get(
+            "final_holdout_identity_hash"
+        ),
+        "final_holdout_content_hash": (experiment_registry or {}).get(
+            "final_holdout_content_hash"
+        ),
+        "final_holdout_reuse_key_hash_v1": (experiment_registry or {}).get(
+            "final_holdout_reuse_key_hash_v1"
+        ),
+        "final_holdout_reuse_key_hash": (experiment_registry or {}).get(
+            "final_holdout_reuse_key_hash"
+        ),
         "final_holdout_reuse_key_schema_version": (experiment_registry or {}).get(
             "final_holdout_reuse_key_schema_version"
         ),
-        "final_holdout_reuse_key_hash_v2": (experiment_registry or {}).get("final_holdout_reuse_key_hash_v2"),
-        "final_holdout_split_hash": (experiment_registry or {}).get("final_holdout_split_hash"),
-        "research_freedom_hash": (experiment_registry or {}).get("research_freedom_hash"),
+        "final_holdout_reuse_key_hash_v2": (experiment_registry or {}).get(
+            "final_holdout_reuse_key_hash_v2"
+        ),
+        "final_holdout_split_hash": (experiment_registry or {}).get(
+            "final_holdout_split_hash"
+        ),
+        "research_freedom_hash": (experiment_registry or {}).get(
+            "research_freedom_hash"
+        ),
         "registry_gate_result": (experiment_registry or {}).get("registry_gate_result"),
-        "registry_gate_fail_reasons": list((experiment_registry or {}).get("registry_gate_fail_reasons") or []),
+        "registry_gate_fail_reasons": list(
+            (experiment_registry or {}).get("registry_gate_fail_reasons") or []
+        ),
         "n_bootstrap": contract.bootstrap.n_bootstrap,
         "block_length": sampling_contract.get("block_length"),
         "block_length_policy": contract.bootstrap.block_length_policy,
@@ -398,7 +515,10 @@ def build_statistical_selection_evidence(
         "method_provenance": method_provenance,
         "statistical_gate_result": "FAIL" if gate_reasons else "PASS",
         "gate_fail_reasons": gate_reasons,
-        "limitations": _limitations(contract, statistical_evidence_generation_available=statistical_evidence_generation_available),
+        "limitations": _limitations(
+            contract,
+            statistical_evidence_generation_available=statistical_evidence_generation_available,
+        ),
         "statistical_evidence_limitations": _statistical_evidence_limitations(
             contract,
             statistical_evidence_generation_available=statistical_evidence_generation_available,
@@ -416,9 +536,13 @@ def write_statistical_selection_evidence(
     evidence: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
 ) -> Path:
-    path = manager.research_artifact_path(experiment_id, "statistical_selection_evidence.json")
+    path = manager.research_artifact_path(
+        experiment_id, "statistical_selection_evidence.json"
+    )
     _ensure_research_output_path_allowed(manager, path)
-    store = artifact_context or ResearchArtifactContext(manager=manager, experiment_id=experiment_id)
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager, experiment_id=experiment_id
+    )
     store.write_json_atomic(path, evidence)
     return path
 
@@ -431,10 +555,15 @@ def validate_statistical_evidence_for_candidate(
     require_experiment_registry_binding: bool = True,
 ) -> list[str]:
     reasons: list[str] = []
-    required = bool(candidate.get("statistical_validation_required")) or requires_candidate_validation(
-        candidate.get("research_classification") or report.get("research_classification")
+    required = bool(
+        candidate.get("statistical_validation_required")
+    ) or requires_candidate_validation(
+        candidate.get("research_classification")
+        or report.get("research_classification")
     )
-    contract = candidate.get("statistical_validation_contract") or report.get("statistical_validation_contract")
+    contract = candidate.get("statistical_validation_contract") or report.get(
+        "statistical_validation_contract"
+    )
     if required and not isinstance(contract, dict):
         reasons.append("statistical_contract_missing")
     if not required:
@@ -442,10 +571,16 @@ def validate_statistical_evidence_for_candidate(
     if not isinstance(evidence, dict):
         reasons.append("statistical_evidence_missing")
         return reasons
-    expected_hash = str(candidate.get("statistical_evidence_hash") or report.get("statistical_evidence_hash") or "")
+    expected_hash = str(
+        candidate.get("statistical_evidence_hash")
+        or report.get("statistical_evidence_hash")
+        or ""
+    )
     if not expected_hash.startswith("sha256:"):
         reasons.append("statistical_evidence_hash_missing")
-    actual_hash = sha256_prefixed(content_hash_payload({k: v for k, v in evidence.items() if k != "content_hash"}))
+    actual_hash = sha256_prefixed(
+        content_hash_payload({k: v for k, v in evidence.items() if k != "content_hash"})
+    )
     embedded_hash = str(evidence.get("content_hash") or "")
     if expected_hash.startswith("sha256:") and actual_hash != expected_hash:
         reasons.append("statistical_evidence_hash_mismatch")
@@ -453,7 +588,9 @@ def validate_statistical_evidence_for_candidate(
         reasons.append("statistical_evidence_hash_mismatch")
 
     expected_metric_hash = str(
-        candidate.get("candidate_metric_values_hash") or report.get("candidate_metric_values_hash") or ""
+        candidate.get("candidate_metric_values_hash")
+        or report.get("candidate_metric_values_hash")
+        or ""
     )
     actual_metric_hash = str(evidence.get("candidate_metric_values_hash") or "")
     if not expected_metric_hash.startswith("sha256:"):
@@ -467,7 +604,11 @@ def validate_statistical_evidence_for_candidate(
         reasons=reasons,
     )
 
-    expected_universe = str(candidate.get("selection_universe_hash") or report.get("selection_universe_hash") or "")
+    expected_universe = str(
+        candidate.get("selection_universe_hash")
+        or report.get("selection_universe_hash")
+        or ""
+    )
     if not expected_universe.startswith("sha256:"):
         reasons.append("selection_universe_hash_missing")
     elif str(evidence.get("selection_universe_hash") or "") != expected_universe:
@@ -479,14 +620,24 @@ def validate_statistical_evidence_for_candidate(
             if str(expected or "") != str(actual or ""):
                 reasons.append("selection_universe_hash_mismatch")
                 break
-    _extend_statistical_metadata_reasons(candidate=candidate, report=report, evidence=evidence, reasons=reasons)
+    _extend_statistical_metadata_reasons(
+        candidate=candidate, report=report, evidence=evidence, reasons=reasons
+    )
     evidence_grade = str(evidence.get("evidence_grade") or "").strip()
-    validation_required = requires_candidate_validation(candidate.get("research_classification") or report.get("research_classification"))
-    if validation_required and evidence_grade not in STATISTICAL_EVIDENCE_EVIDENCE_GRADES:
+    validation_required = requires_candidate_validation(
+        candidate.get("research_classification")
+        or report.get("research_classification")
+    )
+    if (
+        validation_required
+        and evidence_grade not in STATISTICAL_EVIDENCE_EVIDENCE_GRADES
+    ):
         reasons.append("statistical_evidence_grade_insufficient")
     if not evidence_grade:
         reasons.append("statistical_evidence_grade_missing")
-    method = evidence.get("statistical_method") or evidence.get("white_reality_check_method")
+    method = evidence.get("statistical_method") or evidence.get(
+        "white_reality_check_method"
+    )
     if evidence_grade == SCREENING_SUMMARY_BOOTSTRAP:
         p_value = evidence.get("summary_metric_max_bootstrap_p_value")
         if p_value is None or _as_float(p_value) is None:
@@ -499,13 +650,23 @@ def validate_statistical_evidence_for_candidate(
         p_value = evidence.get("white_reality_check_p_value")
         if p_value is None or _as_float(p_value) is None:
             reasons.append("reality_check_p_value_missing")
-        if method not in STATISTICAL_EVIDENCE_METHODS and evidence_grade in STATISTICAL_EVIDENCE_EVIDENCE_GRADES:
+        if (
+            method not in STATISTICAL_EVIDENCE_METHODS
+            and evidence_grade in STATISTICAL_EVIDENCE_EVIDENCE_GRADES
+        ):
             reasons.append("statistical_method_unavailable")
-        if method in STATISTICAL_EVIDENCE_METHODS and method not in SUPPORTED_STATISTICAL_EVIDENCE_METHODS:
+        if (
+            method in STATISTICAL_EVIDENCE_METHODS
+            and method not in SUPPORTED_STATISTICAL_EVIDENCE_METHODS
+        ):
             reasons.append("statistical_evidence_statistical_computation_missing")
             reasons.append("statistical_method_unavailable")
-        _extend_statistical_method_contract_reasons(contract=contract, evidence=evidence, reasons=reasons)
-        _extend_statistical_evidence_method_reasons(evidence=evidence, report=report, reasons=reasons)
+        _extend_statistical_method_contract_reasons(
+            contract=contract, evidence=evidence, reasons=reasons
+        )
+        _extend_statistical_evidence_method_reasons(
+            evidence=evidence, report=report, reasons=reasons
+        )
     summary_p_value = evidence.get("summary_metric_max_bootstrap_p_value")
     if evidence_grade == SCREENING_SUMMARY_BOOTSTRAP and summary_p_value is None:
         reasons.append("summary_metric_max_bootstrap_p_value_missing")
@@ -518,15 +679,30 @@ def validate_statistical_evidence_for_candidate(
                     require_complete=True,
                 )
             )
-        reasons.extend(validate_return_panel_binding(report=report, evidence=evidence, panel=_load_return_panel(evidence, report)))
-        reasons.extend(validate_family_registry_binding(report=report, evidence=evidence))
+        reasons.extend(
+            validate_return_panel_binding(
+                report=report,
+                evidence=evidence,
+                panel=_load_return_panel(evidence, report),
+            )
+        )
+        reasons.extend(
+            validate_family_registry_binding(report=report, evidence=evidence)
+        )
     if evidence.get("effective_trial_count") is None:
         reasons.append("effective_trial_count_missing")
     elif _as_int(evidence.get("effective_trial_count")) is not None:
-        expected_effective = _expected_effective_trial_count(candidate=candidate, report=report, evidence=evidence)
-        if expected_effective is not None and int(evidence["effective_trial_count"]) < expected_effective:
+        expected_effective = _expected_effective_trial_count(
+            candidate=candidate, report=report, evidence=evidence
+        )
+        if (
+            expected_effective is not None
+            and int(evidence["effective_trial_count"]) < expected_effective
+        ):
             reasons.append("statistical_effective_trial_count_underreported")
-    if _as_int(evidence.get("metric_value_count")) != _as_int(candidate.get("metric_value_count") or report.get("metric_value_count")):
+    if _as_int(evidence.get("metric_value_count")) != _as_int(
+        candidate.get("metric_value_count") or report.get("metric_value_count")
+    ):
         reasons.append("statistical_metric_value_count_mismatch")
     metric_value_count = _as_int(evidence.get("metric_value_count"))
     candidate_count = _as_int(evidence.get("candidate_count"))
@@ -551,9 +727,15 @@ def validate_statistical_evidence_for_candidate(
             reasons.append("experiment_family_statistical_universe_not_implemented")
         gates = contract.get("gates")
         if isinstance(gates, dict):
-            if gates.get("max_spa_p_value") is not None and evidence.get("spa_p_value") is None:
+            if (
+                gates.get("max_spa_p_value") is not None
+                and evidence.get("spa_p_value") is None
+            ):
                 reasons.append("spa_method_unavailable")
-            if gates.get("min_deflated_sharpe_probability") is not None and evidence.get("deflated_sharpe_probability") is None:
+            if (
+                gates.get("min_deflated_sharpe_probability") is not None
+                and evidence.get("deflated_sharpe_probability") is None
+            ):
                 reasons.append("deflated_sharpe_missing")
     return sorted(set(reasons))
 
@@ -574,21 +756,36 @@ def _extend_statistical_evidence_method_reasons(
     if not isinstance(sampling, dict):
         reasons.append("bootstrap_sampling_contract_missing")
     else:
-        actual_sampling_hash = sha256_prefixed(content_hash_payload({k: v for k, v in sampling.items() if k != "content_hash"}))
-        if sampling.get("content_hash") != actual_sampling_hash or sampling_hash != actual_sampling_hash:
+        actual_sampling_hash = sha256_prefixed(
+            content_hash_payload(
+                {k: v for k, v in sampling.items() if k != "content_hash"}
+            )
+        )
+        if (
+            sampling.get("content_hash") != actual_sampling_hash
+            or sampling_hash != actual_sampling_hash
+        ):
             reasons.append("bootstrap_sampling_contract_malformed")
         if sampling.get("method") not in STATISTICAL_EVIDENCE_METHODS:
             reasons.append("bootstrap_sampling_contract_malformed")
         sampling_method = str(sampling.get("method") or "").strip()
         if not sampling_method:
             reasons.append("bootstrap_sampling_contract_method_mismatch")
-        if sampling.get("method_name") and str(sampling.get("method_name")) != sampling_method:
+        if (
+            sampling.get("method_name")
+            and str(sampling.get("method_name")) != sampling_method
+        ):
             reasons.append("bootstrap_sampling_contract_method_mismatch")
         if sampling_method != evidence_method or sampling_method != wrc_method:
             reasons.append("bootstrap_sampling_contract_method_mismatch")
-    if not str(evidence.get("return_panel_hash") or report.get("return_panel_hash") or "").startswith("sha256:"):
+    if not str(
+        evidence.get("return_panel_hash") or report.get("return_panel_hash") or ""
+    ).startswith("sha256:"):
         reasons.append("return_panel_hash_missing")
-    observation_count = _as_int(evidence.get("return_panel_observation_count") or report.get("return_panel_observation_count"))
+    observation_count = _as_int(
+        evidence.get("return_panel_observation_count")
+        or report.get("return_panel_observation_count")
+    )
     if observation_count is None or observation_count <= 0:
         reasons.append("return_panel_observation_count_insufficient")
     evidence_return_unit = evidence.get("return_unit")
@@ -607,7 +804,9 @@ def _extend_statistical_evidence_method_reasons(
             reasons.append("return_panel_statistical_evidence_unavailable")
     if not isinstance(panel, dict) or not isinstance(sampling, dict):
         return
-    recomputed = recompute_white_reality_check_block_bootstrap(panel=panel, sampling_contract=sampling)
+    recomputed = recompute_white_reality_check_block_bootstrap(
+        panel=panel, sampling_contract=sampling
+    )
     claimed = _as_float(evidence.get("white_reality_check_p_value"))
     if recomputed is None:
         reasons.append("statistical_evidence_statistical_computation_missing")
@@ -625,7 +824,11 @@ def _extend_statistical_method_contract_reasons(
         reasons.append("statistical_method_contract_mismatch")
         return
     bootstrap = contract.get("bootstrap")
-    contract_method = str(bootstrap.get("method") or "").strip() if isinstance(bootstrap, dict) else ""
+    contract_method = (
+        str(bootstrap.get("method") or "").strip()
+        if isinstance(bootstrap, dict)
+        else ""
+    )
     evidence_method = str(evidence.get("statistical_method") or "").strip()
     wrc_method = str(evidence.get("white_reality_check_method") or "").strip()
     bootstrap_method = str(evidence.get("bootstrap_method") or "").strip()
@@ -633,7 +836,10 @@ def _extend_statistical_method_contract_reasons(
         reasons.append("statistical_method_contract_mismatch")
     if bootstrap_method and bootstrap_method != contract_method:
         reasons.append("statistical_method_contract_mismatch")
-    if contract_method in STATISTICAL_EVIDENCE_METHODS and contract_method not in SUPPORTED_STATISTICAL_EVIDENCE_METHODS:
+    if (
+        contract_method in STATISTICAL_EVIDENCE_METHODS
+        and contract_method not in SUPPORTED_STATISTICAL_EVIDENCE_METHODS
+    ):
         reasons.append("statistical_method_unavailable")
 
 
@@ -645,13 +851,17 @@ def _extend_candidate_metric_recompute_reasons(
     reasons: list[str],
 ) -> None:
     candidates = report.get("candidates")
-    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+    if not isinstance(candidates, list) or not all(
+        isinstance(item, dict) for item in candidates
+    ):
         reasons.append("candidate_metric_values_hash_missing")
         reasons.append("statistical_metadata_mismatch")
         return
     actual_candidate_count = len(candidates)
     for field_value in (
-        report.get("candidate_count") if "candidate_count" in report else actual_candidate_count,
+        report.get("candidate_count")
+        if "candidate_count" in report
+        else actual_candidate_count,
         evidence.get("candidate_count"),
     ):
         if _as_int(field_value) != actual_candidate_count:
@@ -664,14 +874,20 @@ def _extend_candidate_metric_recompute_reasons(
     if _as_int(summary.get("candidate_count")) != actual_candidate_count:
         reasons.append("statistical_candidate_count_mismatch")
         reasons.append("statistical_metadata_mismatch")
-    if _as_int(summary.get("metric_value_count")) != _as_int(evidence.get("metric_value_count")):
+    if _as_int(summary.get("metric_value_count")) != _as_int(
+        evidence.get("metric_value_count")
+    ):
         reasons.append("statistical_metric_value_count_mismatch")
         reasons.append("statistical_metadata_mismatch")
-    if _as_int(summary.get("missing_metric_count")) != _as_int(evidence.get("missing_metric_count")):
+    if _as_int(summary.get("missing_metric_count")) != _as_int(
+        evidence.get("missing_metric_count")
+    ):
         reasons.append("statistical_metric_value_count_mismatch")
         reasons.append("statistical_metadata_mismatch")
 
-    recomputed = recompute_candidate_metric_values_hash_from_report(report=report, evidence=evidence)
+    recomputed = recompute_candidate_metric_values_hash_from_report(
+        report=report, evidence=evidence
+    )
     if recomputed is None:
         reasons.append("candidate_metric_values_hash_missing")
         reasons.append("statistical_metadata_mismatch")
@@ -720,7 +936,9 @@ def _extend_statistical_metadata_reasons(
         elif str(expected or "") != str(actual or ""):
             reasons.append(code)
             reasons.append("statistical_metadata_mismatch")
-    expected_contract = candidate.get("statistical_validation_contract") or report.get("statistical_validation_contract")
+    expected_contract = candidate.get("statistical_validation_contract") or report.get(
+        "statistical_validation_contract"
+    )
     if expected_contract != evidence.get("statistical_validation_contract"):
         reasons.append("statistical_contract_mismatch")
         reasons.append("statistical_metadata_mismatch")
@@ -755,7 +973,9 @@ def _candidate_metric_values_from_payload(payload: dict[str, Any]) -> list[float
     return values
 
 
-def _metric_value(metrics: dict[str, Any], primary_metric: str, benchmark: str) -> float | None:
+def _metric_value(
+    metrics: dict[str, Any], primary_metric: str, benchmark: str
+) -> float | None:
     if primary_metric in {"net_excess_return", "return_pct"}:
         raw = _as_float(metrics.get("return_pct"))
     elif primary_metric == "sharpe_like":
@@ -796,7 +1016,9 @@ def _metric_centered_max_bootstrap_p_value(
     exceed_count = 0
     sample_size = len(centered)
     for _ in range(n_bootstrap):
-        sample_max = max(centered[rng.randrange(sample_size)] for _ in range(sample_size))
+        sample_max = max(
+            centered[rng.randrange(sample_size)] for _ in range(sample_size)
+        )
         if sample_max >= observed:
             exceed_count += 1
     return round((exceed_count + 1) / (n_bootstrap + 1), 12), seed
@@ -831,7 +1053,11 @@ def _statistical_gate_fail_reasons(
     return sorted(set(reasons))
 
 
-def _limitations(contract: StatisticalSelectionContract, *, statistical_evidence_generation_available: bool = False) -> list[str]:
+def _limitations(
+    contract: StatisticalSelectionContract,
+    *,
+    statistical_evidence_generation_available: bool = False,
+) -> list[str]:
     if statistical_evidence_generation_available:
         return [
             "spa_not_implemented",
@@ -931,7 +1157,13 @@ def recompute_white_reality_check_block_bootstrap(
     n_bootstrap = _as_int(sampling_contract.get("n_bootstrap"))
     block_length = _as_int(sampling_contract.get("block_length"))
     seed = _as_int(sampling_contract.get("derived_seed"))
-    if n_bootstrap is None or n_bootstrap <= 0 or block_length is None or block_length <= 0 or seed is None:
+    if (
+        n_bootstrap is None
+        or n_bootstrap <= 0
+        or block_length is None
+        or block_length <= 0
+        or seed is None
+    ):
         return None
     candidate_paths: list[list[float]] = []
     rows = panel.get("candidate_return_series")
@@ -955,17 +1187,24 @@ def recompute_white_reality_check_block_bootstrap(
     if not candidate_paths:
         return None
     observed = max(sum(path) / len(path) for path in candidate_paths)
-    centered_paths = [[value - (sum(path) / len(path)) for value in path] for path in candidate_paths]
+    centered_paths = [
+        [value - (sum(path) / len(path)) for value in path] for path in candidate_paths
+    ]
     rng = random.Random(seed)
     exceed_count = 0
     for _ in range(n_bootstrap):
-        boot_max = max(_block_bootstrap_mean(path, block_length=block_length, rng=rng) for path in centered_paths)
+        boot_max = max(
+            _block_bootstrap_mean(path, block_length=block_length, rng=rng)
+            for path in centered_paths
+        )
         if boot_max >= observed:
             exceed_count += 1
     return round((exceed_count + 1) / (n_bootstrap + 1), 12)
 
 
-def _block_bootstrap_mean(path: list[float], *, block_length: int, rng: random.Random) -> float:
+def _block_bootstrap_mean(
+    path: list[float], *, block_length: int, rng: random.Random
+) -> float:
     out: list[float] = []
     n = len(path)
     while len(out) < n:
@@ -977,8 +1216,12 @@ def _block_bootstrap_mean(path: list[float], *, block_length: int, rng: random.R
     return sum(out) / len(out)
 
 
-def _load_return_panel(evidence: dict[str, Any], report: dict[str, Any]) -> dict[str, Any] | None:
-    path_value = str(evidence.get("return_panel_path") or report.get("return_panel_path") or "").strip()
+def _load_return_panel(
+    evidence: dict[str, Any], report: dict[str, Any]
+) -> dict[str, Any] | None:
+    path_value = str(
+        evidence.get("return_panel_path") or report.get("return_panel_path") or ""
+    ).strip()
     if not path_value:
         return None
     try:
@@ -1016,20 +1259,38 @@ def _expected_effective_trial_count(
     evidence: dict[str, Any],
 ) -> int | None:
     values = {
-        "candidate_count": _as_int(candidate.get("candidate_count") or report.get("candidate_count") or evidence.get("candidate_count")),
-        "metric_value_count": _as_int(evidence.get("metric_value_count")),
-        "search_budget": _as_int(candidate.get("search_budget") or report.get("search_budget") or evidence.get("search_budget")),
-        "parameter_grid_size": _as_int(
-            candidate.get("parameter_grid_size") or report.get("parameter_grid_size") or evidence.get("parameter_grid_size")
+        "candidate_count": _as_int(
+            candidate.get("candidate_count")
+            or report.get("candidate_count")
+            or evidence.get("candidate_count")
         ),
-        "attempt_index": _as_int(candidate.get("attempt_index") or report.get("attempt_index") or evidence.get("attempt_index")),
+        "metric_value_count": _as_int(evidence.get("metric_value_count")),
+        "search_budget": _as_int(
+            candidate.get("search_budget")
+            or report.get("search_budget")
+            or evidence.get("search_budget")
+        ),
+        "parameter_grid_size": _as_int(
+            candidate.get("parameter_grid_size")
+            or report.get("parameter_grid_size")
+            or evidence.get("parameter_grid_size")
+        ),
+        "attempt_index": _as_int(
+            candidate.get("attempt_index")
+            or report.get("attempt_index")
+            or evidence.get("attempt_index")
+        ),
         "holdout_reuse_count": _as_int(
-            candidate.get("holdout_reuse_count") or report.get("holdout_reuse_count") or evidence.get("holdout_reuse_count")
+            candidate.get("holdout_reuse_count")
+            or report.get("holdout_reuse_count")
+            or evidence.get("holdout_reuse_count")
         ),
     }
     if any(value is None for value in values.values()):
         return None
-    return _effective_trial_count(**{key: int(value) for key, value in values.items() if value is not None})
+    return _effective_trial_count(
+        **{key: int(value) for key, value in values.items() if value is not None}
+    )
 
 
 def _seed_from_hash(value: str) -> int:
@@ -1056,8 +1317,12 @@ def _as_int(value: object) -> int | None:
         return None
 
 
-def _ensure_research_output_path_allowed(manager: ResearchPathManager, path: Path) -> None:
+def _ensure_research_output_path_allowed(
+    manager: ResearchPathManager, path: Path
+) -> None:
     project_root = manager.project_root.resolve()
     resolved = path.resolve()
     if ResearchPathManager.is_within(resolved, project_root):
-        raise ResearchPathError(f"research output path must be outside repository: {resolved}")
+        raise ResearchPathError(
+            f"research output path must be outside repository: {resolved}"
+        )

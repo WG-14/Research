@@ -1,4 +1,5 @@
 """Immutable strategy-facing projection of authoritative ledger state."""
+
 from __future__ import annotations
 from dataclasses import dataclass
 

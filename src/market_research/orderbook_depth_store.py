@@ -24,7 +24,9 @@ class OrderbookDepthLevel:
     source: str
     observed_at_epoch_sec: float | None = None
 
-    def as_db_tuple(self) -> tuple[int, str, str, int, float, float, float, float, str, float | None]:
+    def as_db_tuple(
+        self,
+    ) -> tuple[int, str, str, int, float, float, float, float, str, float | None]:
         return (
             self.ts,
             self.pair,
@@ -101,9 +103,9 @@ def build_orderbook_depth_snapshot(
     )
 
 
-
-
-def upsert_orderbook_depth_snapshot(conn: sqlite3.Connection, snapshot: OrderbookDepthSnapshot) -> int:
+def upsert_orderbook_depth_snapshot(
+    conn: sqlite3.Connection, snapshot: OrderbookDepthSnapshot
+) -> int:
     validated = build_orderbook_depth_snapshot(
         ts=snapshot.ts,
         pair=snapshot.pair,
@@ -173,8 +175,16 @@ def load_orderbook_depth_snapshot_after_or_equal(
         """,
         (int(row[0]), market, str(row[1])),
     ).fetchall()
-    bids = [(float(price), float(size)) for side, _idx, price, size in level_rows if str(side) == "bid"]
-    asks = [(float(price), float(size)) for side, _idx, price, size in level_rows if str(side) == "ask"]
+    bids = [
+        (float(price), float(size))
+        for side, _idx, price, size in level_rows
+        if str(side) == "bid"
+    ]
+    asks = [
+        (float(price), float(size))
+        for side, _idx, price, size in level_rows
+        if str(side) == "ask"
+    ]
     return build_orderbook_depth_snapshot(
         ts=int(row[0]),
         pair=market,
@@ -234,9 +244,12 @@ def summarize_orderbook_depth_evidence(
     end_ts: int | None = None,
     source: str | None = None,
 ) -> dict[str, Any]:
-    table_exists = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_depth_levels'"
-    ).fetchone() is not None
+    table_exists = (
+        conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_depth_levels'"
+        ).fetchone()
+        is not None
+    )
     base_payload: dict[str, Any] = {
         "l2_depth_table_exists": table_exists,
         "l2_depth_rows_available": False,
@@ -302,11 +315,11 @@ def summarize_orderbook_depth_evidence(
     ]
     sides_by_snapshot: dict[tuple[int, str], set[str]] = {}
     for item in row_payloads:
-        sides_by_snapshot.setdefault((int(item["ts"]), str(item["source"])), set()).add(str(item["side"]))
+        sides_by_snapshot.setdefault((int(item["ts"]), str(item["source"])), set()).add(
+            str(item["side"])
+        )
     complete_snapshots = {
-        key
-        for key, sides in sides_by_snapshot.items()
-        if {"bid", "ask"} <= sides
+        key for key, sides in sides_by_snapshot.items() if {"bid", "ask"} <= sides
     }
     timestamps = [int(item["ts"]) for item in row_payloads]
     base_payload.update(
@@ -327,7 +340,9 @@ def summarize_orderbook_depth_evidence(
 def _depth_evidence_hash(rows: list[dict[str, Any]]) -> str:
     digest = hashlib.sha256()
     for row in rows:
-        encoded = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        encoded = json.dumps(
+            row, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
         digest.update(encoded.encode("utf-8"))
         digest.update(b"\n")
     return f"sha256:{digest.hexdigest()}"
@@ -378,11 +393,17 @@ def _build_side_levels(
     return tuple(out)
 
 
-def _validate_price_size(*, price: float, size: float, side: str, level_index: int) -> None:
+def _validate_price_size(
+    *, price: float, size: float, side: str, level_index: int
+) -> None:
     if not math.isfinite(price) or price <= 0.0:
-        raise ValueError(f"invalid orderbook depth price side={side} level_index={level_index}: {price!r}")
+        raise ValueError(
+            f"invalid orderbook depth price side={side} level_index={level_index}: {price!r}"
+        )
     if not math.isfinite(size) or size <= 0.0:
-        raise ValueError(f"invalid orderbook depth size side={side} level_index={level_index}: {size!r}")
+        raise ValueError(
+            f"invalid orderbook depth size side={side} level_index={level_index}: {size!r}"
+        )
 
 
 def _validate_depth_sides(
@@ -395,4 +416,6 @@ def _validate_depth_sides(
     best_bid = float(bids[0].price)
     best_ask = float(asks[0].price)
     if best_bid > best_ask:
-        raise ValueError(f"crossed orderbook depth: best_bid={best_bid!r} best_ask={best_ask!r}")
+        raise ValueError(
+            f"crossed orderbook depth: best_bid={best_bid!r} best_ask={best_ask!r}"
+        )

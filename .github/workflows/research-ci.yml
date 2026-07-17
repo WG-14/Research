@@ -5,26 +5,52 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: Core tests and distribution boundaries
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
       RESEARCH_DATA_ROOT: /tmp/market-research/datasets
       RESEARCH_ARTIFACT_ROOT: /tmp/market-research/artifacts
       RESEARCH_REPORT_ROOT: /tmp/market-research/reports
       RESEARCH_CACHE_ROOT: /tmp/market-research/cache
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - run: uv sync --dev
-      - run: uv run python -m compileall -q src/market_research
-      - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_market_research_namespace_boundary.py tests/test_offline_data_boundary.py tests/test_execution_calibration_boundary.py tests/test_research_semantics_v2_contract.py
-      - run: uv run pytest -q
-      - run: uv build
-      - name: Inspect wheel and sdist boundaries
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.11.2"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify the workspace lock and install only Core
+        run: |
+          uv lock --check
+          uv sync --frozen --package market-research
+      - run: uv run --no-sync python -m compileall -q src/market_research
+      - name: Run focused Core boundary tests
+        run: >-
+          uv run --no-sync pytest -q
+          tests/test_repository_research_only_boundary.py
+          tests/test_market_research_namespace_boundary.py
+          tests/test_offline_data_boundary.py
+          tests/test_execution_calibration_boundary.py
+          tests/test_research_semantics_v2_contract.py
+      - name: Run the complete Core suite once
+        run: uv run --no-sync pytest -q
+      - name: Build only the Core distribution
+        run: uv build --package market-research --out-dir dist --clear
+      - name: Inspect Core wheel and sdist boundaries
         run: |
           set -euo pipefail
           wheel="dist/market_research-0.1.0-py3-none-any.whl"
@@ -53,44 +79,59 @@ jobs:
           assert any(name.startswith("market_research/research/") for name in names)
           assert any(name.startswith("market_research/research_cli/") for name in names)
           assert any(".dist-info/" in name for name in names)
-          forbidden = ("tests/", "scr" + "ipts/", "to" + "ols/", ".env.example", ".github/")
-          assert not [name for name in names if name.startswith(forbidden) or name.endswith("/.env.example")]
+          forbidden = (
+              "tests/", "scripts/", "tools/", "portal/",
+              "market_research_web/", "research_operations/", ".github/",
+          )
+          assert not [name for name in names if name.startswith(forbidden)]
+          assert not [name for name in names if name.endswith("/.env.example")]
 
           with open_tar(sdist_path, "r:gz") as sdist:
               names = set(sdist.getnames())
           root = "market_research-0.1.0/"
           required = {
-              root + "pyproject.toml", root + "README.md", root + "CHANGELOG.md",
+              root + "pyproject.toml",
+              root + "README.md",
+              root + "CHANGELOG.md",
               root + "src/market_research/__init__.py",
               root + "src/market_research/application/__init__.py",
           }
           assert required <= names, required - names
-          forbidden_parts = ("/dist/", "/.venv/", "/.git/", "/tests/", "/docs/", "/.github/", "/apps/")
-          forbidden_suffixes = (".sqlite", ".sqlite3", ".db", "/.env", "/.env.example")
-          assert not [name for name in names if any(part in name for part in forbidden_parts) or name.endswith(forbidden_suffixes)]
+          forbidden_parts = (
+              "/dist/", "/.venv/", "/.git/", "/tests/", "/docs/",
+              "/.github/", "/apps/", "/services/",
+          )
+          forbidden_suffixes = (
+              ".sqlite", ".sqlite3", ".db", "/.env", "/.env.example",
+          )
+          assert not [
+              name for name in names
+              if any(part in name for part in forbidden_parts)
+              or name.endswith(forbidden_suffixes)
+          ]
           PY
-      - name: Install wheel and sdist in separate isolated environments
+      - name: Install Core wheel and sdist in isolated environments
         run: |
           set -euo pipefail
           tmpdir="$(mktemp -d)"
           trap 'rm -rf "$tmpdir"' EXIT
           wheel="${GITHUB_WORKSPACE}/dist/market_research-0.1.0-py3-none-any.whl"
           sdist="${GITHUB_WORKSPACE}/dist/market_research-0.1.0.tar.gz"
-          uv venv "$tmpdir/wheel-venv"
-          uv venv "$tmpdir/sdist-venv"
+          uv venv --python 3.12 "$tmpdir/wheel-venv"
+          uv venv --python 3.12 "$tmpdir/sdist-venv"
           env -u PYTHONPATH uv pip install --python "$tmpdir/wheel-venv/bin/python" "$wheel"
           env -u PYTHONPATH uv pip install --python "$tmpdir/sdist-venv/bin/python" "$sdist"
           cd "$tmpdir"
           for environment in wheel sdist; do
-            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import market_research; import importlib.metadata; assert importlib.metadata.version('market-research') == '0.1.0'; assert market_research.__name__ == 'market_research'"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import market_research; import importlib.metadata; assert importlib.metadata.version('market-research') == '0.1.0'"
             env -u PYTHONPATH "./$environment-venv/bin/market-research" --help > "$environment-console-help.txt"
             env -u PYTHONPATH "./$environment-venv/bin/python" -m market_research --help > "$environment-module-help.txt"
             diff -u "$environment-console-help.txt" "$environment-module-help.txt"
-            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from market_research.research.strategy_catalog import list_research_strategies; from market_research.research_composition import builtin_strategy_registry; print(json.dumps({'version': importlib.metadata.version('market-research'), 'namespace': 'market_research', 'strategies': [item.name for item in list_research_strategies(registry=builtin_strategy_registry())]}))" > "$environment-probe.json"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from market_research.research.strategy_catalog import list_research_strategies; from market_research.research_composition import builtin_strategy_registry; print(json.dumps({'version': importlib.metadata.version('market-research'), 'strategies': [item.name for item in list_research_strategies(registry=builtin_strategy_registry())]}))" > "$environment-probe.json"
           done
           diff -u wheel-console-help.txt sdist-console-help.txt
           diff -u wheel-probe.json sdist-probe.json
-      - name: Create distribution checksums
+      - name: Create Core distribution checksums
         run: |
           set -euo pipefail
           (
@@ -98,8 +139,8 @@ jobs:
             sha256sum market_research-0.1.0-py3-none-any.whl market_research-0.1.0.tar.gz | sort -k2 > SHA256SUMS
             sha256sum -c SHA256SUMS
           )
-      - name: Upload distribution artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Core distribution artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: market-research-0.1.0-dist
           path: |
@@ -107,28 +148,400 @@ jobs:
             dist/market_research-0.1.0.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
+          retention-days: 14
+
+  platform-contracts:
+    name: Monorepo architecture, hygiene, and package build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
+      RESEARCH_DATA_ROOT: /tmp/market-research-contracts/datasets
+      RESEARCH_ARTIFACT_ROOT: /tmp/market-research-contracts/artifacts
+      RESEARCH_REPORT_ROOT: /tmp/market-research-contracts/reports
+      RESEARCH_CACHE_ROOT: /tmp/market-research-contracts/cache
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.11.2"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Reject old sibling paths, tracked secrets, and symlinks
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import re
+          import subprocess
+          from pathlib import Path, PurePosixPath
+
+          paths = subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0")
+          paths = [path.decode("utf-8") for path in paths if path]
+          index = subprocess.check_output(["git", "ls-files", "-s", "-z"]).split(b"\0")
+          symlinks = []
+          for row in index:
+              if not row:
+                  continue
+              mode, _object_id, _stage_and_path = row.decode("utf-8").split(maxsplit=2)
+              if mode == "120000":
+                  symlinks.append(_stage_and_path.split("\t", 1)[-1])
+          assert not symlinks, f"tracked symlinks are forbidden: {symlinks}"
+
+          forbidden_suffixes = {
+              ".key", ".pem", ".crt", ".cer", ".p12", ".pfx",
+              ".htpasswd", ".dump", ".backup", ".sqlite", ".sqlite3", ".db",
+          }
+          forbidden_paths = []
+          for raw_path in paths:
+              path = PurePosixPath(raw_path)
+              if path.name.endswith(".env.example"):
+                  continue
+              if path.name == ".env" or path.suffix.lower() in forbidden_suffixes:
+                  forbidden_paths.append(raw_path)
+              if {"secrets", "pki"} & set(path.parts):
+                  forbidden_paths.append(raw_path)
+          assert not forbidden_paths, f"tracked runtime/secret files: {forbidden_paths}"
+
+          private_material = re.compile(rb"BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY")
+          github_token = re.compile(rb"gh[pousr]_[A-Za-z0-9_]{20,}")
+          credential_hits = []
+          old_path_hits = []
+          old_references = (
+              b"/home/vorac/work/" + b"ResearchOperations",
+              b"Research" + b"Operations/",
+              b"../" + b"ResearchOperations",
+          )
+          old_reference_exceptions = {
+              ".github/workflows/research-ci.yml",
+              "tests/test_monorepo_packaging.py",
+          }
+          for raw_path in paths:
+              payload = Path(raw_path).read_bytes()
+              if private_material.search(payload) or github_token.search(payload):
+                  credential_hits.append(raw_path)
+              if raw_path not in old_reference_exceptions and any(
+                  reference in payload for reference in old_references
+              ):
+                  old_path_hits.append(raw_path)
+          assert not credential_hits, f"credential material detected: {credential_hits}"
+          assert not old_path_hits, f"legacy sibling path detected: {old_path_hits}"
+          PY
+      - name: Sync the complete workspace from the root lock
+        run: |
+          uv lock --check
+          uv sync --frozen --all-packages --all-groups
+      - name: Audit locked runtime dependencies
+        run: |
+          uv export --frozen --all-packages --no-dev --no-emit-workspace \
+            --no-hashes --output-file /tmp/runtime-requirements.txt
+          uv run --no-sync pip-audit -r /tmp/runtime-requirements.txt \
+            --progress-spinner off
+      - name: Run architecture and monorepo contract tests
+        run: >-
+          uv run --no-sync pytest -q
+          tests/test_monorepo_packaging.py
+          tests/test_monorepo_architecture.py
+          tests/test_repository_research_only_boundary.py
+          tests/test_market_research_namespace_boundary.py
+          tests/test_offline_data_boundary.py
+          tests/test_internal_web_architecture_contract.py
+          tests/test_release_metadata.py
+          tests/test_release_manifest.py
+      - name: Build all three distributions from the workspace
+        run: scripts/platform build
+      - name: Reproduce the canonical platform release manifest
+        run: |
+          set -euo pipefail
+          python tools/release_manifest.py \
+            --release-id "ci-${GITHUB_SHA}" \
+            --artifacts-dir "${GITHUB_WORKSPACE}/dist/platform" \
+            --output /tmp/research-platform-release-1.json >/dev/null
+          python tools/release_manifest.py \
+            --release-id "ci-${GITHUB_SHA}" \
+            --artifacts-dir "${GITHUB_WORKSPACE}/dist/platform" \
+            --output /tmp/research-platform-release-2.json >/dev/null
+          cmp /tmp/research-platform-release-1.json \
+            /tmp/research-platform-release-2.json
+      - name: Inspect all package-data and isolation boundaries
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from tarfile import open as open_tar
+          from zipfile import ZipFile
+
+          root = Path("dist/platform")
+          wheels = sorted(root.glob("*.whl"))
+          sdists = sorted(root.glob("*.tar.gz"))
+          assert len(wheels) == 3, wheels
+          assert len(sdists) == 3, sdists
+
+          def one(prefix: str, values: list[Path]) -> Path:
+              matches = [value for value in values if value.name.startswith(prefix)]
+              assert len(matches) == 1, matches
+              return matches[0]
+
+          core_wheel = one("market_research-", wheels)
+          web_wheel = one("market_research_internal_web-", wheels)
+          operations_wheel = one("research_operations-", wheels)
+
+          with ZipFile(core_wheel) as archive:
+              core = set(archive.namelist())
+          with ZipFile(web_wheel) as archive:
+              web = set(archive.namelist())
+          with ZipFile(operations_wheel) as archive:
+              operations = set(archive.namelist())
+
+          assert "market_research/application/release.py" in core
+          assert not any(name.startswith(("portal/", "research_operations/")) for name in core)
+          assert "portal/templates/registration/login.html" in web
+          assert "portal/static/portal/app.css" in web
+          assert "portal/migrations/0008_imported_decision_report.py" in web
+          required_sql = {
+              "research_operations/migrations/0001_initial.sql",
+              "research_operations/migrations/0002_runtime_control.sql",
+              "research_operations/migrations/0003_research_job_receipt.sql",
+              "research_operations/migrations/0004_worker_release_provenance.sql",
+          }
+          assert required_sql <= operations, required_sql - operations
+
+          for names in (core, web, operations):
+              assert not any(
+                  name.startswith("tests/")
+                  or "/__pycache__/" in name
+                  or name.endswith((".key", ".pem", ".sqlite", ".db", ".dump"))
+                  for name in names
+              )
+          for sdist in sdists:
+              with open_tar(sdist, "r:gz") as archive:
+                  names = archive.getnames()
+              assert not any(
+                  "/.git/" in name or "/.venv/" in name or "/__pycache__/" in name
+                  for name in names
+              )
+          PY
+      - name: Install all wheels outside the source tree
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          uv venv --python 3.12 "$tmpdir/venv"
+          env -u PYTHONPATH uv pip install \
+            --python "$tmpdir/venv/bin/python" \
+            dist/platform/*.whl
+          cd "$tmpdir"
+          env -u PYTHONPATH "$tmpdir/venv/bin/python" - <<'PY'
+          from importlib import resources
+
+          import market_research
+          import market_research_web
+          import portal
+          import research_operations
+
+          assert market_research.__name__ == "market_research"
+          assert market_research_web.__name__ == "market_research_web"
+          assert portal.__name__ == "portal"
+          assert research_operations.__name__ == "research_operations"
+          migrations = resources.files("research_operations.migrations")
+          assert migrations.joinpath("0004_worker_release_provenance.sql").is_file()
+          PY
+          "$tmpdir/venv/bin/python" \
+            "$GITHUB_WORKSPACE/tools/verify_installed_release.py" \
+            --manifest /tmp/research-platform-release-1.json
+      - name: Create platform package checksums
+        run: |
+          set -euo pipefail
+          (
+            cd dist/platform
+            sha256sum ./*.whl ./*.tar.gz | sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+      - name: Upload platform distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: research-platform-distributions
+          path: dist/platform/
+          if-no-files-found: error
+          retention-days: 14
 
   internal-web-test:
+    name: Web tests on PostgreSQL and browser E2E
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/internal_web
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.14-bookworm
+        env:
+          POSTGRES_DB: research_web_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: web-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d research_web_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
+      DJANGO_SETTINGS_MODULE: market_research_web.settings_test
       INTERNAL_WEB_SECRET_KEY: ci-only-internal-web-secret-0123456789abcdef
       INTERNAL_WEB_REQUIRE_BROWSER_E2E: "1"
       INTERNAL_WEB_SECURE_SSL_REDIRECT: "false"
+      INTERNAL_WEB_DATABASE_ENGINE: postgresql
+      INTERNAL_WEB_DATABASE_NAME: research_web_ci
+      INTERNAL_WEB_DATABASE_USER: postgres
+      INTERNAL_WEB_DATABASE_PASSWORD: web-ci-password
+      INTERNAL_WEB_DATABASE_HOST: 127.0.0.1
+      INTERNAL_WEB_DATABASE_PORT: "5432"
+      INTERNAL_WEB_DATABASE_SSLMODE: disable
+      INTERNAL_WEB_DATABASE_CONN_MAX_AGE_SECONDS: "0"
+      INTERNAL_WEB_DATABASE_STATEMENT_TIMEOUT_MS: "30000"
+      INTERNAL_WEB_DATABASE_LOCK_TIMEOUT_MS: "5000"
+      INTERNAL_WEB_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "30000"
+      INTERNAL_WEB_DATABASE_APPLICATION_NAME: market-research-web
+      RESEARCH_OPS_SOURCE_ROOT: ${{ github.workspace }}
       RESEARCH_DATA_ROOT: /tmp/market-research-web/datasets
       RESEARCH_ARTIFACT_ROOT: /tmp/market-research-web/artifacts
       RESEARCH_REPORT_ROOT: /tmp/market-research-web/reports
       RESEARCH_CACHE_ROOT: /tmp/market-research-web/cache
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - run: uv sync --dev
-      - run: uv run python -m playwright install --with-deps chromium
-      - run: uv run python manage.py check --settings=market_research_web.settings_test
-      - run: uv run python manage.py makemigrations --check --dry-run --settings=market_research_web.settings_test
-      - run: uv run pytest -q -s
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.11.2"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync the complete workspace from the root lock
+        run: |
+          uv lock --check
+          uv sync --frozen --all-packages --all-groups
+      - run: uv run --no-sync python -m playwright install --with-deps chromium
+      - run: uv run --no-sync python apps/internal_web/manage.py check --settings=market_research_web.settings_test
+      - run: uv run --no-sync python apps/internal_web/manage.py makemigrations --check --dry-run --settings=market_research_web.settings_test
+      - name: Run all non-browser Web tests on PostgreSQL with zero skips
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest -q \
+            -c apps/internal_web/pyproject.toml \
+            apps/internal_web/tests \
+            --ignore=apps/internal_web/tests/test_browser_e2e.py \
+            --junitxml=/tmp/web-tests.xml
+          uv run --no-sync python - <<'PY'
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse("/tmp/web-tests.xml").getroot()
+          cases = list(root.iter("testcase"))
+          skipped = list(root.iter("skipped"))
+          assert cases, "Web test report contains no test cases"
+          assert not skipped, f"Web tests skipped unexpectedly: {len(skipped)}"
+          PY
+      - name: Run browser E2E on PostgreSQL with zero skips
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest -q -s \
+            -c apps/internal_web/pyproject.toml \
+            apps/internal_web/tests/test_browser_e2e.py \
+            --junitxml=/tmp/web-browser-tests.xml
+          uv run --no-sync python - <<'PY'
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse("/tmp/web-browser-tests.xml").getroot()
+          cases = list(root.iter("testcase"))
+          skipped = list(root.iter("skipped"))
+          assert cases, "browser E2E report contains no test cases"
+          assert not skipped, f"browser E2E skipped unexpectedly: {len(skipped)}"
+          PY
+
+  operations-test:
+    name: Operations full suite on live PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.14-bookworm
+        env:
+          POSTGRES_DB: research_ops_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: operations-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d research_ops_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
+      DJANGO_SETTINGS_MODULE: market_research_web.settings_test
+      INTERNAL_WEB_SECRET_KEY: ci-only-operations-secret-0123456789abcdef
+      INTERNAL_WEB_DATABASE_ENGINE: postgresql
+      INTERNAL_WEB_DATABASE_NAME: research_ops_ci
+      INTERNAL_WEB_DATABASE_USER: postgres
+      INTERNAL_WEB_DATABASE_PASSWORD: operations-ci-password
+      INTERNAL_WEB_DATABASE_HOST: 127.0.0.1
+      INTERNAL_WEB_DATABASE_PORT: "5432"
+      INTERNAL_WEB_DATABASE_SSLMODE: disable
+      INTERNAL_WEB_DATABASE_CONN_MAX_AGE_SECONDS: "0"
+      INTERNAL_WEB_DATABASE_STATEMENT_TIMEOUT_MS: "30000"
+      INTERNAL_WEB_DATABASE_LOCK_TIMEOUT_MS: "5000"
+      INTERNAL_WEB_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "30000"
+      INTERNAL_WEB_DATABASE_APPLICATION_NAME: market-research-web
+      RESEARCH_OPS_SOURCE_ROOT: ${{ github.workspace }}
+      RESEARCH_OPS_TEST_DATABASE_URL: postgresql://postgres:operations-ci-password@127.0.0.1:5432/research_ops_ci?sslmode=disable
+      RESEARCH_DATA_ROOT: /tmp/market-research-operations/datasets
+      RESEARCH_ARTIFACT_ROOT: /tmp/market-research-operations/artifacts
+      RESEARCH_REPORT_ROOT: /tmp/market-research-operations/reports
+      RESEARCH_CACHE_ROOT: /tmp/market-research-operations/cache
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.11.2"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync the complete workspace from the root lock
+        run: |
+          uv lock --check
+          uv sync --frozen --all-packages --all-groups
+      - name: Apply Web migrations required by Operations foreign keys
+        run: uv run --no-sync python apps/internal_web/manage.py migrate --noinput --settings=market_research_web.settings_test
+      - name: Run the complete Operations suite with zero skips
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest -q \
+            -c services/research_operations/pyproject.toml \
+            services/research_operations/tests \
+            --junitxml=/tmp/operations-tests.xml
+          uv run --no-sync python - <<'PY'
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse("/tmp/operations-tests.xml").getroot()
+          cases = list(root.iter("testcase"))
+          skipped = list(root.iter("skipped"))
+          assert cases, "Operations test report contains no test cases"
+          assert not skipped, f"Operations tests skipped unexpectedly: {len(skipped)}"
+          PY

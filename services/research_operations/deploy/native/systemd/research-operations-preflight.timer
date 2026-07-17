@@ -1,0 +1,14 @@
+[Unit]
+Description=Re-run Research Operations PKI and policy preflight daily
+PartOf=research-operations.target
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=24h
+RandomizedDelaySec=30min
+AccuracySec=1min
+Persistent=true
+Unit=research-operations-preflight.service
+
+[Install]
+WantedBy=timers.target

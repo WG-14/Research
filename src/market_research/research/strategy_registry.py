@@ -1,4 +1,5 @@
 """Immutable, content-hashed strategy registry."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,11 +27,21 @@ class StrategyRegistry:
         values: dict[str, ResearchStrategyPlugin] = {}
         for plugin in plugins:
             if plugin.name in values:
-                raise StrategyRegistryError(f"duplicate_research_strategy:{plugin.name}")
+                raise StrategyRegistryError(
+                    f"duplicate_research_strategy:{plugin.name}"
+                )
             values[plugin.name] = plugin
-        payload = {"schema_version": 1, "plugins": {name: values[name].contract_hash() for name in sorted(values)}}
+        payload = {
+            "schema_version": 1,
+            "plugins": {name: values[name].contract_hash() for name in sorted(values)},
+        }
         hashes = {name: values[name].contract_hash() for name in sorted(values)}
-        return cls(1, MappingProxyType(values), MappingProxyType(hashes), sha256_prefixed(payload))
+        return cls(
+            1,
+            MappingProxyType(values),
+            MappingProxyType(hashes),
+            sha256_prefixed(payload),
+        )
 
     def resolve(self, name: str) -> ResearchStrategyPlugin:
         key = str(name or "").strip().lower()
@@ -50,11 +61,15 @@ class StrategyRegistry:
         unrelated strategy is added to that catalog.
         """
         plugin = self.resolve(name)
-        return sha256_prefixed({
-            "schema_version": 1,
-            "strategy_name": plugin.name,
-            "strategy_plugin_contract_hash": self.plugin_contract_hashes[plugin.name],
-        })
+        return sha256_prefixed(
+            {
+                "schema_version": 1,
+                "strategy_name": plugin.name,
+                "strategy_plugin_contract_hash": self.plugin_contract_hashes[
+                    plugin.name
+                ],
+            }
+        )
 
     def accepts_execution_hash(self, name: str, value: str) -> bool:
         """Accept current scoped hashes and same-catalog legacy v2 hashes."""
@@ -68,16 +83,20 @@ class StrategyRegistry:
             module = plugin.reconstruction_module
             qualname = plugin.reconstruction_qualname
             if not module or not qualname or "<locals>" in qualname:
-                raise StrategyRegistryError(f"strategy_plugin_not_reconstructable:{name}")
-            plugins.append({
-                "schema_version": 1,
-                "strategy_name": plugin.name,
-                "strategy_version": plugin.version,
-                "factory_module": module,
-                "factory_qualname": qualname,
-                "plugin_contract_hash": self.plugin_contract_hashes[name],
-                "strategy_spec_hash": plugin.spec.spec_hash(),
-            })
+                raise StrategyRegistryError(
+                    f"strategy_plugin_not_reconstructable:{name}"
+                )
+            plugins.append(
+                {
+                    "schema_version": 1,
+                    "strategy_name": plugin.name,
+                    "strategy_version": plugin.version,
+                    "factory_module": module,
+                    "factory_qualname": qualname,
+                    "plugin_contract_hash": self.plugin_contract_hashes[name],
+                    "strategy_spec_hash": plugin.spec.spec_hash(),
+                }
+            )
         material = {
             "schema_version": 1,
             "registry_content_hash": self.content_hash,
@@ -86,27 +105,53 @@ class StrategyRegistry:
         return {**material, "descriptor_hash": sha256_prefixed(material)}
 
 
-_REGISTRY_DESCRIPTOR_FIELDS = frozenset({
-    "schema_version", "registry_content_hash", "plugins", "descriptor_hash",
-})
-_PLUGIN_DESCRIPTOR_FIELDS = frozenset({
-    "schema_version", "strategy_name", "strategy_version", "factory_module", "factory_qualname",
-    "plugin_contract_hash", "strategy_spec_hash",
-})
+_REGISTRY_DESCRIPTOR_FIELDS = frozenset(
+    {
+        "schema_version",
+        "registry_content_hash",
+        "plugins",
+        "descriptor_hash",
+    }
+)
+_PLUGIN_DESCRIPTOR_FIELDS = frozenset(
+    {
+        "schema_version",
+        "strategy_name",
+        "strategy_version",
+        "factory_module",
+        "factory_qualname",
+        "plugin_contract_hash",
+        "strategy_spec_hash",
+    }
+)
 
 
 def reconstruct_strategy_registry(descriptor: Mapping[str, Any]) -> StrategyRegistry:
     """Rebuild and verify a registry before a worker may execute candidates."""
-    if not isinstance(descriptor, Mapping) or set(descriptor) != _REGISTRY_DESCRIPTOR_FIELDS:
+    if (
+        not isinstance(descriptor, Mapping)
+        or set(descriptor) != _REGISTRY_DESCRIPTOR_FIELDS
+    ):
         raise StrategyRegistryError("strategy_registry_descriptor_invalid")
-    material = {key: descriptor[key] for key in ("schema_version", "registry_content_hash", "plugins")}
-    if descriptor.get("schema_version") != 1 or descriptor.get("descriptor_hash") != sha256_prefixed(material):
+    material = {
+        key: descriptor[key]
+        for key in ("schema_version", "registry_content_hash", "plugins")
+    }
+    if descriptor.get("schema_version") != 1 or descriptor.get(
+        "descriptor_hash"
+    ) != sha256_prefixed(material):
         raise StrategyRegistryError("strategy_registry_descriptor_hash_mismatch")
     raw_plugins = descriptor.get("plugins")
     if not isinstance(raw_plugins, (list, tuple)):
         raise StrategyRegistryError("strategy_registry_descriptor_plugins_invalid")
-    names = [item.get("strategy_name") for item in raw_plugins if isinstance(item, Mapping)]
-    if len(names) != len(raw_plugins) or names != sorted(names) or len(set(names)) != len(names):
+    names = [
+        item.get("strategy_name") for item in raw_plugins if isinstance(item, Mapping)
+    ]
+    if (
+        len(names) != len(raw_plugins)
+        or names != sorted(names)
+        or len(set(names)) != len(names)
+    ):
         raise StrategyRegistryError("strategy_registry_descriptor_order_invalid")
     plugins: list[ResearchStrategyPlugin] = []
     for item in raw_plugins:
@@ -120,13 +165,23 @@ def reconstruct_strategy_registry(descriptor: Mapping[str, Any]) -> StrategyRegi
                 factory = getattr(factory, component)
             plugin = factory()
         except (ImportError, AttributeError, TypeError) as exc:
-            raise StrategyRegistryError(f"strategy_plugin_reconstruction_failed:{name}") from exc
-        if not isinstance(plugin, ResearchStrategyPlugin) or plugin.name != name or plugin.version != item["strategy_version"]:
-            raise StrategyRegistryError(f"strategy_plugin_reconstruction_identity_mismatch:{name}")
+            raise StrategyRegistryError(
+                f"strategy_plugin_reconstruction_failed:{name}"
+            ) from exc
+        if (
+            not isinstance(plugin, ResearchStrategyPlugin)
+            or plugin.name != name
+            or plugin.version != item["strategy_version"]
+        ):
+            raise StrategyRegistryError(
+                f"strategy_plugin_reconstruction_identity_mismatch:{name}"
+            )
         if plugin.spec.spec_hash() != item["strategy_spec_hash"]:
             raise StrategyRegistryError(f"strategy_plugin_spec_hash_mismatch:{name}")
         if plugin.contract_hash() != item["plugin_contract_hash"]:
-            raise StrategyRegistryError(f"strategy_plugin_contract_hash_mismatch:{name}")
+            raise StrategyRegistryError(
+                f"strategy_plugin_contract_hash_mismatch:{name}"
+            )
         plugins.append(plugin)
     registry = StrategyRegistry.build(plugins)
     if registry.content_hash != descriptor.get("registry_content_hash"):

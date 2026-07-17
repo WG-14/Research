@@ -22,7 +22,7 @@ from market_research.application.contracts import (
     ResearchValidationRequest,
     ResearchValidationResult,
 )
-from market_research.research.hashing import sha256_prefixed
+from market_research.application.adapter_contracts import sha256_prefixed
 
 from .audit import record_web_audit_event
 from .models import ManifestUpload, ResearchJob
@@ -86,7 +86,9 @@ def validate_web_job_capability_contract(capability_id: str) -> None:
     try:
         specification = get_capability(capability_id)
     except KeyError as exc:
-        raise ValidationError("research_job_capability_missing_from_core_catalog") from exc
+        raise ValidationError(
+            "research_job_capability_missing_from_core_catalog"
+        ) from exc
     service_id, request_model, result_model = expected
     if (
         specification.gui_policy is not GuiPolicy.REQUIRED
@@ -189,7 +191,10 @@ def validate_source_preflight_evidence(
         expected_source_request,
         label="internal_web_job_request",
     )
-    if request_payload != expected_source_request or source.request_hash != expected_source_hash:
+    if (
+        request_payload != expected_source_request
+        or source.request_hash != expected_source_hash
+    ):
         raise ValidationError("validation_source_preflight_request_binding_invalid")
 
     result_payload = verify_result_artifact(
@@ -351,6 +356,12 @@ def enqueue_research_job(
 
 
 def claim_next_job(*, worker_id: str, now: Any | None = None) -> ResearchJob | None:
+    from market_research.application import (
+        LEGACY_WEB_CLAIM_SCOPE,
+        require_operated_execution_capability,
+    )
+
+    require_operated_execution_capability(LEGACY_WEB_CLAIM_SCOPE)
     claimed_at = now or timezone.now()
     lease_seconds = int(settings.INTERNAL_WEB_JOB_LEASE_SECONDS)
     candidate_ids = list(
@@ -502,13 +513,19 @@ def complete_job_success(
     validate_sha256(result.result_hash, field="result_hash")
     verify_result_artifact(result.result_ref, expected_hash=result.result_hash)
     research_outcome = str(result.research_outcome or "").strip().upper()
-    if job_capability := ResearchJob.objects.filter(pk=job_id).values_list(
-        "capability_id", flat=True
-    ).first():
-        if job_capability in {
-            ResearchJob.Capability.PREFLIGHT,
-            ResearchJob.Capability.VALIDATE,
-        } and research_outcome not in ResearchJob.ResearchOutcome.values:
+    if (
+        job_capability := ResearchJob.objects.filter(pk=job_id)
+        .values_list("capability_id", flat=True)
+        .first()
+    ):
+        if (
+            job_capability
+            in {
+                ResearchJob.Capability.PREFLIGHT,
+                ResearchJob.Capability.VALIDATE,
+            }
+            and research_outcome not in ResearchJob.ResearchOutcome.values
+        ):
             raise ValidationError("job_result_research_outcome_required")
     if research_outcome and research_outcome not in ResearchJob.ResearchOutcome.values:
         raise ValidationError("job_result_research_outcome_invalid")
@@ -621,7 +638,10 @@ def finalize_cancelled(
             pk=job_id,
             lease_token=lease_token,
             lease_expires_at__gt=now,
-            status__in=(ResearchJob.Status.RUNNING, ResearchJob.Status.CANCEL_REQUESTED),
+            status__in=(
+                ResearchJob.Status.RUNNING,
+                ResearchJob.Status.CANCEL_REQUESTED,
+            ),
         ).update(
             status=ResearchJob.Status.CANCELLED,
             error_code="CANCELLED_BY_REQUEST",

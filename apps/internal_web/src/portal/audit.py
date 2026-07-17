@@ -11,16 +11,15 @@ from django.conf import settings
 from django.db import connection, transaction
 from django.utils import timezone as django_timezone
 
-from market_research.research.hash_chain import (
+from market_research.application.adapter_contracts import (
     append_hash_chained_jsonl_idempotent,
-    validate_hash_chained_jsonl,
-    verify_hash_chained_jsonl_event,
-)
-from market_research.research.hashing import content_hash_payload, sha256_prefixed
-from market_research.research.segmented_hash_chain import (
     append_segmented_hash_chained_jsonl_idempotent,
+    content_hash_payload,
     read_segmented_hash_chain_full_snapshot,
+    sha256_prefixed,
+    validate_hash_chained_jsonl,
     validate_segmented_hash_chain_incremental,
+    verify_hash_chained_jsonl_event,
     verify_segmented_hash_chained_jsonl_event,
 )
 from market_research.storage_io import append_jsonl
@@ -154,10 +153,7 @@ def _build_audit_payload(
         "correlation_id": str(correlation_id).strip()[:128],
         "details": sanitize_audit_details(details or {}),
     }
-    if not all(
-        material[key]
-        for key in _IDENTITY_FIELDS
-    ):
+    if not all(material[key] for key in _IDENTITY_FIELDS):
         raise ValueError("web_audit_identity_fields_required")
     return {
         **material,
@@ -222,9 +218,8 @@ def project_web_audit_event(
     )
     if updated != 1:
         current = WebAuditEvent.objects.get(pk=event.pk)
-        if (
-            current.projected_at is not None
-            and current.projection_row_hash == str(row["row_hash"])
+        if current.projected_at is not None and current.projection_row_hash == str(
+            row["row_hash"]
         ):
             return AuditProjectionResult(
                 event_id=current.pk,
@@ -368,8 +363,7 @@ def validate_web_audit_outbox() -> dict[str, Any]:
             if event_id in event_ids:
                 continue
             if any(
-                _projection_payload(row).get("delivery_mode")
-                == AUDIT_DELIVERY_OUTBOX
+                _projection_payload(row).get("delivery_mode") == AUDIT_DELIVERY_OUTBOX
                 for row in matching_rows
             ):
                 orphan_ids.add(event_id)
@@ -426,11 +420,7 @@ def validate_web_audit_outbox() -> dict[str, Any]:
 
 
 def _projection_payload(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in row.items()
-        if key not in _CHAIN_FIELDS
-    }
+    return {key: value for key, value in row.items() if key not in _CHAIN_FIELDS}
 
 
 def _payload_binding_reasons(payload: Any) -> list[str]:
@@ -485,11 +475,7 @@ def _event_intent_reasons(event: WebAuditEvent) -> list[str]:
 
 
 def _intent_hash(payload: dict[str, Any]) -> str:
-    material = {
-        key: value
-        for key, value in payload.items()
-        if key != "intent_hash"
-    }
+    material = {key: value for key, value in payload.items() if key != "intent_hash"}
     return sha256_prefixed(
         content_hash_payload(material),
         label="internal_web_audit_intent",

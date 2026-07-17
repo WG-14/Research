@@ -14,14 +14,21 @@ from market_research.execution_reality_contract import (
 from market_research.market_regime import RegimeAcceptanceGate
 from .risk_contract import ResearchRiskPolicy
 
-from .research_classification import RESEARCH_CLASSIFICATIONS, requires_candidate_validation, normalize_research_classification
+from .research_classification import (
+    requires_candidate_validation,
+    normalize_research_classification,
+)
 from .benchmark_contract import BenchmarkSuiteContract, parse_benchmark_suite_contract
 from .hashing import sha256_prefixed
 from .process_runtime import ALLOWED_RESEARCH_START_METHODS
-from .strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
+from .strategy_spec import (
+    StrategySpecError,
+    validate_parameter_space_against_strategy_spec,
+)
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
 from .datasets.contracts import DatasetArtifactRef
 from .hypothesis_contract import HypothesisSpec, parse_hypothesis_spec
+
 if TYPE_CHECKING:
     from .strategy_registry import StrategyRegistry
 
@@ -323,7 +330,9 @@ class ExecutionScenario:
             payload["fee_source"] = self.cost_assumption.fee_source
             payload["fee_authority_policy"] = self.cost_assumption.fee_authority_policy
             payload["slippage_source"] = self.cost_assumption.slippage_source
-            payload["validation_eligible_as_base"] = self.cost_assumption.validation_eligible_as_base
+            payload["validation_eligible_as_base"] = (
+                self.cost_assumption.validation_eligible_as_base
+            )
         return payload
 
 
@@ -395,7 +404,9 @@ class ExecutionTimingPolicy:
             "source": self.source,
         }
         if self.min_execution_reality_level_for_validation is not None:
-            payload["min_execution_reality_level_for_validation"] = self.min_execution_reality_level_for_validation
+            payload["min_execution_reality_level_for_validation"] = (
+                self.min_execution_reality_level_for_validation
+            )
         payload["depth_required"] = self.depth_required
         payload["trade_tick_required"] = self.trade_tick_required
         payload["queue_position_required"] = self.queue_position_required
@@ -428,7 +439,9 @@ class AcceptanceGate:
     max_consecutive_zero_filled_days: int | None = None
     min_filled_execution_per_kst_day: int | None = None
     participation_count_basis: str | None = None
-    regime_acceptance_gate: RegimeAcceptanceGate = field(default_factory=RegimeAcceptanceGate)
+    regime_acceptance_gate: RegimeAcceptanceGate = field(
+        default_factory=RegimeAcceptanceGate
+    )
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -583,12 +596,16 @@ class ResearchExecutionInputProvenance:
 
 @dataclass(frozen=True)
 class ResearchRunInputProvenance:
-    execution: ResearchExecutionInputProvenance = field(default_factory=ResearchExecutionInputProvenance)
+    execution: ResearchExecutionInputProvenance = field(
+        default_factory=ResearchExecutionInputProvenance
+    )
 
 
 @dataclass(frozen=True)
 class ManifestInputProvenance:
-    research_run: ResearchRunInputProvenance = field(default_factory=ResearchRunInputProvenance)
+    research_run: ResearchRunInputProvenance = field(
+        default_factory=ResearchRunInputProvenance
+    )
 
 
 @dataclass(frozen=True)
@@ -596,9 +613,15 @@ class ResearchRunPolicy:
     report_detail: str = "summary"
     diagnostic_mode: str = "candidate_validation"
     run_purpose: str = "strategy_performance_diagnostic"
-    artifact_policy: ResearchArtifactPolicy = field(default_factory=ResearchArtifactPolicy)
-    audit_trail: ResearchAuditTrailPolicy = field(default_factory=ResearchAuditTrailPolicy)
-    resource_limits: ResearchResourceLimits = field(default_factory=ResearchResourceLimits)
+    artifact_policy: ResearchArtifactPolicy = field(
+        default_factory=ResearchArtifactPolicy
+    )
+    audit_trail: ResearchAuditTrailPolicy = field(
+        default_factory=ResearchAuditTrailPolicy
+    )
+    resource_limits: ResearchResourceLimits = field(
+        default_factory=ResearchResourceLimits
+    )
     heartbeat: ResearchHeartbeatPolicy = field(default_factory=ResearchHeartbeatPolicy)
     execution: ResearchExecutionPolicy = field(default_factory=ResearchExecutionPolicy)
 
@@ -724,7 +747,9 @@ class StressPeriodAblationContract:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "calendar_years": self.calendar_years if self.calendar_years == "auto" else list(self.calendar_years),
+            "calendar_years": self.calendar_years
+            if self.calendar_years == "auto"
+            else list(self.calendar_years),
             "min_pass_ratio": self.min_pass_ratio,
             "min_return_retention_pct": self.min_return_retention_pct,
         }
@@ -864,8 +889,12 @@ class ExperimentManifest:
     walk_forward: WalkForwardConfig | None
     research_run: ResearchRunPolicy
     raw: dict[str, Any]
-    manifest_input_provenance: ManifestInputProvenance = field(default_factory=ManifestInputProvenance)
-    validated_strategy_registry_hash: str | None = field(default=None, compare=False, repr=False)
+    manifest_input_provenance: ManifestInputProvenance = field(
+        default_factory=ManifestInputProvenance
+    )
+    validated_strategy_registry_hash: str | None = field(
+        default=None, compare=False, repr=False
+    )
 
     def canonical_payload(self) -> dict[str, Any]:
         payload = {
@@ -875,27 +904,36 @@ class ExperimentManifest:
             "market": self.market,
             "interval": self.interval,
             "dataset": self.dataset.as_dict(),
-            "parameter_space": {key: sorted(list(value), key=repr) for key, value in sorted(self.parameter_space.items())},
+            "parameter_space": {
+                key: sorted(list(value), key=repr)
+                for key, value in sorted(self.parameter_space.items())
+            },
             "cost_model": self.cost_model.as_dict(),
             "execution_model": self.execution_model.as_dict(),
             "execution_timing": self.execution_timing.as_dict(),
             "portfolio_policy": self.portfolio_policy.as_dict(),
             "risk_policy": self.risk_policy.as_dict(),
             "research_classification": self.research_classification,
-            "dataset_quality_policy": _canonical_dataset_quality_policy(self.raw.get("dataset_quality_policy")),
+            "dataset_quality_policy": _canonical_dataset_quality_policy(
+                self.raw.get("dataset_quality_policy")
+            ),
             "acceptance_gate": self.acceptance_gate.as_dict(),
             "statistical_validation": (
                 self.statistical_validation.as_dict()
                 if self.statistical_validation is not None
                 else None
             ),
-            "stress_suite": self.stress_suite.as_dict() if self.stress_suite is not None else None,
+            "stress_suite": self.stress_suite.as_dict()
+            if self.stress_suite is not None
+            else None,
             "final_selection": (
                 self.final_selection.as_dict()
                 if self.final_selection is not None
                 else None
             ),
-            "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
+            "walk_forward": self.walk_forward.as_dict()
+            if self.walk_forward is not None
+            else None,
             "research_run": self.research_run.as_dict(),
         }
         if self.hypothesis_spec is not None:
@@ -915,13 +953,18 @@ class ExperimentManifest:
             "market": self.market,
             "interval": self.interval,
             "dataset": self.dataset.as_dict(),
-            "parameter_space": {key: sorted(list(value), key=repr) for key, value in sorted(self.parameter_space.items())},
+            "parameter_space": {
+                key: sorted(list(value), key=repr)
+                for key, value in sorted(self.parameter_space.items())
+            },
             "cost_model": self.cost_model.as_dict(),
             "execution_model": self.execution_model.as_dict(),
             "execution_timing": self.execution_timing.as_dict(),
             "portfolio_policy": self.portfolio_policy.as_dict(),
             "risk_policy": self.risk_policy.as_dict(),
-            "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
+            "walk_forward": self.walk_forward.as_dict()
+            if self.walk_forward is not None
+            else None,
         }
 
     def simulation_seed_scope_hash(self) -> str:
@@ -939,13 +982,17 @@ class ExperimentManifest:
                 "portfolio_policy_hash": self.portfolio_policy_hash(),
                 "risk_policy_hash": self.risk_policy_hash(),
                 "execution_model_hash": sha256_prefixed(self.execution_model.as_dict()),
-                "execution_timing_hash": sha256_prefixed(self.execution_timing.as_dict()),
+                "execution_timing_hash": sha256_prefixed(
+                    self.execution_timing.as_dict()
+                ),
                 "cost_model_hash": sha256_prefixed(self.cost_model.as_dict()),
             }
         )
 
 
-def load_manifest(path: str | Path, *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
+def load_manifest(
+    path: str | Path, *, registry: "StrategyRegistry | None" = None
+) -> ExperimentManifest:
     """Load a manifest using an explicitly selected strategy registry."""
     if registry is None:
         raise ManifestValidationError("authoritative_manifest_registry_required")
@@ -955,32 +1002,58 @@ def load_manifest(path: str | Path, *, registry: "StrategyRegistry | None" = Non
     return parse_manifest(payload, registry=registry)
 
 
-def load_manifest_with_registry(path: str | Path, *, registry: "StrategyRegistry") -> ExperimentManifest:
+def load_manifest_with_registry(
+    path: str | Path, *, registry: "StrategyRegistry"
+) -> ExperimentManifest:
     """Authoritative manifest loader bound to the runtime registry."""
     if registry is None:
         raise ManifestValidationError("authoritative_manifest_registry_required")
     return load_manifest(path, registry=registry)
 
 
-def parse_manifest_with_registry(payload: dict[str, Any], *, registry: "StrategyRegistry") -> ExperimentManifest:
+def parse_manifest_with_registry(
+    payload: dict[str, Any], *, registry: "StrategyRegistry"
+) -> ExperimentManifest:
     """Authoritative manifest parser bound to the runtime registry."""
     if registry is None:
         raise ManifestValidationError("authoritative_manifest_registry_required")
     return parse_manifest(payload, registry=registry)
 
 
-def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
+def parse_manifest(
+    payload: dict[str, Any], *, registry: "StrategyRegistry | None" = None
+) -> ExperimentManifest:
     """Parse a manifest using an explicitly selected strategy registry."""
     if registry is None:
         raise ManifestValidationError("authoritative_manifest_registry_required")
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest must be a JSON object")
     allowed_fields = {
-        "experiment_id", "hypothesis", "hypothesis_spec", "strategy_name", "strategy_version", "market", "interval", "dataset",
-        "parameter_space", "research_classification", "cost_model", "execution_model",
-        "execution_timing", "dataset_quality_policy", "portfolio_policy", "risk_policy",
-        "acceptance_gate", "benchmark_suite", "statistical_validation", "stress_suite", "final_selection",
-        "walk_forward", "research_run", "attempt_index", "holdout_reuse_count",
+        "experiment_id",
+        "hypothesis",
+        "hypothesis_spec",
+        "strategy_name",
+        "strategy_version",
+        "market",
+        "interval",
+        "dataset",
+        "parameter_space",
+        "research_classification",
+        "cost_model",
+        "execution_model",
+        "execution_timing",
+        "dataset_quality_policy",
+        "portfolio_policy",
+        "risk_policy",
+        "acceptance_gate",
+        "benchmark_suite",
+        "statistical_validation",
+        "stress_suite",
+        "final_selection",
+        "walk_forward",
+        "research_run",
+        "attempt_index",
+        "holdout_reuse_count",
     }
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
@@ -1005,14 +1078,25 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
     parameter_space = _parse_parameter_space(payload.get("parameter_space"))
-    research_classification = _parse_research_classification(payload.get("research_classification"))
-    if requires_candidate_validation(research_classification) and hypothesis_spec is None:
+    research_classification = _parse_research_classification(
+        payload.get("research_classification")
+    )
+    if (
+        requires_candidate_validation(research_classification)
+        and hypothesis_spec is None
+    ):
         raise ManifestValidationError(
             "hypothesis_spec is required for validation-bound manifests"
         )
     if hypothesis_spec is not None:
         missing_explicit_contracts = [
-            field for field in ("strategy_version", "execution_timing", "portfolio_policy", "risk_policy")
+            field
+            for field in (
+                "strategy_version",
+                "execution_timing",
+                "portfolio_policy",
+                "risk_policy",
+            )
             if payload.get(field) is None
         ]
         if missing_explicit_contracts:
@@ -1020,7 +1104,10 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
                 "structured research manifest requires explicit contract field(s): "
                 + ",".join(missing_explicit_contracts)
             )
-    if requires_candidate_validation(research_classification) and strategy_version is None:
+    if (
+        requires_candidate_validation(research_classification)
+        and strategy_version is None
+    ):
         raise ManifestValidationError(
             "strategy_version is required for validation-bound manifests"
         )
@@ -1050,11 +1137,20 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         execution_model=execution_model,
         execution_timing=execution_timing,
     )
-    if "dataset_quality_policy" in payload and payload["dataset_quality_policy"] is None:
-        raise ManifestValidationError("dataset_quality_policy must be an object when supplied")
+    if (
+        "dataset_quality_policy" in payload
+        and payload["dataset_quality_policy"] is None
+    ):
+        raise ManifestValidationError(
+            "dataset_quality_policy must be an object when supplied"
+        )
     _parse_dataset_quality_policy(payload.get("dataset_quality_policy"))
-    portfolio_policy = _parse_portfolio_policy(payload.get("portfolio_policy"), research_classification=research_classification)
-    risk_policy = _parse_risk_policy(payload.get("risk_policy"), research_classification=research_classification)
+    portfolio_policy = _parse_portfolio_policy(
+        payload.get("portfolio_policy"), research_classification=research_classification
+    )
+    risk_policy = _parse_risk_policy(
+        payload.get("risk_policy"), research_classification=research_classification
+    )
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
     if requires_candidate_validation(research_classification):
         if dataset.split.final_holdout is None:
@@ -1087,18 +1183,25 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         payload.get("statistical_validation"),
         research_classification=research_classification,
     )
-    stress_suite = _parse_stress_suite(payload.get("stress_suite"), research_classification=research_classification)
-    final_selection = _parse_final_selection(payload.get("final_selection"), research_classification=research_classification)
+    stress_suite = _parse_stress_suite(
+        payload.get("stress_suite"), research_classification=research_classification
+    )
+    final_selection = _parse_final_selection(
+        payload.get("final_selection"), research_classification=research_classification
+    )
     walk_forward = _parse_walk_forward(payload.get("walk_forward"))
     research_run = _parse_research_run(payload.get("research_run"))
     manifest_input_provenance = _manifest_input_provenance(payload)
     if acceptance_gate.walk_forward_required and walk_forward is None:
-        raise ManifestValidationError("walk_forward is required when acceptance_gate.walk_forward_required=true")
+        raise ManifestValidationError(
+            "walk_forward is required when acceptance_gate.walk_forward_required=true"
+        )
     _validate_execution_reality_manifest_policy(
         research_classification=research_classification,
         dataset=dataset,
         execution_timing=execution_timing,
-        execution_timing_declared="execution_timing" in payload and execution_timing_payload is not None,
+        execution_timing_declared="execution_timing" in payload
+        and execution_timing_payload is not None,
         execution_timing_declared_fields=(
             set(execution_timing_payload)
             if isinstance(execution_timing_payload, dict)
@@ -1116,7 +1219,9 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         execution_model=execution_model,
     )
     if cost_policy_reasons or execution_stress_policy_reasons:
-        raise ManifestValidationError(",".join(sorted(set(cost_policy_reasons + execution_stress_policy_reasons))))
+        raise ManifestValidationError(
+            ",".join(sorted(set(cost_policy_reasons + execution_stress_policy_reasons)))
+        )
 
     return ExperimentManifest(
         experiment_id=experiment_id,
@@ -1200,9 +1305,13 @@ def _parse_date_range(payload: dict[str, Any], key: str) -> DateRange:
     section = payload.get(key)
     if not isinstance(section, dict):
         raise ManifestValidationError(f"dataset.{key} must be an object")
-    date_range = DateRange(start=_required_str(section, "start"), end=_required_str(section, "end"))
+    date_range = DateRange(
+        start=_required_str(section, "start"), end=_required_str(section, "end")
+    )
     if date_range.start_ts_ms() > date_range.end_ts_ms():
-        raise ManifestValidationError(f"dataset.{key}.start must be earlier than or equal to end")
+        raise ManifestValidationError(
+            f"dataset.{key}.start must be earlier than or equal to end"
+        )
     return date_range
 
 
@@ -1225,22 +1334,39 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
     }
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"dataset unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"dataset unsupported fields: {','.join(unknown)}"
+        )
     source = _required_str(payload, "source")
-    artifact_uri = _optional_non_empty_str(payload.get("artifact_manifest_uri"), "dataset.artifact_manifest_uri")
-    artifact_hash = _optional_hash(payload.get("artifact_manifest_hash"), "dataset.artifact_manifest_hash")
+    artifact_uri = _optional_non_empty_str(
+        payload.get("artifact_manifest_uri"), "dataset.artifact_manifest_uri"
+    )
+    artifact_hash = _optional_hash(
+        payload.get("artifact_manifest_hash"), "dataset.artifact_manifest_hash"
+    )
     if (artifact_uri is None) != (artifact_hash is None):
-        raise ManifestValidationError("dataset.artifact_manifest_uri_and_hash_required_together")
+        raise ManifestValidationError(
+            "dataset.artifact_manifest_uri_and_hash_required_together"
+        )
     if artifact_uri is not None and any(
         payload.get(key) is not None
-        for key in ("source_uri", "source_content_hash", "source_schema_hash", "locator")
+        for key in (
+            "source_uri",
+            "source_content_hash",
+            "source_schema_hash",
+            "locator",
+        )
     ):
-        raise ManifestValidationError("dataset.artifact_ref_conflicts_with_legacy_artifact_authority")
+        raise ManifestValidationError(
+            "dataset.artifact_ref_conflicts_with_legacy_artifact_authority"
+        )
     if source == "frozen_sqlite_candles" and artifact_uri is None:
         # Schema-v1 manifests are intentionally read-only research-only legacy
         # compatibility. They cannot become validated candidates.
         if payload.get("source_uri") is None:
-            raise ManifestValidationError("frozen_sqlite_candles_requires_artifact_manifest_reference")
+            raise ManifestValidationError(
+                "frozen_sqlite_candles_requires_artifact_manifest_reference"
+            )
     locator = _optional_mapping(payload.get("locator"), "dataset.locator")
     options = _optional_mapping(payload.get("options"), "dataset.options") or {}
     split = DatasetSplit(
@@ -1258,11 +1384,21 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
         split=split,
         top_of_book=_parse_top_of_book_dataset(payload.get("top_of_book")),
         depth=_parse_orderbook_depth_dataset(payload.get("depth")),
-        source_uri=_optional_non_empty_str(payload.get("source_uri"), "dataset.source_uri"),
-        source_content_hash=_optional_hash(payload.get("source_content_hash"), "dataset.source_content_hash"),
-        source_schema_hash=_optional_hash(payload.get("source_schema_hash"), "dataset.source_schema_hash"),
+        source_uri=_optional_non_empty_str(
+            payload.get("source_uri"), "dataset.source_uri"
+        ),
+        source_content_hash=_optional_hash(
+            payload.get("source_content_hash"), "dataset.source_content_hash"
+        ),
+        source_schema_hash=_optional_hash(
+            payload.get("source_schema_hash"), "dataset.source_schema_hash"
+        ),
         locator=locator,
-        artifact_ref=(DatasetArtifactRef(artifact_uri, artifact_hash) if artifact_uri is not None and artifact_hash is not None else None),
+        artifact_ref=(
+            DatasetArtifactRef(artifact_uri, artifact_hash)
+            if artifact_uri is not None and artifact_hash is not None
+            else None
+        ),
         options=options,
     )
 
@@ -1278,12 +1414,18 @@ def _parse_dataset_quality_policy(value: Any) -> None:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"dataset_quality_policy unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"dataset_quality_policy unsupported fields: {','.join(unknown)}"
+        )
     missing_policy = str(value.get("missing_candle_policy", "fail")).strip().lower()
     if missing_policy != "fail":
-        raise ManifestValidationError("dataset_quality_policy.missing_candle_policy must be fail")
+        raise ManifestValidationError(
+            "dataset_quality_policy.missing_candle_policy must be fail"
+        )
     if value.get("dense_candles_required", True) is not True:
-        raise ManifestValidationError("dataset_quality_policy.dense_candles_required must be true")
+        raise ManifestValidationError(
+            "dataset_quality_policy.dense_candles_required must be true"
+        )
 
 
 def _canonical_dataset_quality_policy(value: Any) -> dict[str, object]:
@@ -1313,29 +1455,41 @@ def _parse_top_of_book_dataset(value: Any) -> TopOfBookDatasetSpec | None:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"dataset.top_of_book unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"dataset.top_of_book unsupported fields: {','.join(unknown)}"
+        )
     source = str(value.get("source") or "sqlite_orderbook_top_snapshots").strip()
     if not source:
         raise ManifestValidationError("dataset.top_of_book.source must be non-empty")
-    join_tolerance_ms = _positive_int(value.get("join_tolerance_ms", 3000), "dataset.top_of_book.join_tolerance_ms")
+    join_tolerance_ms = _positive_int(
+        value.get("join_tolerance_ms", 3000), "dataset.top_of_book.join_tolerance_ms"
+    )
     missing_policy = str(value.get("missing_policy") or "warn").strip().lower()
     if missing_policy not in {"warn", "fail"}:
-        raise ManifestValidationError("dataset.top_of_book.missing_policy must be warn or fail")
+        raise ManifestValidationError(
+            "dataset.top_of_book.missing_policy must be warn or fail"
+        )
     required = bool(value.get("required", False))
     quote_source = value.get("quote_source")
     parsed_quote_source = None
     if quote_source is not None:
         parsed_quote_source = str(quote_source).strip()
         if not parsed_quote_source:
-            raise ManifestValidationError("dataset.top_of_book.quote_source must be non-empty when supplied")
+            raise ManifestValidationError(
+                "dataset.top_of_book.quote_source must be non-empty when supplied"
+            )
     min_coverage_pct = _finite_non_negative_float(
         value.get("min_coverage_pct", 100.0),
         "dataset.top_of_book.min_coverage_pct",
     )
     if min_coverage_pct > 100.0:
-        raise ManifestValidationError("dataset.top_of_book.min_coverage_pct must be <= 100")
+        raise ManifestValidationError(
+            "dataset.top_of_book.min_coverage_pct must be <= 100"
+        )
     locator = _optional_mapping(value.get("locator"), "dataset.top_of_book.locator")
-    options = _optional_mapping(value.get("options"), "dataset.top_of_book.options") or {}
+    options = (
+        _optional_mapping(value.get("options"), "dataset.top_of_book.options") or {}
+    )
     return TopOfBookDatasetSpec(
         source=source,
         required=required,
@@ -1343,9 +1497,15 @@ def _parse_top_of_book_dataset(value: Any) -> TopOfBookDatasetSpec | None:
         missing_policy=missing_policy,
         quote_source=parsed_quote_source,
         min_coverage_pct=min_coverage_pct,
-        source_uri=_optional_non_empty_str(value.get("source_uri"), "dataset.top_of_book.source_uri"),
-        source_content_hash=_optional_hash(value.get("source_content_hash"), "dataset.top_of_book.source_content_hash"),
-        source_schema_hash=_optional_hash(value.get("source_schema_hash"), "dataset.top_of_book.source_schema_hash"),
+        source_uri=_optional_non_empty_str(
+            value.get("source_uri"), "dataset.top_of_book.source_uri"
+        ),
+        source_content_hash=_optional_hash(
+            value.get("source_content_hash"), "dataset.top_of_book.source_content_hash"
+        ),
+        source_schema_hash=_optional_hash(
+            value.get("source_schema_hash"), "dataset.top_of_book.source_schema_hash"
+        ),
         locator=locator,
         options=options,
     )
@@ -1367,16 +1527,24 @@ def _parse_orderbook_depth_dataset(value: Any) -> OrderbookDepthDatasetSpec | No
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"dataset.depth unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"dataset.depth unsupported fields: {','.join(unknown)}"
+        )
     source = str(value.get("source") or "orderbook_depth_levels").strip()
     if not source:
         raise ManifestValidationError("dataset.depth.source must be non-empty")
     return OrderbookDepthDatasetSpec(
         source=source,
         required=bool(value.get("required", False)),
-        source_uri=_optional_non_empty_str(value.get("source_uri"), "dataset.depth.source_uri"),
-        source_content_hash=_optional_hash(value.get("source_content_hash"), "dataset.depth.source_content_hash"),
-        source_schema_hash=_optional_hash(value.get("source_schema_hash"), "dataset.depth.source_schema_hash"),
+        source_uri=_optional_non_empty_str(
+            value.get("source_uri"), "dataset.depth.source_uri"
+        ),
+        source_content_hash=_optional_hash(
+            value.get("source_content_hash"), "dataset.depth.source_content_hash"
+        ),
+        source_schema_hash=_optional_hash(
+            value.get("source_schema_hash"), "dataset.depth.source_schema_hash"
+        ),
         locator=_optional_mapping(value.get("locator"), "dataset.depth.locator"),
         options=_optional_mapping(value.get("options"), "dataset.depth.options") or {},
     )
@@ -1388,9 +1556,13 @@ def _parse_parameter_space(value: Any) -> dict[str, tuple[object, ...]]:
     out: dict[str, tuple[object, ...]] = {}
     for key, raw_values in value.items():
         if not isinstance(key, str) or not key.strip():
-            raise ManifestValidationError("parameter_space keys must be non-empty strings")
+            raise ManifestValidationError(
+                "parameter_space keys must be non-empty strings"
+            )
         if not isinstance(raw_values, list) or len(raw_values) == 0:
-            raise ManifestValidationError(f"parameter_space.{key} must be a non-empty array")
+            raise ManifestValidationError(
+                f"parameter_space.{key} must be a non-empty array"
+            )
         out[key.strip()] = tuple(raw_values)
     return out
 
@@ -1400,20 +1572,31 @@ def _parse_cost_model(payload: Any) -> CostModel:
         return CostModel(fee_rate=0.0, slippage_bps=(0.0,))
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest field 'cost_model' must be an object")
-    fee_rate = _finite_non_negative_float(payload.get("fee_rate"), "cost_model.fee_rate")
+    fee_rate = _finite_non_negative_float(
+        payload.get("fee_rate"), "cost_model.fee_rate"
+    )
     slippage = payload.get("slippage_bps")
     if not isinstance(slippage, list) or not slippage:
-        raise ManifestValidationError("cost_model.slippage_bps must be a non-empty array")
+        raise ManifestValidationError(
+            "cost_model.slippage_bps must be a non-empty array"
+        )
     return CostModel(
         fee_rate=fee_rate,
-        slippage_bps=tuple(_finite_non_negative_float(value, "cost_model.slippage_bps") for value in slippage),
+        slippage_bps=tuple(
+            _finite_non_negative_float(value, "cost_model.slippage_bps")
+            for value in slippage
+        ),
     )
 
 
-def _parse_portfolio_policy(value: Any, *, research_classification: str) -> PortfolioPolicy:
+def _parse_portfolio_policy(
+    value: Any, *, research_classification: str
+) -> PortfolioPolicy:
     if value is None:
         if requires_candidate_validation(research_classification):
-            raise ManifestValidationError("portfolio_policy is required for validation-bound manifests")
+            raise ManifestValidationError(
+                "portfolio_policy is required for validation-bound manifests"
+            )
         return legacy_research_portfolio_policy()
     if not isinstance(value, dict):
         raise ManifestValidationError("portfolio_policy must be an object")
@@ -1428,28 +1611,50 @@ def _parse_portfolio_policy(value: Any, *, research_classification: str) -> Port
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"portfolio_policy unsupported fields: {','.join(unknown)}")
-    schema_version = _positive_int(value.get("schema_version", 1), "portfolio_policy.schema_version")
+        raise ManifestValidationError(
+            f"portfolio_policy unsupported fields: {','.join(unknown)}"
+        )
+    schema_version = _positive_int(
+        value.get("schema_version", 1), "portfolio_policy.schema_version"
+    )
     if schema_version != 1:
-        raise ManifestValidationError("portfolio_policy.schema_version currently supports only 1")
-    starting_cash = _finite_positive_float(value.get("starting_cash_krw"), "portfolio_policy.starting_cash_krw")
+        raise ManifestValidationError(
+            "portfolio_policy.schema_version currently supports only 1"
+        )
+    starting_cash = _finite_positive_float(
+        value.get("starting_cash_krw"), "portfolio_policy.starting_cash_krw"
+    )
     quote_currency = str(value.get("quote_currency") or "KRW").strip().upper()
     if quote_currency != "KRW":
-        raise ManifestValidationError("portfolio_policy.quote_currency currently supports only KRW")
+        raise ManifestValidationError(
+            "portfolio_policy.quote_currency currently supports only KRW"
+        )
     initial_position_qty = _finite_non_negative_float(
         value.get("initial_position_qty", 0.0),
         "portfolio_policy.initial_position_qty",
     )
     if initial_position_qty != 0.0:
-        raise ManifestValidationError("portfolio_policy.initial_position_qty non-zero is not supported yet")
-    cash_interest_policy = str(value.get("cash_interest_policy") or "zero").strip().lower()
+        raise ManifestValidationError(
+            "portfolio_policy.initial_position_qty non-zero is not supported yet"
+        )
+    cash_interest_policy = (
+        str(value.get("cash_interest_policy") or "zero").strip().lower()
+    )
     if cash_interest_policy != "zero":
-        raise ManifestValidationError("portfolio_policy.cash_interest_policy must be zero")
+        raise ManifestValidationError(
+            "portfolio_policy.cash_interest_policy must be zero"
+        )
     source = str(value.get("source") or "manifest").strip().lower()
     if source not in {"manifest", "legacy_research_default"}:
-        raise ManifestValidationError("portfolio_policy.source must be manifest or legacy_research_default")
-    if source == "legacy_research_default" and requires_candidate_validation(research_classification):
-        raise ManifestValidationError("portfolio_policy.source legacy_research_default is not allowed for validation-bound manifests")
+        raise ManifestValidationError(
+            "portfolio_policy.source must be manifest or legacy_research_default"
+        )
+    if source == "legacy_research_default" and requires_candidate_validation(
+        research_classification
+    ):
+        raise ManifestValidationError(
+            "portfolio_policy.source legacy_research_default is not allowed for validation-bound manifests"
+        )
     sizing = _parse_position_sizing_policy(_required_dict(value, "position_sizing"))
     return PortfolioPolicy(
         schema_version=schema_version,
@@ -1462,11 +1667,15 @@ def _parse_portfolio_policy(value: Any, *, research_classification: str) -> Port
     )
 
 
-def _parse_risk_policy(value: Any, *, research_classification: str) -> ResearchRiskPolicy:
+def _parse_risk_policy(
+    value: Any, *, research_classification: str
+) -> ResearchRiskPolicy:
     validation_required = requires_candidate_validation(research_classification)
     if value is None:
         if validation_required:
-            raise ManifestValidationError("risk_policy is required for validation-bound manifests")
+            raise ManifestValidationError(
+                "risk_policy is required for validation-bound manifests"
+            )
         return ResearchRiskPolicy(
             schema_version=1,
             policy_status="disabled_explicit",
@@ -1491,24 +1700,38 @@ def _parse_risk_policy(value: Any, *, research_classification: str) -> ResearchR
     }
     unknown = sorted(set(value) - allowed)
     if unknown:
-        raise ManifestValidationError(f"risk_policy unsupported fields: {','.join(unknown)}")
-    schema_version = _positive_int(value.get("schema_version", 1), "risk_policy.schema_version")
+        raise ManifestValidationError(
+            f"risk_policy unsupported fields: {','.join(unknown)}"
+        )
+    schema_version = _positive_int(
+        value.get("schema_version", 1), "risk_policy.schema_version"
+    )
     if schema_version != 1:
-        raise ManifestValidationError("risk_policy.schema_version currently supports only 1")
+        raise ManifestValidationError(
+            "risk_policy.schema_version currently supports only 1"
+        )
     disabled = bool(value.get("disabled", False))
     policy_status = str(
         value.get("policy_status") or ("disabled_explicit" if disabled else "enabled")
     )
     if policy_status not in {"enabled", "disabled_explicit"}:
-        raise ManifestValidationError("risk_policy.policy_status must be enabled or disabled_explicit")
+        raise ManifestValidationError(
+            "risk_policy.policy_status must be enabled or disabled_explicit"
+        )
     if validation_required and policy_status == "disabled_explicit":
-        raise ManifestValidationError("risk_policy disabled_explicit is not allowed for validation-bound manifests")
+        raise ManifestValidationError(
+            "risk_policy disabled_explicit is not allowed for validation-bound manifests"
+        )
     unresolved_policy = str(value.get("unresolved_order_policy", "block"))
     if unresolved_policy != "block":
-        raise ManifestValidationError("risk_policy.unresolved_order_policy currently supports only block")
+        raise ManifestValidationError(
+            "risk_policy.unresolved_order_policy currently supports only block"
+        )
     missing_policy = str(value.get("missing_policy", "fail_closed_for_validation"))
     if missing_policy != "fail_closed_for_validation":
-        raise ManifestValidationError("risk_policy.missing_policy currently supports only fail_closed_for_validation")
+        raise ManifestValidationError(
+            "risk_policy.missing_policy currently supports only fail_closed_for_validation"
+        )
     return ResearchRiskPolicy(
         schema_version=schema_version,
         max_daily_loss_krw=_finite_non_negative_float(
@@ -1535,7 +1758,9 @@ def _parse_risk_policy(value: Any, *, research_classification: str) -> ResearchR
             value.get("cooldown_after_loss_min", 0),
             "risk_policy.cooldown_after_loss_min",
         ),
-        max_open_positions=_positive_int(value.get("max_open_positions", 1), "risk_policy.max_open_positions"),
+        max_open_positions=_positive_int(
+            value.get("max_open_positions", 1), "risk_policy.max_open_positions"
+        ),
         unresolved_order_policy=unresolved_policy,
         policy_status=policy_status,
         missing_policy=missing_policy,
@@ -1555,23 +1780,32 @@ def _parse_position_sizing_policy(value: dict[str, Any]) -> PositionSizingPolicy
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"portfolio_policy.position_sizing unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"portfolio_policy.position_sizing unsupported fields: {','.join(unknown)}"
+        )
     sizing_type = str(value.get("type") or "").strip().lower()
     if sizing_type != "fractional_cash":
-        raise ManifestValidationError("portfolio_policy.position_sizing.type must be fractional_cash")
+        raise ManifestValidationError(
+            "portfolio_policy.position_sizing.type must be fractional_cash"
+        )
     buy_fraction = _finite_positive_float(
         value.get("buy_fraction"),
         "portfolio_policy.position_sizing.buy_fraction",
     )
     if buy_fraction > 1.0:
-        raise ManifestValidationError("portfolio_policy.position_sizing.buy_fraction must be in (0, 1]")
+        raise ManifestValidationError(
+            "portfolio_policy.position_sizing.buy_fraction must be in (0, 1]"
+        )
     sell_policy = str(value.get("sell_policy") or "").strip().lower()
     if sell_policy != "sell_all_available_position":
         raise ManifestValidationError(
             "portfolio_policy.position_sizing.sell_policy must be sell_all_available_position"
         )
     cash_buffer_policy = str(value.get("cash_buffer_policy") or "").strip().lower()
-    if cash_buffer_policy not in {"derived_from_buy_fraction_before_fees", "retain_1_percent_before_fees"}:
+    if cash_buffer_policy not in {
+        "derived_from_buy_fraction_before_fees",
+        "retain_1_percent_before_fees",
+    }:
         raise ManifestValidationError(
             "portfolio_policy.position_sizing.cash_buffer_policy must be derived_from_buy_fraction_before_fees"
         )
@@ -1579,7 +1813,11 @@ def _parse_position_sizing_policy(value: dict[str, Any]) -> PositionSizingPolicy
         raise ManifestValidationError(
             "portfolio_policy.position_sizing.cash_buffer_policy retain_1_percent_before_fees requires buy_fraction == 0.99"
         )
-    rounding_policy = str(value.get("rounding_policy") or "engine_float_no_exchange_lot_rounding").strip().lower()
+    rounding_policy = (
+        str(value.get("rounding_policy") or "engine_float_no_exchange_lot_rounding")
+        .strip()
+        .lower()
+    )
     if rounding_policy != "engine_float_no_exchange_lot_rounding":
         raise ManifestValidationError(
             "portfolio_policy.position_sizing.rounding_policy must be engine_float_no_exchange_lot_rounding"
@@ -1593,11 +1831,17 @@ def _parse_position_sizing_policy(value: dict[str, Any]) -> PositionSizingPolicy
         "portfolio_policy.position_sizing.max_order_krw",
     )
     if min_order is not None and max_order is not None and min_order > max_order:
-        raise ManifestValidationError("portfolio_policy.position_sizing.min_order_krw must be <= max_order_krw")
+        raise ManifestValidationError(
+            "portfolio_policy.position_sizing.min_order_krw must be <= max_order_krw"
+        )
     if min_order is not None:
-        raise ManifestValidationError("portfolio_policy.position_sizing.min_order_krw is not supported yet")
+        raise ManifestValidationError(
+            "portfolio_policy.position_sizing.min_order_krw is not supported yet"
+        )
     if max_order is not None:
-        raise ManifestValidationError("portfolio_policy.position_sizing.max_order_krw is not supported yet")
+        raise ManifestValidationError(
+            "portfolio_policy.position_sizing.max_order_krw is not supported yet"
+        )
     return PositionSizingPolicy(
         type=sizing_type,
         buy_fraction=buy_fraction,
@@ -1664,7 +1908,9 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"execution_model unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"execution_model unsupported fields: {','.join(unknown)}"
+        )
     explicit_scenario_policy = value.get("scenario_policy")
     scenario_policy = str(explicit_scenario_policy or "").strip()
     if scenario_policy and scenario_policy not in {
@@ -1676,11 +1922,15 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
         )
     strictness = str(value.get("calibration_strictness") or "fail").strip().lower()
     if strictness not in {"fail", "warn"}:
-        raise ManifestValidationError("execution_model.calibration_strictness must be fail or warn")
+        raise ManifestValidationError(
+            "execution_model.calibration_strictness must be fail or warn"
+        )
     explicit_scenarios = value.get("scenarios")
     if explicit_scenarios is not None:
         if not isinstance(explicit_scenarios, list) or not explicit_scenarios:
-            raise ManifestValidationError("execution_model.scenarios must be a non-empty array")
+            raise ManifestValidationError(
+                "execution_model.scenarios must be a non-empty array"
+            )
         scenarios = [
             _parse_explicit_execution_scenario(
                 raw,
@@ -1693,21 +1943,29 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
     else:
         model_type = _required_str(value, "type")
         if model_type not in {"fixed_bps", "stress", "depth_walk"}:
-            raise ManifestValidationError("execution_model.type must be fixed_bps, stress, or depth_walk")
+            raise ManifestValidationError(
+                "execution_model.type must be fixed_bps, stress, or depth_walk"
+            )
         scenario_role = _optional_scenario_role(value.get("scenario_role"))
         scenario_role_source = "manifest" if scenario_role is not None else "derived"
         fees = _number_array(value, "fee_rate", default=(cost_model.fee_rate,))
-        slippages = _number_array(value, "slippage_bps", default=cost_model.slippage_bps)
+        slippages = _number_array(
+            value, "slippage_bps", default=cost_model.slippage_bps
+        )
         latencies = _int_array(value, "latency_ms", default=(0,))
         partial_rates = _number_array(value, "partial_fill_rate", default=(0.0,))
         failure_rates = _number_array(value, "order_failure_rate", default=(0.0,))
-        market_extra = _number_array(value, "market_order_extra_cost_bps", default=(0.0,))
+        market_extra = _number_array(
+            value, "market_order_extra_cost_bps", default=(0.0,)
+        )
         seed = value.get("seed")
         parsed_seed = None if seed is None else int(seed)
         scenarios = []
-        for index, (fee, slippage, latency, partial, failure, extra) in enumerate(itertools.product(
-            fees, slippages, latencies, partial_rates, failure_rates, market_extra
-        )):
+        for index, (fee, slippage, latency, partial, failure, extra) in enumerate(
+            itertools.product(
+                fees, slippages, latencies, partial_rates, failure_rates, market_extra
+            )
+        ):
             active_role = scenario_role or _derived_scenario_role(index)
             scenarios.append(
                 ExecutionScenario(
@@ -1728,11 +1986,15 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
                         role=active_role,
                         fee_rate=float(fee),
                         fee_source=str(value.get("fee_source") or "").strip(),
-                        fee_authority_policy=str(value.get("fee_authority_policy") or "").strip(),
+                        fee_authority_policy=str(
+                            value.get("fee_authority_policy") or ""
+                        ).strip(),
                         slippage_bps=float(slippage),
                         slippage_source=str(value.get("slippage_source") or "").strip(),
                         valid_for=value.get("valid_for"),
-                        validation_eligible_as_base=value.get("validation_eligible_as_base"),
+                        validation_eligible_as_base=value.get(
+                            "validation_eligible_as_base"
+                        ),
                         source="execution_model",
                     ),
                 )
@@ -1740,7 +2002,11 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
     if not scenarios:
         raise ManifestValidationError("execution_model produced no scenarios")
     if not scenario_policy:
-        scenario_policy = "single_scenario" if len(scenarios) == 1 else "must_pass_base_and_survive_stress"
+        scenario_policy = (
+            "single_scenario"
+            if len(scenarios) == 1
+            else "must_pass_base_and_survive_stress"
+        )
         scenarios = [
             ExecutionScenario(
                 type=scenario.type,
@@ -1785,7 +2051,9 @@ def _parse_explicit_execution_scenario(
     scenario_policy: str,
 ) -> ExecutionScenario:
     if not isinstance(raw, dict):
-        raise ManifestValidationError("execution_model.scenarios entries must be objects")
+        raise ManifestValidationError(
+            "execution_model.scenarios entries must be objects"
+        )
     allowed_fields = {
         "type",
         "scenario_role",
@@ -1805,22 +2073,33 @@ def _parse_explicit_execution_scenario(
     }
     unknown = sorted(set(raw) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"execution_model.scenarios unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"execution_model.scenarios unsupported fields: {','.join(unknown)}"
+        )
     model_type = str(raw.get("type") or parent.get("type") or "fixed_bps").strip()
     if model_type not in {"fixed_bps", "stress", "depth_walk"}:
-        raise ManifestValidationError("execution_model.scenarios.type must be fixed_bps, stress, or depth_walk")
+        raise ManifestValidationError(
+            "execution_model.scenarios.type must be fixed_bps, stress, or depth_walk"
+        )
     role = _optional_scenario_role(raw.get("scenario_role"))
     if role is None:
         raise ManifestValidationError(
             "execution_model.scenarios.scenario_role must be base, stress, or diagnostic_zero_cost"
         )
-    fee = _finite_non_negative_float(raw.get("fee_rate"), "execution_model.scenarios.fee_rate")
-    slippage = _finite_non_negative_float(raw.get("slippage_bps"), "execution_model.scenarios.slippage_bps")
+    fee = _finite_non_negative_float(
+        raw.get("fee_rate"), "execution_model.scenarios.fee_rate"
+    )
+    slippage = _finite_non_negative_float(
+        raw.get("slippage_bps"), "execution_model.scenarios.slippage_bps"
+    )
     return ExecutionScenario(
         type=model_type,
         fee_rate=fee,
         slippage_bps=slippage,
-        latency_ms=_positive_or_zero_int(raw.get("latency_ms", parent.get("latency_ms", 0)), "execution_model.scenarios.latency_ms"),
+        latency_ms=_positive_or_zero_int(
+            raw.get("latency_ms", parent.get("latency_ms", 0)),
+            "execution_model.scenarios.latency_ms",
+        ),
         partial_fill_rate=_finite_non_negative_float(
             raw.get("partial_fill_rate", parent.get("partial_fill_rate", 0.0)),
             "execution_model.scenarios.partial_fill_rate",
@@ -1830,10 +2109,15 @@ def _parse_explicit_execution_scenario(
             "execution_model.scenarios.order_failure_rate",
         ),
         market_order_extra_cost_bps=_finite_non_negative_float(
-            raw.get("market_order_extra_cost_bps", parent.get("market_order_extra_cost_bps", 0.0)),
+            raw.get(
+                "market_order_extra_cost_bps",
+                parent.get("market_order_extra_cost_bps", 0.0),
+            ),
             "execution_model.scenarios.market_order_extra_cost_bps",
         ),
-        seed=None if raw.get("seed", parent.get("seed")) is None else int(raw.get("seed", parent.get("seed"))),
+        seed=None
+        if raw.get("seed", parent.get("seed")) is None
+        else int(raw.get("seed", parent.get("seed"))),
         source="execution_model",
         scenario_policy=scenario_policy,
         scenario_role=role,
@@ -1869,21 +2153,30 @@ def _scenario_cost_assumption(
     valid_for_payload = None
     if valid_for is not None:
         if not isinstance(valid_for, dict):
-            raise ManifestValidationError("cost assumption valid_for must be an object when supplied")
+            raise ManifestValidationError(
+                "cost assumption valid_for must be an object when supplied"
+            )
         valid_for_payload = dict(valid_for)
     return ScenarioCostAssumption(
         label=label,
         role=role,
         fee_rate=fee_rate,
         fee_source=fee_source,
-        fee_authority_policy=fee_authority_policy or "runtime_fee_authority_or_config_fallback",
+        fee_authority_policy=fee_authority_policy
+        or "runtime_fee_authority_or_config_fallback",
         slippage_bps=slippage_bps,
         slippage_source=slippage_source,
         valid_for=valid_for_payload,
         validation_eligible_as_base=(
             bool(validation_eligible_as_base)
             if validation_eligible_as_base is not None
-            else bool(role == "base" and label and fee_source and slippage_source and source != "legacy_cost_model")
+            else bool(
+                role == "base"
+                and label
+                and fee_source
+                and slippage_source
+                and source != "legacy_cost_model"
+            )
         ),
         source=source,
     )
@@ -1912,7 +2205,10 @@ def validation_cost_assumption_policy_reasons(
     for assumption in base_assumptions:
         if not assumption.label:
             reasons.append("validation_cost_assumption_label_required")
-        if not assumption.fee_source or assumption.fee_source in {"legacy_cost_model", "stress_assumption"}:
+        if not assumption.fee_source or assumption.fee_source in {
+            "legacy_cost_model",
+            "stress_assumption",
+        }:
             reasons.append("validation_cost_assumption_source_required")
         if not assumption.slippage_source:
             reasons.append("validation_cost_assumption_source_required")
@@ -1949,7 +2245,9 @@ def validation_execution_stress_policy_reasons(
         return sorted(set(reasons))
 
     base = base_scenarios[0]
-    base_total_cost_bps = base.fee_rate * 10_000.0 + base.slippage_bps + base.market_order_extra_cost_bps
+    base_total_cost_bps = (
+        base.fee_rate * 10_000.0 + base.slippage_bps + base.market_order_extra_cost_bps
+    )
     if base_total_cost_bps <= 0.0:
         reasons.append("validation_positive_base_execution_cost_required")
         return sorted(set(reasons))
@@ -1967,7 +2265,9 @@ def validation_execution_stress_policy_reasons(
         reasons.append("validation_execution_cost_1_5x_scenario_required")
     if not any(ratio >= 2.0 for ratio in cost_ratios):
         reasons.append("validation_execution_cost_2x_scenario_required")
-    if not any(scenario.slippage_bps > base.slippage_bps for scenario in stress_scenarios):
+    if not any(
+        scenario.slippage_bps > base.slippage_bps for scenario in stress_scenarios
+    ):
         reasons.append("validation_increased_slippage_scenario_required")
     if not any(scenario.latency_ms > base.latency_ms for scenario in stress_scenarios):
         reasons.append("validation_increased_latency_scenario_required")
@@ -1976,9 +2276,15 @@ def validation_execution_stress_policy_reasons(
         for scenario in stress_scenarios
     ):
         reasons.append("validation_adverse_fill_price_scenario_required")
-    if not any(scenario.partial_fill_rate > base.partial_fill_rate for scenario in stress_scenarios):
+    if not any(
+        scenario.partial_fill_rate > base.partial_fill_rate
+        for scenario in stress_scenarios
+    ):
         reasons.append("validation_partial_fill_scenario_required")
-    if not any(scenario.order_failure_rate > base.order_failure_rate for scenario in stress_scenarios):
+    if not any(
+        scenario.order_failure_rate > base.order_failure_rate
+        for scenario in stress_scenarios
+    ):
         reasons.append("validation_order_failure_scenario_required")
     return sorted(set(reasons))
 
@@ -2006,33 +2312,59 @@ def _parse_execution_timing(value: Any) -> ExecutionTimingPolicy:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"execution_timing unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"execution_timing unsupported fields: {','.join(unknown)}"
+        )
     signal_basis = str(value.get("signal_basis") or "closed_candle").strip().lower()
     if signal_basis != "closed_candle":
-        raise ManifestValidationError("execution_timing.signal_basis must be closed_candle")
+        raise ManifestValidationError(
+            "execution_timing.signal_basis must be closed_candle"
+        )
     decision_time = str(value.get("decision_time") or "candle_close").strip().lower()
     if decision_time not in {"candle_close", "candle_close_plus_guard"}:
-        raise ManifestValidationError("execution_timing.decision_time must be candle_close or candle_close_plus_guard")
-    guard_ms = _positive_or_zero_int(value.get("decision_guard_ms", 0), "execution_timing.decision_guard_ms")
+        raise ManifestValidationError(
+            "execution_timing.decision_time must be candle_close or candle_close_plus_guard"
+        )
+    guard_ms = _positive_or_zero_int(
+        value.get("decision_guard_ms", 0), "execution_timing.decision_guard_ms"
+    )
     if decision_time == "candle_close" and guard_ms:
         decision_time = "candle_close_plus_guard"
-    fill_policy = str(value.get("fill_reference_policy") or "next_candle_open").strip().lower()
+    fill_policy = (
+        str(value.get("fill_reference_policy") or "next_candle_open").strip().lower()
+    )
     if fill_policy not in {
         "candle_close_legacy",
         "next_candle_open",
         "first_orderbook_after_decision",
         "latency_adjusted_orderbook",
     }:
-        raise ManifestValidationError("execution_timing.fill_reference_policy is unsupported")
-    quote_selection = str(value.get("quote_selection") or "first_after_or_equal").strip().lower()
+        raise ManifestValidationError(
+            "execution_timing.fill_reference_policy is unsupported"
+        )
+    quote_selection = (
+        str(value.get("quote_selection") or "first_after_or_equal").strip().lower()
+    )
     if quote_selection != "first_after_or_equal":
-        raise ManifestValidationError("execution_timing.quote_selection must be first_after_or_equal")
-    max_wait = _positive_or_zero_int(value.get("max_quote_wait_ms", 3000), "execution_timing.max_quote_wait_ms")
-    missing_quote_policy = str(value.get("missing_quote_policy") or "warn").strip().lower()
+        raise ManifestValidationError(
+            "execution_timing.quote_selection must be first_after_or_equal"
+        )
+    max_wait = _positive_or_zero_int(
+        value.get("max_quote_wait_ms", 3000), "execution_timing.max_quote_wait_ms"
+    )
+    missing_quote_policy = (
+        str(value.get("missing_quote_policy") or "warn").strip().lower()
+    )
     if missing_quote_policy not in {"fail", "skip", "warn"}:
-        raise ManifestValidationError("execution_timing.missing_quote_policy must be fail, skip, or warn")
+        raise ManifestValidationError(
+            "execution_timing.missing_quote_policy must be fail, skip, or warn"
+        )
     explicit_allow = value.get("allow_same_candle_close_fill")
-    allow_same = bool(explicit_allow) if explicit_allow is not None else fill_policy == "candle_close_legacy"
+    allow_same = (
+        bool(explicit_allow)
+        if explicit_allow is not None
+        else fill_policy == "candle_close_legacy"
+    )
     min_level_raw = value.get("min_execution_reality_level_for_validation")
     min_level = None if min_level_raw is None else str(min_level_raw).strip()
     if min_level is not None and min_level not in {
@@ -2042,7 +2374,9 @@ def _parse_execution_timing(value: Any) -> ExecutionTimingPolicy:
         "latency_adjusted_top_of_book",
         "l2_depth_walk_no_queue",
     }:
-        raise ManifestValidationError("execution_timing.min_execution_reality_level_for_validation is unsupported")
+        raise ManifestValidationError(
+            "execution_timing.min_execution_reality_level_for_validation is unsupported"
+        )
     depth_required = bool(value.get("depth_required", False))
     trade_tick_required = bool(value.get("trade_tick_required", False))
     queue_position_required = bool(value.get("queue_position_required", False))
@@ -2109,21 +2443,30 @@ def _validate_execution_model_capability_policy(
     execution_model: ExecutionModelConfig,
     execution_timing: ExecutionTimingPolicy,
 ) -> None:
-    has_depth_walk = any(scenario.type == "depth_walk" for scenario in execution_model.scenarios)
+    has_depth_walk = any(
+        scenario.type == "depth_walk" for scenario in execution_model.scenarios
+    )
     if execution_timing.depth_required and not has_depth_walk:
-        raise ManifestValidationError("execution_depth_required_but_unavailable_without_depth_walk_scenario")
+        raise ManifestValidationError(
+            "execution_depth_required_but_unavailable_without_depth_walk_scenario"
+        )
     if (
-        execution_timing.min_execution_reality_level_for_validation == "l2_depth_walk_no_queue"
+        execution_timing.min_execution_reality_level_for_validation
+        == "l2_depth_walk_no_queue"
         and not has_depth_walk
     ):
-        raise ManifestValidationError("execution_l2_depth_walk_required_but_depth_walk_scenario_missing")
+        raise ManifestValidationError(
+            "execution_l2_depth_walk_required_but_depth_walk_scenario_missing"
+        )
 
 
 def _optional_scenario_role(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, list):
-        raise ManifestValidationError("execution_model.scenario_role must be a scalar base or stress value")
+        raise ManifestValidationError(
+            "execution_model.scenario_role must be a scalar base or stress value"
+        )
     role = str(value).strip()
     if role not in {"base", "stress", "diagnostic_zero_cost"}:
         raise ManifestValidationError(
@@ -2152,7 +2495,10 @@ def _with_diagnostic_zero_cost_scenario(
         for scenario in scenarios
     ):
         return scenarios
-    base = next((scenario for scenario in scenarios if scenario.scenario_role == "base"), scenarios[0])
+    base = next(
+        (scenario for scenario in scenarios if scenario.scenario_role == "base"),
+        scenarios[0],
+    )
     diagnostic = ExecutionScenario(
         type=base.type,
         fee_rate=0.0,
@@ -2188,7 +2534,10 @@ def _validate_scenario_policy_role_consistency(
     scenario_policy: str,
     scenarios: tuple[ExecutionScenario, ...],
 ) -> None:
-    if str(explicit_scenario_policy or "").strip() != "must_pass_base_and_survive_stress":
+    if (
+        str(explicit_scenario_policy or "").strip()
+        != "must_pass_base_and_survive_stress"
+    ):
         return
     if scenario_policy != "must_pass_base_and_survive_stress" or len(scenarios) <= 1:
         return
@@ -2201,24 +2550,33 @@ def _validate_scenario_policy_role_consistency(
         )
 
 
-def _number_array(payload: dict[str, Any], key: str, *, default: tuple[float, ...]) -> tuple[float, ...]:
+def _number_array(
+    payload: dict[str, Any], key: str, *, default: tuple[float, ...]
+) -> tuple[float, ...]:
     if key not in payload:
         return tuple(float(item) for item in default)
     value = payload.get(key)
     raw_values = value if isinstance(value, list) else [value]
     if not raw_values:
         raise ManifestValidationError(f"execution_model.{key} must not be empty")
-    return tuple(_finite_non_negative_float(item, f"execution_model.{key}") for item in raw_values)
+    return tuple(
+        _finite_non_negative_float(item, f"execution_model.{key}")
+        for item in raw_values
+    )
 
 
-def _int_array(payload: dict[str, Any], key: str, *, default: tuple[int, ...]) -> tuple[int, ...]:
+def _int_array(
+    payload: dict[str, Any], key: str, *, default: tuple[int, ...]
+) -> tuple[int, ...]:
     if key not in payload:
         return tuple(int(item) for item in default)
     value = payload.get(key)
     raw_values = value if isinstance(value, list) else [value]
     if not raw_values:
         raise ManifestValidationError(f"execution_model.{key} must not be empty")
-    return tuple(_positive_or_zero_int(item, f"execution_model.{key}") for item in raw_values)
+    return tuple(
+        _positive_or_zero_int(item, f"execution_model.{key}") for item in raw_values
+    )
 
 
 def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
@@ -2249,9 +2607,15 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
     }
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"acceptance_gate unsupported fields: {','.join(unknown)}")
-    min_trade_count = _positive_int(payload.get("min_trade_count"), "acceptance_gate.min_trade_count")
-    max_mdd_pct = _finite_non_negative_float(payload.get("max_mdd_pct"), "acceptance_gate.max_mdd_pct")
+        raise ManifestValidationError(
+            f"acceptance_gate unsupported fields: {','.join(unknown)}"
+        )
+    min_trade_count = _positive_int(
+        payload.get("min_trade_count"), "acceptance_gate.min_trade_count"
+    )
+    max_mdd_pct = _finite_non_negative_float(
+        payload.get("max_mdd_pct"), "acceptance_gate.max_mdd_pct"
+    )
     min_profit_factor = _finite_non_negative_float(
         payload.get("min_profit_factor"), "acceptance_gate.min_profit_factor"
     )
@@ -2261,11 +2625,19 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
         min_trade_count=min_trade_count,
         max_mdd_pct=max_mdd_pct,
         min_profit_factor=min_profit_factor,
-        oos_return_must_be_positive=bool(payload.get("oos_return_must_be_positive", True)),
-        parameter_stability_required=bool(payload.get("parameter_stability_required", False)),
+        oos_return_must_be_positive=bool(
+            payload.get("oos_return_must_be_positive", True)
+        ),
+        parameter_stability_required=bool(
+            payload.get("parameter_stability_required", False)
+        ),
         walk_forward_required=bool(payload.get("walk_forward_required", False)),
-        final_holdout_required_for_validation=bool(payload.get("final_holdout_required_for_validation", True)),
-        min_cagr_pct=_optional_finite_float(payload.get("min_cagr_pct"), "acceptance_gate.min_cagr_pct"),
+        final_holdout_required_for_validation=bool(
+            payload.get("final_holdout_required_for_validation", True)
+        ),
+        min_cagr_pct=_optional_finite_float(
+            payload.get("min_cagr_pct"), "acceptance_gate.min_cagr_pct"
+        ),
         min_expectancy_per_trade_krw=_optional_finite_float(
             payload.get("min_expectancy_per_trade_krw"),
             "acceptance_gate.min_expectancy_per_trade_krw",
@@ -2274,7 +2646,10 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
             payload.get("min_expectancy_per_trade_pct"),
             "acceptance_gate.min_expectancy_per_trade_pct",
         ),
-        max_exposure_time_pct=_optional_pct(payload.get("max_exposure_time_pct"), "acceptance_gate.max_exposure_time_pct"),
+        max_exposure_time_pct=_optional_pct(
+            payload.get("max_exposure_time_pct"),
+            "acceptance_gate.max_exposure_time_pct",
+        ),
         max_avg_holding_time_minutes=_optional_finite_non_negative_float(
             payload.get("max_avg_holding_time_minutes"),
             "acceptance_gate.max_avg_holding_time_minutes",
@@ -2291,9 +2666,13 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
             payload.get("max_single_trade_dependency_score"),
             "acceptance_gate.max_single_trade_dependency_score",
         ),
-        reject_open_position_at_end=bool(payload.get("reject_open_position_at_end", False)),
+        reject_open_position_at_end=bool(
+            payload.get("reject_open_position_at_end", False)
+        ),
         metrics_contract_required=bool(payload.get("metrics_contract_required", False)),
-        min_trade_days_pct=_optional_pct(payload.get("min_trade_days_pct"), "acceptance_gate.min_trade_days_pct"),
+        min_trade_days_pct=_optional_pct(
+            payload.get("min_trade_days_pct"), "acceptance_gate.min_trade_days_pct"
+        ),
         max_zero_filled_days=_optional_non_negative_int(
             payload.get("max_zero_filled_days"),
             "acceptance_gate.max_zero_filled_days",
@@ -2306,8 +2685,12 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
             payload.get("min_filled_execution_per_kst_day"),
             "acceptance_gate.min_filled_execution_per_kst_day",
         ),
-        participation_count_basis=_optional_participation_count_basis(payload.get("participation_count_basis")),
-        regime_acceptance_gate=_parse_regime_acceptance_gate(payload.get("regime_acceptance_gate")),
+        participation_count_basis=_optional_participation_count_basis(
+            payload.get("participation_count_basis")
+        ),
+        regime_acceptance_gate=_parse_regime_acceptance_gate(
+            payload.get("regime_acceptance_gate")
+        ),
     )
 
 
@@ -2319,7 +2702,9 @@ def _parse_statistical_validation(
     validation_required = requires_candidate_validation(research_classification)
     if value is None:
         if validation_required:
-            raise ManifestValidationError("statistical_validation required for validation-bound manifests")
+            raise ManifestValidationError(
+                "statistical_validation required for validation-bound manifests"
+            )
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("statistical_validation must be an object")
@@ -2334,13 +2719,19 @@ def _parse_statistical_validation(
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"statistical_validation unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"statistical_validation unsupported fields: {','.join(unknown)}"
+        )
     required = bool(value.get("required_for_validation", validation_required))
     if validation_required and not required:
-        raise ManifestValidationError("statistical_validation.required_for_validation must be true for validation-bound manifests")
+        raise ManifestValidationError(
+            "statistical_validation.required_for_validation must be true for validation-bound manifests"
+        )
     benchmark = str(value.get("benchmark") or "").strip()
     if benchmark not in {"cash", "buy_and_hold", "configured"}:
-        raise ManifestValidationError("statistical_validation.benchmark must be cash, buy_and_hold, or configured")
+        raise ManifestValidationError(
+            "statistical_validation.benchmark must be cash, buy_and_hold, or configured"
+        )
     primary_metric = str(value.get("primary_metric") or "").strip()
     if primary_metric not in {"net_excess_return", "return_pct", "sharpe_like"}:
         raise ManifestValidationError(
@@ -2358,7 +2749,9 @@ def _parse_statistical_validation(
         )
     multiple_testing_scope = str(value.get("multiple_testing_scope") or "").strip()
     if multiple_testing_scope not in {"experiment", "experiment_family"}:
-        raise ManifestValidationError("statistical_validation.multiple_testing_scope must be experiment or experiment_family")
+        raise ManifestValidationError(
+            "statistical_validation.multiple_testing_scope must be experiment or experiment_family"
+        )
     bootstrap = _parse_statistical_bootstrap(value.get("bootstrap"))
     gates = _parse_statistical_gates(value.get("gates"))
     return StatisticalSelectionContract(
@@ -2374,23 +2767,38 @@ def _parse_statistical_validation(
 
 def _parse_statistical_bootstrap(value: Any) -> StatisticalBootstrapConfig:
     if not isinstance(value, dict):
-        raise ManifestValidationError("statistical_validation.bootstrap must be an object")
+        raise ManifestValidationError(
+            "statistical_validation.bootstrap must be an object"
+        )
     allowed_fields = {"method", "n_bootstrap", "block_length_policy", "seed_policy"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"statistical_validation.bootstrap unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"statistical_validation.bootstrap unsupported fields: {','.join(unknown)}"
+        )
     method = str(value.get("method") or "").strip()
-    if method not in {"metric_centered_max_bootstrap", "white_reality_check_block_bootstrap"}:
+    if method not in {
+        "metric_centered_max_bootstrap",
+        "white_reality_check_block_bootstrap",
+    }:
         raise ManifestValidationError(
             "statistical_validation.bootstrap.method must be metric_centered_max_bootstrap or white_reality_check_block_bootstrap"
         )
-    n_bootstrap = _positive_int(value.get("n_bootstrap"), "statistical_validation.bootstrap.n_bootstrap")
+    n_bootstrap = _positive_int(
+        value.get("n_bootstrap"), "statistical_validation.bootstrap.n_bootstrap"
+    )
     block_length_policy = str(value.get("block_length_policy") or "").strip()
-    if method == "metric_centered_max_bootstrap" and block_length_policy != "not_applicable_summary_metric":
+    if (
+        method == "metric_centered_max_bootstrap"
+        and block_length_policy != "not_applicable_summary_metric"
+    ):
         raise ManifestValidationError(
             "statistical_validation.bootstrap.block_length_policy must be not_applicable_summary_metric for metric_centered_max_bootstrap"
         )
-    if method == "white_reality_check_block_bootstrap" and block_length_policy != "fixed":
+    if (
+        method == "white_reality_check_block_bootstrap"
+        and block_length_policy != "fixed"
+    ):
         raise ManifestValidationError(
             "statistical_validation.bootstrap.block_length_policy must be fixed for white_reality_check_block_bootstrap"
         )
@@ -2419,7 +2827,9 @@ def _parse_statistical_gates(value: Any) -> StatisticalValidationGates:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"statistical_validation.gates unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"statistical_validation.gates unsupported fields: {','.join(unknown)}"
+        )
     max_reality_check = _probability(
         value.get("max_reality_check_p_value"),
         "statistical_validation.gates.max_reality_check_p_value",
@@ -2447,11 +2857,15 @@ def _parse_statistical_gates(value: Any) -> StatisticalValidationGates:
     )
 
 
-def _parse_stress_suite(value: Any, *, research_classification: str) -> StressSuiteContract | None:
+def _parse_stress_suite(
+    value: Any, *, research_classification: str
+) -> StressSuiteContract | None:
     validation_required = requires_candidate_validation(research_classification)
     if value is None:
         if validation_required:
-            raise ManifestValidationError("stress_suite required for validation-bound manifests")
+            raise ManifestValidationError(
+                "stress_suite required for validation-bound manifests"
+            )
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("stress_suite must be an object")
@@ -2466,18 +2880,28 @@ def _parse_stress_suite(value: Any, *, research_classification: str) -> StressSu
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"stress_suite unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite unsupported fields: {','.join(unknown)}"
+        )
     required = bool(value.get("required_for_validation", validation_required))
     if validation_required and not required:
-        raise ManifestValidationError("stress_suite.required_for_validation must be true for validation-bound manifests")
+        raise ManifestValidationError(
+            "stress_suite.required_for_validation must be true for validation-bound manifests"
+        )
     contract = StressSuiteContract(
         required_for_validation=required,
         trade_removal=_parse_stress_trade_removal(value.get("trade_removal")),
-        trade_order_monte_carlo=_parse_stress_trade_order_monte_carlo(value.get("trade_order_monte_carlo")),
+        trade_order_monte_carlo=_parse_stress_trade_order_monte_carlo(
+            value.get("trade_order_monte_carlo")
+        ),
         period_ablation=_parse_stress_period_ablation(value.get("period_ablation")),
-        parameter_perturbation=_parse_stress_parameter_perturbation(value.get("parameter_perturbation")),
+        parameter_perturbation=_parse_stress_parameter_perturbation(
+            value.get("parameter_perturbation")
+        ),
         signal_omission=_parse_stress_signal_omission(value.get("signal_omission")),
-        risk_adjusted_score=_parse_stress_risk_adjusted_score(value.get("risk_adjusted_score")),
+        risk_adjusted_score=_parse_stress_risk_adjusted_score(
+            value.get("risk_adjusted_score")
+        ),
     )
     if required:
         required_components = {
@@ -2487,7 +2911,9 @@ def _parse_stress_suite(value: Any, *, research_classification: str) -> StressSu
             "parameter_perturbation": contract.parameter_perturbation,
             "signal_omission": contract.signal_omission,
         }
-        missing = sorted(name for name, component in required_components.items() if component is None)
+        missing = sorted(
+            name for name, component in required_components.items() if component is None
+        )
         if missing:
             raise ManifestValidationError(
                 "stress_suite required components missing: " + ",".join(missing)
@@ -2495,11 +2921,15 @@ def _parse_stress_suite(value: Any, *, research_classification: str) -> StressSu
     return contract
 
 
-def _parse_final_selection(value: Any, *, research_classification: str) -> FinalSelectionContract | None:
+def _parse_final_selection(
+    value: Any, *, research_classification: str
+) -> FinalSelectionContract | None:
     validation_required = requires_candidate_validation(research_classification)
     if value is None:
         if validation_required:
-            raise ManifestValidationError("final_selection required for validation-bound manifests")
+            raise ManifestValidationError(
+                "final_selection required for validation-bound manifests"
+            )
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("final_selection must be an object")
@@ -2516,13 +2946,21 @@ def _parse_final_selection(value: Any, *, research_classification: str) -> Final
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"final_selection unsupported fields: {','.join(unknown)}")
-    schema_version = _positive_int(value.get("schema_version"), "final_selection.schema_version")
+        raise ManifestValidationError(
+            f"final_selection unsupported fields: {','.join(unknown)}"
+        )
+    schema_version = _positive_int(
+        value.get("schema_version"), "final_selection.schema_version"
+    )
     if schema_version != 2:
-        raise ManifestValidationError("final_selection.schema_version must be 2; legacy schema_version 1 is not translated")
+        raise ManifestValidationError(
+            "final_selection.schema_version must be 2; legacy schema_version 1 is not translated"
+        )
     required = bool(value.get("required_for_validation", validation_required))
     if validation_required and not required:
-        raise ManifestValidationError("final_selection.required_for_validation must be true for validation-bound manifests")
+        raise ManifestValidationError(
+            "final_selection.required_for_validation must be true for validation-bound manifests"
+        )
     candidate_universe = str(value.get("candidate_universe") or "").strip()
     if candidate_universe != "acceptance_gate_passed_required_scenarios":
         raise ManifestValidationError(
@@ -2538,7 +2976,9 @@ def _parse_final_selection(value: Any, *, research_classification: str) -> Final
         )
     ranking_value = value.get("ranking")
     if not isinstance(ranking_value, list) or not ranking_value:
-        raise ManifestValidationError("final_selection.ranking must be a non-empty array")
+        raise ManifestValidationError(
+            "final_selection.ranking must be a non-empty array"
+        )
     rules = tuple(
         _parse_final_selection_metric_rule(item, index=index)
         for index, item in enumerate(ranking_value)
@@ -2548,8 +2988,12 @@ def _parse_final_selection(value: Any, *, research_classification: str) -> Final
             "final_selection.ranking must end with parameter_candidate_id asc deterministic tie-breaker"
         )
     must_pass = _parse_final_selection_must_pass(value.get("must_pass"))
-    exposure = _parse_final_selection_exposure_policy(value.get("selection_exposure_policy"), rules=rules)
-    unsupported = _parse_final_selection_unsupported_metric_policy(value.get("unsupported_metric_policy"))
+    exposure = _parse_final_selection_exposure_policy(
+        value.get("selection_exposure_policy"), rules=rules
+    )
+    unsupported = _parse_final_selection_unsupported_metric_policy(
+        value.get("unsupported_metric_policy")
+    )
     return FinalSelectionContract(
         schema_version=schema_version,
         required_for_validation=required,
@@ -2575,7 +3019,9 @@ def _parse_final_selection_must_pass(value: Any) -> dict[str, object]:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"final_selection.must_pass unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"final_selection.must_pass unsupported fields: {','.join(unknown)}"
+        )
     return dict(value)
 
 
@@ -2585,7 +3031,9 @@ def _parse_final_selection_exposure_policy(
     rules: tuple[FinalSelectionMetricRule, ...],
 ) -> dict[str, object]:
     if not isinstance(value, dict):
-        raise ManifestValidationError("final_selection.selection_exposure_policy must be an object")
+        raise ManifestValidationError(
+            "final_selection.selection_exposure_policy must be an object"
+        )
     allowed_fields = {"final_holdout_usage", "counts_as_holdout_reuse"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
@@ -2618,7 +3066,9 @@ def _parse_final_selection_exposure_policy(
 
 def _parse_final_selection_unsupported_metric_policy(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise ManifestValidationError("final_selection.unsupported_metric_policy must be an object")
+        raise ManifestValidationError(
+            "final_selection.unsupported_metric_policy must be an object"
+        )
     allowed_fields = {"sharpe_ratio", "sortino_ratio"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
@@ -2636,20 +3086,32 @@ def _parse_final_selection_unsupported_metric_policy(value: Any) -> dict[str, st
     return parsed
 
 
-def _parse_final_selection_metric_rule(value: Any, *, index: int) -> FinalSelectionMetricRule:
+def _parse_final_selection_metric_rule(
+    value: Any, *, index: int
+) -> FinalSelectionMetricRule:
     if not isinstance(value, dict):
-        raise ManifestValidationError(f"final_selection.ranking[{index}] must be an object")
+        raise ManifestValidationError(
+            f"final_selection.ranking[{index}] must be an object"
+        )
     allowed_fields = {"metric", "order", "required", "null_policy"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"final_selection.ranking[{index}] unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"final_selection.ranking[{index}] unsupported fields: {','.join(unknown)}"
+        )
     metric = str(value.get("metric") or "").strip()
     if not metric:
-        raise ManifestValidationError(f"final_selection.ranking[{index}].metric is required")
+        raise ManifestValidationError(
+            f"final_selection.ranking[{index}].metric is required"
+        )
     order = str(value.get("order") or "").strip()
     if order not in {"asc", "desc"}:
-        raise ManifestValidationError(f"final_selection.ranking[{index}].order must be asc or desc")
-    null_policy = str(value.get("null_policy") or "fail_if_required_else_worst_rank").strip()
+        raise ManifestValidationError(
+            f"final_selection.ranking[{index}].order must be asc or desc"
+        )
+    null_policy = str(
+        value.get("null_policy") or "fail_if_required_else_worst_rank"
+    ).strip()
     if null_policy != "fail_if_required_else_worst_rank":
         raise ManifestValidationError(
             f"final_selection.ranking[{index}].null_policy must be fail_if_required_else_worst_rank"
@@ -2667,16 +3129,29 @@ def _parse_stress_trade_removal(value: Any) -> StressTradeRemovalContract | None
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("stress_suite.trade_removal must be an object")
-    allowed_fields = {"top_n_by_net_pnl", "min_return_retention_pct", "max_mdd_multiplier"}
+    allowed_fields = {
+        "top_n_by_net_pnl",
+        "min_return_retention_pct",
+        "max_mdd_multiplier",
+    }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"stress_suite.trade_removal unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite.trade_removal unsupported fields: {','.join(unknown)}"
+        )
     raw_top_n = value.get("top_n_by_net_pnl")
     if not isinstance(raw_top_n, list) or not raw_top_n:
-        raise ManifestValidationError("stress_suite.trade_removal.top_n_by_net_pnl must be a non-empty array")
-    top_n = tuple(_positive_int(item, "stress_suite.trade_removal.top_n_by_net_pnl") for item in raw_top_n)
+        raise ManifestValidationError(
+            "stress_suite.trade_removal.top_n_by_net_pnl must be a non-empty array"
+        )
+    top_n = tuple(
+        _positive_int(item, "stress_suite.trade_removal.top_n_by_net_pnl")
+        for item in raw_top_n
+    )
     if len(set(top_n)) != len(top_n):
-        raise ManifestValidationError("stress_suite.trade_removal.top_n_by_net_pnl must not contain duplicates")
+        raise ManifestValidationError(
+            "stress_suite.trade_removal.top_n_by_net_pnl must not contain duplicates"
+        )
     min_retention = _optional_pct(
         value.get("min_return_retention_pct"),
         "stress_suite.trade_removal.min_return_retention_pct",
@@ -2692,11 +3167,15 @@ def _parse_stress_trade_removal(value: Any) -> StressTradeRemovalContract | None
     )
 
 
-def _parse_stress_trade_order_monte_carlo(value: Any) -> StressTradeOrderMonteCarloContract | None:
+def _parse_stress_trade_order_monte_carlo(
+    value: Any,
+) -> StressTradeOrderMonteCarloContract | None:
     if value is None:
         return None
     if not isinstance(value, dict):
-        raise ManifestValidationError("stress_suite.trade_order_monte_carlo must be an object")
+        raise ManifestValidationError(
+            "stress_suite.trade_order_monte_carlo must be an object"
+        )
     allowed_fields = {
         "iterations",
         "seed_policy",
@@ -2706,14 +3185,18 @@ def _parse_stress_trade_order_monte_carlo(value: Any) -> StressTradeOrderMonteCa
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"stress_suite.trade_order_monte_carlo unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite.trade_order_monte_carlo unsupported fields: {','.join(unknown)}"
+        )
     seed_policy = str(value.get("seed_policy") or "").strip()
     if seed_policy != "derived_from_manifest_candidate_scenario_split_hash":
         raise ManifestValidationError(
             "stress_suite.trade_order_monte_carlo.seed_policy must be derived_from_manifest_candidate_scenario_split_hash"
         )
     return StressTradeOrderMonteCarloContract(
-        iterations=_positive_int(value.get("iterations"), "stress_suite.trade_order_monte_carlo.iterations"),
+        iterations=_positive_int(
+            value.get("iterations"), "stress_suite.trade_order_monte_carlo.iterations"
+        ),
         seed_policy=seed_policy,
         min_survival_probability=_probability(
             value.get("min_survival_probability"),
@@ -2730,20 +3213,28 @@ def _parse_stress_trade_order_monte_carlo(value: Any) -> StressTradeOrderMonteCa
     )
 
 
-def _parse_stress_risk_adjusted_score(value: Any) -> StressRiskAdjustedScoreContract | None:
+def _parse_stress_risk_adjusted_score(
+    value: Any,
+) -> StressRiskAdjustedScoreContract | None:
     if value is None:
         return None
     if not isinstance(value, dict):
-        raise ManifestValidationError("stress_suite.risk_adjusted_score must be an object")
+        raise ManifestValidationError(
+            "stress_suite.risk_adjusted_score must be an object"
+        )
     allowed_fields = {"required_metrics", "ranking"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"stress_suite.risk_adjusted_score unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite.risk_adjusted_score unsupported fields: {','.join(unknown)}"
+        )
     required = _named_string_list(
         value.get("required_metrics"),
         "stress_suite.risk_adjusted_score.required_metrics",
     )
-    ranking = _named_string_list(value.get("ranking"), "stress_suite.risk_adjusted_score.ranking")
+    ranking = _named_string_list(
+        value.get("ranking"), "stress_suite.risk_adjusted_score.ranking"
+    )
     supported_metrics = {"calmar", "sharpe", "sortino"}
     unsupported = sorted(set(required) - supported_metrics)
     if unsupported:
@@ -2756,7 +3247,9 @@ def _parse_stress_risk_adjusted_score(value: Any) -> StressRiskAdjustedScoreCont
         raise ManifestValidationError(
             f"stress_suite.risk_adjusted_score.ranking unsupported values: {','.join(ranking_unsupported)}"
         )
-    return StressRiskAdjustedScoreContract(required_metrics=tuple(required), ranking=tuple(ranking))
+    return StressRiskAdjustedScoreContract(
+        required_metrics=tuple(required), ranking=tuple(ranking)
+    )
 
 
 def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | None:
@@ -2767,23 +3260,36 @@ def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | 
     allowed_fields = {"calendar_years", "min_pass_ratio", "min_return_retention_pct"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"stress_suite.period_ablation unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite.period_ablation unsupported fields: {','.join(unknown)}"
+        )
     years = value.get("calendar_years")
     if years != "auto" and not isinstance(years, list):
-        raise ManifestValidationError("stress_suite.period_ablation.calendar_years must be auto or an array")
+        raise ManifestValidationError(
+            "stress_suite.period_ablation.calendar_years must be auto or an array"
+        )
     parsed_years: tuple[int, ...] | str
     if years == "auto":
         parsed_years = "auto"
     else:
         if not years:
-            raise ManifestValidationError("stress_suite.period_ablation.calendar_years must be auto or a non-empty array")
-        parsed = tuple(_calendar_year(item, "stress_suite.period_ablation.calendar_years") for item in years)
+            raise ManifestValidationError(
+                "stress_suite.period_ablation.calendar_years must be auto or a non-empty array"
+            )
+        parsed = tuple(
+            _calendar_year(item, "stress_suite.period_ablation.calendar_years")
+            for item in years
+        )
         if len(set(parsed)) != len(parsed):
-            raise ManifestValidationError("stress_suite.period_ablation.calendar_years must not contain duplicates")
+            raise ManifestValidationError(
+                "stress_suite.period_ablation.calendar_years must not contain duplicates"
+            )
         parsed_years = tuple(sorted(parsed))
     min_pass_ratio = 0.8
     if "min_pass_ratio" in value:
-        min_pass_ratio = _probability(value.get("min_pass_ratio"), "stress_suite.period_ablation.min_pass_ratio")
+        min_pass_ratio = _probability(
+            value.get("min_pass_ratio"), "stress_suite.period_ablation.min_pass_ratio"
+        )
     min_return_retention_pct = 50.0
     if "min_return_retention_pct" in value:
         parsed_retention = _optional_pct(
@@ -2791,7 +3297,9 @@ def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | 
             "stress_suite.period_ablation.min_return_retention_pct",
         )
         if parsed_retention is None:
-            raise ManifestValidationError("stress_suite.period_ablation.min_return_retention_pct must be a number")
+            raise ManifestValidationError(
+                "stress_suite.period_ablation.min_return_retention_pct must be a number"
+            )
         min_return_retention_pct = parsed_retention
     return StressPeriodAblationContract(
         calendar_years=parsed_years,
@@ -2800,11 +3308,15 @@ def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | 
     )
 
 
-def _parse_stress_parameter_perturbation(value: Any) -> StressParameterPerturbationContract | None:
+def _parse_stress_parameter_perturbation(
+    value: Any,
+) -> StressParameterPerturbationContract | None:
     if value is None:
         return None
     if not isinstance(value, dict):
-        raise ManifestValidationError("stress_suite.parameter_perturbation must be an object")
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation must be an object"
+        )
     allowed_fields = {
         "relative_pct",
         "numeric_params_only",
@@ -2816,23 +3328,40 @@ def _parse_stress_parameter_perturbation(value: Any) -> StressParameterPerturbat
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"stress_suite.parameter_perturbation unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite.parameter_perturbation unsupported fields: {','.join(unknown)}"
+        )
     relative = value.get("relative_pct")
     if not isinstance(relative, list) or not relative:
-        raise ManifestValidationError("stress_suite.parameter_perturbation.relative_pct must be a non-empty array")
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation.relative_pct must be a non-empty array"
+        )
     parsed_relative: list[float] = []
     for item in relative:
-        parsed = _optional_finite_float(item, "stress_suite.parameter_perturbation.relative_pct")
+        parsed = _optional_finite_float(
+            item, "stress_suite.parameter_perturbation.relative_pct"
+        )
         if parsed == 0.0:
-            raise ManifestValidationError("stress_suite.parameter_perturbation.relative_pct values must be non-zero")
+            raise ManifestValidationError(
+                "stress_suite.parameter_perturbation.relative_pct values must be non-zero"
+            )
         parsed_relative.append(float(parsed))
     if len(set(parsed_relative)) != len(parsed_relative):
-        raise ManifestValidationError("stress_suite.parameter_perturbation.relative_pct must not contain duplicates")
-    if "numeric_params_only" in value and not isinstance(value.get("numeric_params_only"), bool):
-        raise ManifestValidationError("stress_suite.parameter_perturbation.numeric_params_only must be boolean")
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation.relative_pct must not contain duplicates"
+        )
+    if "numeric_params_only" in value and not isinstance(
+        value.get("numeric_params_only"), bool
+    ):
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation.numeric_params_only must be boolean"
+        )
     min_pass_ratio = 0.8
     if "min_pass_ratio" in value:
-        min_pass_ratio = _probability(value.get("min_pass_ratio"), "stress_suite.parameter_perturbation.min_pass_ratio")
+        min_pass_ratio = _probability(
+            value.get("min_pass_ratio"),
+            "stress_suite.parameter_perturbation.min_pass_ratio",
+        )
     min_trade_retention = _optional_finite_float(
         value.get("min_neighbor_trade_count_retention_pct", 50.0),
         "stress_suite.parameter_perturbation.min_neighbor_trade_count_retention_pct",
@@ -2884,23 +3413,35 @@ def _parse_stress_signal_omission(value: Any) -> StressSignalOmissionContract | 
     }
     unknown = sorted(set(value) - allowed)
     if unknown:
-        raise ManifestValidationError(f"stress_suite.signal_omission unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"stress_suite.signal_omission unsupported fields: {','.join(unknown)}"
+        )
     raw_rates = value.get("omission_rates_pct")
     if not isinstance(raw_rates, list) or not raw_rates:
-        raise ManifestValidationError("stress_suite.signal_omission.omission_rates_pct must be a non-empty array")
+        raise ManifestValidationError(
+            "stress_suite.signal_omission.omission_rates_pct must be a non-empty array"
+        )
     rates = tuple(
         sorted(
-            float(_optional_finite_float(item, "stress_suite.signal_omission.omission_rates_pct"))
+            float(
+                _optional_finite_float(
+                    item, "stress_suite.signal_omission.omission_rates_pct"
+                )
+            )
             for item in raw_rates
         )
     )
-    if len(set(rates)) != len(rates) or any(rate <= 0.0 or rate > 100.0 for rate in rates):
+    if len(set(rates)) != len(rates) or any(
+        rate <= 0.0 or rate > 100.0 for rate in rates
+    ):
         raise ManifestValidationError(
             "stress_suite.signal_omission.omission_rates_pct values must be unique and in (0, 100]"
         )
     seed_policy = str(value.get("seed_policy") or "")
     if seed_policy != "derived_from_manifest_candidate_scenario_split_contract_hash":
-        raise ManifestValidationError("stress_suite.signal_omission.seed_policy unsupported")
+        raise ManifestValidationError(
+            "stress_suite.signal_omission.seed_policy unsupported"
+        )
     retention = _optional_finite_float(
         value.get("min_return_retention_pct"),
         "stress_suite.signal_omission.min_return_retention_pct",
@@ -2941,25 +3482,39 @@ def _parse_regime_acceptance_gate(value: Any) -> RegimeAcceptanceGate:
     if value is None:
         return RegimeAcceptanceGate(required=False)
     if not isinstance(value, dict):
-        raise ManifestValidationError("acceptance_gate.regime_acceptance_gate must be an object")
+        raise ManifestValidationError(
+            "acceptance_gate.regime_acceptance_gate must be an object"
+        )
     min_trade_count = int(value.get("min_trade_count_per_required_regime", 0) or 0)
     blocked_count = int(value.get("blocked_regime_max_trade_count", 0) or 0)
     if min_trade_count < 0:
-        raise ManifestValidationError("acceptance_gate.regime_acceptance_gate.min_trade_count_per_required_regime must be >= 0")
+        raise ManifestValidationError(
+            "acceptance_gate.regime_acceptance_gate.min_trade_count_per_required_regime must be >= 0"
+        )
     if blocked_count < 0:
-        raise ManifestValidationError("acceptance_gate.regime_acceptance_gate.blocked_regime_max_trade_count must be >= 0")
+        raise ManifestValidationError(
+            "acceptance_gate.regime_acceptance_gate.blocked_regime_max_trade_count must be >= 0"
+        )
     return RegimeAcceptanceGate(
         required=bool(value.get("required", False)),
         min_trade_count_per_required_regime=min_trade_count,
-        required_regimes=tuple(_str_list(value.get("required_regimes"), "required_regimes")),
-        blocked_regimes=tuple(_str_list(value.get("blocked_regimes"), "blocked_regimes")),
+        required_regimes=tuple(
+            _str_list(value.get("required_regimes"), "required_regimes")
+        ),
+        blocked_regimes=tuple(
+            _str_list(value.get("blocked_regimes"), "blocked_regimes")
+        ),
         blocked_regime_max_trade_count=blocked_count,
         blocked_regime_max_net_pnl_loss_krw=_finite_non_negative_float(
             value.get("blocked_regime_max_net_pnl_loss_krw", 0.0),
             "acceptance_gate.regime_acceptance_gate.blocked_regime_max_net_pnl_loss_krw",
         ),
-        min_profit_factor_by_regime=_float_map(value.get("min_profit_factor_by_regime"), "min_profit_factor_by_regime"),
-        min_expectancy_by_regime=_float_map(value.get("min_expectancy_by_regime"), "min_expectancy_by_regime"),
+        min_profit_factor_by_regime=_float_map(
+            value.get("min_profit_factor_by_regime"), "min_profit_factor_by_regime"
+        ),
+        min_expectancy_by_regime=_float_map(
+            value.get("min_expectancy_by_regime"), "min_expectancy_by_regime"
+        ),
         max_loss_share_by_single_regime=(
             None
             if value.get("max_loss_share_by_single_regime") is None
@@ -2983,7 +3538,9 @@ def _str_list(value: Any, field: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ManifestValidationError(f"acceptance_gate.regime_acceptance_gate.{field} must be an array")
+        raise ManifestValidationError(
+            f"acceptance_gate.regime_acceptance_gate.{field} must be an array"
+        )
     return [str(item).strip() for item in value if str(item).strip()]
 
 
@@ -2991,10 +3548,14 @@ def _float_map(value: Any, field: str) -> dict[str, float]:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise ManifestValidationError(f"acceptance_gate.regime_acceptance_gate.{field} must be an object")
+        raise ManifestValidationError(
+            f"acceptance_gate.regime_acceptance_gate.{field} must be an object"
+        )
     out: dict[str, float] = {}
     for key, raw in value.items():
-        out[str(key)] = _finite_non_negative_float(raw, f"acceptance_gate.regime_acceptance_gate.{field}.{key}")
+        out[str(key)] = _finite_non_negative_float(
+            raw, f"acceptance_gate.regime_acceptance_gate.{field}.{key}"
+        )
     return out
 
 
@@ -3004,8 +3565,12 @@ def _parse_walk_forward(value: Any) -> WalkForwardConfig | None:
     if not isinstance(value, dict):
         raise ManifestValidationError("walk_forward must be an object")
     return WalkForwardConfig(
-        train_window_days=_positive_int(value.get("train_window_days"), "walk_forward.train_window_days"),
-        test_window_days=_positive_int(value.get("test_window_days"), "walk_forward.test_window_days"),
+        train_window_days=_positive_int(
+            value.get("train_window_days"), "walk_forward.train_window_days"
+        ),
+        test_window_days=_positive_int(
+            value.get("test_window_days"), "walk_forward.test_window_days"
+        ),
         step_days=_positive_int(value.get("step_days"), "walk_forward.step_days"),
         min_windows=_positive_int(value.get("min_windows"), "walk_forward.min_windows"),
     )
@@ -3028,16 +3593,26 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"research_run unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"research_run unsupported fields: {','.join(unknown)}"
+        )
     report_detail = str(value.get("report_detail") or "summary").strip().lower()
     if report_detail not in {"index", "summary", "standard", "full"}:
-        raise ManifestValidationError("research_run.report_detail must be index, summary, standard, or full")
-    diagnostic_mode = str(value.get("diagnostic_mode") or "candidate_validation").strip().lower()
+        raise ManifestValidationError(
+            "research_run.report_detail must be index, summary, standard, or full"
+        )
+    diagnostic_mode = (
+        str(value.get("diagnostic_mode") or "candidate_validation").strip().lower()
+    )
     if diagnostic_mode not in {"candidate_validation", "exploratory", "profiling"}:
         raise ManifestValidationError(
             "research_run.diagnostic_mode must be exploratory, profiling, or candidate_validation"
         )
-    run_purpose = str(value.get("run_purpose") or "strategy_performance_diagnostic").strip().lower()
+    run_purpose = (
+        str(value.get("run_purpose") or "strategy_performance_diagnostic")
+        .strip()
+        .lower()
+    )
     if run_purpose not in {
         "simulation_integrity_smoke",
         "resource_budget_probe",
@@ -3051,7 +3626,10 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         )
     artifact_policy = _parse_research_artifact_policy(value.get("artifact_policy"))
     audit_trail = _parse_research_audit_trail(value.get("audit_trail"))
-    if artifact_policy.full_decisions_external_jsonl and value.get("audit_trail") is None:
+    if (
+        artifact_policy.full_decisions_external_jsonl
+        and value.get("audit_trail") is None
+    ):
         audit_trail = ResearchAuditTrailPolicy(
             mode="complete_external",
             decisions_required=True,
@@ -3078,9 +3656,13 @@ def _validate_research_run_policy(policy: ResearchRunPolicy) -> None:
     if policy.execution.mode != "parallel":
         return
     if policy.audit_trail.complete_external:
-        raise ManifestValidationError("parallel_execution_complete_external_audit_trail_not_supported")
+        raise ManifestValidationError(
+            "parallel_execution_complete_external_audit_trail_not_supported"
+        )
     if policy.artifact_policy.full_decisions_external_jsonl:
-        raise ManifestValidationError("parallel_execution_full_decisions_external_jsonl_not_supported")
+        raise ManifestValidationError(
+            "parallel_execution_full_decisions_external_jsonl_not_supported"
+        )
 
 
 def _parse_research_artifact_policy(value: Any) -> ResearchArtifactPolicy:
@@ -3088,14 +3670,22 @@ def _parse_research_artifact_policy(value: Any) -> ResearchArtifactPolicy:
         return ResearchArtifactPolicy()
     if not isinstance(value, dict):
         raise ManifestValidationError("research_run.artifact_policy must be an object")
-    allowed_fields = {"candidate_journal", "failed_candidate_evidence", "full_decisions_external_jsonl"}
+    allowed_fields = {
+        "candidate_journal",
+        "failed_candidate_evidence",
+        "full_decisions_external_jsonl",
+    }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"research_run.artifact_policy unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"research_run.artifact_policy unsupported fields: {','.join(unknown)}"
+        )
     return ResearchArtifactPolicy(
         candidate_journal=bool(value.get("candidate_journal", True)),
         failed_candidate_evidence=bool(value.get("failed_candidate_evidence", True)),
-        full_decisions_external_jsonl=bool(value.get("full_decisions_external_jsonl", False)),
+        full_decisions_external_jsonl=bool(
+            value.get("full_decisions_external_jsonl", False)
+        ),
     )
 
 
@@ -3114,10 +3704,14 @@ def _parse_research_audit_trail(value: Any) -> ResearchAuditTrailPolicy:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"research_run.audit_trail unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"research_run.audit_trail unsupported fields: {','.join(unknown)}"
+        )
     mode = str(value.get("mode") or "summary_only").strip().lower()
     if mode not in {"summary_only", "complete_external"}:
-        raise ManifestValidationError("research_run.audit_trail.mode must be summary_only or complete_external")
+        raise ManifestValidationError(
+            "research_run.audit_trail.mode must be summary_only or complete_external"
+        )
     complete = mode == "complete_external"
     return ResearchAuditTrailPolicy(
         mode=mode,
@@ -3150,7 +3744,9 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"research_run.resource_limits unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"research_run.resource_limits unsupported fields: {','.join(unknown)}"
+        )
     return ResearchResourceLimits(
         max_runtime_s_per_candidate_split=_optional_positive_float(
             value.get("max_runtime_s_per_candidate_split", 300.0),
@@ -3160,12 +3756,16 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
             value.get("max_decisions_retained", 0),
             "research_run.resource_limits.max_decisions_retained",
         ),
-        max_trades=_optional_positive_or_zero_int(value.get("max_trades", 5000), "research_run.resource_limits.max_trades"),
+        max_trades=_optional_positive_or_zero_int(
+            value.get("max_trades", 5000), "research_run.resource_limits.max_trades"
+        ),
         max_equity_points_retained=_optional_positive_or_zero_int(
             value.get("max_equity_points_retained", 0),
             "research_run.resource_limits.max_equity_points_retained",
         ),
-        max_rss_mb=_optional_positive_float(value.get("max_rss_mb", 1400.0), "research_run.resource_limits.max_rss_mb"),
+        max_rss_mb=_optional_positive_float(
+            value.get("max_rss_mb", 1400.0), "research_run.resource_limits.max_rss_mb"
+        ),
         max_artifact_bytes=_optional_positive_or_zero_int(
             value.get("max_artifact_bytes", 640 * 1024 * 1024),
             "research_run.resource_limits.max_artifact_bytes",
@@ -3186,7 +3786,9 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
             value.get("max_total_memory_mb"),
             "research_run.resource_limits.max_total_memory_mb",
         ),
-        memory_admission_policy=_memory_admission_policy(value.get("memory_admission_policy", "fail_fast")),
+        memory_admission_policy=_memory_admission_policy(
+            value.get("memory_admission_policy", "fail_fast")
+        ),
     )
 
 
@@ -3198,10 +3800,16 @@ def _parse_research_heartbeat(value: Any) -> ResearchHeartbeatPolicy:
     allowed_fields = {"interval_s", "bar_interval"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"research_run.heartbeat unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"research_run.heartbeat unsupported fields: {','.join(unknown)}"
+        )
     return ResearchHeartbeatPolicy(
-        interval_s=_optional_positive_float(value.get("interval_s", 10.0), "research_run.heartbeat.interval_s"),
-        bar_interval=_optional_positive_or_zero_int(value.get("bar_interval", 10000), "research_run.heartbeat.bar_interval"),
+        interval_s=_optional_positive_float(
+            value.get("interval_s", 10.0), "research_run.heartbeat.interval_s"
+        ),
+        bar_interval=_optional_positive_or_zero_int(
+            value.get("bar_interval", 10000), "research_run.heartbeat.bar_interval"
+        ),
     )
 
 
@@ -3210,19 +3818,36 @@ def _parse_research_execution(value: Any) -> ResearchExecutionPolicy:
         return ResearchExecutionPolicy()
     if not isinstance(value, dict):
         raise ManifestValidationError("research_run.execution must be an object")
-    allowed_fields = {"mode", "max_workers", "process_start_method", "work_unit", "deterministic_merge_order", "resume"}
+    allowed_fields = {
+        "mode",
+        "max_workers",
+        "process_start_method",
+        "work_unit",
+        "deterministic_merge_order",
+        "resume",
+    }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise ManifestValidationError(f"research_run.execution unsupported fields: {','.join(unknown)}")
+        raise ManifestValidationError(
+            f"research_run.execution unsupported fields: {','.join(unknown)}"
+        )
     mode = str(value.get("mode") or "serial").strip().lower()
     if mode not in {"serial", "parallel"}:
-        raise ManifestValidationError("research_run.execution.mode must be one of: serial, parallel")
-    max_workers = _positive_int(value.get("max_workers", 1), "research_run.execution.max_workers")
+        raise ManifestValidationError(
+            "research_run.execution.mode must be one of: serial, parallel"
+        )
+    max_workers = _positive_int(
+        value.get("max_workers", 1), "research_run.execution.max_workers"
+    )
     if mode == "serial" and max_workers != 1:
-        raise ManifestValidationError("serial execution currently supports only max_workers=1")
+        raise ManifestValidationError(
+            "serial execution currently supports only max_workers=1"
+        )
     if mode == "parallel" and max_workers < 2:
         raise ManifestValidationError("parallel execution requires max_workers>=2")
-    process_start_method = str(value.get("process_start_method") or "auto_safe").strip().lower()
+    process_start_method = (
+        str(value.get("process_start_method") or "auto_safe").strip().lower()
+    )
     if process_start_method not in ALLOWED_RESEARCH_START_METHODS:
         raise ManifestValidationError(
             "research_run.execution.process_start_method must be one of: "
@@ -3230,14 +3855,17 @@ def _parse_research_execution(value: Any) -> ResearchExecutionPolicy:
         )
     resume = bool(value.get("resume", False))
     if resume:
-        raise ManifestValidationError("research_run.execution.resume is not supported yet")
+        raise ManifestValidationError(
+            "research_run.execution.resume is not supported yet"
+        )
     work_unit = str(value.get("work_unit") or "candidate_scenario").strip().lower()
     if work_unit not in {"candidate_scenario", "candidate_scenario_split"}:
         raise ManifestValidationError(
             "research_run.execution.work_unit must be candidate_scenario or candidate_scenario_split"
         )
     deterministic_merge_order = str(
-        value.get("deterministic_merge_order") or "scenario_index,candidate_index,split_name"
+        value.get("deterministic_merge_order")
+        or "scenario_index,candidate_index,split_name"
     ).strip()
     if deterministic_merge_order != "scenario_index,candidate_index,split_name":
         raise ManifestValidationError(
@@ -3255,7 +3883,9 @@ def _parse_research_execution(value: Any) -> ResearchExecutionPolicy:
 
 def _manifest_input_provenance(payload: dict[str, Any]) -> ManifestInputProvenance:
     research_run = payload.get("research_run")
-    execution = research_run.get("execution") if isinstance(research_run, dict) else None
+    execution = (
+        research_run.get("execution") if isinstance(research_run, dict) else None
+    )
     execution_payload = execution if isinstance(execution, dict) else {}
     return ManifestInputProvenance(
         research_run=ResearchRunInputProvenance(
@@ -3263,7 +3893,8 @@ def _manifest_input_provenance(payload: dict[str, Any]) -> ManifestInputProvenan
                 mode_declared="mode" in execution_payload,
                 max_workers_declared="max_workers" in execution_payload,
                 work_unit_declared="work_unit" in execution_payload,
-                process_start_method_declared="process_start_method" in execution_payload,
+                process_start_method_declared="process_start_method"
+                in execution_payload,
             )
         )
     )
@@ -3271,9 +3902,16 @@ def _manifest_input_provenance(payload: dict[str, Any]) -> ManifestInputProvenan
 
 def _validate_split_order(split: DatasetSplit) -> None:
     if split.train.end_ts_ms() >= split.validation.start_ts_ms():
-        raise ManifestValidationError("dataset.train must end before dataset.validation starts")
-    if split.final_holdout is not None and split.validation.end_ts_ms() >= split.final_holdout.start_ts_ms():
-        raise ManifestValidationError("dataset.validation must end before dataset.final_holdout starts")
+        raise ManifestValidationError(
+            "dataset.train must end before dataset.validation starts"
+        )
+    if (
+        split.final_holdout is not None
+        and split.validation.end_ts_ms() >= split.final_holdout.start_ts_ms()
+    ):
+        raise ManifestValidationError(
+            "dataset.validation must end before dataset.final_holdout starts"
+        )
 
 
 def _date_start_ts_ms(value: str) -> int:
@@ -3288,7 +3926,9 @@ def _parse_date(value: str) -> datetime:
     try:
         return datetime.strptime(value, "%Y-%m-%d")
     except ValueError as exc:
-        raise ManifestValidationError(f"invalid date {value!r}; expected YYYY-MM-DD") from exc
+        raise ManifestValidationError(
+            f"invalid date {value!r}; expected YYYY-MM-DD"
+        ) from exc
 
 
 def _finite_non_negative_float(value: Any, field: str) -> float:

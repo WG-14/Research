@@ -37,7 +37,10 @@ def run_research_batch(
 ) -> ResearchBatchResult:
     if command != "research-backtest":
         raise ValueError("research_batch_supports_research_backtest_only")
-    manifest_paths = [Path(path).expanduser().resolve() for path in sorted(glob.glob(str(manifest_glob)))]
+    manifest_paths = [
+        Path(path).expanduser().resolve()
+        for path in sorted(glob.glob(str(manifest_glob)))
+    ]
     if not manifest_paths:
         raise ValueError("research_batch_manifest_glob_matched_no_files")
     manifests = [
@@ -51,14 +54,19 @@ def run_research_batch(
             duplicates.append(manifest.experiment_id)
         experiment_ids[manifest.experiment_id] = path
     if duplicates:
-        raise ValueError("research_batch_duplicate_experiment_ids:" + ",".join(sorted(set(duplicates))))
+        raise ValueError(
+            "research_batch_duplicate_experiment_ids:"
+            + ",".join(sorted(set(duplicates)))
+        )
 
     max_concurrent = max(1, int(max_concurrent_manifests))
     summary_path = _batch_summary_path(manager=manager, out_path=out_path)
     batch_root = summary_path.parent / f"{summary_path.stem}_logs"
     _ensure_allowed(manager, batch_root)
     started = time.perf_counter()
-    batch_resource_budget = allocate_batch_child_process_budget(max_concurrent_manifests=max_concurrent)
+    batch_resource_budget = allocate_batch_child_process_budget(
+        max_concurrent_manifests=max_concurrent
+    )
     statuses: list[dict[str, Any]] = []
     failed = False
 
@@ -106,7 +114,9 @@ def run_research_batch(
         "fail_fast": bool(fail_fast),
         "process_model": "subprocess",
         "batch_resource_budget": batch_resource_budget,
-        "status": "failed" if any(item["status"] != "succeeded" for item in statuses) else "succeeded",
+        "status": "failed"
+        if any(item["status"] != "succeeded" for item in statuses)
+        else "succeeded",
         "elapsed_s": round(time.perf_counter() - started, 6),
         "manifest_count": len(manifests),
         "manifests": sorted(statuses, key=lambda item: item["manifest_path"]),
@@ -153,7 +163,9 @@ def _run_one_manifest(
     child_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    report_path = research_paths(manager, manifest.experiment_id, "backtest").report_path
+    report_path = research_paths(
+        manager, manifest.experiment_id, "backtest"
+    ).report_path
     log_path = log_dir / f"{_safe_name(manifest.experiment_id)}.log"
     _ensure_allowed(manager, log_path)
     cmd = [
@@ -172,7 +184,12 @@ def _run_one_manifest(
     )
     write_text_atomic(
         log_path,
-        "COMMAND " + " ".join(cmd) + "\n\nSTDOUT\n" + completed.stdout + "\nSTDERR\n" + completed.stderr,
+        "COMMAND "
+        + " ".join(cmd)
+        + "\n\nSTDOUT\n"
+        + completed.stdout
+        + "\nSTDERR\n"
+        + completed.stderr,
     )
     return {
         "manifest_path": str(path),
@@ -182,11 +199,15 @@ def _run_one_manifest(
         "elapsed_s": round(time.perf_counter() - started, 6),
         "report_path": str(report_path.resolve()),
         "log_path": str(log_path.resolve()),
-        "failure_reason": None if completed.returncode == 0 else "subprocess_exit_nonzero",
+        "failure_reason": None
+        if completed.returncode == 0
+        else "subprocess_exit_nonzero",
     }
 
 
-def allocate_batch_child_process_budget(*, max_concurrent_manifests: int) -> dict[str, Any]:
+def allocate_batch_child_process_budget(
+    *, max_concurrent_manifests: int
+) -> dict[str, Any]:
     max_concurrent = max(1, int(max_concurrent_manifests))
     contract = detect_resource_contract()
     total_budget = contract.total_process_budget or contract.cpu_limit
@@ -227,9 +248,13 @@ def _batch_summary_path(*, manager: Any, out_path: str | Path | None) -> Path:
 def _ensure_allowed(manager: Any, path: Path) -> None:
     resolved = path.resolve()
     if _is_within(resolved, manager.project_root.resolve()):
-        raise ValueError(f"research batch artifact must be outside repository: {resolved}")
+        raise ValueError(
+            f"research batch artifact must be outside repository: {resolved}"
+        )
     if not _is_within(resolved, manager.report_root.resolve()):
-        raise ValueError(f"research batch report must be under research report root: {resolved}")
+        raise ValueError(
+            f"research batch report must be under research report root: {resolved}"
+        )
 
 
 def _research_cli_environment(manager: Any) -> dict[str, str]:
@@ -255,4 +280,7 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 
 def _safe_name(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(value or "unknown"))[:128]
+    return "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "_"
+        for ch in str(value or "unknown")
+    )[:128]

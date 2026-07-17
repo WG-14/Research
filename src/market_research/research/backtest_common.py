@@ -7,7 +7,11 @@ from .hashing import canonical_payload_hash
 from .dataset_snapshot import DatasetSnapshot
 from .execution_model import ExecutionFill, ExecutionModel, model_params_hash
 from .execution_timing import ExecutionReferenceEvent, SignalEvent
-from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from .experiment_manifest import (
+    ExecutionTimingPolicy,
+    PortfolioPolicy,
+    legacy_research_portfolio_policy,
+)
 from .metrics import ResearchMetrics
 from .metrics_contract import (
     ClosedTradeRecord,
@@ -23,7 +27,12 @@ from .streaming_evidence import StreamingEvidenceDigest
 
 
 def _research_position_authority_snapshot(
-    *, qty: float, sellable_qty: float, order_rules_hash: str, fee_authority_hash: str, position_state_hash: str
+    *,
+    qty: float,
+    sellable_qty: float,
+    order_rules_hash: str,
+    fee_authority_hash: str,
+    position_state_hash: str,
 ) -> object:
     flat = float(qty) <= 0.0 and float(sellable_qty) <= 0.0
     payload = {
@@ -42,8 +51,12 @@ def _research_position_authority_snapshot(
         "order_rules_hash": order_rules_hash,
         "fee_authority_hash": fee_authority_hash,
         "position_state_hash": position_state_hash,
-        "state_class": "flat_no_dust_no_position" if flat else "research_model_lacks_lot_native_authority",
-        "unsupported_reason": "" if flat else "research_model_lacks_lot_native_authority",
+        "state_class": "flat_no_dust_no_position"
+        if flat
+        else "research_model_lacks_lot_native_authority",
+        "unsupported_reason": ""
+        if flat
+        else "research_model_lacks_lot_native_authority",
         "research_position_model": "cash_qty_simulation_v1",
     }
 
@@ -51,10 +64,12 @@ def _research_position_authority_snapshot(
         def __init__(self, value: dict[str, object]) -> None:
             self.position_state_hash = str(value["position_state_hash"])
             self._value = value
+
         def as_dict(self) -> dict[str, object]:
             return dict(self._value)
 
     return Snapshot(payload)
+
 
 def _create_exit_rules(**kwargs: Any):
     # Keep this local to avoid config -> research_profile -> research -> strategy -> config imports.
@@ -97,7 +112,9 @@ def _retained_detail_summary(
 
 
 def _trade_hash_payload(trade: dict[str, object]) -> dict[str, object]:
-    execution = trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
+    execution = (
+        trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
+    )
     return {
         "ts": trade.get("ts"),
         "side": trade.get("side"),
@@ -141,14 +158,20 @@ def _behavior_hashes(
     trade_material: list[dict[str, object]],
     equity_material: list[dict[str, object]],
 ) -> dict[str, object]:
-    decision_final = _finalize_behavior_material(decision_material, label="behavior_hash_material")
+    decision_final = _finalize_behavior_material(
+        decision_material, label="behavior_hash_material"
+    )
     common_final = (
-        _finalize_behavior_material(common_decision_material, label="common_behavior_hash_material")
+        _finalize_behavior_material(
+            common_decision_material, label="common_behavior_hash_material"
+        )
         if common_decision_material is not None
         else StreamingEvidenceDigest("empty_common_behavior_hash_material").finalize()
     )
     strategy_final = (
-        _finalize_behavior_material(strategy_decision_material, label="strategy_behavior_hash_material")
+        _finalize_behavior_material(
+            strategy_decision_material, label="strategy_behavior_hash_material"
+        )
         if strategy_decision_material is not None
         else StreamingEvidenceDigest("empty_strategy_behavior_hash_material").finalize()
     )
@@ -184,7 +207,9 @@ def _behavior_hashes(
         "behavior_hash_material_count": int(decision_final["count"]),
         "common_behavior_hash_material_count": int(common_final["count"]),
         "strategy_behavior_hash_material_count": int(strategy_final["count"]),
-        "behavior_hash_material_retention_policy": str(decision_final["retention_policy"]),
+        "behavior_hash_material_retention_policy": str(
+            decision_final["retention_policy"]
+        ),
         "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
         "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
     }
@@ -250,7 +275,9 @@ def _trace_lineage_event(
         writer(dict(payload))
 
 
-def _complete_audit_trace(context: BacktestRunContext, *, status: str) -> dict[str, object] | None:
+def _complete_audit_trace(
+    context: BacktestRunContext, *, status: str
+) -> dict[str, object] | None:
     sink = context.audit_trace
     if sink is None:
         return None
@@ -284,7 +311,9 @@ def _record_equity_mark(
     return peak, max_drawdown
 
 
-def _fill_applies_to_mark(*, fill: Any, effective_ts: int, mark_boundary_ts: int) -> bool:
+def _fill_applies_to_mark(
+    *, fill: Any, effective_ts: int, mark_boundary_ts: int
+) -> bool:
     if int(effective_ts) < int(mark_boundary_ts):
         return True
     if int(effective_ts) > int(mark_boundary_ts):
@@ -436,7 +465,9 @@ def _research_decision_payload(
         slippage_bps=slippage_bps,
         portfolio_policy=portfolio_policy,
     )
-    fee_authority_hash = str(fee_authority_hash or "").strip() or canonical_payload_hash(
+    fee_authority_hash = str(
+        fee_authority_hash or ""
+    ).strip() or canonical_payload_hash(
         {"source": "research_manifest", "fee_rate": float(fee_rate)},
         label="full_payload_fee_authority_fallback",
     )
@@ -448,20 +479,28 @@ def _research_decision_payload(
         {"fee_rate": float(fee_rate)},
         label="full_payload_fee_model_fallback",
     )
-    slippage_model_hash = str(slippage_model_hash or "").strip() or canonical_payload_hash(
+    slippage_model_hash = str(
+        slippage_model_hash or ""
+    ).strip() or canonical_payload_hash(
         {"slippage_bps": float(slippage_bps)},
         label="full_payload_slippage_model_fallback",
     )
-    execution_timing_policy_hash = str(execution_timing_policy_hash or "").strip() or canonical_payload_hash(
+    execution_timing_policy_hash = str(
+        execution_timing_policy_hash or ""
+    ).strip() or canonical_payload_hash(
         timing_policy.as_dict(),
         label="full_payload_execution_timing_policy_fallback",
     )
     portfolio_policy_hash = portfolio_policy.policy_hash()
-    parameter_values_hash = str(parameter_values_hash or "").strip() or canonical_payload_hash(
+    parameter_values_hash = str(
+        parameter_values_hash or ""
+    ).strip() or canonical_payload_hash(
         parameter_values,
         label="full_payload_parameter_values_fallback",
     )
-    candidate_profile_hash = str(candidate_profile_hash or "").strip() or canonical_payload_hash(
+    candidate_profile_hash = str(
+        candidate_profile_hash or ""
+    ).strip() or canonical_payload_hash(
         {
             "strategy_name": str(strategy_name),
             "parameter_values": parameter_values,
@@ -543,8 +582,13 @@ def _research_decision_payload(
         "order_rules_hash": order_rules_hash,
         "market_regime": str(regime_snapshot.get("composite_regime") or ""),
         "current_market_regime_snapshot": regime_snapshot,
-        "current_regime": str(market_regime_decision.get("current_regime") or regime_snapshot.get("composite_regime") or ""),
-        "regime_decision": market_regime_decision.get("regime_decision") or "not_configured",
+        "current_regime": str(
+            market_regime_decision.get("current_regime")
+            or regime_snapshot.get("composite_regime")
+            or ""
+        ),
+        "regime_decision": market_regime_decision.get("regime_decision")
+        or "not_configured",
         "regime_block_reason": market_regime_decision.get("regime_block_reason") or "",
         "market_regime_blocked": bool(market_regime_blocked),
         "candidate_regime_blocked": bool(candidate_regime_blocked),
@@ -615,7 +659,11 @@ def _failed_fill(
     requested_notional: float | None = None,
 ) -> ExecutionFill:
     request_qty = float(requested_qty or 0.0)
-    if request_qty <= 0.0 and requested_notional is not None and signal.signal_reference_price > 0:
+    if (
+        request_qty <= 0.0
+        and requested_notional is not None
+        and signal.signal_reference_price > 0
+    ):
         request_qty = float(requested_notional) / float(signal.signal_reference_price)
     return ExecutionFill(
         signal_ts=signal.signal_candle_start_ts,
@@ -654,7 +702,9 @@ def _failed_fill(
         depth_sufficient=False,
         queue_position_mode="unavailable",
         market_impact_mode="unavailable",
-        execution_liquidity_evidence_type="top_of_book_quote_only" if reference.quote_ts is not None else "candle_only",
+        execution_liquidity_evidence_type="top_of_book_quote_only"
+        if reference.quote_ts is not None
+        else "candle_only",
         execution_realism_limitations=(
             "full_orderbook_depth_unavailable",
             "queue_position_unavailable",
@@ -741,7 +791,9 @@ def _trade_from_fill(
     trade = _trade(
         fill.signal_ts,
         fill.side,
-        float(fill.avg_fill_price) if fill.avg_fill_price is not None else float(fill.reference_price),
+        float(fill.avg_fill_price)
+        if fill.avg_fill_price is not None
+        else float(fill.reference_price),
         float(fill.filled_qty),
         float(fill.fee),
         cash,
@@ -763,11 +815,15 @@ def _trade_from_fill(
     trade["execution"] = fill.as_dict()
     _annotate_execution_record_type(trade, fill)
     trade["portfolio_effective_ts"] = fill.fill_reference_ts
-    _annotate_portfolio_application(trade, fill, portfolio_applied=bool(trade["is_execution_filled"]))
+    _annotate_portfolio_application(
+        trade, fill, portfolio_applied=bool(trade["is_execution_filled"])
+    )
     return trade
 
 
-def _pending_trade_from_fill(fill: Any, *, cash: float, asset_qty: float) -> dict[str, object]:
+def _pending_trade_from_fill(
+    fill: Any, *, cash: float, asset_qty: float
+) -> dict[str, object]:
     trade = _trade_from_fill(fill, cash=cash, asset_qty=asset_qty, pnl=None)
     trade["portfolio_effective_ts"] = _fill_effective_ts(fill)
     _annotate_portfolio_application(trade, fill, portfolio_applied=False)
@@ -786,8 +842,16 @@ def _mark_trade_applied(
     fee_total: float | None,
     slippage_total: float | None,
 ) -> None:
-    entry_regime = entry_regime_snapshot.get("composite_regime") if entry_regime_snapshot is not None else None
-    exit_regime = exit_regime_snapshot.get("composite_regime") if exit_regime_snapshot is not None else None
+    entry_regime = (
+        entry_regime_snapshot.get("composite_regime")
+        if entry_regime_snapshot is not None
+        else None
+    )
+    exit_regime = (
+        exit_regime_snapshot.get("composite_regime")
+        if exit_regime_snapshot is not None
+        else None
+    )
     trade.update(
         {
             "cash": float(cash),
@@ -802,7 +866,9 @@ def _mark_trade_applied(
             "exit_regime_snapshot": exit_regime_snapshot,
         }
     )
-    _annotate_portfolio_application(trade, trade.get("execution") or {}, portfolio_applied=True)
+    _annotate_portfolio_application(
+        trade, trade.get("execution") or {}, portfolio_applied=True
+    )
 
 
 def _fill_effective_ts(fill: Any) -> int:
@@ -813,7 +879,10 @@ def _fill_effective_ts(fill: Any) -> int:
 
 def _annotate_execution_record_type(trade: dict[str, object], fill: Any) -> None:
     status = str(getattr(fill, "fill_status", ""))
-    is_filled = float(getattr(fill, "filled_qty", 0.0) or 0.0) > 0.0 and status in {"filled", "partial"}
+    is_filled = float(getattr(fill, "filled_qty", 0.0) or 0.0) > 0.0 and status in {
+        "filled",
+        "partial",
+    }
     is_skipped = status in {"skipped", "skipped_with_warning"}
     is_failed = status == "failed"
     if is_skipped:
@@ -891,19 +960,26 @@ def _mark_pending_fills_at_end(
     for pending in pending_fills:
         trade = trades[pending.trade_index]
         trade["pending_execution_at_end"] = True
-        trade["pending_execution_after_dataset_end"] = int(pending.effective_ts) > int(final_mark_ts)
+        trade["pending_execution_after_dataset_end"] = int(pending.effective_ts) > int(
+            final_mark_ts
+        )
         trade["dataset_final_mark_ts"] = int(final_mark_ts)
 
 
 def execution_event_summary(trades: Any) -> dict[str, object]:
     rows = [trade for trade in trades if isinstance(trade, dict)]
     attempts = [trade for trade in rows if bool(trade.get("is_execution_attempt"))]
-    execution_filled = [trade for trade in rows if bool(trade.get("is_execution_filled"))]
-    portfolio_applied = [trade for trade in rows if bool(trade.get("is_portfolio_applied_trade"))]
+    execution_filled = [
+        trade for trade in rows if bool(trade.get("is_execution_filled"))
+    ]
+    portfolio_applied = [
+        trade for trade in rows if bool(trade.get("is_portfolio_applied_trade"))
+    ]
     pending = [
         trade
         for trade in rows
-        if bool(trade.get("is_execution_filled")) and not bool(trade.get("is_portfolio_applied_trade"))
+        if bool(trade.get("is_execution_filled"))
+        and not bool(trade.get("is_portfolio_applied_trade"))
     ]
     skipped = [trade for trade in rows if bool(trade.get("is_skipped_execution"))]
     failed = [trade for trade in rows if bool(trade.get("is_failed_execution"))]
@@ -912,8 +988,14 @@ def execution_event_summary(trades: Any) -> dict[str, object]:
         for trade in portfolio_applied
         if str(trade.get("side") or "").upper() == "SELL"
     ]
-    pending_at_end = [trade for trade in pending if bool(trade.get("pending_execution_at_end"))]
-    pending_after_end = [trade for trade in pending if bool(trade.get("pending_execution_after_dataset_end"))]
+    pending_at_end = [
+        trade for trade in pending if bool(trade.get("pending_execution_at_end"))
+    ]
+    pending_after_end = [
+        trade
+        for trade in pending
+        if bool(trade.get("pending_execution_after_dataset_end"))
+    ]
     return {
         "execution_attempt_count": len(attempts),
         "execution_filled_count": len(execution_filled),
@@ -980,8 +1062,16 @@ def _strategy_diagnostics_from_trades(
             mae_pct_by_trade.append(float(trade.get("mae_pct") or 0.0))
         if trade.get("mfe_pct") is not None:
             mfe_pct_by_trade.append(float(trade.get("mfe_pct") or 0.0))
-        pnl = trade.get("net_pnl") if trade.get("net_pnl") is not None else trade.get("closed_trade_pnl")
-        if pnl is not None and float(pnl) < 0.0 and trade.get("holding_minutes") is not None:
+        pnl = (
+            trade.get("net_pnl")
+            if trade.get("net_pnl") is not None
+            else trade.get("closed_trade_pnl")
+        )
+        if (
+            pnl is not None
+            and float(pnl) < 0.0
+            and trade.get("holding_minutes") is not None
+        ):
             loss_holding_minutes.append(float(trade.get("holding_minutes") or 0.0))
     payload = {
         "schema_version": 1,
@@ -1011,7 +1101,9 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
     ordered = sorted(float(value) for value in values)
-    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * float(percentile)))))
+    index = min(
+        len(ordered) - 1, max(0, int(round((len(ordered) - 1) * float(percentile))))
+    )
     return ordered[index]
 
 
@@ -1019,8 +1111,14 @@ def empty_execution_event_summary() -> dict[str, object]:
     return execution_event_summary(())
 
 
-def _empty_metrics_v2(*, starting_cash: float | None = None, initial_position_qty: float = 0.0) -> MetricContractV2:
-    cash = float(starting_cash if starting_cash is not None else legacy_research_portfolio_policy().starting_cash_krw)
+def _empty_metrics_v2(
+    *, starting_cash: float | None = None, initial_position_qty: float = 0.0
+) -> MetricContractV2:
+    cash = float(
+        starting_cash
+        if starting_cash is not None
+        else legacy_research_portfolio_policy().starting_cash_krw
+    )
     return build_metrics_v2(
         starting_cash=cash,
         final_cash=cash,
@@ -1036,12 +1134,30 @@ def _empty_metrics_v2(*, starting_cash: float | None = None, initial_position_qt
 def _metrics_v2_ledgers_from_trades(
     *,
     trades: list[dict[str, object]],
-) -> tuple[tuple[PositionInterval, ...], tuple[ClosedTradeRecord, ...], tuple[ExecutionRecord, ...], float]:
-    execution_records = tuple(_execution_record_from_trade(trade) for trade in trades if isinstance(trade, dict))
+) -> tuple[
+    tuple[PositionInterval, ...],
+    tuple[ClosedTradeRecord, ...],
+    tuple[ExecutionRecord, ...],
+    float,
+]:
+    execution_records = tuple(
+        _execution_record_from_trade(trade)
+        for trade in trades
+        if isinstance(trade, dict)
+    )
     applied = sorted(
-        [trade for trade in trades if isinstance(trade, dict) and bool(trade.get("is_portfolio_applied_trade"))],
+        [
+            trade
+            for trade in trades
+            if isinstance(trade, dict) and bool(trade.get("is_portfolio_applied_trade"))
+        ],
         key=lambda trade: (
-            int(trade.get("portfolio_effective_ts") or trade.get("fill_ts") or trade.get("ts") or 0),
+            int(
+                trade.get("portfolio_effective_ts")
+                or trade.get("fill_ts")
+                or trade.get("ts")
+                or 0
+            ),
             str(trade.get("side") or ""),
         ),
     )
@@ -1052,7 +1168,12 @@ def _metrics_v2_ledgers_from_trades(
     open_cost_basis = 0.0
     for trade in applied:
         side = str(trade.get("side") or "").upper()
-        ts = int(trade.get("portfolio_effective_ts") or trade.get("fill_ts") or trade.get("ts") or 0)
+        ts = int(
+            trade.get("portfolio_effective_ts")
+            or trade.get("fill_ts")
+            or trade.get("ts")
+            or 0
+        )
         qty = float(trade.get("qty") or 0.0)
         price = float(trade.get("price") or 0.0)
         fee = float(trade.get("fee") or 0.0)
@@ -1065,15 +1186,23 @@ def _metrics_v2_ledgers_from_trades(
         elif side == "SELL" and qty > 0.0:
             basis_fraction = min(1.0, qty / open_qty) if open_qty > 1e-12 else 0.0
             allocated_basis = open_cost_basis * basis_fraction
-            pnl = trade.get("net_pnl") if trade.get("net_pnl") is not None else trade.get("closed_trade_pnl")
+            pnl = (
+                trade.get("net_pnl")
+                if trade.get("net_pnl") is not None
+                else trade.get("closed_trade_pnl")
+            )
             if pnl is not None:
                 closed.append(
                     ClosedTradeRecord(
                         entry_ts=open_ts,
                         exit_ts=ts,
-                        entry_notional=allocated_basis if allocated_basis > 0.0 else None,
+                        entry_notional=allocated_basis
+                        if allocated_basis > 0.0
+                        else None,
                         net_pnl=float(pnl),
-                        return_pct=(float(pnl) / allocated_basis * 100.0) if allocated_basis > 0.0 else None,
+                        return_pct=(float(pnl) / allocated_basis * 100.0)
+                        if allocated_basis > 0.0
+                        else None,
                         holding_minutes=(
                             float(trade.get("holding_minutes"))
                             if trade.get("holding_minutes") is not None
@@ -1100,15 +1229,27 @@ def _metrics_v2_ledgers_from_trades(
                             else None
                         ),
                         exit_rule=(
-                            str(trade.get("exit_rule")) if trade.get("exit_rule") is not None else None
+                            str(trade.get("exit_rule"))
+                            if trade.get("exit_rule") is not None
+                            else None
                         ),
                         exit_reason=(
-                            str(trade.get("exit_reason")) if trade.get("exit_reason") is not None else None
+                            str(trade.get("exit_reason"))
+                            if trade.get("exit_reason") is not None
+                            else None
                         ),
-                        mae=float(trade.get("mae")) if trade.get("mae") is not None else None,
-                        mfe=float(trade.get("mfe")) if trade.get("mfe") is not None else None,
-                        mae_pct=float(trade.get("mae_pct")) if trade.get("mae_pct") is not None else None,
-                        mfe_pct=float(trade.get("mfe_pct")) if trade.get("mfe_pct") is not None else None,
+                        mae=float(trade.get("mae"))
+                        if trade.get("mae") is not None
+                        else None,
+                        mfe=float(trade.get("mfe"))
+                        if trade.get("mfe") is not None
+                        else None,
+                        mae_pct=float(trade.get("mae_pct"))
+                        if trade.get("mae_pct") is not None
+                        else None,
+                        mfe_pct=float(trade.get("mfe_pct"))
+                        if trade.get("mfe_pct") is not None
+                        else None,
                         bars_to_mae=(
                             int(trade.get("bars_to_mae"))
                             if trade.get("bars_to_mae") is not None
@@ -1121,7 +1262,9 @@ def _metrics_v2_ledgers_from_trades(
                         ),
                         unrealized_pnl_path_summary=(
                             dict(trade.get("unrealized_pnl_path_summary"))
-                            if isinstance(trade.get("unrealized_pnl_path_summary"), dict)
+                            if isinstance(
+                                trade.get("unrealized_pnl_path_summary"), dict
+                            )
                             else None
                         ),
                         entry_feature_schema_version=(
@@ -1161,7 +1304,9 @@ def _metrics_v2_ledgers_from_trades(
 
 
 def _execution_record_from_trade(trade: dict[str, object]) -> ExecutionRecord:
-    execution = trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
+    execution = (
+        trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
+    )
     assert isinstance(execution, dict)
     return ExecutionRecord(
         side=str(trade.get("side") or execution.get("side") or ""),
@@ -1174,21 +1319,34 @@ def _execution_record_from_trade(trade: dict[str, object]) -> ExecutionRecord:
         ),
         fee=float(execution.get("fee") or trade.get("fee") or 0.0),
         slippage=float(_trade_execution_slippage(trade)),
-        quote_age_ms=int(execution["quote_age_ms"]) if execution.get("quote_age_ms") is not None else None,
+        quote_age_ms=int(execution["quote_age_ms"])
+        if execution.get("quote_age_ms") is not None
+        else None,
         ts=(
             int(execution.get("fill_reference_ts"))
             if execution.get("fill_reference_ts") is not None
-            else int(trade.get("fill_ts") or trade.get("portfolio_effective_ts") or trade.get("ts") or 0)
+            else int(
+                trade.get("fill_ts")
+                or trade.get("portfolio_effective_ts")
+                or trade.get("ts")
+                or 0
+            )
         ),
         entry_signal_source=(
-            str(trade.get("entry_signal_source") or execution.get("entry_signal_source") or "")
+            str(
+                trade.get("entry_signal_source")
+                or execution.get("entry_signal_source")
+                or ""
+            )
             or None
         ),
     )
 
 
 def _trade_execution_slippage(trade: dict[str, object]) -> float:
-    execution = trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
+    execution = (
+        trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
+    )
     assert isinstance(execution, dict)
     status = str(execution.get("fill_status") or "")
     if status not in {"filled", "partial"}:
@@ -1222,8 +1380,12 @@ def _closed_trade_diagnostics(
     exit_decision_hash: str,
 ) -> dict[str, object]:
     points = list(path)
-    mae_point = min(points, key=lambda item: float(item.get("unrealized_pnl", 0.0)), default=None)
-    mfe_point = max(points, key=lambda item: float(item.get("unrealized_pnl", 0.0)), default=None)
+    mae_point = min(
+        points, key=lambda item: float(item.get("unrealized_pnl", 0.0)), default=None
+    )
+    mfe_point = max(
+        points, key=lambda item: float(item.get("unrealized_pnl", 0.0)), default=None
+    )
     entry_ts_int = int(entry_ts) if entry_ts is not None else None
     holding_minutes = (
         max(0.0, (int(exit_ts) - int(entry_ts_int)) / 60_000.0)
@@ -1236,14 +1398,20 @@ def _closed_trade_diagnostics(
         "holding_minutes": holding_minutes,
         "entry_price": float(entry_price) if entry_price is not None else None,
         "exit_price": float(exit_price),
-        "entry_regime": _regime_snapshot_value(entry_regime_snapshot, "composite_regime"),
+        "entry_regime": _regime_snapshot_value(
+            entry_regime_snapshot, "composite_regime"
+        ),
         "exit_regime": _regime_snapshot_value(exit_regime_snapshot, "composite_regime"),
         "exit_rule": str(exit_rule or "unknown"),
         "exit_reason": str(exit_reason or "unknown"),
         "mae": float(mae_point.get("unrealized_pnl", 0.0)) if mae_point else 0.0,
         "mfe": float(mfe_point.get("unrealized_pnl", 0.0)) if mfe_point else 0.0,
-        "mae_pct": float(mae_point.get("unrealized_pnl_pct", 0.0)) if mae_point else 0.0,
-        "mfe_pct": float(mfe_point.get("unrealized_pnl_pct", 0.0)) if mfe_point else 0.0,
+        "mae_pct": float(mae_point.get("unrealized_pnl_pct", 0.0))
+        if mae_point
+        else 0.0,
+        "mfe_pct": float(mfe_point.get("unrealized_pnl_pct", 0.0))
+        if mfe_point
+        else 0.0,
         "bars_to_mae": points.index(mae_point) if mae_point in points else None,
         "bars_to_mfe": points.index(mfe_point) if mfe_point in points else None,
         "unrealized_pnl_path_summary": {
@@ -1254,13 +1422,17 @@ def _closed_trade_diagnostics(
             "mfe_point": mfe_point,
         },
         "entry_feature_schema_version": 1,
-        "entry_feature_snapshot": _closed_trade_entry_feature_snapshot(entry_feature_snapshot),
+        "entry_feature_snapshot": _closed_trade_entry_feature_snapshot(
+            entry_feature_snapshot
+        ),
         "entry_decision_hash": str(entry_decision_hash or ""),
         "exit_decision_hash": str(exit_decision_hash or ""),
     }
 
 
-def _closed_trade_entry_feature_snapshot(raw: dict[str, object] | None) -> dict[str, object]:
+def _closed_trade_entry_feature_snapshot(
+    raw: dict[str, object] | None,
+) -> dict[str, object]:
     snapshot = dict(raw or {})
     feature: dict[str, object] = {"schema_version": 1}
     mapping = {
@@ -1289,7 +1461,10 @@ def _closed_trade_entry_feature_snapshot(raw: dict[str, object] | None) -> dict[
 
 def _execution_reference_warnings(fill: Any) -> list[str]:
     warnings: list[str] = []
-    if getattr(fill, "execution_reference_failure_reason", None) == "missing_quote_warning":
+    if (
+        getattr(fill, "execution_reference_failure_reason", None)
+        == "missing_quote_warning"
+    ):
         warnings.append("missing_quote_warning")
     if getattr(fill, "latency_reference_policy_warning", None):
         warnings.append(str(fill.latency_reference_policy_warning))
@@ -1339,7 +1514,9 @@ def _metrics(
         fee_total=float(fee_total),
         slippage_total=float(slippage_total),
         max_consecutive_losses=_max_consecutive_losses(closed_pnls),
-        single_trade_dependency_score=(largest_abs / total_abs) if total_abs > 0.0 else None,
+        single_trade_dependency_score=(largest_abs / total_abs)
+        if total_abs > 0.0
+        else None,
         parameter_stability_score=parameter_stability_score,
         profit_factor_unbounded=profit_factor_unbounded,
     )

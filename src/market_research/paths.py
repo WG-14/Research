@@ -12,10 +12,17 @@ class ResearchPathError(ValueError):
 
 def _safe_parts(*parts: str) -> tuple[str, ...]:
     normalized = tuple(str(part).strip() for part in parts)
-    if not normalized or any(not part or Path(part).is_absolute() or part in {".", ".."} for part in normalized):
-        raise ResearchPathError("research output path parts must be non-empty relative names")
+    if not normalized or any(
+        not part or Path(part).is_absolute() or part in {".", ".."}
+        for part in normalized
+    ):
+        raise ResearchPathError(
+            "research output path parts must be non-empty relative names"
+        )
     if any("/" in part or "\\" in part for part in normalized):
-        raise ResearchPathError("research output path parts must not contain path separators")
+        raise ResearchPathError(
+            "research output path parts must not contain path separators"
+        )
     return normalized
 
 
@@ -27,8 +34,13 @@ class ResearchPathManager:
     project_root: Path
 
     @classmethod
-    def from_settings(cls, settings: ResearchSettings, project_root: Path | None = None) -> "ResearchPathManager":
-        return cls(settings=settings, project_root=(project_root or Path.cwd()).expanduser().resolve())
+    def from_settings(
+        cls, settings: ResearchSettings, project_root: Path | None = None
+    ) -> "ResearchPathManager":
+        return cls(
+            settings=settings,
+            project_root=(project_root or Path.cwd()).expanduser().resolve(),
+        )
 
     @property
     def data_root(self) -> Path:
@@ -59,7 +71,12 @@ class ResearchPathManager:
             return False
 
     def ensure_roots(self) -> None:
-        for root in (self.data_root, self.artifact_root, self.report_root, self.cache_root):
+        for root in (
+            self.data_root,
+            self.artifact_root,
+            self.report_root,
+            self.cache_root,
+        ):
             root.mkdir(parents=True, exist_ok=True)
 
     def require_database_path(self) -> Path:
@@ -133,7 +150,9 @@ class ResearchPathManager:
             raise ResearchPathError(f"{label} must be an absolute path")
         resolved = raw.resolve()
         if self.is_within(resolved, self.project_root):
-            raise ResearchPathError(f"{label} must be outside the repository: {resolved}")
+            raise ResearchPathError(
+                f"{label} must be outside the repository: {resolved}"
+            )
         return resolved
 
     def cache_path(self, *parts: str) -> Path:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from market_research.research.datasets.source_provenance import build_dataset_source_provenance
+from market_research.research.datasets.source_provenance import (
+    build_dataset_source_provenance,
+)
 
 
 TEST_SOURCE_PROVENANCE = build_dataset_source_provenance(

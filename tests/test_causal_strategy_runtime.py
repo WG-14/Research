@@ -1,6 +1,9 @@
 import pytest
 from dataclasses import replace
-from market_research.research.causal_market_view import CausalMarketView, FutureMarketAccessError
+from market_research.research.causal_market_view import (
+    CausalMarketView,
+    FutureMarketAccessError,
+)
 from tests.test_common_simulation_engine import _dataset
 from market_research.research_composition import builtin_strategy_registry
 from market_research.research.simulation_engine import run_common_simulation_backtest
@@ -31,8 +34,14 @@ def test_private_fields_do_not_expose_future_candle_quote_or_depth():
 def test_all_production_builtin_plugins_have_runtime_factory():
     registry = builtin_strategy_registry()
     assert set(registry.plugins) == {
-        "sma_with_filter", "buy_and_hold_baseline", "noop_baseline", "threshold_research_only"}
-    assert all(plugin.runtime_factory is not None for plugin in registry.plugins.values())
+        "sma_with_filter",
+        "buy_and_hold_baseline",
+        "noop_baseline",
+        "threshold_research_only",
+    }
+    assert all(
+        plugin.runtime_factory is not None for plugin in registry.plugins.values()
+    )
 
 
 def test_common_runtime_adapter_invokes_current_only_builder_once_per_candle():

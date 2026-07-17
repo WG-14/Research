@@ -1,0 +1,81 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+case "${1:-}" in
+  bootstrap)
+    exec uv sync --all-packages --all-groups --frozen
+    ;;
+  test-core)
+    exec uv run --package market-research pytest tests
+    ;;
+  test-web)
+    exec uv run --package market-research-internal-web pytest apps/internal_web/tests
+    ;;
+  test-operations)
+    exec uv run --package research-operations pytest services/research_operations/tests
+    ;;
+  test-all)
+    "$0" test-core
+    "$0" test-web
+    exec "$0" test-operations
+    ;;
+  test-browser)
+    exec uv run --package market-research-internal-web pytest -q \
+      apps/internal_web/tests/test_browser_e2e.py
+    ;;
+  test-integration)
+    : "${RESEARCH_OPS_TEST_DATABASE_URL:?RESEARCH_OPS_TEST_DATABASE_URL is required}"
+    if [ "${INTERNAL_WEB_DATABASE_ENGINE:-}" != postgresql ]; then
+      echo "INTERNAL_WEB_DATABASE_ENGINE=postgresql is required" >&2
+      exit 78
+    fi
+    uv run --package market-research-internal-web pytest -q \
+      apps/internal_web/tests/test_postgresql_integration_contract.py \
+      apps/internal_web/tests/test_governance_postgresql_atomicity.py
+    exec uv run --package research-operations pytest -q \
+      services/research_operations/tests/test_postgresql_core.py
+    ;;
+  lint)
+    exec uv run --package research-operations ruff check \
+      src tests apps/internal_web/src apps/internal_web/tests \
+      services/research_operations/src services/research_operations/tests
+    ;;
+  compile)
+    exec uv run --package market-research python -m compileall -q \
+      src apps/internal_web/src services/research_operations/src
+    ;;
+  audit)
+    requirements="${TMPDIR:-/tmp}/research-platform-runtime-requirements.txt"
+    uv export --frozen --all-packages --no-dev --no-emit-workspace \
+      --no-hashes --output-file "$requirements"
+    exec uv run --no-sync pip-audit -r "$requirements" --progress-spinner off
+    ;;
+  build)
+    exec uv run --frozen --no-sync --package market-research \
+      python tools/build_release_artifacts.py \
+      --output-dir "$root/dist/platform"
+    ;;
+  release-manifest)
+    shift
+    exec uv run --package market-research python tools/release_manifest.py "$@"
+    ;;
+  install-release)
+    shift
+    exec python3 tools/install_release.py "$@"
+    ;;
+  verify-deployment)
+    exec uv run --package research-operations pytest -q \
+      services/research_operations/tests/test_native_deployment.py
+    ;;
+  backup-restore-drill)
+    shift
+    exec uv run --package research-operations research-ops recovery-verify "$@"
+    ;;
+  *)
+    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|compile|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill}" >&2
+    exit 64
+    ;;
+esac

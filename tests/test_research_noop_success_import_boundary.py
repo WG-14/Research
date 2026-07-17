@@ -76,8 +76,13 @@ raise SystemExit(rc)
     assert summary["execution_attempt_count"] == 0
     assert summary["filled_execution_count"] == 0
     assert summary["portfolio_applied_trade_count"] == 0
-    assert validation["validation_resource_usage"]["common_execution_authority"] == "common_simulation_engine"
-    diagnostics = validation["validation_strategy_diagnostics"]["strategy_specific_diagnostics"]["noop_baseline"]
+    assert (
+        validation["validation_resource_usage"]["common_execution_authority"]
+        == "common_simulation_engine"
+    )
+    diagnostics = validation["validation_strategy_diagnostics"][
+        "strategy_specific_diagnostics"
+    ]["noop_baseline"]
     assert diagnostics["hold_decision_count"] == 3
     assert diagnostics["decision_count"] == 3
 

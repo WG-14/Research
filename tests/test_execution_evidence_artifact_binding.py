@@ -101,7 +101,9 @@ def _manifest(*, top=None, depth=None):
     )
 
 
-def test_top_of_book_typed_locator_is_the_data_authority_not_runtime_db(tmp_path: Path) -> None:
+def test_top_of_book_typed_locator_is_the_data_authority_not_runtime_db(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "top-artifact.sqlite"
     runtime = tmp_path / "runtime.sqlite"
     _write_top_of_book(artifact, bid=100.0, ask=101.0)
@@ -127,7 +129,9 @@ def test_top_of_book_typed_locator_is_the_data_authority_not_runtime_db(tmp_path
         execution_quote_lookahead_ms=0,
         context=DatasetLoadContext(db_path=runtime),
     )
-    provenance = adapter.provenance(manifest=manifest, context=DatasetLoadContext(db_path=runtime))
+    provenance = adapter.provenance(
+        manifest=manifest, context=DatasetLoadContext(db_path=runtime)
+    )
 
     assert quotes[0].bid_price == 100.0
     assert provenance["source_artifact_content_hash"] == content_hash
@@ -135,7 +139,9 @@ def test_top_of_book_typed_locator_is_the_data_authority_not_runtime_db(tmp_path
     assert provenance["source_locator"]["path"] == str(artifact.resolve())
 
 
-def test_top_of_book_source_artifact_hash_is_stable_across_split_evidence(tmp_path: Path) -> None:
+def test_top_of_book_source_artifact_hash_is_stable_across_split_evidence(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "top-artifact.sqlite"
     _write_top_of_book(artifact, bid=100.0, ask=101.0)
     content_hash = _file_hash(artifact)
@@ -143,7 +149,11 @@ def test_top_of_book_source_artifact_hash_is_stable_across_split_evidence(tmp_pa
     spec = TopOfBookDatasetSpec(
         source_content_hash=content_hash,
         source_schema_hash=schema_hash,
-        locator={"type": "content_addressed_local", "path": str(artifact), "artifact_content_hash": content_hash},
+        locator={
+            "type": "content_addressed_local",
+            "path": str(artifact),
+            "artifact_content_hash": content_hash,
+        },
     )
     provenance = SQLiteTopOfBookAdapter().provenance(
         manifest=_manifest(top=spec), context=DatasetLoadContext(db_path=None)
@@ -168,31 +178,50 @@ def test_top_of_book_source_artifact_hash_is_stable_across_split_evidence(tmp_pa
             top_of_book_source_schema_hash=schema_hash,
             top_of_book_adapter_provenance=provenance,
         )
-        return _build_source_agnostic_dataset_quality_report(db_path=None, snapshot=snapshot).payload
+        return _build_source_agnostic_dataset_quality_report(
+            db_path=None, snapshot=snapshot
+        ).payload
 
     train = report("train", 100.0)
     validation = report("validation", 200.0)
 
     assert train["top_of_book_source_content_hash"] == content_hash
     assert validation["top_of_book_source_content_hash"] == content_hash
-    assert train["top_of_book_split_content_hash"] != validation["top_of_book_split_content_hash"]
+    assert (
+        train["top_of_book_split_content_hash"]
+        != validation["top_of_book_split_content_hash"]
+    )
     manifest = _manifest(top=spec)
-    assert _top_of_book_provenance_reasons(
-        manifest=manifest, split_name="train", payload=train
-    ) == []
-    assert _top_of_book_provenance_reasons(
-        manifest=manifest, split_name="validation", payload=validation
-    ) == []
+    assert (
+        _top_of_book_provenance_reasons(
+            manifest=manifest, split_name="train", payload=train
+        )
+        == []
+    )
+    assert (
+        _top_of_book_provenance_reasons(
+            manifest=manifest, split_name="validation", payload=validation
+        )
+        == []
+    )
 
 
-def test_changed_top_of_book_artifact_is_rejected_before_execution(tmp_path: Path) -> None:
+def test_changed_top_of_book_artifact_is_rejected_before_execution(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "top-artifact.sqlite"
     _write_top_of_book(artifact, bid=100.0, ask=101.0)
     original_hash = _file_hash(artifact)
     spec = TopOfBookDatasetSpec(
         source_content_hash=original_hash,
-        source_schema_hash=_db_table_schema_fingerprint(artifact, "orderbook_top_snapshots"),
-        locator={"type": "content_addressed_local", "path": str(artifact), "artifact_content_hash": original_hash},
+        source_schema_hash=_db_table_schema_fingerprint(
+            artifact, "orderbook_top_snapshots"
+        ),
+        locator={
+            "type": "content_addressed_local",
+            "path": str(artifact),
+            "artifact_content_hash": original_hash,
+        },
     )
     connection = sqlite3.connect(artifact)
     try:
@@ -216,7 +245,9 @@ def test_changed_top_of_book_artifact_is_rejected_before_execution(tmp_path: Pat
         )
 
 
-def test_depth_typed_locator_and_source_hash_are_independent_of_split(tmp_path: Path) -> None:
+def test_depth_typed_locator_and_source_hash_are_independent_of_split(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "depth-artifact.sqlite"
     runtime = tmp_path / "runtime.sqlite"
     _write_depth(artifact, bid=100.0, ask=101.0)
@@ -227,7 +258,11 @@ def test_depth_typed_locator_and_source_hash_are_independent_of_split(tmp_path: 
         required=True,
         source_content_hash=content_hash,
         source_schema_hash=schema_hash,
-        locator={"type": "content_addressed_local", "path": str(artifact), "artifact_content_hash": content_hash},
+        locator={
+            "type": "content_addressed_local",
+            "path": str(artifact),
+            "artifact_content_hash": content_hash,
+        },
         options={"source_filter": "fixture"},
     )
     manifest = _manifest(depth=spec)
@@ -238,7 +273,9 @@ def test_depth_typed_locator_and_source_hash_are_independent_of_split(tmp_path: 
         execution_depth_lookahead_ms=0,
         context=DatasetLoadContext(db_path=runtime),
     )
-    provenance = adapter.provenance(manifest=manifest, context=DatasetLoadContext(db_path=runtime))
+    provenance = adapter.provenance(
+        manifest=manifest, context=DatasetLoadContext(db_path=runtime)
+    )
 
     assert snapshots[0].bids[0].price == 100.0
     assert provenance["source_artifact_content_hash"] == content_hash
@@ -267,7 +304,9 @@ def test_depth_typed_locator_and_source_hash_are_independent_of_split(tmp_path: 
             orderbook_depth_source_schema_hash=schema_hash,
             orderbook_depth_adapter_provenance=provenance,
         )
-        return _build_source_agnostic_dataset_quality_report(db_path=None, snapshot=snapshot).payload
+        return _build_source_agnostic_dataset_quality_report(
+            db_path=None, snapshot=snapshot
+        ).payload
 
     train = report("train", 100.0)
     validation = report("validation", 200.0)
@@ -280,9 +319,13 @@ def test_depth_typed_locator_and_source_hash_are_independent_of_split(tmp_path: 
         min_execution_reality_level_for_validation=None,
     )
     manifest.execution_model = SimpleNamespace(scenarios=())
-    assert _depth_provenance_reasons(
-        manifest=manifest, split_name="train", payload=train
-    ) == []
-    assert _depth_provenance_reasons(
-        manifest=manifest, split_name="validation", payload=validation
-    ) == []
+    assert (
+        _depth_provenance_reasons(manifest=manifest, split_name="train", payload=train)
+        == []
+    )
+    assert (
+        _depth_provenance_reasons(
+            manifest=manifest, split_name="validation", payload=validation
+        )
+        == []
+    )

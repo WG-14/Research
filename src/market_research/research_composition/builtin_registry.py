@@ -1,4 +1,5 @@
 """Only production composition root importing concrete built-in plugins."""
+
 from __future__ import annotations
 from functools import lru_cache
 
@@ -14,7 +15,9 @@ from market_research.research.experiment_manifest import (
 
 @lru_cache(maxsize=1)
 def builtin_strategy_registry() -> StrategyRegistry:
-    return StrategyRegistry.build(factory() for factory in discover_builtin_strategy_factories())
+    return StrategyRegistry.build(
+        factory() for factory in discover_builtin_strategy_factories()
+    )
 
 
 def compile_builtin_strategy(**values):

@@ -106,7 +106,12 @@ def list_feature_provider_specs() -> tuple[FeatureProviderSpec, ...]:
             value_type="str",
             required_history=2,
             bucketizer_type="category",
-            causal_inputs=("candle.close", "candle.high", "candle.low", "candle.volume"),
+            causal_inputs=(
+                "candle.close",
+                "candle.high",
+                "candle.low",
+                "candle.volume",
+            ),
             category_universe=REGIME_CATEGORY_UNIVERSE,
         ),
     )
@@ -121,10 +126,14 @@ def feature_provider_spec_for_name(name: str) -> FeatureProviderSpec:
         return specs[normalized]
     except KeyError as exc:
         allowed = ", ".join(sorted(specs))
-        raise ValueError(f"unknown diagnostic feature={name!r}; allowed values: {allowed}") from exc
+        raise ValueError(
+            f"unknown diagnostic feature={name!r}; allowed values: {allowed}"
+        ) from exc
 
 
-def feature_provider_specs_for_names(names: tuple[str, ...]) -> tuple[FeatureProviderSpec, ...]:
+def feature_provider_specs_for_names(
+    names: tuple[str, ...],
+) -> tuple[FeatureProviderSpec, ...]:
     if not names:
         raise ValueError("features must not be empty")
     return tuple(feature_provider_spec_for_name(name) for name in names)
@@ -153,7 +162,11 @@ def _spec(
 
 
 def _definition_hash(provider: FeatureProvider) -> str:
-    parameters = asdict(provider) if hasattr(provider, "__dataclass_fields__") else {"name": provider.name}
+    parameters = (
+        asdict(provider)
+        if hasattr(provider, "__dataclass_fields__")
+        else {"name": provider.name}
+    )
     return sha256_prefixed(
         {
             "provider_name": str(provider.name),
@@ -170,16 +183,26 @@ def _validate_specs(specs: tuple[FeatureProviderSpec, ...]) -> None:
         if not spec.name:
             raise ValueError("diagnostic feature provider name must be non-empty")
         if spec.value_type not in {"float", "str", "bool"}:
-            raise ValueError(f"diagnostic feature provider {spec.name} has invalid value_type")
+            raise ValueError(
+                f"diagnostic feature provider {spec.name} has invalid value_type"
+            )
         if spec.bucketizer_type not in {"quantile", "category"}:
-            raise ValueError(f"diagnostic feature provider {spec.name} has invalid bucketizer_type")
+            raise ValueError(
+                f"diagnostic feature provider {spec.name} has invalid bucketizer_type"
+            )
         _validate_bucketizer_value_type(spec)
         if spec.required_history <= 0:
-            raise ValueError(f"diagnostic feature provider {spec.name} must declare positive required_history")
+            raise ValueError(
+                f"diagnostic feature provider {spec.name} must declare positive required_history"
+            )
         if not spec.definition_hash:
-            raise ValueError(f"diagnostic feature provider {spec.name} must declare definition_hash")
+            raise ValueError(
+                f"diagnostic feature provider {spec.name} must declare definition_hash"
+            )
         if not spec.causal_inputs:
-            raise ValueError(f"diagnostic feature provider {spec.name} must declare causal_inputs")
+            raise ValueError(
+                f"diagnostic feature provider {spec.name} must declare causal_inputs"
+            )
         if spec.category_universe and spec.bucketizer_type != "category":
             raise ValueError(
                 f"diagnostic feature provider {spec.name} declares category_universe for non-category bucketizer"
@@ -188,17 +211,25 @@ def _validate_specs(specs: tuple[FeatureProviderSpec, ...]) -> None:
 
 def _validate_bucketizer_value_type(spec: FeatureProviderSpec) -> None:
     value_type = str(spec.value_type).lower()
-    if spec.bucketizer_type == "quantile" and value_type not in NUMERIC_FEATURE_VALUE_TYPES:
+    if (
+        spec.bucketizer_type == "quantile"
+        and value_type not in NUMERIC_FEATURE_VALUE_TYPES
+    ):
         raise ValueError(
             f"diagnostic feature provider {spec.name} quantile bucketizer requires numeric value_type"
         )
-    if spec.bucketizer_type == "category" and value_type not in CATEGORY_FEATURE_VALUE_TYPES:
+    if (
+        spec.bucketizer_type == "category"
+        and value_type not in CATEGORY_FEATURE_VALUE_TYPES
+    ):
         raise ValueError(
             f"diagnostic feature provider {spec.name} category bucketizer requires categorical value_type"
         )
 
 
-def validate_feature_value_against_spec(spec: FeatureProviderSpec, value: FeatureValue) -> None:
+def validate_feature_value_against_spec(
+    spec: FeatureProviderSpec, value: FeatureValue
+) -> None:
     if value.name != spec.name:
         raise ValueError(
             f"feature provider contract violation: value name {value.name!r} does not match spec {spec.name!r}"

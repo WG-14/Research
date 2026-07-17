@@ -94,10 +94,13 @@ def test_successful_login_resets_only_account_failure_row(
     assert str(client.session["_auth_user_id"]) == str(runner_user.pk)
     assert LoginThrottle.objects.count() == 1
     remaining = LoginThrottle.objects.get()
-    assert remaining.subject_hash == login_subject_hashes(
-        succeeded.wsgi_request,
-        runner_user.username,
-    )[1]
+    assert (
+        remaining.subject_hash
+        == login_subject_hashes(
+            succeeded.wsgi_request,
+            runner_user.username,
+        )[1]
+    )
 
 
 def test_login_throttle_window_resets_and_block_expires(rf, settings) -> None:

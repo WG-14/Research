@@ -87,9 +87,7 @@ def test_full_validation_localizes_middle_segment_corruption(
     for index in range(26):
         _append(path, index, segment_rows=5)
     middle = (
-        path.with_name(f"{path.name}.segments")
-        / "segments"
-        / "segment-00000001.jsonl"
+        path.with_name(f"{path.name}.segments") / "segments" / "segment-00000001.jsonl"
     )
     rows = [json.loads(line) for line in middle.read_text().splitlines()]
     rows[2]["value"] = "tampered"
@@ -100,9 +98,12 @@ def test_full_validation_localizes_middle_segment_corruption(
 
     # The bounded validator intentionally covers only the active and immediate
     # predecessor segments.  Scheduled full validation detects older damage.
-    assert validate_segmented_hash_chain_incremental(
-        path=path, label=LABEL, max_segment_rows=5
-    )["status"] == "PASS"
+    assert (
+        validate_segmented_hash_chain_incremental(
+            path=path, label=LABEL, max_segment_rows=5
+        )["status"]
+        == "PASS"
+    )
     full = read_segmented_hash_chain_full_snapshot(
         path=path, label=LABEL, max_segment_rows=5
     )
@@ -150,7 +151,9 @@ def test_fsynced_row_is_adopted_after_checkpoint_publish_interruption(
             raise OSError("simulated checkpoint publish interruption")
         return original_write(*args, **kwargs)
 
-    monkeypatch.setattr(segmented_module, "_write_checkpoint", interrupt_second_checkpoint)
+    monkeypatch.setattr(
+        segmented_module, "_write_checkpoint", interrupt_second_checkpoint
+    )
     with pytest.raises(OSError, match="checkpoint publish interruption"):
         _append(path, 1)
     monkeypatch.setattr(segmented_module, "_write_checkpoint", original_write)
@@ -189,6 +192,9 @@ def test_concurrent_duplicate_delivery_converges_to_one_row(tmp_path: Path) -> N
         expected_payload={"event_id": "same-event", "value": 1},
     )
     assert verified == rows[0]
-    assert read_segmented_hash_chain_full_snapshot(
-        path=path, label=LABEL, max_segment_rows=5
-    ).row_count == 1
+    assert (
+        read_segmented_hash_chain_full_snapshot(
+            path=path, label=LABEL, max_segment_rows=5
+        ).row_count
+        == 1
+    )

@@ -3,7 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from market_research.research.application import ResearchApplicationService
-from market_research.research import ResearchApplicationService as PublicResearchApplicationService
+from market_research.research import (
+    ResearchApplicationService as PublicResearchApplicationService,
+)
 from tests.test_run_lifecycle import _context
 
 
@@ -51,7 +53,8 @@ def test_direct_validation_records_lifecycle_and_forwards_run_id(monkeypatch, tm
             experiment_id="service-experiment",
             manifest_hash=lambda: "sha256:" + "a" * 64,
         ),
-        manifest_path="/external/manifest.json", db_path=None,
+        manifest_path="/external/manifest.json",
+        db_path=None,
     )
 
     assert result["end_to_end_validation_result"] == "PASS"
@@ -63,6 +66,7 @@ def test_direct_validation_records_lifecycle_and_forwards_run_id(monkeypatch, tm
     }
     assert calls["validation"]["run_id"] == "run-from-service"
     assert calls["finish"] == {
-        "status": "SUCCEEDED", "exit_code": 0,
+        "status": "SUCCEEDED",
+        "exit_code": 0,
         "result_content_hash": "sha256:result",
     }

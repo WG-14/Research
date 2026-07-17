@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "forbidden_metric_labels": [
+    "absolute_path",
+    "actor_id",
+    "audit_payload",
+    "database_dsn",
+    "experiment_id",
+    "manifest_body",
+    "username"
+  ],
+  "required_alerts": {
+    "audit_validation_failed": "research_ops_validation_last_pass == 0",
+    "backup_stale": "research_ops_backup_present == 0 or research_ops_backup_age_seconds > 90000",
+    "database_not_primary": "research_ops_database_primary == 0",
+    "dead_letter_present": "research_ops_outbox_dead_letter > 0",
+    "job_receipt_unapplied": "research_ops_job_receipts_unapplied > 0",
+    "outbox_lag": "research_ops_outbox_oldest_age_seconds > 60",
+    "outbox_worker_missing": "research_ops_outbox_workers_fresh < 1",
+    "quarantine": "research_ops_integrity_quarantine == 1",
+    "research_worker_missing": "research_ops_research_job_workers_fresh < 1",
+    "restore_drill_stale": "research_ops_restore_drill_present == 0 or research_ops_restore_drill_age_seconds > 2678400"
+  },
+  "scrape_path": "/__ops/metrics",
+  "scrape_transport": "mutual_tls_plus_basic_authorization"
+}

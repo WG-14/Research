@@ -10,7 +10,10 @@ import tomllib
 import pytest
 
 from market_research.paths import ResearchPathError, ResearchPathManager
-from market_research.research.run_summary import ResearchRunSummary, build_research_run_summary
+from market_research.research.run_summary import (
+    ResearchRunSummary,
+    build_research_run_summary,
+)
 from market_research.research_cli.registry import command_registry
 from market_research.settings import ResearchSettings, ResearchSettingsError
 
@@ -87,7 +90,9 @@ def test_research_package_does_not_import_web_framework_or_internal_web() -> Non
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         for module in _imported_modules(path):
             root = module.split(".", 1)[0]
-            if root in FORBIDDEN_WEB_IMPORT_ROOTS or module.startswith("apps.internal_web"):
+            if root in FORBIDDEN_WEB_IMPORT_ROOTS or module.startswith(
+                "apps.internal_web"
+            ):
                 violations.append(f"{path.relative_to(ROOT)} imports {module}")
     assert violations == []
 
@@ -117,8 +122,7 @@ def test_every_cli_command_has_one_capability_gui_policy() -> None:
     }
     assert set(by_command) == set(command_registry()) == set(EXPECTED_GUI_POLICY)
     assert {
-        command: _policy_value(spec.gui_policy)
-        for command, spec in by_command.items()
+        command: _policy_value(spec.gui_policy) for command, spec in by_command.items()
     } == EXPECTED_GUI_POLICY
 
 
@@ -181,7 +185,9 @@ def test_research_environment_rejects_relative_storage_paths(
         ResearchSettings.from_env()
 
 
-def test_managed_path_segments_reject_absolute_and_traversal_input(tmp_path: Path) -> None:
+def test_managed_path_segments_reject_absolute_and_traversal_input(
+    tmp_path: Path,
+) -> None:
     settings = ResearchSettings(
         data_root=tmp_path / "datasets",
         artifact_root=tmp_path / "artifacts",

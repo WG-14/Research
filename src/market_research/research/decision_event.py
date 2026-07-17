@@ -39,34 +39,69 @@ class OrderIntent:
 
     def __post_init__(self) -> None:
         try:
-            sizing = self.sizing if isinstance(self.sizing, IntentSizing) else IntentSizing(str(self.sizing))
+            sizing = (
+                self.sizing
+                if isinstance(self.sizing, IntentSizing)
+                else IntentSizing(str(self.sizing))
+            )
         except ValueError as exc:
             raise ValueError(f"unsupported_intent_sizing:{self.sizing}") from exc
         object.__setattr__(self, "sizing", sizing)
 
     @classmethod
-    def from_decision(cls, *, decision_id: str, side: str, **values: Any) -> "OrderIntent":
-        payload = {"schema_version": 2, "decision_id": decision_id, "side": str(side).upper(), **values}
+    def from_decision(
+        cls, *, decision_id: str, side: str, **values: Any
+    ) -> "OrderIntent":
+        payload = {
+            "schema_version": 2,
+            "decision_id": decision_id,
+            "side": str(side).upper(),
+            **values,
+        }
         return cls(
             decision_id=decision_id,
             intent_id=sha256_prefixed(payload),
             side=str(side).upper(),
             sizing=IntentSizing(str(values.get("sizing") or "unspecified")),
-            buy_fraction=(float(values["buy_fraction"]) if values.get("buy_fraction") is not None else None),
-            requested_qty=(float(values["requested_qty"]) if values.get("requested_qty") is not None else None),
+            buy_fraction=(
+                float(values["buy_fraction"])
+                if values.get("buy_fraction") is not None
+                else None
+            ),
+            requested_qty=(
+                float(values["requested_qty"])
+                if values.get("requested_qty") is not None
+                else None
+            ),
             reason=str(values.get("reason") or ""),
-            order_intent_ts=int(values.get("order_intent_ts") or values.get("decision_ts") or 0),
-            exit_rule=(str(values["exit_rule"]) if values.get("exit_rule") is not None else None),
-            exit_reason=(str(values["exit_reason"]) if values.get("exit_reason") is not None else None),
+            order_intent_ts=int(
+                values.get("order_intent_ts") or values.get("decision_ts") or 0
+            ),
+            exit_rule=(
+                str(values["exit_rule"])
+                if values.get("exit_rule") is not None
+                else None
+            ),
+            exit_reason=(
+                str(values["exit_reason"])
+                if values.get("exit_reason") is not None
+                else None
+            ),
         )
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema_version": self.schema_version, "decision_id": self.decision_id,
-            "intent_id": self.intent_id, "side": self.side, "sizing": self.sizing.value,
-            "buy_fraction": self.buy_fraction, "requested_qty": self.requested_qty,
-            "reason": self.reason, "order_intent_ts": self.order_intent_ts,
-            "exit_rule": self.exit_rule, "exit_reason": self.exit_reason,
+            "schema_version": self.schema_version,
+            "decision_id": self.decision_id,
+            "intent_id": self.intent_id,
+            "side": self.side,
+            "sizing": self.sizing.value,
+            "buy_fraction": self.buy_fraction,
+            "requested_qty": self.requested_qty,
+            "reason": self.reason,
+            "order_intent_ts": self.order_intent_ts,
+            "exit_rule": self.exit_rule,
+            "exit_reason": self.exit_reason,
         }
 
     def __getitem__(self, key: str) -> object:
@@ -77,6 +112,7 @@ class OrderIntent:
 @dataclass(frozen=True)
 class ResearchDecisionEvent:
     """Typed strategy decision; ``decision_id`` is stable authoritative lineage."""
+
     candle_ts: int
     decision_ts: int
     strategy_name: str
@@ -96,11 +132,16 @@ class ResearchDecisionEvent:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "feature_snapshot", deep_freeze(self.feature_snapshot))
-        object.__setattr__(self, "strategy_diagnostics", deep_freeze(self.strategy_diagnostics))
+        object.__setattr__(
+            self, "strategy_diagnostics", deep_freeze(self.strategy_diagnostics)
+        )
         object.__setattr__(self, "extra_payload", deep_freeze(self.extra_payload))
         object.__setattr__(self, "blocked_filters", tuple(self.blocked_filters))
         calculated = self._calculated_decision_id()
-        if self.authoritative_decision_id and self.authoritative_decision_id != calculated:
+        if (
+            self.authoritative_decision_id
+            and self.authoritative_decision_id != calculated
+        ):
             raise ValueError("decision_id_content_mismatch")
         object.__setattr__(self, "authoritative_decision_id", calculated)
 
@@ -108,25 +149,40 @@ class ResearchDecisionEvent:
         return self.authoritative_decision_id
 
     def _calculated_decision_id(self) -> str:
-        return sha256_prefixed({
-            "strategy_name": self.strategy_name, "strategy_version": self.strategy_version,
-            "candle_ts": self.candle_ts, "decision_ts": self.decision_ts,
-            "raw_signal": self.raw_signal, "final_signal": self.final_signal,
-            "reason": self.reason, "feature_snapshot": self.feature_snapshot,
-        })
+        return sha256_prefixed(
+            {
+                "strategy_name": self.strategy_name,
+                "strategy_version": self.strategy_version,
+                "candle_ts": self.candle_ts,
+                "decision_ts": self.decision_ts,
+                "raw_signal": self.raw_signal,
+                "final_signal": self.final_signal,
+                "reason": self.reason,
+                "feature_snapshot": self.feature_snapshot,
+            }
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "decision_id": self.authoritative_decision_id, "candle_ts": self.candle_ts,
-            "decision_ts": self.decision_ts, "strategy_name": self.strategy_name,
-            "strategy_version": self.strategy_version, "raw_signal": self.raw_signal,
-            "entry_signal": self.entry_signal, "exit_signal": self.exit_signal,
-            "final_signal": self.final_signal, "reason": self.reason,
+            "decision_id": self.authoritative_decision_id,
+            "candle_ts": self.candle_ts,
+            "decision_ts": self.decision_ts,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "raw_signal": self.raw_signal,
+            "entry_signal": self.entry_signal,
+            "exit_signal": self.exit_signal,
+            "final_signal": self.final_signal,
+            "reason": self.reason,
             "feature_snapshot": canonical_mutable(self.feature_snapshot),
             "strategy_diagnostics": canonical_mutable(self.strategy_diagnostics),
             "blocked_filters": list(self.blocked_filters),
-            "order_intent": self.order_intent.as_dict() if self.order_intent is not None else None,
-            "exit_intent": self.exit_intent.as_dict() if self.exit_intent is not None else None,
+            "order_intent": self.order_intent.as_dict()
+            if self.order_intent is not None
+            else None,
+            "exit_intent": self.exit_intent.as_dict()
+            if self.exit_intent is not None
+            else None,
             "extra_payload": canonical_mutable(self.extra_payload),
         }
 

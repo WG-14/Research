@@ -48,7 +48,10 @@ GROUP_PERMISSION_MAP = {
 PERMISSION_MODELS = {
     "view_manifestupload": ("manifestupload", "Can view manifest upload"),
     "upload_research_manifest": ("manifestupload", "Can upload a research manifest"),
-    "view_all_research_manifests": ("manifestupload", "Can view all research manifests"),
+    "view_all_research_manifests": (
+        "manifestupload",
+        "Can view all research manifests",
+    ),
     "view_researchjob": ("researchjob", "Can view research job"),
     "submit_research_job": ("researchjob", "Can submit a research job"),
     "cancel_own_research_job": ("researchjob", "Can cancel an owned research job"),
@@ -96,4 +99,3 @@ class Migration(migrations.Migration):
     ]
 
     operations = [migrations.RunPython(seed_rbac, unseed_rbac)]
-

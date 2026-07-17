@@ -49,7 +49,9 @@ def test_validated_manifest_upload_is_immutable_and_repository_external(
         record.delete()
 
 
-def test_manifest_upload_reuses_same_owner_content(runner_user, manifest_bytes: bytes) -> None:
+def test_manifest_upload_reuses_same_owner_content(
+    runner_user, manifest_bytes: bytes
+) -> None:
     def build_form() -> ManifestUploadForm:
         return ManifestUploadForm(
             files={
@@ -245,7 +247,9 @@ def test_manifest_upload_applies_raw_admission_before_core_parsing(
         validate_manifest_upload(upload)
 
 
-def test_streaming_upload_handler_stops_before_oversized_file_is_stored(settings) -> None:
+def test_streaming_upload_handler_stops_before_oversized_file_is_stored(
+    settings,
+) -> None:
     settings.INTERNAL_WEB_MAX_MANIFEST_BYTES = 8
     handler = BoundedManifestUploadHandler()
 

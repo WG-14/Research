@@ -111,7 +111,9 @@ def _report(
     return payload
 
 
-def _write_report(import_root: Path, payload: dict[str, Any], name: str = "report.json") -> Path:
+def _write_report(
+    import_root: Path, payload: dict[str, Any], name: str = "report.json"
+) -> Path:
     path = import_root / name
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
@@ -173,8 +175,7 @@ def test_admin_import_publishes_managed_copy_and_owner_catalog_survives_source_r
     assert managed.is_file()
     assert json.loads(managed.read_text(encoding="utf-8")) == report
     assert str(source) not in {
-        str(getattr(record, field.name))
-        for field in record._meta.concrete_fields
+        str(getattr(record, field.name)) for field in record._meta.concrete_fields
     }
     assert record.imported_by == admin_user
     assert record.owner == runner_user
@@ -336,9 +337,9 @@ def test_incomplete_or_tampered_evidence_is_not_imported(
     elif failure_kind == "tampered":
         report["sections"]["known_limitations"] = {"tampered": True}
     else:
-        report["sections"]["hypothesis_and_experiment_conditions"][
-            "code_revision"
-        ] = "b" * 40
+        report["sections"]["hypothesis_and_experiment_conditions"]["code_revision"] = (
+            "b" * 40
+        )
         report["content_hash"] = sha256_prefixed(
             content_hash_payload(
                 {key: value for key, value in report.items() if key != "content_hash"}

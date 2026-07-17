@@ -4,21 +4,37 @@ from collections import Counter
 from typing import Any
 
 
-def build_time_filter_comparison_summary(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_time_filter_comparison_summary(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return [_candidate_time_filter_summary(candidate) for candidate in candidates]
 
 
 def _candidate_time_filter_summary(candidate: dict[str, Any]) -> dict[str, Any]:
-    metrics = _mapping(candidate.get("final_holdout_metrics")) or _mapping(candidate.get("metrics")) or {}
-    closed_trades = _sequence(candidate.get("final_holdout_closed_trades") or candidate.get("closed_trades"))
-    decisions = _sequence(candidate.get("final_holdout_decisions") or candidate.get("decisions"))
+    metrics = (
+        _mapping(candidate.get("final_holdout_metrics"))
+        or _mapping(candidate.get("metrics"))
+        or {}
+    )
+    closed_trades = _sequence(
+        candidate.get("final_holdout_closed_trades") or candidate.get("closed_trades")
+    )
+    decisions = _sequence(
+        candidate.get("final_holdout_decisions") or candidate.get("decisions")
+    )
     reclaim = _exit_rule_summary(closed_trades, "breakout_level_reclaim_failed")
     max_holding = _exit_rule_summary(closed_trades, "max_holding_time")
-    parameter_values = _mapping(candidate.get("parameter_values")) or _mapping(candidate.get("parameters")) or {}
+    parameter_values = (
+        _mapping(candidate.get("parameter_values"))
+        or _mapping(candidate.get("parameters"))
+        or {}
+    )
     return {
         "candidate_id": str(candidate.get("candidate_id") or candidate.get("id") or ""),
         "window_label": _window_label(parameter_values),
-        "final_holdout_return_pct": _optional_float(metrics.get("return_pct") or metrics.get("total_return_pct")),
+        "final_holdout_return_pct": _optional_float(
+            metrics.get("return_pct") or metrics.get("total_return_pct")
+        ),
         "profit_factor": _optional_float(metrics.get("profit_factor")),
         "closed_trade_count": len(closed_trades),
         "breakout_level_reclaim_failed_count": reclaim["count"],
@@ -33,7 +49,10 @@ def _exit_rule_summary(closed_trades: list[Any], rule: str) -> dict[str, Any]:
     count = 0
     total_pnl = 0.0
     for trade in closed_trades:
-        if str(_field(trade, "exit_rule", _field(trade, "exit_rule_name", "")) or "") != rule:
+        if (
+            str(_field(trade, "exit_rule", _field(trade, "exit_rule_name", "")) or "")
+            != rule
+        ):
             continue
         count += 1
         total_pnl += float(_field(trade, "net_pnl", 0.0) or 0.0)
@@ -45,7 +64,9 @@ def _entry_hour_kst_distribution(decisions: list[Any]) -> dict[str, int]:
     for decision in decisions:
         feature_snapshot = _mapping(_field(decision, "feature_snapshot", None)) or {}
         diagnostics = _mapping(_field(decision, "strategy_diagnostics", None)) or {}
-        raw_hour = feature_snapshot.get("entry_hour_kst", diagnostics.get("entry_hour_kst"))
+        raw_hour = feature_snapshot.get(
+            "entry_hour_kst", diagnostics.get("entry_hour_kst")
+        )
         if raw_hour is None:
             continue
         counts[f"{int(raw_hour):02d}"] += 1

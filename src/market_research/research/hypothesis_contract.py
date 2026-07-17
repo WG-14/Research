@@ -47,13 +47,19 @@ class HypothesisSpec:
         def normalize(value: str) -> str:
             return " ".join(value.casefold().split())
 
-        return sha256_prefixed({
-            "phenomenon": normalize(self.phenomenon),
-            "mechanism": normalize(self.mechanism),
-            "observation_conditions": sorted(normalize(item) for item in self.observation_conditions),
-            "comparison_target": normalize(self.comparison_target),
-            "falsification_criteria": sorted(normalize(item) for item in self.falsification_criteria),
-        })
+        return sha256_prefixed(
+            {
+                "phenomenon": normalize(self.phenomenon),
+                "mechanism": normalize(self.mechanism),
+                "observation_conditions": sorted(
+                    normalize(item) for item in self.observation_conditions
+                ),
+                "comparison_target": normalize(self.comparison_target),
+                "falsification_criteria": sorted(
+                    normalize(item) for item in self.falsification_criteria
+                ),
+            }
+        )
 
     @property
     def pre_registration_verified(self) -> bool:
@@ -71,9 +77,17 @@ def parse_hypothesis_spec(value: object) -> HypothesisSpec:
     if not isinstance(value, dict):
         raise ValueError("hypothesis_spec must be an object")
     allowed = {
-        "schema_version", "hypothesis_id", "version", "phenomenon", "mechanism",
-        "observation_conditions", "comparison_target", "falsification_criteria",
-        "experiment_family_id", "registration_status", "pre_registered_at",
+        "schema_version",
+        "hypothesis_id",
+        "version",
+        "phenomenon",
+        "mechanism",
+        "observation_conditions",
+        "comparison_target",
+        "falsification_criteria",
+        "experiment_family_id",
+        "registration_status",
+        "pre_registered_at",
         "registration_evidence_hash",
     }
     unknown = sorted(set(value) - allowed)
@@ -104,7 +118,9 @@ def parse_hypothesis_spec(value: object) -> HypothesisSpec:
         raise ValueError(
             "hypothesis_spec.comparison_target must be cash, buy_and_hold, or configured"
         )
-    registration_status = str(value.get("registration_status") or "unregistered").strip()
+    registration_status = str(
+        value.get("registration_status") or "unregistered"
+    ).strip()
     if registration_status not in {"unregistered", "pre_registered", "rejected"}:
         raise ValueError(
             "hypothesis_spec.registration_status must be unregistered, pre_registered, or rejected"
@@ -114,7 +130,9 @@ def parse_hypothesis_spec(value: object) -> HypothesisSpec:
     if evidence_hash is not None and (
         not evidence_hash.startswith("sha256:") or len(evidence_hash) != 71
     ):
-        raise ValueError("hypothesis_spec.registration_evidence_hash must be a sha256 hash")
+        raise ValueError(
+            "hypothesis_spec.registration_evidence_hash must be a sha256 hash"
+        )
     if registration_status == "pre_registered" and (
         pre_registered_at is None or evidence_hash is None
     ):

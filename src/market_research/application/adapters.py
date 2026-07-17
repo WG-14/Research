@@ -51,9 +51,13 @@ def validation_request_from_namespace(
     )
 
 
-def preflight_request_from_mapping(values: Mapping[str, Any]) -> ResearchPreflightRequest:
+def preflight_request_from_mapping(
+    values: Mapping[str, Any],
+) -> ResearchPreflightRequest:
     return ResearchPreflightRequest.model_validate(dict(values))
 
 
-def validation_request_from_mapping(values: Mapping[str, Any]) -> ResearchValidationRequest:
+def validation_request_from_mapping(
+    values: Mapping[str, Any],
+) -> ResearchValidationRequest:
     return ResearchValidationRequest.model_validate(dict(values))

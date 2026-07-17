@@ -27,7 +27,11 @@ def build_walk_forward_selection_evidence(
         choices: list[dict[str, Any]] = []
         for candidate in candidates:
             window = next(
-                (item for item in _candidate_windows(candidate) if str(item.get("window_id")) == window_id),
+                (
+                    item
+                    for item in _candidate_windows(candidate)
+                    if str(item.get("window_id")) == window_id
+                ),
                 None,
             )
             if window is None:
@@ -54,10 +58,15 @@ def build_walk_forward_selection_evidence(
         ]
         selected = min(choices, key=lambda item: _train_rank_key(item, acceptance_gate))
         selected_parameters = dict(selected["parameter_values"])
-        if previous_parameters is not None and selected_parameters != previous_parameters:
+        if (
+            previous_parameters is not None
+            and selected_parameters != previous_parameters
+        ):
             parameter_change_count += 1
         previous_parameters = selected_parameters
-        test_fail_reasons = _metrics_fail_reasons(selected["test_metrics"], acceptance_gate)
+        test_fail_reasons = _metrics_fail_reasons(
+            selected["test_metrics"], acceptance_gate
+        )
         selection_input_hash = sha256_prefixed(
             {"window_id": window_id, "train_candidate_inputs": selection_inputs}
         )
@@ -89,7 +98,10 @@ def build_walk_forward_selection_evidence(
         failure_reason = "walk_forward_insufficient_windows"
     elif pass_count != len(selected_windows):
         failure_reason = "walk_forward_failed"
-    test_returns = [float(window["test_metrics"].get("return_pct") or 0.0) for window in selected_windows]
+    test_returns = [
+        float(window["test_metrics"].get("return_pct") or 0.0)
+        for window in selected_windows
+    ]
     by_year: dict[str, float] = defaultdict(float)
     for window in selected_windows:
         end = str(window.get("test_date_range", {}).get("end") or "unknown")
@@ -98,7 +110,8 @@ def build_walk_forward_selection_evidence(
         )
     positive_total = sum(max(value, 0.0) for value in by_year.values())
     max_year_share = (
-        max((max(value, 0.0) for value in by_year.values()), default=0.0) / positive_total
+        max((max(value, 0.0) for value in by_year.values()), default=0.0)
+        / positive_total
         if positive_total > 0.0
         else None
     )
@@ -107,7 +120,9 @@ def build_walk_forward_selection_evidence(
         "window_count": len(selected_windows),
         "pass_window_count": pass_count,
         "fail_window_count": len(selected_windows) - pass_count,
-        "mean_test_return_pct": sum(test_returns) / len(test_returns) if test_returns else None,
+        "mean_test_return_pct": sum(test_returns) / len(test_returns)
+        if test_returns
+        else None,
         "worst_test_return_pct": min(test_returns) if test_returns else None,
         "recent_window_test_return_pct": test_returns[-1] if test_returns else None,
         "selected_parameter_change_count": parameter_change_count,
@@ -152,6 +167,9 @@ def _metrics_fail_reasons(metrics: dict[str, Any], gate: Any) -> list[str]:
         profit_factor is None or float(profit_factor) < float(gate.min_profit_factor)
     ):
         reasons.append("profit_factor_failed")
-    if gate.oos_return_must_be_positive and float(metrics.get("return_pct") or 0.0) <= 0.0:
+    if (
+        gate.oos_return_must_be_positive
+        and float(metrics.get("return_pct") or 0.0) <= 0.0
+    ):
         reasons.append("return_not_positive")
     return reasons

@@ -19,7 +19,15 @@ def _value(item: Any, name: str, default: float = 0.0) -> float:
     return float(getattr(item, name, default) or default)
 
 
-def _bucket_ratio(value: float | None, *, low: float, high: float, low_label: str, normal_label: str, high_label: str) -> str:
+def _bucket_ratio(
+    value: float | None,
+    *,
+    low: float,
+    high: float,
+    low_label: str,
+    normal_label: str,
+    high_label: str,
+) -> str:
     if value is None:
         return "unknown"
     if value < low:
@@ -44,8 +52,14 @@ def classify_market_regime(
     t = thresholds or MarketRegimeThresholds()
     normalized = list(candles)
     closes = [_value(candle, "close") for candle in normalized]
-    highs = [_value(candle, "high", closes[index] if index < len(closes) else 0.0) for index, candle in enumerate(normalized)]
-    lows = [_value(candle, "low", closes[index] if index < len(closes) else 0.0) for index, candle in enumerate(normalized)]
+    highs = [
+        _value(candle, "high", closes[index] if index < len(closes) else 0.0)
+        for index, candle in enumerate(normalized)
+    ]
+    lows = [
+        _value(candle, "low", closes[index] if index < len(closes) else 0.0)
+        for index, candle in enumerate(normalized)
+    ]
     volumes = [_value(candle, "volume") for candle in normalized]
     last_close = closes[-1] if closes else 0.0
 
@@ -54,7 +68,11 @@ def classify_market_regime(
         trend_delta = float(short_sma) - float(long_sma)
     elif len(closes) >= 2:
         trend_delta = closes[-1] - closes[0]
-    trend_base = float(long_sma) if long_sma and float(long_sma) > 0.0 else (closes[0] if closes else 0.0)
+    trend_base = (
+        float(long_sma)
+        if long_sma and float(long_sma) > 0.0
+        else (closes[0] if closes else 0.0)
+    )
     trend_strength = abs(_safe_ratio(trend_delta, trend_base))
     trend_direction = 1 if trend_delta > 0.0 else (-1 if trend_delta < 0.0 else 0)
 
@@ -80,8 +98,16 @@ def classify_market_regime(
     vol_n = max(1, int(volatility_window))
     vol_highs = highs[-vol_n:]
     vol_lows = lows[-vol_n:]
-    vol_base = last_close if last_close > 0.0 else (fmean(closes[-vol_n:]) if closes[-vol_n:] else 0.0)
-    volatility_ratio = _safe_ratio(max(vol_highs) - min(vol_lows), vol_base) if vol_highs and vol_lows else 0.0
+    vol_base = (
+        last_close
+        if last_close > 0.0
+        else (fmean(closes[-vol_n:]) if closes[-vol_n:] else 0.0)
+    )
+    volatility_ratio = (
+        _safe_ratio(max(vol_highs) - min(vol_lows), vol_base)
+        if vol_highs and vol_lows
+        else 0.0
+    )
     volatility_bucket = _bucket_ratio(
         volatility_ratio,
         low=max(0.0, float(t.low_volatility_ratio)),
@@ -92,15 +118,33 @@ def classify_market_regime(
     )
 
     vol_window = max(1, int(volume_window))
-    recent_volume = fmean(volumes[-vol_window:]) if volumes and any(value > 0.0 for value in volumes[-vol_window:]) else None
-    prior = volumes[-(2 * vol_window) : -vol_window] if len(volumes) >= 2 * vol_window else volumes[:-vol_window]
+    recent_volume = (
+        fmean(volumes[-vol_window:])
+        if volumes and any(value > 0.0 for value in volumes[-vol_window:])
+        else None
+    )
+    prior = (
+        volumes[-(2 * vol_window) : -vol_window]
+        if len(volumes) >= 2 * vol_window
+        else volumes[:-vol_window]
+    )
     if not prior and 2 <= len(volumes) < 2 * vol_window:
         midpoint = len(volumes) // 2
         prior = volumes[:midpoint]
         recent_slice = volumes[midpoint:]
-        recent_volume = fmean(recent_slice) if recent_slice and any(value > 0.0 for value in recent_slice) else recent_volume
-    prior_volume = fmean(prior) if prior and any(value > 0.0 for value in prior) else None
-    volume_ratio = (recent_volume / prior_volume) if recent_volume is not None and prior_volume and prior_volume > 0.0 else None
+        recent_volume = (
+            fmean(recent_slice)
+            if recent_slice and any(value > 0.0 for value in recent_slice)
+            else recent_volume
+        )
+    prior_volume = (
+        fmean(prior) if prior and any(value > 0.0 for value in prior) else None
+    )
+    volume_ratio = (
+        (recent_volume / prior_volume)
+        if recent_volume is not None and prior_volume and prior_volume > 0.0
+        else None
+    )
     volume_bucket = _bucket_ratio(
         volume_ratio,
         low=float(t.volume_decreasing_ratio),
@@ -110,16 +154,35 @@ def classify_market_regime(
         high_label="volume_increasing",
     )
 
-    notionals = [max(0.0, closes[index]) * max(0.0, volumes[index]) for index in range(len(volumes))]
+    notionals = [
+        max(0.0, closes[index]) * max(0.0, volumes[index])
+        for index in range(len(volumes))
+    ]
     liq_n = max(1, int(liquidity_window))
-    recent_liquidity = fmean(notionals[-liq_n:]) if notionals and any(value > 0.0 for value in notionals[-liq_n:]) else None
-    prior_liq_values = notionals[-(2 * liq_n) : -liq_n] if len(notionals) >= 2 * liq_n else notionals[:-liq_n]
+    recent_liquidity = (
+        fmean(notionals[-liq_n:])
+        if notionals and any(value > 0.0 for value in notionals[-liq_n:])
+        else None
+    )
+    prior_liq_values = (
+        notionals[-(2 * liq_n) : -liq_n]
+        if len(notionals) >= 2 * liq_n
+        else notionals[:-liq_n]
+    )
     if not prior_liq_values and 2 <= len(notionals) < 2 * liq_n:
         midpoint = len(notionals) // 2
         prior_liq_values = notionals[:midpoint]
         recent_liq_values = notionals[midpoint:]
-        recent_liquidity = fmean(recent_liq_values) if recent_liq_values and any(value > 0.0 for value in recent_liq_values) else recent_liquidity
-    prior_liquidity = fmean(prior_liq_values) if prior_liq_values and any(value > 0.0 for value in prior_liq_values) else None
+        recent_liquidity = (
+            fmean(recent_liq_values)
+            if recent_liq_values and any(value > 0.0 for value in recent_liq_values)
+            else recent_liquidity
+        )
+    prior_liquidity = (
+        fmean(prior_liq_values)
+        if prior_liq_values and any(value > 0.0 for value in prior_liq_values)
+        else None
+    )
     liquidity_ratio = (
         recent_liquidity / prior_liquidity
         if recent_liquidity is not None and prior_liquidity and prior_liquidity > 0.0
@@ -137,15 +200,27 @@ def classify_market_regime(
     overext_lookback = max(1, int(overextended_lookback))
     signed_overextension = 0.0
     if len(closes) > overext_lookback:
-        signed_overextension = _safe_ratio(last_close - closes[-1 - overext_lookback], closes[-1 - overext_lookback])
+        signed_overextension = _safe_ratio(
+            last_close - closes[-1 - overext_lookback], closes[-1 - overext_lookback]
+        )
     overextension_ratio = abs(signed_overextension)
-    sma_gap_ratio = abs(_safe_ratio(float(short_sma or 0.0) - float(long_sma or 0.0), float(long_sma or 0.0))) if long_sma else None
+    sma_gap_ratio = (
+        abs(
+            _safe_ratio(
+                float(short_sma or 0.0) - float(long_sma or 0.0), float(long_sma or 0.0)
+            )
+        )
+        if long_sma
+        else None
+    )
 
     legacy_regime = "unknown"
     block_reason = "unknown_market_regime"
     if last_close <= 0.0:
         pass
-    elif overextended_max_return_ratio > 0.0 and signed_overextension > float(overextended_max_return_ratio):
+    elif overextended_max_return_ratio > 0.0 and signed_overextension > float(
+        overextended_max_return_ratio
+    ):
         legacy_regime = "overextended_up"
         block_reason = "overextended_up"
     elif volatility_bucket == "low_vol":
@@ -219,7 +294,9 @@ def classify_market_regime_from_arrays(
     if index < 0:
         effective_count = 0
     else:
-        effective_count = min(len(closes), len(highs), len(lows), len(volumes), int(index) + 1)
+        effective_count = min(
+            len(closes), len(highs), len(lows), len(volumes), int(index) + 1
+        )
     if effective_count <= 0:
         return classify_market_regime(
             candles=(),
@@ -270,8 +347,16 @@ def classify_market_regime_from_arrays(
     vol_highs = [float(value or 0.0) for value in highs[vol_start:effective_count]]
     vol_lows = [float(value or 0.0) for value in lows[vol_start:effective_count]]
     close_window = [float(value or 0.0) for value in closes[vol_start:effective_count]]
-    vol_base = last_close if last_close > 0.0 else (fmean(close_window) if close_window else 0.0)
-    volatility_ratio = _safe_ratio(max(vol_highs) - min(vol_lows), vol_base) if vol_highs and vol_lows else 0.0
+    vol_base = (
+        last_close
+        if last_close > 0.0
+        else (fmean(close_window) if close_window else 0.0)
+    )
+    volatility_ratio = (
+        _safe_ratio(max(vol_highs) - min(vol_lows), vol_base)
+        if vol_highs and vol_lows
+        else 0.0
+    )
     volatility_bucket = _bucket_ratio(
         volatility_ratio,
         low=max(0.0, float(t.low_volatility_ratio)),
@@ -282,18 +367,37 @@ def classify_market_regime_from_arrays(
     )
 
     vol_window = max(1, int(volume_window))
-    recent_volume_values = [float(value or 0.0) for value in volumes[max(0, effective_count - vol_window) : effective_count]]
-    recent_volume = fmean(recent_volume_values) if recent_volume_values and any(value > 0.0 for value in recent_volume_values) else None
+    recent_volume_values = [
+        float(value or 0.0)
+        for value in volumes[max(0, effective_count - vol_window) : effective_count]
+    ]
+    recent_volume = (
+        fmean(recent_volume_values)
+        if recent_volume_values and any(value > 0.0 for value in recent_volume_values)
+        else None
+    )
     prior_start = max(0, effective_count - (2 * vol_window))
     prior_end = max(0, effective_count - vol_window)
     prior = [float(value or 0.0) for value in volumes[prior_start:prior_end]]
     if not prior and 2 <= effective_count < 2 * vol_window:
         midpoint = effective_count // 2
         prior = [float(value or 0.0) for value in volumes[:midpoint]]
-        recent_slice = [float(value or 0.0) for value in volumes[midpoint:effective_count]]
-        recent_volume = fmean(recent_slice) if recent_slice and any(value > 0.0 for value in recent_slice) else recent_volume
-    prior_volume = fmean(prior) if prior and any(value > 0.0 for value in prior) else None
-    volume_ratio = (recent_volume / prior_volume) if recent_volume is not None and prior_volume and prior_volume > 0.0 else None
+        recent_slice = [
+            float(value or 0.0) for value in volumes[midpoint:effective_count]
+        ]
+        recent_volume = (
+            fmean(recent_slice)
+            if recent_slice and any(value > 0.0 for value in recent_slice)
+            else recent_volume
+        )
+    prior_volume = (
+        fmean(prior) if prior and any(value > 0.0 for value in prior) else None
+    )
+    volume_ratio = (
+        (recent_volume / prior_volume)
+        if recent_volume is not None and prior_volume and prior_volume > 0.0
+        else None
+    )
     volume_bucket = _bucket_ratio(
         volume_ratio,
         low=float(t.volume_decreasing_ratio),
@@ -310,7 +414,9 @@ def classify_market_regime_from_arrays(
         for item in range(recent_liq_start, effective_count)
     ]
     recent_liquidity = (
-        fmean(recent_liq_values) if recent_liq_values and any(value > 0.0 for value in recent_liq_values) else None
+        fmean(recent_liq_values)
+        if recent_liq_values and any(value > 0.0 for value in recent_liq_values)
+        else None
     )
     prior_liq_start = max(0, effective_count - (2 * liq_n))
     prior_liq_end = max(0, effective_count - liq_n)
@@ -329,9 +435,15 @@ def classify_market_regime_from_arrays(
             for item in range(midpoint, effective_count)
         ]
         recent_liquidity = (
-            fmean(recent_liq_values) if recent_liq_values and any(value > 0.0 for value in recent_liq_values) else recent_liquidity
+            fmean(recent_liq_values)
+            if recent_liq_values and any(value > 0.0 for value in recent_liq_values)
+            else recent_liquidity
         )
-    prior_liquidity = fmean(prior_liq_values) if prior_liq_values and any(value > 0.0 for value in prior_liq_values) else None
+    prior_liquidity = (
+        fmean(prior_liq_values)
+        if prior_liq_values and any(value > 0.0 for value in prior_liq_values)
+        else None
+    )
     liquidity_ratio = (
         recent_liquidity / prior_liquidity
         if recent_liquidity is not None and prior_liquidity and prior_liquidity > 0.0
@@ -352,13 +464,23 @@ def classify_market_regime_from_arrays(
         base_close = float(closes[effective_count - 1 - overext_lookback] or 0.0)
         signed_overextension = _safe_ratio(last_close - base_close, base_close)
     overextension_ratio = abs(signed_overextension)
-    sma_gap_ratio = abs(_safe_ratio(float(short_sma or 0.0) - float(long_sma or 0.0), float(long_sma or 0.0))) if long_sma else None
+    sma_gap_ratio = (
+        abs(
+            _safe_ratio(
+                float(short_sma or 0.0) - float(long_sma or 0.0), float(long_sma or 0.0)
+            )
+        )
+        if long_sma
+        else None
+    )
 
     legacy_regime = "unknown"
     block_reason = "unknown_market_regime"
     if last_close <= 0.0:
         pass
-    elif overextended_max_return_ratio > 0.0 and signed_overextension > float(overextended_max_return_ratio):
+    elif overextended_max_return_ratio > 0.0 and signed_overextension > float(
+        overextended_max_return_ratio
+    ):
         legacy_regime = "overextended_up"
         block_reason = "overextended_up"
     elif volatility_bucket == "low_vol":
@@ -422,7 +544,12 @@ def classify_sma_market_regime(
     min_trend_strength_ratio: float,
 ) -> MarketRegimeSnapshot:
     candles = [
-        {"close": float(close), "high": float(close), "low": float(close), "volume": 0.0}
+        {
+            "close": float(close),
+            "high": float(close),
+            "low": float(close),
+            "volume": 0.0,
+        }
         for close in closes
     ]
     return classify_market_regime(

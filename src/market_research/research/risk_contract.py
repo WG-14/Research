@@ -84,11 +84,21 @@ def evaluate_research_risk(
         allowed, reason = False, "sell_blocked_no_sellable_qty"
     elif policy.policy_status == "disabled_explicit":
         allowed = signal in {"BUY", "SELL"}
-    elif policy.max_daily_loss_krw > 0.0 and baseline_equity - current_equity >= policy.max_daily_loss_krw:
+    elif (
+        policy.max_daily_loss_krw > 0.0
+        and baseline_equity - current_equity >= policy.max_daily_loss_krw
+    ):
         allowed, reason = False, "daily_loss_limit"
-    elif policy.max_position_loss_pct > 0.0 and position.unrealized_pnl_ratio(market_price) <= -(policy.max_position_loss_pct / 100.0):
+    elif policy.max_position_loss_pct > 0.0 and position.unrealized_pnl_ratio(
+        market_price
+    ) <= -(policy.max_position_loss_pct / 100.0):
         allowed, reason = False, "position_loss_limit"
-    elif policy.max_drawdown_pct > 0.0 and peak_equity > 0.0 and ((peak_equity - current_equity) / peak_equity * 100.0) >= policy.max_drawdown_pct:
+    elif (
+        policy.max_drawdown_pct > 0.0
+        and peak_equity > 0.0
+        and ((peak_equity - current_equity) / peak_equity * 100.0)
+        >= policy.max_drawdown_pct
+    ):
         allowed, reason = False, "max_drawdown_limit"
     else:
         allowed = signal in {"BUY", "SELL"}

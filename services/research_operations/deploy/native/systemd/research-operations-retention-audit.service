@@ -1,0 +1,39 @@
+[Unit]
+Description=Research Operations non-destructive retention and legal-hold audit
+Documentation=file:/opt/research-platform/current/services/research_operations/deploy/native/README.md
+Requires=research-operations-preflight.service
+After=research-operations-preflight.service
+
+[Service]
+Type=oneshot
+User=research-ops
+Group=research-ops
+EnvironmentFile=/etc/research-ops/runtime.env
+ExecStart=/usr/bin/python3 /opt/research-platform/current/services/research_operations/deploy/native/bin/backup-retention.py --dry-run --backup-root /srv/research-backups --receipt-root /srv/research-offsite-receipts --backup-verification-public-key ${RESEARCH_OPS_BACKUP_VERIFICATION_KEY_FILE} --offsite-receipt-verification-public-key ${RESEARCH_OPS_OFFSITE_RECEIPT_VERIFICATION_KEY_FILE} --target-id ${RESEARCH_OPS_OFFSITE_TARGET_ID} --encryption ${RESEARCH_OPS_BACKUP_ENCRYPTION} --encryption-key-id ${RESEARCH_OPS_BACKUP_ENCRYPTION_KEY_ID} --retention-days ${RESEARCH_OPS_BACKUP_RETENTION_DAYS} --minimum-count ${RESEARCH_OPS_BACKUP_RETENTION_MINIMUM_COUNT}
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+ReadOnlyPaths=/srv/research-backups /srv/research-offsite-receipts
+TasksMax=16
+MemoryMax=128M
+CPUQuota=50%
+TimeoutStartSec=5min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=research-operations-retention-audit

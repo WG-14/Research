@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from market_research.paths import ResearchPathManager
-from market_research.research.cli import cmd_research_backtest, cmd_research_reproduce_run
+from market_research.research.cli import (
+    cmd_research_backtest,
+    cmd_research_reproduce_run,
+)
 from market_research.research.validation_protocol import run_research_walk_forward
 from market_research.research_cli.context import ResearchAppContext
 from market_research.research_composition import builtin_strategy_registry
@@ -49,7 +52,10 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
     out = tmp_path / "reproduction_report.json"
 
     rc = cmd_research_reproduce_run(
-        context=context, manifest_path=str(manifest_path), receipt_path=str(receipt), out_path=str(out)
+        context=context,
+        manifest_path=str(manifest_path),
+        receipt_path=str(receipt),
+        out_path=str(out),
     )
 
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -96,9 +102,7 @@ def test_reproduce_run_replays_walk_forward_without_runtime_database(
     reproduced_receipt = json.loads(
         Path(payload["reproduced_receipt_path"]).read_text(encoding="utf-8")
     )
-    assert reproduced_receipt["stable_fingerprint"]["report_kind"] == (
-        "walk_forward"
-    )
+    assert reproduced_receipt["stable_fingerprint"]["report_kind"] == ("walk_forward")
 
 
 def test_reproduce_run_rejects_changed_manifest_before_backtest(tmp_path: Path) -> None:
@@ -113,7 +117,10 @@ def test_reproduce_run_rejects_changed_manifest_before_backtest(tmp_path: Path) 
     out = tmp_path / "invalid.json"
 
     rc = cmd_research_reproduce_run(
-        context=context, manifest_path=str(manifest_path), receipt_path=str(receipt), out_path=str(out)
+        context=context,
+        manifest_path=str(manifest_path),
+        receipt_path=str(receipt),
+        out_path=str(out),
     )
 
     assert rc == 1
@@ -130,13 +137,18 @@ def test_reproduce_run_rejects_frozen_dataset_tamper(tmp_path: Path) -> None:
         "research", "sma_success_import_boundary", "reproduction_receipt.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    artifact_manifest = json.loads(Path(manifest["dataset"]["artifact_manifest_uri"]).read_text(encoding="utf-8"))
+    artifact_manifest = json.loads(
+        Path(manifest["dataset"]["artifact_manifest_uri"]).read_text(encoding="utf-8")
+    )
     with sqlite3.connect(artifact_manifest["artifact"]["uri"]) as conn:
         conn.execute("UPDATE candles SET close = close + 0.25 WHERE rowid = 1")
     out = tmp_path / "drift.json"
 
     rc = cmd_research_reproduce_run(
-        context=context, manifest_path=str(manifest_path), receipt_path=str(receipt), out_path=str(out)
+        context=context,
+        manifest_path=str(manifest_path),
+        receipt_path=str(receipt),
+        out_path=str(out),
     )
 
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -148,7 +160,9 @@ def test_reproduce_run_rejects_frozen_dataset_tamper(tmp_path: Path) -> None:
     assert payload["mismatches"] == []
 
 
-def test_reproduce_run_classifies_reproduced_receipt_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reproduce_run_classifies_reproduced_receipt_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context, _, manifest_path = _context(tmp_path)
     assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
     receipt = context.paths.report_path(
@@ -166,7 +180,10 @@ def test_reproduce_run_classifies_reproduced_receipt_failure(tmp_path: Path, mon
 
     monkeypatch.setattr(cli, "run_research_backtest", fail_reproduction)
     rc = cmd_research_reproduce_run(
-        context=context, manifest_path=str(manifest_path), receipt_path=str(receipt), out_path=str(out)
+        context=context,
+        manifest_path=str(manifest_path),
+        receipt_path=str(receipt),
+        out_path=str(out),
     )
 
     payload = json.loads(out.read_text(encoding="utf-8"))

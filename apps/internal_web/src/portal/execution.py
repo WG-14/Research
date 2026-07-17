@@ -13,11 +13,16 @@ from django.core.exceptions import ValidationError
 from market_research.application import (
     ActorContext,
     ApplicationAuthorizationError,
+    RESEARCH_JOB_DISPATCH_SCOPE,
     ResearchApplicationService,
     ResearchPreflightRequest,
     ResearchValidationRequest,
+    require_operated_execution_capability,
 )
-from market_research.research.hashing import content_hash_payload, sha256_prefixed
+from market_research.application.adapter_contracts import (
+    content_hash_payload,
+    sha256_prefixed,
+)
 from market_research.research_composition import builtin_strategy_registry
 from market_research.storage_io import write_json_atomic
 
@@ -70,6 +75,11 @@ class ResearchJobDispatcher:
         job: ResearchJob,
         progress: JobProgressReporter,
     ) -> JobExecutionResult:
+        require_operated_execution_capability(
+            RESEARCH_JOB_DISPATCH_SCOPE,
+            admission_request_id=f"web-job:{job.pk}",
+            admission_request_hash=job.request_hash,
+        )
         try:
             validate_web_job_capability_contract(job.capability_id)
         except ValidationError as exc:
@@ -110,27 +120,16 @@ class ResearchJobDispatcher:
                 manifest_path=str(manifest_path),
                 execution_calibration_path=None,
             )
-            if hasattr(service, "preflight"):
-                try:
-                    result = service.preflight(  # type: ignore[attr-defined]
-                        request,
-                        progress_callback=report_progress,
-                        cancellation_check=cancellation_requested,
-                    )
-                except ApplicationAuthorizationError as exc:
-                    raise PublicJobError("APPLICATION_PERMISSION_DENIED") from exc
-                readiness = result.readiness
-                workload = result.workload
-            else:  # Compatibility while older core wheels are phased out.
-                readiness = service.readiness(
+            try:
+                result = service.preflight(
                     request,
                     progress_callback=report_progress,
                     cancellation_check=cancellation_requested,
                 )
-                workload = service.workload_estimate(
-                    request,
-                    cancellation_check=cancellation_requested,
-                )
+            except ApplicationAuthorizationError as exc:
+                raise PublicJobError("APPLICATION_PERMISSION_DENIED") from exc
+            readiness = result.readiness
+            workload = result.workload
             if cancellation_requested():
                 raise JobCancellationRequested("research_job_cancellation_requested")
             errors = tuple(readiness.errors) + tuple(workload.errors)
@@ -184,7 +183,11 @@ class ResearchJobDispatcher:
             if cancellation_requested() or result.status.value == "CANCELLED":
                 raise JobCancellationRequested("research_job_cancellation_requested")
             if result.report is None:
-                code = result.errors[0].code if result.errors else "application_execution_failed"
+                code = (
+                    result.errors[0].code
+                    if result.errors
+                    else "application_execution_failed"
+                )
                 raise PublicJobError(_public_error_code(code))
             # The research engine, not this adapter, writes and hashes this result.
             reference = make_artifact_ref("report", output_path)

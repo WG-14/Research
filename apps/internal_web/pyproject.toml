@@ -20,6 +20,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
+market_research_web = ["_build_provenance.json"]
 portal = [
     "templates/portal/*.html",
     "templates/registration/*.html",
@@ -39,7 +40,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-market-research = { path = "../..", editable = true }
+market-research = { workspace = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "market_research_web.settings_test"

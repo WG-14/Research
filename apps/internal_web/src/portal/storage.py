@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
-from market_research.research.hashing import (
+from market_research.application.adapter_contracts import (
     content_hash_payload,
     report_content_hash_payload,
     sha256_prefixed,
@@ -78,7 +78,9 @@ def resolve_artifact_ref(
     *,
     require_exists: bool = True,
 ) -> Path:
-    reference = value if isinstance(value, SafeArtifactRef) else SafeArtifactRef.parse(value)
+    reference = (
+        value if isinstance(value, SafeArtifactRef) else SafeArtifactRef.parse(value)
+    )
     root = _root_path(reference.root)
     candidate = root.joinpath(*Path(reference.relative_path).parts)
     resolved = ensure_path_within_root(candidate, root)

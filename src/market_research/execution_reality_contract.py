@@ -24,7 +24,9 @@ EXECUTION_OBSERVED_EVIDENCE_FIELDS = frozenset(
     }
 )
 CAPABILITY_OBSERVED_AVAILABILITY_FIELDS = frozenset({"top_of_book"})
-L2_DEPTH_SNAPSHOT_MISSING_REASON = "execution_l2_depth_snapshot_required_but_unavailable"
+L2_DEPTH_SNAPSHOT_MISSING_REASON = (
+    "execution_l2_depth_snapshot_required_but_unavailable"
+)
 
 _TIMESTAMP_FIELDS = frozenset(
     {
@@ -123,19 +125,29 @@ def evaluate_execution_reality_policy(
     if not execution_timing_declared or missing_required_fields:
         reasons.append("validation_execution_timing_required")
     if _field_value(execution_timing, "source") == "legacy_default":
-        reasons.append("validation_legacy_execution_timing_not_candidate_selection_eligible")
+        reasons.append(
+            "validation_legacy_execution_timing_not_candidate_selection_eligible"
+        )
 
     fill_policy = str(_field_value(execution_timing, "fill_reference_policy") or "")
-    min_level = _field_value(execution_timing, "min_execution_reality_level_for_validation")
+    min_level = _field_value(
+        execution_timing, "min_execution_reality_level_for_validation"
+    )
     if fill_policy == "candle_close_legacy":
-        reasons.append("validation_execution_reference_price_candle_close_not_candidate_selection_eligible")
+        reasons.append(
+            "validation_execution_reference_price_candle_close_not_candidate_selection_eligible"
+        )
     if min_level is None:
         reasons.append("validation_min_execution_reality_level_required")
     elif min_level == "candle_close_optimistic":
         reasons.append("validation_execution_reality_level_below_required")
     else:
         required_min_level = _MIN_REALITY_LEVEL_BY_FILL_POLICY.get(fill_policy)
-        if required_min_level is not None and REALITY_ORDER.get(str(min_level), -1) < REALITY_ORDER[required_min_level]:
+        if (
+            required_min_level is not None
+            and REALITY_ORDER.get(str(min_level), -1)
+            < REALITY_ORDER[required_min_level]
+        ):
             reasons.append("validation_execution_reality_level_below_policy_reference")
     if bool(_field_value(execution_timing, "allow_same_candle_close_fill")):
         reasons.append("validation_same_candle_close_fill_not_allowed")
@@ -165,24 +177,36 @@ def execution_contract_hash(contract: dict[str, Any]) -> str:
 
 def execution_condition_contract_hash(contract: dict[str, Any]) -> str:
     payload = _canonical_contract_payload(contract)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def execution_capability_contract_hash(contract: dict[str, Any]) -> str:
     payload = _canonical_capability_contract_payload(contract)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def attach_execution_capability_contract_hash(contract: dict[str, Any]) -> dict[str, Any]:
+def attach_execution_capability_contract_hash(
+    contract: dict[str, Any],
+) -> dict[str, Any]:
     payload = dict(contract)
-    payload[CAPABILITY_CONTRACT_HASH_FIELD] = execution_capability_contract_hash(payload)
+    payload[CAPABILITY_CONTRACT_HASH_FIELD] = execution_capability_contract_hash(
+        payload
+    )
     return payload
 
 
-def capability_contract_hash_matches(contract: dict[str, Any], expected_hash: object | None = None) -> bool:
-    observed = str(expected_hash or contract.get(CAPABILITY_CONTRACT_HASH_FIELD) or "").strip()
+def capability_contract_hash_matches(
+    contract: dict[str, Any], expected_hash: object | None = None
+) -> bool:
+    observed = str(
+        expected_hash or contract.get(CAPABILITY_CONTRACT_HASH_FIELD) or ""
+    ).strip()
     return bool(observed) and execution_capability_contract_hash(contract) == observed
 
 
@@ -192,7 +216,9 @@ def attach_execution_contract_hash(contract: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def contract_hash_matches(contract: dict[str, Any], expected_hash: object | None = None) -> bool:
+def contract_hash_matches(
+    contract: dict[str, Any], expected_hash: object | None = None
+) -> bool:
     observed = str(expected_hash or contract.get(CONTRACT_HASH_FIELD) or "").strip()
     return bool(observed) and execution_condition_contract_hash(contract) == observed
 
@@ -226,7 +252,9 @@ def build_execution_reality_contract(
     limitations: list[str] | tuple[str, ...] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    level = execution_reality_level or _level_for_fill_reference_policy(fill_reference_policy)
+    level = execution_reality_level or _level_for_fill_reference_policy(
+        fill_reference_policy
+    )
     payload: dict[str, Any] = {
         "schema_version": EXECUTION_REALITY_CONTRACT_SCHEMA_VERSION,
         "fill_reference_policy": str(fill_reference_policy),
@@ -252,7 +280,9 @@ def build_execution_reality_contract(
         "calibration_required": bool(calibration_required),
         "calibration_artifact_hash": calibration_artifact_hash,
         "execution_reality_level": level,
-        "limitations": sorted({str(item) for item in (limitations or default_execution_limitations())}),
+        "limitations": sorted(
+            {str(item) for item in (limitations or default_execution_limitations())}
+        ),
     }
     if extra:
         payload.update(dict(extra))
@@ -271,18 +301,32 @@ def build_execution_reality_contract(
         trade_ticks_required=bool(trade_tick_required),
         queue_position_required=bool(queue_position_required),
         market_impact_model_required=bool(market_impact_required),
-        intra_candle_path_required=bool(payload.get("intra_candle_path_required", False)),
-        l2_depth_snapshot_available=bool(payload.get("l2_depth_snapshot_available", payload.get("depth_available", False))),
-        full_orderbook_depth_available=bool(payload.get("full_orderbook_depth_available", False)),
+        intra_candle_path_required=bool(
+            payload.get("intra_candle_path_required", False)
+        ),
+        l2_depth_snapshot_available=bool(
+            payload.get(
+                "l2_depth_snapshot_available", payload.get("depth_available", False)
+            )
+        ),
+        full_orderbook_depth_available=bool(
+            payload.get("full_orderbook_depth_available", False)
+        ),
         trade_ticks_available=bool(payload.get("trade_ticks_available", False)),
         queue_position_available=bool(payload.get("queue_position_available", False)),
-        market_impact_model_available=bool(payload.get("market_impact_model_available", False)),
-        intra_candle_path_available=bool(payload.get("intra_candle_path_available", False)),
+        market_impact_model_available=bool(
+            payload.get("market_impact_model_available", False)
+        ),
+        intra_candle_path_available=bool(
+            payload.get("intra_candle_path_available", False)
+        ),
         evidence_tier=str(payload.get("execution_reality_level") or level),
         limitations=list(payload.get("limitations") or []),
     )
     payload["execution_capability_contract"] = capability_contract
-    payload[CAPABILITY_CONTRACT_HASH_FIELD] = capability_contract[CAPABILITY_CONTRACT_HASH_FIELD]
+    payload[CAPABILITY_CONTRACT_HASH_FIELD] = capability_contract[
+        CAPABILITY_CONTRACT_HASH_FIELD
+    ]
     return attach_execution_contract_hash(payload)
 
 
@@ -390,13 +434,21 @@ def unsupported_capability_reasons(contract: dict[str, Any]) -> list[str]:
         reasons.append("top_of_book_cannot_satisfy_full_depth")
     if contract.get("depth_required") and not contract.get("depth_available", False):
         reasons.append(L2_DEPTH_SNAPSHOT_MISSING_REASON)
-    if contract.get("trade_tick_required") and not contract.get("trade_ticks_available", False):
+    if contract.get("trade_tick_required") and not contract.get(
+        "trade_ticks_available", False
+    ):
         reasons.append("execution_trade_ticks_required_but_unavailable")
-    if contract.get("queue_position_required") and not contract.get("queue_position_available", False):
+    if contract.get("queue_position_required") and not contract.get(
+        "queue_position_available", False
+    ):
         reasons.append("execution_queue_position_required_but_unavailable")
-    if contract.get("market_impact_required") and not contract.get("market_impact_model_available", False):
+    if contract.get("market_impact_required") and not contract.get(
+        "market_impact_model_available", False
+    ):
         reasons.append("execution_market_impact_required_but_unavailable")
-    if contract.get("intra_candle_path_required") and not contract.get("intra_candle_path_available", False):
+    if contract.get("intra_candle_path_required") and not contract.get(
+        "intra_candle_path_available", False
+    ):
         reasons.append("execution_intra_candle_path_required_but_unavailable")
     capability = contract.get("execution_capability_contract")
     if isinstance(capability, dict):
@@ -438,11 +490,16 @@ def validate_execution_capability_contract(contract: dict[str, Any]) -> list[str
             for name, is_required in required.items()
             if bool(is_required) and not bool(available.get(name, False))
         )
-        declared_unavailable = sorted(str(item) for item in contract.get("unavailable_required_capabilities") or [])
+        declared_unavailable = sorted(
+            str(item)
+            for item in contract.get("unavailable_required_capabilities") or []
+        )
         if recomputed_unavailable:
             reasons.append("execution_capability_required_unavailable")
         if recomputed_unavailable != declared_unavailable:
-            reasons.append("execution_capability_unavailable_required_capabilities_mismatch")
+            reasons.append(
+                "execution_capability_unavailable_required_capabilities_mismatch"
+            )
     return sorted(set(reasons))
 
 
@@ -453,12 +510,28 @@ def execution_capability_contract_mismatch_reasons(
     include_hash: bool = True,
 ) -> list[dict[str, object]]:
     if not isinstance(expected, dict):
-        return [{"field": "execution_capability_contract", "reason": "expected_execution_capability_contract_missing"}]
+        return [
+            {
+                "field": "execution_capability_contract",
+                "reason": "expected_execution_capability_contract_missing",
+            }
+        ]
     if not isinstance(observed, dict):
-        return [{"field": "execution_capability_contract", "reason": "observed_execution_capability_contract_missing"}]
+        return [
+            {
+                "field": "execution_capability_contract",
+                "reason": "observed_execution_capability_contract_missing",
+            }
+        ]
     mismatches: list[dict[str, object]] = []
-    expected_hash = str(expected.get(CAPABILITY_CONTRACT_HASH_FIELD) or execution_capability_contract_hash(expected))
-    observed_hash = str(observed.get(CAPABILITY_CONTRACT_HASH_FIELD) or execution_capability_contract_hash(observed))
+    expected_hash = str(
+        expected.get(CAPABILITY_CONTRACT_HASH_FIELD)
+        or execution_capability_contract_hash(expected)
+    )
+    observed_hash = str(
+        observed.get(CAPABILITY_CONTRACT_HASH_FIELD)
+        or execution_capability_contract_hash(observed)
+    )
     if include_hash and expected_hash != observed_hash:
         mismatches.append(
             {
@@ -479,8 +552,12 @@ def execution_capability_contract_mismatch_reasons(
             mismatches.extend(availability_mismatches)
             continue
         if field == "unavailable_required_capabilities":
-            expected_items = _semantic_unavailable_required_capabilities(expected.get(field))
-            observed_items = _semantic_unavailable_required_capabilities(observed.get(field))
+            expected_items = _semantic_unavailable_required_capabilities(
+                expected.get(field)
+            )
+            observed_items = _semantic_unavailable_required_capabilities(
+                observed.get(field)
+            )
             if expected_items != observed_items:
                 mismatches.append(
                     {
@@ -509,12 +586,26 @@ def execution_contract_mismatch_reasons(
     observed: dict[str, Any] | None,
 ) -> list[dict[str, object]]:
     if not isinstance(expected, dict):
-        return [{"field": "execution_reality_contract", "reason": "expected_execution_contract_missing"}]
+        return [
+            {
+                "field": "execution_reality_contract",
+                "reason": "expected_execution_contract_missing",
+            }
+        ]
     if not isinstance(observed, dict):
-        return [{"field": "execution_reality_contract", "reason": "observed_execution_contract_missing"}]
+        return [
+            {
+                "field": "execution_reality_contract",
+                "reason": "observed_execution_contract_missing",
+            }
+        ]
     mismatches: list[dict[str, object]] = []
-    expected_hash = str(expected.get(CONTRACT_HASH_FIELD) or execution_condition_contract_hash(expected))
-    observed_hash = str(observed.get(CONTRACT_HASH_FIELD) or execution_condition_contract_hash(observed))
+    expected_hash = str(
+        expected.get(CONTRACT_HASH_FIELD) or execution_condition_contract_hash(expected)
+    )
+    observed_hash = str(
+        observed.get(CONTRACT_HASH_FIELD) or execution_condition_contract_hash(observed)
+    )
     if expected_hash != observed_hash:
         mismatches.append(
             {
@@ -536,8 +627,12 @@ def execution_contract_mismatch_reasons(
         if field == "execution_capability_contract":
             mismatches.extend(
                 execution_capability_contract_mismatch_reasons(
-                    expected=expected.get(field) if isinstance(expected.get(field), dict) else None,
-                    observed=observed.get(field) if isinstance(observed.get(field), dict) else None,
+                    expected=expected.get(field)
+                    if isinstance(expected.get(field), dict)
+                    else None,
+                    observed=observed.get(field)
+                    if isinstance(observed.get(field), dict)
+                    else None,
                     include_hash=False,
                 )
             )
@@ -573,16 +668,14 @@ def _canonical_contract_payload(contract: dict[str, Any]) -> dict[str, Any]:
     }
     capability = payload.get("execution_capability_contract")
     if isinstance(capability, dict):
-        payload["execution_capability_contract"] = _canonical_capability_contract_payload(capability)
+        payload["execution_capability_contract"] = (
+            _canonical_capability_contract_payload(capability)
+        )
     return _strip_runtime_only(payload)
 
 
 def _canonical_capability_contract_payload(contract: dict[str, Any]) -> dict[str, Any]:
-    payload = {
-        k: v
-        for k, v in contract.items()
-        if k != CAPABILITY_CONTRACT_HASH_FIELD
-    }
+    payload = {k: v for k, v in contract.items() if k != CAPABILITY_CONTRACT_HASH_FIELD}
     available = payload.get("available_capabilities")
     if isinstance(available, dict):
         payload["available_capabilities"] = {

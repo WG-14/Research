@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from market_research.research_composition import parse_builtin_manifest as parse_manifest
 from market_research.research.experiment_registry import (
     EXPERIMENT_REGISTRY_SCHEMA_VERSION,
     FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
@@ -27,7 +26,10 @@ from market_research.research.final_selection import (
     validate_confirmation_artifact,
 )
 from market_research.research.hashing import sha256_prefixed
-from market_research.research.validation_protocol import run_final_holdout_confirmation, run_research_backtest
+from market_research.research.validation_protocol import (
+    run_final_holdout_confirmation,
+    run_research_backtest,
+)
 from market_research.research.cli import cmd_research_registry_validate
 from market_research.research_composition import builtin_strategy_registry
 from market_research.research_cli.context import ResearchAppContext
@@ -41,12 +43,21 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
         final_selection=True,
         strategy_name="buy_and_hold_baseline",
     )
-    parsed = replace(parsed, raw={
-        **parsed.raw, "objective_metric": "return", "experiment_family_id": "registry-evidence-family",
-        "hypothesis_id": "registry-evidence-hypothesis",
-    })
-    report = run_research_backtest(manifest=parsed, db_path=None, manager=manager,
-                                   strategy_registry=builtin_strategy_registry())
+    parsed = replace(
+        parsed,
+        raw={
+            **parsed.raw,
+            "objective_metric": "return",
+            "experiment_family_id": "registry-evidence-family",
+            "hypothesis_id": "registry-evidence-hypothesis",
+        },
+    )
+    report = run_research_backtest(
+        manifest=parsed,
+        db_path=None,
+        manager=manager,
+        strategy_registry=builtin_strategy_registry(),
+    )
     candidate = report["candidates"][0]
     candidate["aggregate_acceptance_gate_result"] = "PASS"
     candidate["acceptance_gate_result"] = "PASS"
@@ -59,24 +70,20 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
     report.update(
         {
             "final_selection_contract": selection["final_selection_contract"],
-            "final_selection_contract_hash": selection[
-                "final_selection_contract_hash"
-            ],
+            "final_selection_contract_hash": selection["final_selection_contract_hash"],
             "final_selection_gate_result": selection["gate_result"],
             "final_selection_fail_reasons": selection["fail_reasons"],
             "selected_candidate_id": selection["selected_candidate_id"],
             "best_candidate_id": selection["selected_candidate_id"],
-            "selected_candidate_score_hash": selection[
-                "selected_candidate_score_hash"
-            ],
-            "candidate_final_scores_hash": selection[
-                "candidate_final_scores_hash"
-            ],
+            "selected_candidate_score_hash": selection["selected_candidate_score_hash"],
+            "candidate_final_scores_hash": selection["candidate_final_scores_hash"],
             "candidate_final_scores": selection["candidate_final_scores"],
         }
     )
     report["selection_artifact"] = build_selection_artifact(
-        manifest_hash=parsed.manifest_hash(), selection_result=selection, candidates=report["candidates"]
+        manifest_hash=parsed.manifest_hash(),
+        selection_result=selection,
+        candidates=report["candidates"],
     )
     confirmation = run_final_holdout_confirmation(
         manifest=parsed,
@@ -86,42 +93,62 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
         strategy_registry=builtin_strategy_registry(),
     )
     rows = load_experiment_registry_rows(Path(confirmation["experiment_registry_path"]))
-    reservation = next(row for row in rows if row["event_type"] == "research_attempt_reserved")
-    completion = next(row for row in rows if row["event_type"] == "research_attempt_completed")
+    reservation = next(
+        row for row in rows if row["event_type"] == "research_attempt_reserved"
+    )
+    completion = next(
+        row for row in rows if row["event_type"] == "research_attempt_completed"
+    )
     assert reservation["schema_version"] == EXPERIMENT_REGISTRY_SCHEMA_VERSION
     assert reservation["pre_exposure_reservation_key_hash"].startswith("sha256:")
     assert reservation.get("final_holdout_reuse_key_hash") is None
     required = (
-        "dataset_artifact_evidence_hash", "final_holdout_query_hash", "final_holdout_data_hash",
-        "final_holdout_fingerprint_hash", "final_holdout_quality_hash", "final_holdout_reuse_key_hash",
+        "dataset_artifact_evidence_hash",
+        "final_holdout_query_hash",
+        "final_holdout_data_hash",
+        "final_holdout_fingerprint_hash",
+        "final_holdout_quality_hash",
+        "final_holdout_reuse_key_hash",
     )
     assert all(completion[field].startswith("sha256:") for field in required)
-    assert completion["final_holdout_reuse_key_schema_version"] == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
+    assert (
+        completion["final_holdout_reuse_key_schema_version"]
+        == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
+    )
     recomputed = final_holdout_reuse_key_hash_v2_from_parts(
-        strategy_name=parsed.strategy_name, market=parsed.market, interval=parsed.interval,
+        strategy_name=parsed.strategy_name,
+        market=parsed.market,
+        interval=parsed.interval,
         final_holdout=confirmation["dataset_evidence"]["requested_range"],
-        objective_metric="return", dataset_artifact_evidence_hash=confirmation["dataset_artifact_evidence_hash"],
+        objective_metric="return",
+        dataset_artifact_evidence_hash=confirmation["dataset_artifact_evidence_hash"],
         final_holdout_query_hash=confirmation["final_holdout_query_hash"],
         final_holdout_data_hash=confirmation["final_holdout_data_hash"],
         final_holdout_fingerprint_hash=confirmation["final_holdout_fingerprint_hash"],
         final_holdout_quality_hash=confirmation["final_holdout_quality_hash"],
     )
-    assert completion["final_holdout_reuse_key_hash"] == recomputed == confirmation["final_holdout_reuse_key_hash"]
+    assert (
+        completion["final_holdout_reuse_key_hash"]
+        == recomputed
+        == confirmation["final_holdout_reuse_key_hash"]
+    )
     for field in required[:-1]:
         assert confirmation[field] == completion[field]
-    assert completion["final_holdout_result_hash"] == confirmation[
-        "final_holdout_result_hash"
-    ]
-    assert validate_confirmation_artifact(
-        confirmation,
-        selection_artifact=report["selection_artifact"],
-    ) == []
+    assert (
+        completion["final_holdout_result_hash"]
+        == confirmation["final_holdout_result_hash"]
+    )
+    assert (
+        validate_confirmation_artifact(
+            confirmation,
+            selection_artifact=report["selection_artifact"],
+        )
+        == []
+    )
 
     tampered = copy.deepcopy(confirmation)
     tampered["candidate_results"][0]["metrics"]["return_pct"] = 999999.0
-    tampered["final_holdout_result_hash"] = compute_final_holdout_result_hash(
-        tampered
-    )
+    tampered["final_holdout_result_hash"] = compute_final_holdout_result_hash(tampered)
     tampered_material = {
         key: value
         for key, value in tampered.items()
@@ -131,10 +158,13 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
         tampered_material,
         label="final_holdout_confirmation",
     )
-    assert validate_confirmation_artifact(
-        tampered,
-        selection_artifact=report["selection_artifact"],
-    ) == []
+    assert (
+        validate_confirmation_artifact(
+            tampered,
+            selection_artifact=report["selection_artifact"],
+        )
+        == []
+    )
     assert "experiment_registry_stale" in validate_experiment_registry_binding(
         report=tampered,
         require_complete=True,
@@ -164,11 +194,14 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
             reservation=reservation_result,
             updates=completion_updates,
         )
-    assert append_attempt_aborted(
-        manager=manager,
-        reservation_row_hash=reservation["row_hash"],
-        reason="must not override completed evidence",
-    ) is None
+    assert (
+        append_attempt_aborted(
+            manager=manager,
+            reservation_row_hash=reservation["row_hash"],
+            reason="must not override completed evidence",
+        )
+        is None
+    )
 
 
 def test_old_and_unknown_registry_schemas_fail_closed(tmp_path) -> None:
@@ -309,6 +342,7 @@ def test_registry_cli_rejects_incomplete_attempt_lifecycle(tmp_path) -> None:
     payload = json.loads(output[-1])
     assert result == 1
     assert payload["ok"] is False
-    assert "experiment_registry_incomplete_attempt" in payload[
-        "registry_lifecycle_summary"
-    ][0]["reasons"]
+    assert (
+        "experiment_registry_incomplete_attempt"
+        in payload["registry_lifecycle_summary"][0]["reasons"]
+    )

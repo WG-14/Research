@@ -49,7 +49,9 @@ def _stable_projection(result) -> dict[str, object]:
 
 @pytest.mark.integration
 @pytest.mark.research_e2e
-def test_cli_and_web_requests_produce_equal_real_engine_stable_results(tmp_path: Path) -> None:
+def test_cli_and_web_requests_produce_equal_real_engine_stable_results(
+    tmp_path: Path,
+) -> None:
     cli_root = tmp_path / "cli"
     web_root = tmp_path / "web"
     cli_root.mkdir()

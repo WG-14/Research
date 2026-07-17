@@ -21,7 +21,4 @@ def test_distribution_probe_uses_explicit_builtin_composition() -> None:
         "from market_research.research_composition import builtin_strategy_registry"
         in workflow
     )
-    assert (
-        "list_research_strategies(registry=builtin_strategy_registry())"
-        in workflow
-    )
+    assert "list_research_strategies(registry=builtin_strategy_registry())" in workflow

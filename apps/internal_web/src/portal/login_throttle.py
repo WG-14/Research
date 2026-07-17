@@ -27,10 +27,14 @@ def _subject_hash(kind: str, value: str) -> str:
     return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
-def login_subject_hashes(request: HttpRequest | None, username: object) -> tuple[str, ...]:
+def login_subject_hashes(
+    request: HttpRequest | None, username: object
+) -> tuple[str, ...]:
     """Return stable, secret-keyed subjects without retaining login identifiers."""
 
-    normalized_username = unicodedata.normalize("NFKC", str(username)).strip().casefold()
+    normalized_username = (
+        unicodedata.normalize("NFKC", str(username)).strip().casefold()
+    )
     if not normalized_username:
         normalized_username = "<empty>"
 
@@ -93,7 +97,10 @@ def _record_subject_failure(subject_hash: str, *, observed_at: datetime) -> None
                     )
                     return
 
-                if record.blocked_until is not None and record.blocked_until > observed_at:
+                if (
+                    record.blocked_until is not None
+                    and record.blocked_until > observed_at
+                ):
                     return
 
                 if record.window_started_at <= observed_at - window:

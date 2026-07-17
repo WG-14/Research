@@ -87,7 +87,7 @@ def create_success_fixture(root: Path) -> tuple[Path, Path]:
                 "max_workers": 1,
                 "process_start_method": "auto_safe",
                 "work_unit": "candidate_scenario",
-            }
+            },
         },
     }
     manifest_path = root / "manifest.json"

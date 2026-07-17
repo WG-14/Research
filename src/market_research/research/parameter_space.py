@@ -22,7 +22,9 @@ def count_parameter_candidates(
     return count
 
 
-def iter_parameter_candidates(parameter_space: dict[str, tuple[object, ...]]) -> list[dict[str, Any]]:
+def iter_parameter_candidates(
+    parameter_space: dict[str, tuple[object, ...]],
+) -> list[dict[str, Any]]:
     keys = sorted(parameter_space)
     candidates: list[dict[str, Any]] = []
     for values in itertools.product(*(parameter_space[key] for key in keys)):

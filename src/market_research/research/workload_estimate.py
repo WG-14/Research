@@ -10,7 +10,11 @@ from .execution_plan import (
     parallel_efficiency_payload,
     parallel_work_task_count,
 )
-from .experiment_manifest import ExperimentManifest, load_manifest, required_execution_scenarios
+from .experiment_manifest import (
+    ExperimentManifest,
+    load_manifest,
+    required_execution_scenarios,
+)
 from .parameter_space import count_parameter_candidates
 from .resource_planner import plan_research_resources
 
@@ -53,23 +57,35 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         "source": "manifest_only_no_runtime_plugin_resolution",
     }
     estimated_plugin_runtime_us = 0
-    pre_parallel_dataset_hash_payload_bytes = expected_candles * 128 + split_count * 2048
+    pre_parallel_dataset_hash_payload_bytes = (
+        expected_candles * 128 + split_count * 2048
+    )
     max_workers = int(resource_plan.effective_max_workers)
     snapshot_bytes_per_worker = expected_candles * 160
     parallel_snapshot_fanout_bytes = snapshot_bytes_per_worker * max(1, max_workers)
-    event_bytes = max((int(item["expected_candle_count"]) for item in split_ranges), default=0) * int(
-        plugin_complexity.get("expected_decision_payload_bytes_per_event") or 384
-    )
+    event_bytes = max(
+        (int(item["expected_candle_count"]) for item in split_ranges), default=0
+    ) * int(plugin_complexity.get("expected_decision_payload_bytes_per_event") or 384)
     stage_trace_bytes = min(expected_candles * 6, 128) * 512
     parent_result_bytes = candidate_count * scenario_count * 4096
-    memory_budget = manifest.research_run.resource_limits.max_total_memory_mb or manifest.research_run.resource_limits.max_rss_mb
-    estimated_total_memory_bytes = (
-        parallel_snapshot_fanout_bytes + event_bytes + stage_trace_bytes + 8192 + parent_result_bytes
+    memory_budget = (
+        manifest.research_run.resource_limits.max_total_memory_mb
+        or manifest.research_run.resource_limits.max_rss_mb
     )
-    memory_budget_bytes = int(float(memory_budget) * 1024 * 1024) if memory_budget is not None else None
+    estimated_total_memory_bytes = (
+        parallel_snapshot_fanout_bytes
+        + event_bytes
+        + stage_trace_bytes
+        + 8192
+        + parent_result_bytes
+    )
+    memory_budget_bytes = (
+        int(float(memory_budget) * 1024 * 1024) if memory_budget is not None else None
+    )
     memory_budget_reasons = (
         ["estimated_parent_and_worker_bytes_exceed_memory_budget"]
-        if memory_budget_bytes is not None and estimated_total_memory_bytes > memory_budget_bytes
+        if memory_budget_bytes is not None
+        and estimated_total_memory_bytes > memory_budget_bytes
         else []
     )
     canonical_estimate = estimate_canonical_observability_cost(
@@ -88,7 +104,8 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
     data_plane_policy = build_data_plane_policy(
         manifest_hash=manifest.manifest_hash(),
         dataset_hashes={
-            item["split_name"]: f"manifest_range:{item['start_ts']}:{item['end_ts']}" for item in split_ranges
+            item["split_name"]: f"manifest_range:{item['start_ts']}:{item['end_ts']}"
+            for item in split_ranges
         },
         split_names=split_name_values,
         memory_budget_mb=resource_plan.memory_budget_mb,
@@ -106,8 +123,12 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         "work_unit_count": work_unit_count,
         "estimated_strategy_runs": candidate_count * scenario_count * split_count,
         "available_parallel_work_tasks": available_parallel_work_tasks,
-        "parallel_task_to_worker_ratio": parallel_capacity["parallel_task_to_worker_ratio"],
-        "expected_worker_utilization_pct": parallel_capacity["expected_worker_utilization_pct"],
+        "parallel_task_to_worker_ratio": parallel_capacity[
+            "parallel_task_to_worker_ratio"
+        ],
+        "expected_worker_utilization_pct": parallel_capacity[
+            "expected_worker_utilization_pct"
+        ],
         "parallelism_limiting_factor": parallel_capacity["parallelism_limiting_factor"],
         "effective_worker_source": parallel_capacity["effective_worker_source"],
         "resource_plan": resource_plan_payload,
@@ -136,8 +157,12 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         "estimated_behavior_evidence_bytes": 8192,
         "estimated_parent_result_bytes": parent_result_bytes,
         "max_in_flight_tasks": resource_plan.max_in_flight_tasks,
-        "safe_max_workers_by_memory_budget": max(1, max_workers if not memory_budget_reasons else min(max_workers, 1)),
-        "memory_budget_status": "WARN" if memory_budget_reasons else ("PASS" if memory_budget_bytes is not None else "NOT_EVALUATED"),
+        "safe_max_workers_by_memory_budget": max(
+            1, max_workers if not memory_budget_reasons else min(max_workers, 1)
+        ),
+        "memory_budget_status": "WARN"
+        if memory_budget_reasons
+        else ("PASS" if memory_budget_bytes is not None else "NOT_EVALUATED"),
         "memory_budget_reasons": memory_budget_reasons,
         "memory_admission_policy": manifest.research_run.resource_limits.memory_admission_policy,
         **canonical_estimate,

@@ -30,11 +30,14 @@ class EquityPoint:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "ts": int(self.ts), "mark_ts": int(self.ts),
+            "ts": int(self.ts),
+            "mark_ts": int(self.ts),
             "equity": float(self.equity),
             "cash": float(self.cash),
             "asset_qty": float(self.asset_qty),
-            "mark_price": float(self.mark_price) if self.mark_price is not None else None,
+            "mark_price": float(self.mark_price)
+            if self.mark_price is not None
+            else None,
             "mark_price_source": self.mark_price_source,
         }
 
@@ -84,9 +87,15 @@ class ClosedTradeRecord:
         return {
             "entry_ts": int(self.entry_ts) if self.entry_ts is not None else None,
             "exit_ts": int(self.exit_ts),
-            "holding_minutes": float(self.holding_minutes) if self.holding_minutes is not None else None,
-            "entry_price": float(self.entry_price) if self.entry_price is not None else None,
-            "exit_price": float(self.exit_price) if self.exit_price is not None else None,
+            "holding_minutes": float(self.holding_minutes)
+            if self.holding_minutes is not None
+            else None,
+            "entry_price": float(self.entry_price)
+            if self.entry_price is not None
+            else None,
+            "exit_price": float(self.exit_price)
+            if self.exit_price is not None
+            else None,
             "entry_regime": self.entry_regime,
             "exit_regime": self.exit_regime,
             "exit_rule": self.exit_rule,
@@ -95,8 +104,12 @@ class ClosedTradeRecord:
             "mfe": float(self.mfe) if self.mfe is not None else None,
             "mae_pct": float(self.mae_pct) if self.mae_pct is not None else None,
             "mfe_pct": float(self.mfe_pct) if self.mfe_pct is not None else None,
-            "bars_to_mae": int(self.bars_to_mae) if self.bars_to_mae is not None else None,
-            "bars_to_mfe": int(self.bars_to_mfe) if self.bars_to_mfe is not None else None,
+            "bars_to_mae": int(self.bars_to_mae)
+            if self.bars_to_mae is not None
+            else None,
+            "bars_to_mfe": int(self.bars_to_mfe)
+            if self.bars_to_mfe is not None
+            else None,
             "unrealized_pnl_path_summary": self.unrealized_pnl_path_summary,
             "entry_feature_schema_version": (
                 int(self.entry_feature_schema_version)
@@ -106,9 +119,13 @@ class ClosedTradeRecord:
             "entry_feature_snapshot": self.entry_feature_snapshot,
             "entry_decision_hash": self.entry_decision_hash,
             "exit_decision_hash": self.exit_decision_hash,
-            "entry_notional": float(self.entry_notional) if self.entry_notional is not None else None,
+            "entry_notional": float(self.entry_notional)
+            if self.entry_notional is not None
+            else None,
             "net_pnl": float(self.net_pnl),
-            "return_pct": float(self.return_pct) if self.return_pct is not None else None,
+            "return_pct": float(self.return_pct)
+            if self.return_pct is not None
+            else None,
             "fee_total": float(self.fee_total),
             "slippage_total": float(self.slippage_total),
         }
@@ -134,7 +151,9 @@ class ExecutionRecord:
             "price": float(self.price) if self.price is not None else None,
             "fee": float(self.fee),
             "slippage": float(self.slippage),
-            "quote_age_ms": int(self.quote_age_ms) if self.quote_age_ms is not None else None,
+            "quote_age_ms": int(self.quote_age_ms)
+            if self.quote_age_ms is not None
+            else None,
             "ts": int(self.ts) if self.ts is not None else None,
             "entry_signal_source": self.entry_signal_source,
         }
@@ -206,8 +225,12 @@ class CostExecutionMetrics:
     quote_coverage_pct: float | None
     median_quote_age_ms: float | None
     p95_quote_age_ms: float | None
-    fee_drag_ratio_basis: str = field(default=DRAG_RATIO_BASIS_TRADED_NOTIONAL, init=False)
-    slippage_drag_ratio_basis: str = field(default=DRAG_RATIO_BASIS_TRADED_NOTIONAL, init=False)
+    fee_drag_ratio_basis: str = field(
+        default=DRAG_RATIO_BASIS_TRADED_NOTIONAL, init=False
+    )
+    slippage_drag_ratio_basis: str = field(
+        default=DRAG_RATIO_BASIS_TRADED_NOTIONAL, init=False
+    )
 
     def as_dict(self) -> dict[str, object]:
         payload = self.__dict__.copy()
@@ -296,13 +319,21 @@ def build_metrics_v2(
     elapsed_ms = (
         int(summary_elapsed_ms)
         if summary_elapsed_ms is not None
-        else ((int(period_end) - int(period_start)) if period_start is not None and period_end is not None else None)
+        else (
+            (int(period_end) - int(period_start))
+            if period_start is not None and period_end is not None
+            else None
+        )
     )
     if elapsed_ms is not None and elapsed_ms < 0:
         elapsed_ms = None
         limitations.append("elapsed_time_invalid")
     final_equity = float(final_cash) + float(final_asset_qty) * float(final_mark_price)
-    total_return_pct = ((final_equity / float(starting_cash)) - 1.0) * 100.0 if starting_cash > 0.0 else 0.0
+    total_return_pct = (
+        ((final_equity / float(starting_cash)) - 1.0) * 100.0
+        if starting_cash > 0.0
+        else 0.0
+    )
     cagr_pct = _cagr_pct(total_return_pct=total_return_pct, elapsed_ms=elapsed_ms)
     if cagr_pct is None:
         limitations.append("cagr_unavailable_without_positive_elapsed_time")
@@ -318,9 +349,15 @@ def build_metrics_v2(
         if accounting_realized_pnl is not None
         else closed_trade_realized_pnl
     )
-    realized_return_pct = (realized_pnl / float(starting_cash) * 100.0) if starting_cash > 0.0 else 0.0
-    open_position_at_end = float(final_asset_qty) > 1e-12 or any(interval.close_ts is None for interval in position_intervals)
-    unrealized_pnl_end = (float(final_asset_qty) * float(final_mark_price)) - float(final_open_cost_basis)
+    realized_return_pct = (
+        (realized_pnl / float(starting_cash) * 100.0) if starting_cash > 0.0 else 0.0
+    )
+    open_position_at_end = float(final_asset_qty) > 1e-12 or any(
+        interval.close_ts is None for interval in position_intervals
+    )
+    unrealized_pnl_end = (float(final_asset_qty) * float(final_mark_price)) - float(
+        final_open_cost_basis
+    )
     if open_position_at_end:
         limitations.append("open_position_excluded_from_holding_time_stats")
     period_return_stats = _period_return_stats(points)
@@ -338,17 +375,32 @@ def build_metrics_v2(
         limitations.append("profit_factor_unbounded_no_losses")
     avg_win = (gross_profit / len(wins)) if wins else None
     avg_loss = (sum(losses) / len(losses)) if losses else None
-    payoff_ratio = (avg_win / abs(avg_loss)) if avg_win is not None and avg_loss not in (None, 0.0) else None
-    return_values = [float(trade.return_pct) for trade in closed_trades if trade.return_pct is not None]
-    expectancy_pct = (sum(return_values) / len(return_values)) if len(return_values) == len(closed_trades) and closed_trades else None
+    payoff_ratio = (
+        (avg_win / abs(avg_loss))
+        if avg_win is not None and avg_loss not in (None, 0.0)
+        else None
+    )
+    return_values = [
+        float(trade.return_pct)
+        for trade in closed_trades
+        if trade.return_pct is not None
+    ]
+    expectancy_pct = (
+        (sum(return_values) / len(return_values))
+        if len(return_values) == len(closed_trades) and closed_trades
+        else None
+    )
     if closed_trades and expectancy_pct is None:
-        limitations.append("expectancy_per_trade_pct_unavailable_without_entry_notional")
+        limitations.append(
+            "expectancy_per_trade_pct_unavailable_without_entry_notional"
+        )
     total_abs = sum(abs(value) for value in net_values)
     largest_abs = max((abs(value) for value in net_values), default=0.0)
     closed_durations = [
         int(interval.close_ts) - int(interval.open_ts)
         for interval in position_intervals
-        if interval.close_ts is not None and int(interval.close_ts) >= int(interval.open_ts)
+        if interval.close_ts is not None
+        and int(interval.close_ts) >= int(interval.open_ts)
     ]
     exposure_ms = (
         int(summary_exposure_ms)
@@ -381,8 +433,16 @@ def build_metrics_v2(
     else:
         fee_drag_ratio = fee_total / traded_notional
         slippage_drag_ratio = slippage_total / traded_notional
-    quote_ages = [int(record.quote_age_ms) for record in execution_records if record.quote_age_ms is not None]
-    quote_coverage_pct = (len(quote_ages) / len(execution_records) * 100.0) if execution_records else None
+    quote_ages = [
+        int(record.quote_age_ms)
+        for record in execution_records
+        if record.quote_age_ms is not None
+    ]
+    quote_coverage_pct = (
+        (len(quote_ages) / len(execution_records) * 100.0)
+        if execution_records
+        else None
+    )
     statuses = [record.status for record in execution_records]
     participation = build_participation_metrics(
         period_start_ts=period_start,
@@ -403,7 +463,9 @@ def build_metrics_v2(
             unrealized_pnl_end=float(unrealized_pnl_end),
             open_position_at_end=bool(open_position_at_end),
             period_return_unit=period_return_stats["period_return_unit"],
-            period_return_observation_count=int(period_return_stats["period_return_observation_count"] or 0),
+            period_return_observation_count=int(
+                period_return_stats["period_return_observation_count"] or 0
+            ),
             sharpe_ratio=period_return_stats["sharpe_ratio"],
             sortino_ratio=period_return_stats["sortino_ratio"],
             annualization_policy=period_return_stats["annualization_policy"],
@@ -417,10 +479,14 @@ def build_metrics_v2(
             payoff_ratio=payoff_ratio,
             profit_factor=profit_factor,
             profit_factor_unbounded=profit_factor_unbounded,
-            expectancy_per_trade_krw=(closed_trade_realized_pnl / len(net_values)) if net_values else None,
+            expectancy_per_trade_krw=(closed_trade_realized_pnl / len(net_values))
+            if net_values
+            else None,
             expectancy_per_trade_pct=expectancy_pct,
             max_consecutive_losses=_max_consecutive_losses(net_values),
-            single_trade_dependency_score=(largest_abs / total_abs) if total_abs > 0.0 else None,
+            single_trade_dependency_score=(largest_abs / total_abs)
+            if total_abs > 0.0
+            else None,
         ),
         time_exposure=TimeExposureMetrics(
             period_start_ts=int(period_start) if period_start is not None else None,
@@ -429,8 +495,12 @@ def build_metrics_v2(
             calendar_days=(elapsed_ms / MS_PER_DAY) if elapsed_ms is not None else None,
             active_bar_count=int(active_bar_count),
             exposure_time_pct=exposure_time_pct,
-            avg_holding_time_ms=(sum(closed_durations) / len(closed_durations)) if closed_durations else None,
-            median_holding_time_ms=median(closed_durations) if closed_durations else None,
+            avg_holding_time_ms=(sum(closed_durations) / len(closed_durations))
+            if closed_durations
+            else None,
+            median_holding_time_ms=median(closed_durations)
+            if closed_durations
+            else None,
             max_holding_time_ms=max(closed_durations) if closed_durations else None,
         ),
         cost_execution=CostExecutionMetrics(
@@ -438,10 +508,16 @@ def build_metrics_v2(
             slippage_total=float(slippage_total),
             fee_drag_ratio=fee_drag_ratio,
             slippage_drag_ratio=slippage_drag_ratio,
-            filled_execution_count=sum(1 for status in statuses if status in {"filled", "partial"}),
+            filled_execution_count=sum(
+                1 for status in statuses if status in {"filled", "partial"}
+            ),
             partial_fill_count=sum(1 for status in statuses if status == "partial"),
             failed_execution_count=sum(1 for status in statuses if status == "failed"),
-            skipped_execution_count=sum(1 for status in statuses if status in {"skipped", "skipped_with_warning"}),
+            skipped_execution_count=sum(
+                1
+                for status in statuses
+                if status in {"skipped", "skipped_with_warning"}
+            ),
             quote_coverage_pct=quote_coverage_pct,
             median_quote_age_ms=median(quote_ages) if quote_ages else None,
             p95_quote_age_ms=_percentile(quote_ages, 95) if quote_ages else None,
@@ -463,7 +539,11 @@ def build_participation_metrics(
 ) -> ParticipationMetrics:
     from .hashing import sha256_prefixed
 
-    days = _calendar_days(period_start_ts=period_start_ts, period_end_ts=period_end_ts, timezone_name=timezone_name)
+    days = _calendar_days(
+        period_start_ts=period_start_ts,
+        period_end_ts=period_end_ts,
+        timezone_name=timezone_name,
+    )
     intent_counts = {day: 0 for day in days}
     submit_expected_counts = {day: 0 for day in days}
     submitted_counts = {day: 0 for day in days}
@@ -476,19 +556,36 @@ def build_participation_metrics(
     fallback_closed_trade_count = 0
     base_sma_buy_count = 0
     for decision in decision_records:
-        if str(decision.get("final_signal") or decision.get("signal") or "").upper() != "BUY":
+        if (
+            str(decision.get("final_signal") or decision.get("signal") or "").upper()
+            != "BUY"
+        ):
             continue
-        ts = _coerce_ts(decision.get("decision_ts") or decision.get("ts") or decision.get("candle_ts"))
+        ts = _coerce_ts(
+            decision.get("decision_ts")
+            or decision.get("ts")
+            or decision.get("candle_ts")
+        )
         if ts is None:
             continue
         day = _day(ts, timezone_name)
         intent_counts[day] = intent_counts.get(day, 0) + 1
         submit_expected_counts[day] = submit_expected_counts.get(day, 0) + 1
-        trace = decision.get("trace") if isinstance(decision.get("trace"), dict) else decision
-        if isinstance(trace, dict) and trace.get("entry_signal_source") == "daily_participation_fallback":
+        trace = (
+            decision.get("trace")
+            if isinstance(decision.get("trace"), dict)
+            else decision
+        )
+        if (
+            isinstance(trace, dict)
+            and trace.get("entry_signal_source") == "daily_participation_fallback"
+        ):
             fallback_entry_count += 1
             fallback_submit_expected_count += 1
-        elif isinstance(trace, dict) and trace.get("entry_signal_source") in {"sma_cross", "base_sma"}:
+        elif isinstance(trace, dict) and trace.get("entry_signal_source") in {
+            "sma_cross",
+            "base_sma",
+        }:
             base_sma_buy_count += 1
     for record in execution_records:
         if str(record.side).upper() != "BUY":
@@ -500,7 +597,10 @@ def build_participation_metrics(
             submitted_counts[day] = submitted_counts.get(day, 0) + 1
             if record.entry_signal_source == "daily_participation_fallback":
                 fallback_submitted_count += 1
-        if str(record.status) in {"filled", "partial"} and float(record.filled_qty) > 0.0:
+        if (
+            str(record.status) in {"filled", "partial"}
+            and float(record.filled_qty) > 0.0
+        ):
             filled_counts[day] = filled_counts.get(day, 0) + 1
             if record.entry_signal_source == "daily_participation_fallback":
                 fallback_filled_count += 1
@@ -509,7 +609,10 @@ def build_participation_metrics(
             continue
         day = _day(trade.exit_ts, timezone_name)
         closed_counts[day] = closed_counts.get(day, 0) + 1
-        if getattr(trade, "entry_signal_source", None) == "daily_participation_fallback":
+        if (
+            getattr(trade, "entry_signal_source", None)
+            == "daily_participation_fallback"
+        ):
             fallback_closed_trade_count += 1
     zero_filled_days = sum(1 for day in days if filled_counts.get(day, 0) == 0)
     daily_payload = {
@@ -527,14 +630,22 @@ def build_participation_metrics(
         count_basis=count_basis,
         calendar_day_count=len(days),
         days_with_intent=sum(1 for day in days if intent_counts.get(day, 0) > 0),
-        days_with_submit_expected=sum(1 for day in days if submit_expected_counts.get(day, 0) > 0),
+        days_with_submit_expected=sum(
+            1 for day in days if submit_expected_counts.get(day, 0) > 0
+        ),
         days_with_submitted=sum(1 for day in days if submitted_counts.get(day, 0) > 0),
-        days_with_filled_execution=sum(1 for day in days if filled_counts.get(day, 0) > 0),
+        days_with_filled_execution=sum(
+            1 for day in days if filled_counts.get(day, 0) > 0
+        ),
         days_with_closed_trade=sum(1 for day in days if closed_counts.get(day, 0) > 0),
         zero_intent_days=sum(1 for day in days if intent_counts.get(day, 0) == 0),
         zero_filled_days=zero_filled_days,
-        max_consecutive_zero_filled_days=_max_consecutive_zero_days(days, filled_counts),
-        min_daily_filled_execution_count=min((filled_counts.get(day, 0) for day in days), default=0),
+        max_consecutive_zero_filled_days=_max_consecutive_zero_days(
+            days, filled_counts
+        ),
+        min_daily_filled_execution_count=min(
+            (filled_counts.get(day, 0) for day in days), default=0
+        ),
         fallback_entry_count=fallback_entry_count,
         fallback_submit_expected_count=fallback_submit_expected_count,
         fallback_submitted_count=fallback_submitted_count,
@@ -554,10 +665,17 @@ def _coerce_ts(value: Any) -> int | None:
 
 def _day(ts_ms: int, timezone_name: str) -> str:
     tz = ZoneInfo("Asia/Seoul" if timezone_name == "KST" else timezone_name)
-    return datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc).astimezone(tz).date().isoformat()
+    return (
+        datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc)
+        .astimezone(tz)
+        .date()
+        .isoformat()
+    )
 
 
-def _calendar_days(*, period_start_ts: int | None, period_end_ts: int | None, timezone_name: str) -> tuple[str, ...]:
+def _calendar_days(
+    *, period_start_ts: int | None, period_end_ts: int | None, timezone_name: str
+) -> tuple[str, ...]:
     if period_start_ts is None or period_end_ts is None:
         return ()
     start = _day(period_start_ts, timezone_name)
@@ -616,11 +734,19 @@ def _period_return_stats(points: tuple[EquityPoint, ...]) -> dict[str, object]:
     for previous, current in zip(ordered, ordered[1:]):
         previous_equity = float(previous.equity)
         current_equity = float(current.equity)
-        if previous_equity <= 0.0 or not isfinite(previous_equity) or not isfinite(current_equity):
+        if (
+            previous_equity <= 0.0
+            or not isfinite(previous_equity)
+            or not isfinite(current_equity)
+        ):
             continue
         returns.append((current_equity / previous_equity) - 1.0)
         intervals.append(int(current.ts) - int(previous.ts))
-    if len(returns) < 2 or not intervals or any(interval <= 0 for interval in intervals):
+    if (
+        len(returns) < 2
+        or not intervals
+        or any(interval <= 0 for interval in intervals)
+    ):
         return {
             "period_return_unit": "portfolio_bar_return" if returns else None,
             "period_return_observation_count": len(returns),
@@ -636,24 +762,40 @@ def _period_return_stats(points: tuple[EquityPoint, ...]) -> dict[str, object]:
     avg = mean(returns)
     volatility = pstdev(returns)
     downside = [min(0.0, value) for value in returns]
-    downside_deviation = (sum(value * value for value in downside) / len(downside)) ** 0.5
-    sharpe = (avg / volatility * scale) if scale is not None and volatility > 0.0 else None
-    sortino = (avg / downside_deviation * scale) if scale is not None and downside_deviation > 0.0 else None
+    downside_deviation = (
+        sum(value * value for value in downside) / len(downside)
+    ) ** 0.5
+    sharpe = (
+        (avg / volatility * scale) if scale is not None and volatility > 0.0 else None
+    )
+    sortino = (
+        (avg / downside_deviation * scale)
+        if scale is not None and downside_deviation > 0.0
+        else None
+    )
     return {
         "period_return_unit": "portfolio_bar_return",
         "period_return_observation_count": len(returns),
-        "sharpe_ratio": float(sharpe) if sharpe is not None and isfinite(sharpe) else None,
-        "sortino_ratio": float(sortino) if sortino is not None and isfinite(sortino) else None,
+        "sharpe_ratio": float(sharpe)
+        if sharpe is not None and isfinite(sharpe)
+        else None,
+        "sortino_ratio": float(sortino)
+        if sortino is not None and isfinite(sortino)
+        else None,
         "annualization_policy": "sqrt_periods_per_year_from_median_equity_point_interval",
     }
 
 
-def _exposure_ms(*, position_intervals: tuple[PositionInterval, ...], period_end: int | None) -> int:
+def _exposure_ms(
+    *, position_intervals: tuple[PositionInterval, ...], period_end: int | None
+) -> int:
     total = 0
     if period_end is None:
         return total
     for interval in position_intervals:
-        close_ts = int(interval.close_ts) if interval.close_ts is not None else int(period_end)
+        close_ts = (
+            int(interval.close_ts) if interval.close_ts is not None else int(period_end)
+        )
         if close_ts > int(interval.open_ts):
             total += close_ts - int(interval.open_ts)
     return total

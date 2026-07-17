@@ -4,13 +4,24 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from market_research.execution_reality_contract import build_execution_capability_contract
+from market_research.execution_reality_contract import (
+    build_execution_capability_contract,
+)
 
-from .data_plane import build_dataset_quality_report_sql, dataset_quality_policy_payload, readiness_mode_payload, split_names, walk_forward_payload
+from .data_plane import (
+    build_dataset_quality_report_sql,
+    dataset_quality_policy_payload,
+    readiness_mode_payload,
+    split_names,
+    walk_forward_payload,
+)
 from .datasets.contracts import DatasetLoadContext
 from .datasets.registry import default_dataset_adapter_registry
 from .dataset_snapshot import load_dataset_range
-from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
+from .execution_calibration import (
+    compare_calibration_to_scenario,
+    load_calibration_artifact,
+)
 from .execution_calibration_contract import ExecutionCalibrationThresholds
 from .experiment_manifest import ExperimentManifest, load_manifest_with_registry
 from .strategy_registry import StrategyRegistry
@@ -30,7 +41,9 @@ def build_research_readiness_report(
     strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
-    manifest = load_manifest_with_registry(resolved_manifest_path, registry=strategy_registry)
+    manifest = load_manifest_with_registry(
+        resolved_manifest_path, registry=strategy_registry
+    )
     resolved_db_path = (
         Path(db_path).expanduser().resolve() if db_path is not None else None
     )
@@ -43,7 +56,10 @@ def build_research_readiness_report(
     failed = False
     registry = default_dataset_adapter_registry()
     adapter = registry.resolve(manifest.dataset.source)
-    if bool(getattr(adapter, "requires_runtime_db", False)) and resolved_db_path is None:
+    if (
+        bool(getattr(adapter, "requires_runtime_db", False))
+        and resolved_db_path is None
+    ):
         raise ValueError(
             f"runtime_context_missing:{manifest.dataset.source}:requires_runtime_db"
         )
@@ -70,8 +86,12 @@ def build_research_readiness_report(
 
     top_of_book = _top_of_book_payload(manifest=manifest, split_reports=split_reports)
     failed = failed or top_of_book["status"] == "FAIL"
-    execution_capability = _execution_capability_payload(manifest=manifest, top_of_book=top_of_book)
-    failed = failed or bool(execution_capability.get("unavailable_required_capabilities"))
+    execution_capability = _execution_capability_payload(
+        manifest=manifest, top_of_book=top_of_book
+    )
+    failed = failed or bool(
+        execution_capability.get("unavailable_required_capabilities")
+    )
 
     execution_calibration = _execution_calibration_payload(
         manifest=manifest,
@@ -121,7 +141,9 @@ def build_research_readiness_report(
         "execution_capability_contract": execution_capability["contract"],
         "execution_capability_contract_hash": execution_capability["contract_hash"],
         "evidence_tier": execution_capability["evidence_tier"],
-        "unavailable_required_capabilities": execution_capability["unavailable_required_capabilities"],
+        "unavailable_required_capabilities": execution_capability[
+            "unavailable_required_capabilities"
+        ],
         "execution_calibration": execution_calibration,
         "walk_forward": walk_forward,
         "next_actions": next_actions,
@@ -144,18 +166,26 @@ def cmd_research_readiness(
             db_path=context.paths.db_path,
             execution_calibration_path=execution_calibration_path,
             strategy_registry=strategy_registry,
-            environment_summary=(context.environment.as_dict() if context.environment is not None else None),
+            environment_summary=(
+                context.environment.as_dict()
+                if context.environment is not None
+                else None
+            ),
             progress_callback=(
                 None
                 if as_json
-                else lambda split_name, method: context.printer(f"[RESEARCH-READINESS] scanning split={split_name} method={method}")
+                else lambda split_name, method: context.printer(
+                    f"[RESEARCH-READINESS] scanning split={split_name} method={method}"
+                )
             ),
         )
     except Exception as exc:
         context.printer(f"[RESEARCH-READINESS] error={exc}")
         return 1
     if as_json:
-        context.printer(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
+        context.printer(
+            json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
+        )
     else:
         _print_readiness(report, printer=context.printer)
     return 0 if report["status"] == "PASS" else 1
@@ -168,9 +198,8 @@ def _adapter_quality_report(
     split_name: str,
     db_path: Path | None,
 ) -> Any:
-    if (
-        bool(getattr(adapter, "requires_runtime_db", False))
-        and getattr(adapter, "supports_sqlite_streaming_quality_scan", False)
+    if bool(getattr(adapter, "requires_runtime_db", False)) and getattr(
+        adapter, "supports_sqlite_streaming_quality_scan", False
     ):
         if db_path is None:
             raise ValueError(
@@ -188,7 +217,9 @@ def _adapter_quality_report(
         split_name=split_name,
         date_range=date_range,
     )
-    return adapter.quality_report(snapshot=snapshot, context=DatasetLoadContext(db_path=db_path))
+    return adapter.quality_report(
+        snapshot=snapshot, context=DatasetLoadContext(db_path=db_path)
+    )
 
 
 def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
@@ -215,8 +246,12 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
         "quality_reasons": list(report.get("quality_gate_reasons") or []),
         "top_of_book_required": bool(report.get("top_of_book_required")),
         "top_of_book_missing_policy": report.get("top_of_book_missing_policy"),
-        "top_of_book_expected_signal_count": report.get("top_of_book_expected_signal_count"),
-        "top_of_book_candle_quote_expected_count": report.get("top_of_book_expected_signal_count"),
+        "top_of_book_expected_signal_count": report.get(
+            "top_of_book_expected_signal_count"
+        ),
+        "top_of_book_candle_quote_expected_count": report.get(
+            "top_of_book_expected_signal_count"
+        ),
         "top_of_book_joined_count": report.get("top_of_book_joined_count"),
         "top_of_book_candle_quote_joined_count": report.get("top_of_book_joined_count"),
         "top_of_book_missing_count": report.get("top_of_book_missing_count"),
@@ -225,36 +260,56 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
         "top_of_book_candle_quote_coverage_pct": report.get("top_of_book_coverage_pct"),
         "signal_execution_quote_coverage_pct": None,
         "signal_execution_quote_coverage_status": "not_computable_without_strategy_signal_run",
-        "signal_level_depth_coverage_pct": report.get("signal_level_depth_coverage_pct"),
-        "signal_level_depth_coverage_status": report.get("signal_level_depth_coverage_status"),
+        "signal_level_depth_coverage_pct": report.get(
+            "signal_level_depth_coverage_pct"
+        ),
+        "signal_level_depth_coverage_status": report.get(
+            "signal_level_depth_coverage_status"
+        ),
         "depth_available": bool(report.get("depth_available")),
         "depth_available_semantics": report.get("depth_available_semantics"),
         "depth_evidence_available": bool(report.get("depth_evidence_available")),
         "l2_depth_evidence_available": bool(report.get("depth_evidence_available")),
         "depth_availability_source": report.get("depth_availability_source"),
         "l2_depth_rows_available": bool(report.get("l2_depth_rows_available")),
-        "l2_depth_complete_snapshots_available": bool(report.get("l2_depth_complete_snapshots_available")),
+        "l2_depth_complete_snapshots_available": bool(
+            report.get("l2_depth_complete_snapshots_available")
+        ),
         "l2_depth_snapshot_count": int(report.get("l2_depth_snapshot_count") or 0),
         "l2_depth_row_count": int(report.get("l2_depth_row_count") or 0),
         "l2_depth_first_ts": report.get("l2_depth_first_ts"),
         "l2_depth_last_ts": report.get("l2_depth_last_ts"),
         "l2_depth_sources": list(report.get("l2_depth_sources") or []),
         "l2_depth_content_hash": report.get("l2_depth_content_hash"),
-        "depth_snapshot_selection_policy": report.get("depth_snapshot_selection_policy"),
-        "depth_liquidity_sufficiency_status": report.get("depth_liquidity_sufficiency_status"),
-        "depth_walk_execution_model_available": bool(report.get("depth_walk_execution_model_available")),
-        "depth_walk_execution_model_used": bool(report.get("depth_walk_execution_model_used")),
-        "full_orderbook_depth_available": bool(report.get("full_orderbook_depth_available")),
+        "depth_snapshot_selection_policy": report.get(
+            "depth_snapshot_selection_policy"
+        ),
+        "depth_liquidity_sufficiency_status": report.get(
+            "depth_liquidity_sufficiency_status"
+        ),
+        "depth_walk_execution_model_available": bool(
+            report.get("depth_walk_execution_model_available")
+        ),
+        "depth_walk_execution_model_used": bool(
+            report.get("depth_walk_execution_model_used")
+        ),
+        "full_orderbook_depth_available": bool(
+            report.get("full_orderbook_depth_available")
+        ),
         "queue_position_available": bool(report.get("queue_position_available")),
         "trade_ticks_available": bool(report.get("trade_ticks_available")),
-        "market_impact_model_available": bool(report.get("market_impact_model_available")),
+        "market_impact_model_available": bool(
+            report.get("market_impact_model_available")
+        ),
         "intra_candle_path_available": bool(report.get("intra_candle_path_available")),
         "top_of_book_gate_status": report.get("top_of_book_gate_status"),
         "top_of_book_gate_reasons": list(report.get("top_of_book_gate_reasons") or []),
     }
 
 
-def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _top_of_book_payload(
+    *, manifest: ExperimentManifest, split_reports: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     spec = manifest.dataset.top_of_book
     depth_summary = _aggregate_l2_depth_summary(split_reports)
     if spec is None:
@@ -285,10 +340,19 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
             "reasons": [],
             "next_action": "none",
         }
-    expected = sum(int(item.get("top_of_book_expected_signal_count") or 0) for item in split_reports.values())
-    joined = sum(int(item.get("top_of_book_joined_count") or 0) for item in split_reports.values())
+    expected = sum(
+        int(item.get("top_of_book_expected_signal_count") or 0)
+        for item in split_reports.values()
+    )
+    joined = sum(
+        int(item.get("top_of_book_joined_count") or 0)
+        for item in split_reports.values()
+    )
     coverage = round((joined / expected * 100.0), 8) if expected else 0.0
-    statuses = {str(item.get("top_of_book_gate_status") or "UNKNOWN") for item in split_reports.values()}
+    statuses = {
+        str(item.get("top_of_book_gate_status") or "UNKNOWN")
+        for item in split_reports.values()
+    }
     status = "PASS"
     if "FAIL" in statuses:
         status = "FAIL"
@@ -341,7 +405,9 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
     }
 
 
-def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: dict[str, Any]) -> dict[str, Any]:
+def _execution_capability_payload(
+    *, manifest: ExperimentManifest, top_of_book: dict[str, Any]
+) -> dict[str, Any]:
     policy = manifest.execution_timing
     evidence_tier = {
         "candle_close_legacy": "candle_close_optimistic",
@@ -351,8 +417,11 @@ def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: 
     }.get(policy.fill_reference_policy, "unknown")
     contract = build_execution_capability_contract(
         fill_reference_policy=policy.fill_reference_policy,
-        top_of_book_required=bool(manifest.dataset.top_of_book.required) if manifest.dataset.top_of_book else False,
-        top_of_book_available=top_of_book.get("status") == "PASS" and int(top_of_book.get("joined_count") or 0) > 0,
+        top_of_book_required=bool(manifest.dataset.top_of_book.required)
+        if manifest.dataset.top_of_book
+        else False,
+        top_of_book_available=top_of_book.get("status") == "PASS"
+        and int(top_of_book.get("joined_count") or 0) > 0,
         top_of_book_is_full_depth=False,
         l2_depth_snapshot_required=policy.depth_required,
         full_orderbook_depth_required=False,
@@ -384,31 +453,66 @@ def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: 
         "depth_required": policy.depth_required,
         "depth_available": contract["available_capabilities"]["l2_depth_snapshot"],
         "l2_depth_rows_available": bool(top_of_book.get("l2_depth_rows_available")),
-        "l2_depth_complete_snapshots_available": bool(top_of_book.get("l2_depth_complete_snapshots_available")),
+        "l2_depth_complete_snapshots_available": bool(
+            top_of_book.get("l2_depth_complete_snapshots_available")
+        ),
         "l2_depth_snapshot_count": int(top_of_book.get("l2_depth_snapshot_count") or 0),
         "l2_depth_row_count": int(top_of_book.get("l2_depth_row_count") or 0),
-        "depth_walk_execution_model_available": bool(top_of_book.get("depth_walk_execution_model_available")),
-        "depth_walk_execution_model_used": bool(top_of_book.get("depth_walk_execution_model_used")),
-        "full_orderbook_depth_available": contract["available_capabilities"]["full_orderbook_depth"],
-        "signal_level_depth_coverage_pct": top_of_book.get("signal_level_depth_coverage_pct"),
-        "signal_level_depth_coverage_status": top_of_book.get("signal_level_depth_coverage_status"),
-        "depth_liquidity_sufficiency_status": top_of_book.get("depth_liquidity_sufficiency_status"),
-        "market_impact_model_available": contract["available_capabilities"]["market_impact_model"],
-        "top_of_book_is_full_depth": contract["available_capabilities"]["top_of_book_is_full_depth"],
+        "depth_walk_execution_model_available": bool(
+            top_of_book.get("depth_walk_execution_model_available")
+        ),
+        "depth_walk_execution_model_used": bool(
+            top_of_book.get("depth_walk_execution_model_used")
+        ),
+        "full_orderbook_depth_available": contract["available_capabilities"][
+            "full_orderbook_depth"
+        ],
+        "signal_level_depth_coverage_pct": top_of_book.get(
+            "signal_level_depth_coverage_pct"
+        ),
+        "signal_level_depth_coverage_status": top_of_book.get(
+            "signal_level_depth_coverage_status"
+        ),
+        "depth_liquidity_sufficiency_status": top_of_book.get(
+            "depth_liquidity_sufficiency_status"
+        ),
+        "market_impact_model_available": contract["available_capabilities"][
+            "market_impact_model"
+        ],
+        "top_of_book_is_full_depth": contract["available_capabilities"][
+            "top_of_book_is_full_depth"
+        ],
         "status": "PASS" if not unavailable else "FAIL",
         "next_action": next_action,
     }
 
 
-def _aggregate_l2_depth_summary(split_reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    rows_available = any(bool(item.get("l2_depth_rows_available")) for item in split_reports.values())
-    complete_snapshots_available = any(
-        bool(item.get("l2_depth_complete_snapshots_available")) for item in split_reports.values()
+def _aggregate_l2_depth_summary(
+    split_reports: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    rows_available = any(
+        bool(item.get("l2_depth_rows_available")) for item in split_reports.values()
     )
-    l2_row_count = sum(int(item.get("l2_depth_row_count") or 0) for item in split_reports.values())
-    l2_snapshot_count = sum(int(item.get("l2_depth_snapshot_count") or 0) for item in split_reports.values())
-    first_values = [int(item["l2_depth_first_ts"]) for item in split_reports.values() if item.get("l2_depth_first_ts") is not None]
-    last_values = [int(item["l2_depth_last_ts"]) for item in split_reports.values() if item.get("l2_depth_last_ts") is not None]
+    complete_snapshots_available = any(
+        bool(item.get("l2_depth_complete_snapshots_available"))
+        for item in split_reports.values()
+    )
+    l2_row_count = sum(
+        int(item.get("l2_depth_row_count") or 0) for item in split_reports.values()
+    )
+    l2_snapshot_count = sum(
+        int(item.get("l2_depth_snapshot_count") or 0) for item in split_reports.values()
+    )
+    first_values = [
+        int(item["l2_depth_first_ts"])
+        for item in split_reports.values()
+        if item.get("l2_depth_first_ts") is not None
+    ]
+    last_values = [
+        int(item["l2_depth_last_ts"])
+        for item in split_reports.values()
+        if item.get("l2_depth_last_ts") is not None
+    ]
     content_hashes = sorted(
         {
             str(item.get("l2_depth_content_hash"))
@@ -424,7 +528,11 @@ def _aggregate_l2_depth_summary(split_reports: dict[str, dict[str, Any]]) -> dic
         "depth_availability_source": (
             "sqlite_orderbook_depth_levels_complete_snapshots"
             if complete_snapshots_available
-            else ("sqlite_orderbook_depth_levels_rows_only" if rows_available else "orderbook_depth_levels_missing_or_empty")
+            else (
+                "sqlite_orderbook_depth_levels_rows_only"
+                if rows_available
+                else "orderbook_depth_levels_missing_or_empty"
+            )
         ),
         "l2_depth_rows_available": rows_available,
         "l2_depth_complete_snapshots_available": complete_snapshots_available,
@@ -439,7 +547,9 @@ def _aggregate_l2_depth_summary(split_reports: dict[str, dict[str, Any]]) -> dic
                 for source in item.get("l2_depth_sources") or []
             }
         ),
-        "l2_depth_content_hash": content_hashes[0] if len(content_hashes) == 1 else None,
+        "l2_depth_content_hash": content_hashes[0]
+        if len(content_hashes) == 1
+        else None,
         "l2_depth_content_hashes": content_hashes,
     }
 
@@ -479,7 +589,8 @@ def _execution_calibration_payload(
     gates = [
         compare_calibration_to_scenario(
             calibration=artifact,
-            assumed_slippage_bps=scenario.slippage_bps + scenario.market_order_extra_cost_bps,
+            assumed_slippage_bps=scenario.slippage_bps
+            + scenario.market_order_extra_cost_bps,
             assumed_latency_ms=scenario.latency_ms,
             assumed_partial_fill_rate=scenario.partial_fill_rate,
             assumed_order_failure_rate=scenario.order_failure_rate,
@@ -488,12 +599,23 @@ def _execution_calibration_payload(
             expected_execution_timing_policy=manifest.execution_timing.as_dict(),
             require_content_hash=required,
             min_sample_count=ExecutionCalibrationThresholds().min_sample,
-            require_quality_gate_pass=required or manifest.execution_model.calibration_strictness == "fail",
+            require_quality_gate_pass=required
+            or manifest.execution_model.calibration_strictness == "fail",
         )
         for scenario in manifest.execution_model.scenarios
     ]
-    reasons = sorted({str(reason) for gate in gates for reason in gate.get("reasons") or []})
-    status = "PASS" if not reasons else ("FAIL" if required or manifest.execution_model.calibration_strictness == "fail" else "WARN")
+    reasons = sorted(
+        {str(reason) for gate in gates for reason in gate.get("reasons") or []}
+    )
+    status = (
+        "PASS"
+        if not reasons
+        else (
+            "FAIL"
+            if required or manifest.execution_model.calibration_strictness == "fail"
+            else "WARN"
+        )
+    )
     return {
         "required": required,
         "artifact_path": str(Path(execution_calibration_path).expanduser()),
@@ -502,7 +624,9 @@ def _execution_calibration_payload(
         "scenario_gates": gates,
         "status": status,
         "reasons": reasons,
-        "next_action": "none" if status == "PASS" else "provide a sufficient external canonical execution calibration artifact",
+        "next_action": "none"
+        if status == "PASS"
+        else "provide a sufficient external canonical execution calibration artifact",
     }
 
 
@@ -516,7 +640,9 @@ def _next_actions(
 ) -> list[str]:
     actions: list[str] = []
     if any(split["quality_status"] != "PASS" for split in split_reports.values()):
-        actions.append("replace or correct the external immutable dataset or SQLite input, then rerun readiness")
+        actions.append(
+            "replace or correct the external immutable dataset or SQLite input, then rerun readiness"
+        )
     if top_of_book["status"] == "FAIL":
         actions.append(str(top_of_book["next_action"]))
     if execution_capability["status"] == "FAIL":
@@ -535,7 +661,9 @@ def _print_readiness(report: dict[str, Any], *, printer: Any = print) -> None:
     printer(f"  manifest_hash={report['manifest_hash']}")
     printer(f"  mode={report['mode']}")
     printer(f"  db_path={report['db_path']}")
-    printer(f"  environment={json.dumps(report.get('environment') or {}, sort_keys=True)}")
+    printer(
+        f"  environment={json.dumps(report.get('environment') or {}, sort_keys=True)}"
+    )
     printer(f"  market={report['market']} interval={report['interval']}")
     readiness_mode = report["readiness_mode"]
     printer(

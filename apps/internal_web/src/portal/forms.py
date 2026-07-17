@@ -12,7 +12,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 
-from market_research.research.experiment_manifest import (
+from market_research.application.adapter_contracts import (
     ManifestValidationError,
     parse_manifest_with_registry,
 )
@@ -286,9 +286,9 @@ class HistoricalDecisionReportImportForm(forms.Form):
     def __init__(self, *args: Any, operator: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.operator = operator
-        self.fields["owner"].queryset = get_user_model().objects.filter(
-            is_active=True
-        ).order_by("username", "pk")
+        self.fields["owner"].queryset = (
+            get_user_model().objects.filter(is_active=True).order_by("username", "pk")
+        )
 
     def save(
         self,

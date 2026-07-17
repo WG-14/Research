@@ -482,8 +482,7 @@ def _required_runtime_db_path(
     except (OSError, ValueError) as exc:
         source, role = required
         raise ValueError(
-            "runtime_context_missing:"
-            f"source={source}:capability=runtime_db:role={role}"
+            f"runtime_context_missing:source={source}:capability=runtime_db:role={role}"
         ) from exc
 
 

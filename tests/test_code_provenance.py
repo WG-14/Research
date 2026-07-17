@@ -8,7 +8,9 @@ def test_source_and_dependency_changes_alter_code_provenance(tmp_path: Path) -> 
     source = tmp_path / "src" / "package" / "module.py"
     source.parent.mkdir(parents=True)
     source.write_text("VALUE = 1\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\n", encoding="utf-8"
+    )
     (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
 
     first = collect_code_provenance(tmp_path)
@@ -19,7 +21,11 @@ def test_source_and_dependency_changes_alter_code_provenance(tmp_path: Path) -> 
 
     assert first["source_tree_hash"] != second["source_tree_hash"]
     assert second["dependency_contract_hash"] != third["dependency_contract_hash"]
-    assert first["code_provenance_hash"] != second["code_provenance_hash"] != third["code_provenance_hash"]
+    assert (
+        first["code_provenance_hash"]
+        != second["code_provenance_hash"]
+        != third["code_provenance_hash"]
+    )
     assert first["git_available"] is False
 
 
@@ -27,7 +33,9 @@ def test_git_provenance_distinguishes_clean_and_dirty_worktrees(tmp_path: Path) 
     source = tmp_path / "src" / "package" / "module.py"
     source.parent.mkdir(parents=True)
     source.write_text("VALUE = 1\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\n", encoding="utf-8"
+    )
     (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
