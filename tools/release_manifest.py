@@ -270,6 +270,8 @@ def _deployment_digest(root: Path) -> str:
 
         regular_file_count = 0
         for path in paths:
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                continue
             try:
                 status = path.lstat()
             except OSError as error:

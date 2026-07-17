@@ -113,6 +113,24 @@ def test_deployment_digest_binds_marker_script_content_and_modes(
     assert marker_mode_changed[0] != baseline[0]
 
 
+def test_deployment_digest_ignores_generated_bytecode_but_binds_new_source(
+    tmp_path: Path,
+) -> None:
+    _marker, native_policy, _runtime_script = _deployment_fixture(tmp_path)
+    baseline = _deployment_digests(tmp_path)
+
+    bytecode = native_policy.parent / "__pycache__" / "policy.cpython-312.pyc"
+    bytecode.parent.mkdir()
+    bytecode.write_bytes(b"generated-bytecode-is-not-a-release-input")
+    assert _deployment_digests(tmp_path) == baseline
+
+    additional_policy = native_policy.parent / "additional-policy.conf"
+    additional_policy.write_text("policy=added\n", encoding="utf-8")
+    changed = _deployment_digests(tmp_path)
+    assert changed[0] == changed[1]
+    assert changed[0] != baseline[0]
+
+
 def test_deployment_digest_fails_closed_for_missing_inputs(tmp_path: Path) -> None:
     marker, _native_policy, _runtime_script = _deployment_fixture(tmp_path)
     marker.unlink()
