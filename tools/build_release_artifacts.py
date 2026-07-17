@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import gzip
 import os
 import shutil
 import subprocess
@@ -44,6 +46,61 @@ def _inject_provenance(snapshot: Path, git_sha: str) -> None:
             / release_manifest._PROVENANCE_FILENAME
         )
         path.write_bytes(release_manifest._canonical(payload) + b"\n")
+
+
+def _normalize_sdist(path: Path, source_date_epoch: int) -> None:
+    """Rewrite one sdist with deterministic tar and gzip metadata."""
+
+    if source_date_epoch < 0:
+        raise ReleaseBuildError("source_date_epoch_invalid")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".normalized",
+        dir=path.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        with (
+            tarfile.open(path, "r:gz") as source,
+            temporary.open("wb") as output,
+        ):
+            with gzip.GzipFile(
+                filename="",
+                mode="wb",
+                fileobj=output,
+                compresslevel=9,
+                mtime=source_date_epoch,
+            ) as compressed:
+                with tarfile.open(
+                    fileobj=compressed,
+                    mode="w",
+                    format=tarfile.PAX_FORMAT,
+                ) as target:
+                    for member in source.getmembers():
+                        normalized = copy.copy(member)
+                        normalized.mtime = source_date_epoch
+                        normalized.uid = 0
+                        normalized.gid = 0
+                        normalized.uname = ""
+                        normalized.gname = ""
+                        normalized.pax_headers = {
+                            key: value
+                            for key, value in member.pax_headers.items()
+                            if key not in {"mtime", "atime", "ctime"}
+                        }
+                        payload = (
+                            source.extractfile(member) if member.isfile() else None
+                        )
+                        target.addfile(normalized, payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except (OSError, tarfile.TarError) as error:
+        raise ReleaseBuildError("sdist_normalization_failed") from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def build_release_artifacts(root: Path, output_directory: Path) -> str:
@@ -94,6 +151,8 @@ def build_release_artifacts(root: Path, output_directory: Path) -> str:
             env=environment,
             check=True,
         )
+        for sdist in sorted(built.glob("*.tar.gz")):
+            _normalize_sdist(sdist, int(commit_timestamp))
         components = release_manifest._component_metadata(snapshot)
         artifacts = release_manifest.discover_artifacts(snapshot, built, components)
         release_manifest.build_release_manifest(

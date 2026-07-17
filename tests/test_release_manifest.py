@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import csv
+import gzip
 import hashlib
 import importlib.util
 import io
 import json
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -19,6 +21,9 @@ SPEC = importlib.util.spec_from_file_location("release_manifest_tool", MODULE_PA
 assert SPEC and SPEC.loader
 release_manifest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_manifest)
+sys.path.insert(0, str(ROOT / "tools"))
+import build_release_artifacts  # noqa: E402
+
 PREFLIGHT_MODULE_PATH = (
     ROOT
     / "services"
@@ -146,6 +151,54 @@ def test_deployment_digest_rejects_symlinks(tmp_path: Path) -> None:
     marker, _native_policy, runtime_script = _deployment_fixture(tmp_path)
     (runtime_script.parent / "linked-policy").symlink_to(marker)
     _assert_deployment_invalid(tmp_path)
+
+
+def _write_nondeterministic_sdist(
+    path: Path,
+    *,
+    gzip_mtime: int,
+    member_mtime: int,
+) -> None:
+    with path.open("wb") as output:
+        with gzip.GzipFile(
+            filename="source.tar",
+            mode="wb",
+            fileobj=output,
+            mtime=gzip_mtime,
+        ) as compressed:
+            with tarfile.open(
+                fileobj=compressed,
+                mode="w",
+                format=tarfile.PAX_FORMAT,
+            ) as archive:
+                member = tarfile.TarInfo("package-1.0/payload.txt")
+                payload = b"identical-payload\n"
+                member.size = len(payload)
+                member.mtime = member_mtime + 0.5
+                member.uid = 1000
+                member.gid = 1000
+                member.uname = "builder"
+                member.gname = "builder"
+                archive.addfile(member, io.BytesIO(payload))
+
+
+def test_sdist_normalization_is_byte_reproducible(tmp_path: Path) -> None:
+    first = tmp_path / "first.tar.gz"
+    second = tmp_path / "second.tar.gz"
+    _write_nondeterministic_sdist(first, gzip_mtime=10, member_mtime=20)
+    _write_nondeterministic_sdist(second, gzip_mtime=30, member_mtime=40)
+
+    epoch = 1_700_000_000
+    build_release_artifacts._normalize_sdist(first, epoch)
+    build_release_artifacts._normalize_sdist(second, epoch)
+
+    assert first.read_bytes() == second.read_bytes()
+    with tarfile.open(first, "r:gz") as archive:
+        member = archive.getmember("package-1.0/payload.txt")
+        assert member.mtime == epoch
+        assert member.uid == member.gid == 0
+        assert member.uname == member.gname == ""
+        assert archive.extractfile(member).read() == b"identical-payload\n"
 
 
 def _metadata(distribution: str, version: str, component: str) -> bytes:
