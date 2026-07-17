@@ -142,6 +142,9 @@ def test_release_build_and_native_install_are_provenance_bound_wheels() -> None:
     assert web_project["tool"]["setuptools"]["package-data"]["market_research_web"] == [
         "_build_provenance.json"
     ]
+    operations_ignore = (OPERATIONS / ".gitignore").read_text(encoding="utf-8")
+    assert "runtime.env" in operations_ignore
+    assert "*.pem" in operations_ignore
 
     platform = (ROOT / "scripts" / "platform").read_text(encoding="utf-8")
     assert "tools/build_release_artifacts.py" in platform
