@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import django.db.models.deletion
 import uuid
+from django.apps.registry import Apps
 from django.conf import settings
 from django.db import migrations, models
+from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 from django.db.models import Q
 
 
 IMPORT_PERMISSION = "import_research_report"
 
 
-def grant_import_permission(apps, schema_editor):
+def grant_import_permission(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     ContentType = apps.get_model("contenttypes", "ContentType")
     Group = apps.get_model("auth", "Group")
     Permission = apps.get_model("auth", "Permission")
@@ -30,7 +35,10 @@ def grant_import_permission(apps, schema_editor):
     admin_group.permissions.add(permission)
 
 
-def revoke_import_permission(apps, schema_editor):
+def revoke_import_permission(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     Permission = apps.get_model("auth", "Permission")
     database = schema_editor.connection.alias
     Permission.objects.using(database).filter(

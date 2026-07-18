@@ -256,11 +256,15 @@ def _write_metrics_csv(
     writer.writeheader()
     for row in rows:
         payload = dict(row)
-        payload["warnings"] = ",".join(
-            str(item) for item in payload.get("warnings", [])
-        )
+        payload["warnings"] = ",".join(_string_items(payload.get("warnings")))
         writer.writerow(payload)
     write_text_atomic(path, buffer.getvalue())
+
+
+def _string_items(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    return tuple(str(item) for item in value)
 
 
 def _file_hash(path: Path) -> str:

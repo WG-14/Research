@@ -153,6 +153,20 @@ Alert from stable reason codes and systemd state. Do not export paths, URLs,
 usernames, request bodies, cookies, DSNs, environment values, or payload labels.
 Daily preflight failure and approaching certificate expiry are incidents.
 
+The built-in service-health alert workflow is restricted to the allowlist in
+`research_operations.alerting`; it is not a market or trading monitor. Configure
+each supervised delivery unit with a mode-0600
+`RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE`, then exercise the release-specific
+receiver before promotion. Raise with a stable incident idempotency key, run
+`alert-deliver-once` for the bound endpoint, record acknowledgement with a
+different actor and a stable reason code, and run `alert-escalate-once` from a
+timer. An acknowledged incident must not escalate. Retain the alert ID and
+terminal event hash with the receiver's independently retained idempotency key.
+Test both the acknowledgement path and an intentionally unacknowledged deadline
+that reaches the secondary receiver. A repository loopback receiver proves the
+transport and PostgreSQL workflow but does not establish the organization's
+actual on-call ownership or external receiver availability.
+
 ## 5. Stop, restart, and host reboot
 
 Before planned shutdown, close mutation admission and wait for active mutation,
@@ -252,6 +266,19 @@ If interrupted after database restore but before receipt publication, preserve
 the target and rerun the same command only with the documented
 `RESEARCH_OPS_RECOVERY_RESUME=true`. Resume accepts the exact database,
 namespace, manifest, and partial receipt state; it is not a repair mode.
+
+The Operations PostgreSQL CI job exercises this same pair of backup/restore
+scripts, rather than a mocked archive reader. It builds the clean-checkout
+release artifacts and canonical release manifest, creates representative
+immutable research/Web/Operations evidence, restores into a random new blank
+database and filesystem namespace, revalidates target-resolved object and
+reproduction bindings, verifies the signed receipt and recorded duration, and
+then drops only the guarded random target. The Operations JUnit gate rejects
+all skipped tests, so this rehearsal cannot silently skip in CI. Treat that as
+repository-level E4 regression evidence only: production promotion still
+requires an independently retained receipt from the qualified target host and
+does not inherit E5, organization-PKI, off-site-custody, named-owner, or
+approved RPO/RTO status from CI.
 
 After independent review, activation is separate and explicit:
 

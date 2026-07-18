@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from market_research.paths import ResearchPathManager
 from market_research.storage_io import append_jsonl
@@ -24,6 +24,20 @@ from .hash_chain import (
     read_hash_chained_jsonl_snapshot,
 )
 from .hashing import content_hash_payload, sha256_prefixed
+from .knowledge_contract import (
+    AuthorityRef,
+    DecisionAlternative,
+    DecisionApprover,
+    DecisionRecord,
+    DecisionRisk,
+    KnowledgeContractError,
+)
+from .knowledge_registry import (
+    KnowledgeRegistryError,
+    knowledge_registry_path,
+    publish_idempotent_decision_record,
+    verify_decision_record,
+)
 
 
 GOVERNANCE_SCHEMA_VERSION = 1
@@ -156,6 +170,30 @@ _REQUIRED_EVIDENCE = {
         }
     ),
 }
+
+_MATERIAL_HYPOTHESIS_TRANSITIONS = frozenset(
+    {
+        ("IDEA", "HYPOTHESIS_DEFINED"),
+        ("EXPLORING", "VALIDATING"),
+        ("VALIDATING", "SUPPORTED"),
+        ("HYPOTHESIS_DEFINED", "REJECTED"),
+        ("HYPOTHESIS_DEFINED", "ARCHIVED"),
+        ("EXPLORING", "REJECTED"),
+        ("EXPLORING", "ARCHIVED"),
+        ("VALIDATING", "REJECTED"),
+        ("SUPPORTED", "ARCHIVED"),
+        ("REJECTED", "ARCHIVED"),
+    }
+)
+_MATERIAL_STRATEGY_TARGETS = frozenset(
+    {
+        StrategyCandidateLifecycleState.RESEARCH_APPROVED.value,
+        StrategyCandidateLifecycleState.REJECTED.value,
+        StrategyCandidateLifecycleState.RETIRED.value,
+    }
+)
+_MATERIAL_TRANSITION_POLICY_VERSION = "material-transition-policy.v1"
+_STRATEGY_APPROVAL_POLICY_VERSION = "strategy-approval-policy.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +346,16 @@ def _append_lifecycle_transition(
     )
     timestamp = recorded_at or datetime.now(timezone.utc).isoformat()
     _require_timezone(timestamp)
+    decision_binding = _material_transition_decision_binding(
+        manager=manager,
+        subject=subject,
+        from_state=from_state,
+        to_state=to_state,
+        actor_id=actor,
+        rationale=rationale,
+        evidence=evidence,
+        decided_at=timestamp,
+    )
     payload = {
         "schema_version": GOVERNANCE_SCHEMA_VERSION,
         "event_type": "lifecycle_transition",
@@ -319,6 +367,8 @@ def _append_lifecycle_transition(
         "evidence_hashes": dict(sorted(evidence.items())),
         "recorded_at": timestamp,
     }
+    if decision_binding is not None:
+        payload.update(decision_binding)
     try:
         return append_hash_chained_jsonl(
             store=_AppendStore(),
@@ -343,6 +393,7 @@ def append_human_review(
     requested_changes: tuple[Mapping[str, str], ...] = (),
     resolved_requirement_ids: tuple[str, ...] = (),
     decided_at: str | None = None,
+    review_request_id: str | None = None,
 ) -> dict[str, Any]:
     """Append a human judgment separately from automated lifecycle evidence."""
 
@@ -368,28 +419,62 @@ def append_human_review(
         raise GovernanceError(
             "human_review_approved_requires_candidate_approval_service"
         )
-    if normalized_decision is not HumanReviewDecision.APPROVED and resolved:
+    if resolved:
         raise GovernanceError("human_review_resolutions_allowed_only_for_approval")
-    timestamp = decided_at or datetime.now(timezone.utc).isoformat()
-    _require_timezone(timestamp)
+    if decided_at is not None:
+        _require_timezone(decided_at)
+    request_hash = _human_review_request_hash(
+        subject=subject.as_dict(),
+        decision=normalized_decision.value,
+        reviewer_id=reviewer,
+        reviewer_role=role,
+        rationale=reason,
+        reviewed_artifact_hash=reviewed_artifact_hash,
+        requested_changes=changes,
+        resolved_requirement_ids=resolved,
+    )
+    request_id = (
+        request_hash if review_request_id is None else str(review_request_id).strip()
+    )
+    if not request_id or len(request_id) > 255:
+        raise GovernanceError("human_review_request_id_invalid")
 
     def mutation(
         snapshot: HashChainSnapshot,
-        stage: Any,
+        stage: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]:
         rows = list(snapshot.rows)
-        actual_state = _current_state_from_rows(rows, subject)
-        if (
-            subject.subject_type is GovernanceSubjectType.STRATEGY_CANDIDATE
-            and actual_state
-            in {
-                StrategyCandidateLifecycleState.RESEARCH_APPROVED.value,
-                StrategyCandidateLifecycleState.RETIRED.value,
-            }
-        ):
-            raise GovernanceError(
-                "human_review_candidate_lifecycle_not_reviewable:" + str(actual_state)
+        matching_requests = [
+            row for row in rows if row.get("review_request_id") == request_id
+        ]
+        if matching_requests:
+            if (
+                len(matching_requests) != 1
+                or matching_requests[0].get("event_type") != "human_review_decision"
+                or matching_requests[0].get("decision")
+                == HumanReviewDecision.APPROVED.value
+            ):
+                raise GovernanceError("human_review_idempotency_binding_invalid")
+            existing = matching_requests[0]
+            existing_request_id = _validate_human_review_request_binding(
+                existing,
+                decision=HumanReviewDecision(str(existing.get("decision") or "")),
+                changes=_normalize_requested_changes(
+                    tuple(existing.get("requested_changes") or ())
+                ),
+                resolved_requirement_ids=tuple(
+                    str(item) for item in existing.get("resolved_requirement_ids") or ()
+                ),
             )
+            if existing_request_id != request_id:
+                raise GovernanceError("human_review_idempotency_binding_invalid")
+            if existing.get("review_request_hash") != request_hash:
+                raise GovernanceError("human_review_idempotency_conflict")
+            return existing
+        actual_state = _current_state_from_rows(rows, subject)
+        _validate_nonapproval_review_state(subject.subject_type, actual_state)
+        timestamp = decided_at or datetime.now(timezone.utc).isoformat()
+        _require_timezone(timestamp)
         return stage(
             {
                 "schema_version": GOVERNANCE_SCHEMA_VERSION,
@@ -402,6 +487,8 @@ def append_human_review(
                 "reviewed_artifact_hash": reviewed_artifact_hash,
                 "requested_changes": list(changes),
                 "resolved_requirement_ids": list(resolved),
+                "review_request_id": request_id,
+                "review_request_hash": request_hash,
                 "decided_at": timestamp,
             }
         )
@@ -451,6 +538,8 @@ def approve_strategy_candidate(
     prohibited = frozenset(str(item).strip() for item in prohibited_actor_ids)
     if any(not item for item in prohibited):
         raise GovernanceError("governance_prohibited_actor_ids_invalid")
+    if reviewer in prohibited:
+        raise GovernanceError("governance_separation_of_duties_violation")
     if decided_at is not None:
         _require_timezone(decided_at)
     _validate_hashes(
@@ -494,8 +583,6 @@ def approve_strategy_candidate(
 
     def mutation(snapshot: HashChainSnapshot, stage: Any) -> dict[str, Any]:
         rows = list(snapshot.rows)
-        if reviewer in prohibited:
-            raise GovernanceError("governance_separation_of_duties_violation")
         if _unpaired_approved_review_hashes(rows):
             raise GovernanceError("strategy_approval_orphan_review_present")
         if _review_exists_after_candidate_approval(rows):
@@ -512,6 +599,10 @@ def approve_strategy_candidate(
                 rows,
                 hypothesis_subject,
                 source_report_hash,
+            )
+            _verify_transition_decision_binding(
+                manager=manager,
+                transition=transition,
             )
             return _strategy_approval_artifact(
                 manager=manager,
@@ -589,6 +680,21 @@ def approve_strategy_candidate(
             )
         timestamp = decided_at or datetime.now(timezone.utc).isoformat()
         _require_timezone(timestamp)
+        decision_binding = _strategy_approval_decision_binding(
+            manager=manager,
+            subject=subject,
+            reviewer=reviewer,
+            rationale=reason,
+            proposer_ids=tuple(sorted(prohibited)) or ("research-proposal-owner",),
+            source_report_hash=source_report_hash,
+            final_holdout_confirmation_hash=final_holdout_confirmation_hash,
+            hypothesis_contract_hash=hypothesis_contract_hash,
+            strategy_plugin_contract_hash=strategy_plugin_contract_hash,
+            effective_strategy_parameters_hash=effective_strategy_parameters_hash,
+            request_hash=request_hash,
+            decided_at=timestamp,
+        )
+        timestamp = str(decision_binding.pop("decision_decided_at"))
         review = stage(
             {
                 "schema_version": GOVERNANCE_SCHEMA_VERSION,
@@ -603,6 +709,7 @@ def approve_strategy_candidate(
                 "resolved_requirement_ids": list(resolved),
                 "approval_request_id": request_id,
                 "approval_request_hash": request_hash,
+                **decision_binding,
                 "decided_at": timestamp,
             }
         )
@@ -621,6 +728,7 @@ def approve_strategy_candidate(
                 },
                 "approval_request_id": request_id,
                 "approval_request_hash": request_hash,
+                **decision_binding,
                 "recorded_at": timestamp,
             }
         )
@@ -652,6 +760,251 @@ def approve_strategy_candidate(
         ).value
     except (RuntimeError, ValueError) as exc:
         raise GovernanceError(str(exc)) from exc
+
+
+def _material_transition_decision_binding(
+    *,
+    manager: ResearchPathManager,
+    subject: GovernanceSubject,
+    from_state: str | None,
+    to_state: str,
+    actor_id: str,
+    rationale: str,
+    evidence: Mapping[str, str],
+    decided_at: str,
+) -> dict[str, Any] | None:
+    if not _is_material_transition(subject.subject_type, from_state, to_state):
+        return None
+    authority_hash = sha256_prefixed(
+        {
+            "schema_version": 1,
+            "subject": subject.as_dict(),
+            "from_state": from_state,
+            "to_state": to_state,
+            "evidence_hashes": dict(sorted(evidence.items())),
+        },
+        label="governance_transition_subject",
+    )
+    subject_ref = AuthorityRef(
+        authority="research_governance",
+        subject_type=subject.subject_type.value,
+        subject_id=subject.subject_id,
+        subject_version=subject.subject_version,
+        authority_hash=authority_hash,
+    )
+    decision_identity = sha256_prefixed(
+        {
+            "subject": subject_ref.as_dict(),
+            "from_state": from_state,
+            "to_state": to_state,
+            "actor_id": actor_id,
+            "rationale": rationale,
+            "evidence_hashes": dict(sorted(evidence.items())),
+            "policy_version": _MATERIAL_TRANSITION_POLICY_VERSION,
+        },
+        label="material_transition_decision_identity",
+    )
+    chosen_action = f"transition:{from_state or 'UNSET'}->{to_state}"
+    decision = DecisionRecord(
+        schema_version=1,
+        decision_id="governance-" + decision_identity.removeprefix("sha256:"),
+        version="1",
+        decision_type="governance_material_transition",
+        subject=subject_ref,
+        chosen_action=chosen_action,
+        rationale=rationale,
+        evidence_hashes=tuple(sorted({authority_hash, *evidence.values()})),
+        alternatives=(
+            DecisionAlternative(
+                alternative_id="retain-current-state",
+                description=f"Retain lifecycle state {from_state or 'UNSET'}.",
+                rejection_reason=(
+                    "The evidence-bound transition preconditions are satisfied."
+                ),
+            ),
+        ),
+        expected_effects=(
+            f"The authoritative lifecycle state becomes {to_state}.",
+            "The transition does not grant account access or trading permission.",
+        ),
+        risks=(
+            DecisionRisk(
+                risk_id="incorrect-lifecycle-promotion",
+                description="Insufficient evidence could advance research prematurely.",
+                severity="high" if to_state == "SUPPORTED" else "medium",
+                mitigation=(
+                    "Require the transition evidence hashes and governance CAS before "
+                    "state publication."
+                ),
+            ),
+        ),
+        proposer_ids=(actor_id,),
+        approver=DecisionApprover(
+            approver_type="policy",
+            approver_id="material-transition-policy",
+            role="automated_evidence_gate",
+        ),
+        policy_version=_MATERIAL_TRANSITION_POLICY_VERSION,
+        decided_at=decided_at,
+    )
+    return _publish_and_verify_decision(
+        manager=manager,
+        decision=decision,
+        expected_subject=subject_ref,
+        expected_action=chosen_action,
+    )
+
+
+def _strategy_approval_decision_binding(
+    *,
+    manager: ResearchPathManager,
+    subject: GovernanceSubject,
+    reviewer: str,
+    rationale: str,
+    proposer_ids: tuple[str, ...],
+    source_report_hash: str,
+    final_holdout_confirmation_hash: str,
+    hypothesis_contract_hash: str,
+    strategy_plugin_contract_hash: str,
+    effective_strategy_parameters_hash: str,
+    request_hash: str,
+    decided_at: str,
+) -> dict[str, Any]:
+    authority_hash = sha256_prefixed(
+        {
+            "schema_version": 1,
+            "subject": subject.as_dict(),
+            "from_state": StrategyCandidateLifecycleState.OUT_OF_SAMPLE_PASSED.value,
+            "to_state": StrategyCandidateLifecycleState.RESEARCH_APPROVED.value,
+            "request_hash": request_hash,
+            "source_report_hash": source_report_hash,
+            "final_holdout_confirmation_hash": final_holdout_confirmation_hash,
+            "hypothesis_contract_hash": hypothesis_contract_hash,
+            "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
+            "effective_strategy_parameters_hash": effective_strategy_parameters_hash,
+        },
+        label="strategy_approval_decision_subject",
+    )
+    subject_ref = AuthorityRef(
+        authority="research_governance",
+        subject_type=subject.subject_type.value,
+        subject_id=subject.subject_id,
+        subject_version=subject.subject_version,
+        authority_hash=authority_hash,
+    )
+    chosen_action = "transition:OUT_OF_SAMPLE_PASSED->RESEARCH_APPROVED"
+    decision = DecisionRecord(
+        schema_version=1,
+        decision_id="strategy-approval-" + request_hash.removeprefix("sha256:"),
+        version="1",
+        decision_type="strategy_research_approval",
+        subject=subject_ref,
+        chosen_action=chosen_action,
+        rationale=rationale,
+        evidence_hashes=tuple(
+            sorted(
+                {
+                    authority_hash,
+                    source_report_hash,
+                    final_holdout_confirmation_hash,
+                    hypothesis_contract_hash,
+                    strategy_plugin_contract_hash,
+                    effective_strategy_parameters_hash,
+                }
+            )
+        ),
+        alternatives=(
+            DecisionAlternative(
+                alternative_id="request-changes",
+                description="Keep the candidate pending and request evidence changes.",
+                rejection_reason="The reviewed evidence has no unresolved requirements.",
+            ),
+            DecisionAlternative(
+                alternative_id="reject-candidate",
+                description="Reject the research candidate.",
+                rejection_reason="The reviewed evidence satisfies the approval policy.",
+            ),
+        ),
+        expected_effects=(
+            "The candidate becomes eligible for a research strategy package.",
+            "Approval does not grant trading, account, or order-submission permission.",
+        ),
+        risks=(
+            DecisionRisk(
+                risk_id="false-positive-research-promotion",
+                description="An overfit candidate could be promoted as research evidence.",
+                severity="high",
+                mitigation=(
+                    "Bind final-holdout, source-report, strategy, parameter, and "
+                    "independent-review evidence."
+                ),
+            ),
+        ),
+        proposer_ids=proposer_ids,
+        approver=DecisionApprover(
+            approver_type="human",
+            approver_id=reviewer,
+            role="research_approver",
+        ),
+        policy_version=_STRATEGY_APPROVAL_POLICY_VERSION,
+        decided_at=decided_at,
+    )
+    binding = _publish_and_verify_decision(
+        manager=manager,
+        decision=decision,
+        expected_subject=subject_ref,
+        expected_action=chosen_action,
+    )
+    row = verify_decision_record(
+        manager=manager,
+        decision_id=str(binding["decision_id"]),
+        version=str(binding["decision_version"]),
+        expected_record_hash=str(binding["decision_record_hash"]),
+        expected_row_hash=str(binding["decision_registry_row_hash"]),
+    )
+    binding["decision_decided_at"] = row["payload"]["decided_at"]
+    return binding
+
+
+def _publish_and_verify_decision(
+    *,
+    manager: ResearchPathManager,
+    decision: DecisionRecord,
+    expected_subject: AuthorityRef,
+    expected_action: str,
+) -> dict[str, Any]:
+    try:
+        row = publish_idempotent_decision_record(manager=manager, decision=decision)
+        verify_decision_record(
+            manager=manager,
+            decision_id=decision.decision_id,
+            version=decision.version,
+            expected_subject=expected_subject,
+            expected_chosen_action=expected_action,
+            required_evidence_hashes=decision.evidence_hashes,
+            expected_record_hash=str(row["record_hash"]),
+            expected_row_hash=str(row["row_hash"]),
+        )
+    except (KnowledgeRegistryError, ValueError) as exc:
+        raise GovernanceError(f"governance_decision_record_invalid:{exc}") from exc
+    return {
+        "knowledge_registry_path": str(knowledge_registry_path(manager).resolve()),
+        "decision_id": row["logical_id"],
+        "decision_version": row["version"],
+        "decision_subject_hash": expected_subject.authority_hash,
+        "decision_record_hash": row["record_hash"],
+        "decision_registry_row_hash": row["row_hash"],
+    }
+
+
+def _is_material_transition(
+    subject_type: GovernanceSubjectType,
+    from_state: str | None,
+    to_state: str,
+) -> bool:
+    if subject_type is GovernanceSubjectType.HYPOTHESIS:
+        return (str(from_state), to_state) in _MATERIAL_HYPOTHESIS_TRANSITIONS
+    return to_state in _MATERIAL_STRATEGY_TARGETS
 
 
 def _strategy_approval_artifact(
@@ -689,6 +1042,12 @@ def _strategy_approval_artifact(
         "approval_request_id": request_id,
         "approval_request_hash": request_hash,
         "governance_registry_path": str(governance_registry_path(manager).resolve()),
+        "knowledge_registry_path": transition.get("knowledge_registry_path"),
+        "decision_id": transition.get("decision_id"),
+        "decision_version": transition.get("decision_version"),
+        "decision_subject_hash": transition.get("decision_subject_hash"),
+        "decision_record_hash": transition.get("decision_record_hash"),
+        "decision_registry_row_hash": transition.get("decision_registry_row_hash"),
         "hypothesis_id": hypothesis_subject.subject_id,
         "hypothesis_version": hypothesis_subject.subject_version,
         "hypothesis_contract_hash": hypothesis_contract_hash,
@@ -734,6 +1093,16 @@ def _approval_pair_for_request(
         "row_hash"
     ) or _row_subject_key(review) != _row_subject_key(transition):
         raise GovernanceError("strategy_approval_idempotency_pair_invalid")
+    for field in (
+        "knowledge_registry_path",
+        "decision_id",
+        "decision_version",
+        "decision_subject_hash",
+        "decision_record_hash",
+        "decision_registry_row_hash",
+    ):
+        if review.get(field) != transition.get(field):
+            raise GovernanceError("strategy_approval_idempotency_pair_invalid")
     return review, transition
 
 
@@ -834,6 +1203,7 @@ def validate_strategy_approval(
     strategy_plugin_contract_hash: str,
     effective_strategy_parameters_hash: str,
     expected_registry_path: Path | None = None,
+    manager: ResearchPathManager | None = None,
 ) -> list[str]:
     """Validate an approval artifact against the authoritative governance log.
 
@@ -877,6 +1247,16 @@ def validate_strategy_approval(
         reasons.append("strategy_approval_hypothesis_identity_mismatch")
     if approval.get("hypothesis_contract_hash") != hypothesis_contract_hash:
         reasons.append("strategy_approval_hypothesis_contract_mismatch")
+    decision_fields = (
+        "knowledge_registry_path",
+        "decision_id",
+        "decision_version",
+        "decision_subject_hash",
+        "decision_record_hash",
+        "decision_registry_row_hash",
+    )
+    if any(not str(approval.get(field) or "").strip() for field in decision_fields):
+        reasons.append("strategy_approval_decision_binding_missing")
     approval_request_id = approval.get("approval_request_id")
     approval_request_hash = approval.get("approval_request_hash")
     if approval_request_id is not None or approval_request_hash is not None:
@@ -962,6 +1342,8 @@ def validate_strategy_approval(
             or review.get("approval_request_hash") != approval_request_hash
         ):
             reasons.append("strategy_approval_review_request_mismatch")
+        if any(review.get(field) != approval.get(field) for field in decision_fields):
+            reasons.append("strategy_approval_review_decision_mismatch")
     if not isinstance(transition, dict):
         reasons.append("strategy_approval_transition_missing")
     else:
@@ -985,6 +1367,18 @@ def validate_strategy_approval(
             or transition.get("approval_request_hash") != approval_request_hash
         ):
             reasons.append("strategy_approval_transition_request_mismatch")
+        if any(
+            transition.get(field) != approval.get(field) for field in decision_fields
+        ):
+            reasons.append("strategy_approval_transition_decision_mismatch")
+        if manager is not None:
+            try:
+                _verify_transition_decision_binding(
+                    manager=manager,
+                    transition=transition,
+                )
+            except (GovernanceError, ValueError):
+                reasons.append("strategy_approval_decision_binding_invalid")
     matching_transitions = [
         row
         for row in rows
@@ -1068,6 +1462,7 @@ def validate_governance_registry(manager: ResearchPathManager) -> dict[str, Any]
     outstanding_by_subject: dict[tuple[str, str, str], set[str]] = {}
     approved_reviews: dict[str, tuple[int, Mapping[str, Any]]] = {}
     approval_review_references: dict[str, int] = {}
+    review_request_ids: set[str] = set()
     for index, row in enumerate(rows):
         try:
             if row.get("schema_version") != GOVERNANCE_SCHEMA_VERSION:
@@ -1094,6 +1489,15 @@ def validate_governance_registry(manager: ResearchPathManager) -> dict[str, Any]
                 ):
                     raise GovernanceError("actor_and_reason_required")
                 _require_timezone(str(row.get("recorded_at") or ""))
+                if _is_material_transition(
+                    subject_type,
+                    expected_from,
+                    str(row["to_state"]),
+                ):
+                    _verify_transition_decision_binding(
+                        manager=manager,
+                        transition=row,
+                    )
                 if (
                     subject_type is GovernanceSubjectType.STRATEGY_CANDIDATE
                     and row.get("to_state")
@@ -1117,7 +1521,23 @@ def validate_governance_registry(manager: ResearchPathManager) -> dict[str, Any]
                     StrategyCandidateLifecycleState.RETIRED.value,
                 }:
                     raise GovernanceError("review_after_candidate_approval")
-                _validate_review_row(row, outstanding_by_subject.setdefault(key, set()))
+                has_review_request_binding = any(
+                    row.get(field) is not None
+                    for field in ("review_request_id", "review_request_hash")
+                )
+                if (
+                    row.get("decision") != HumanReviewDecision.APPROVED.value
+                    and has_review_request_binding
+                ):
+                    _validate_nonapproval_review_state(subject_type, states.get(key))
+                review_request_id = _validate_review_row(
+                    row,
+                    outstanding_by_subject.setdefault(key, set()),
+                )
+                if review_request_id is not None:
+                    if review_request_id in review_request_ids:
+                        raise GovernanceError("human_review_request_id_duplicate")
+                    review_request_ids.add(review_request_id)
                 if row.get("decision") == HumanReviewDecision.APPROVED.value:
                     review_hash = str(row.get("row_hash") or "")
                     if not review_hash or review_hash in approved_reviews:
@@ -1185,6 +1605,70 @@ def _validate_approval_transition_reference(
         or review_request_hash != transition_request_hash
     ):
         raise GovernanceError("approval_transition_request_binding_invalid")
+    decision_fields = (
+        "knowledge_registry_path",
+        "decision_id",
+        "decision_version",
+        "decision_subject_hash",
+        "decision_record_hash",
+        "decision_registry_row_hash",
+    )
+    if any(review.get(field) != transition.get(field) for field in decision_fields):
+        raise GovernanceError("approval_transition_decision_binding_invalid")
+
+
+def _verify_transition_decision_binding(
+    *,
+    manager: ResearchPathManager,
+    transition: Mapping[str, Any],
+) -> None:
+    expected_path = str(knowledge_registry_path(manager).resolve())
+    if transition.get("knowledge_registry_path") != expected_path:
+        raise GovernanceError("material_transition_knowledge_registry_path_mismatch")
+    subject_hash = str(transition.get("decision_subject_hash") or "")
+    _validate_hashes({"decision_subject_hash": subject_hash})
+    subject = AuthorityRef(
+        authority="research_governance",
+        subject_type=str(transition.get("subject_type") or ""),
+        subject_id=str(transition.get("subject_id") or ""),
+        subject_version=str(transition.get("subject_version") or ""),
+        authority_hash=subject_hash,
+    )
+    from_state = str(transition.get("from_state") or "UNSET")
+    to_state = str(transition.get("to_state") or "")
+    action = f"transition:{from_state}->{to_state}"
+    evidence = transition.get("evidence_hashes") or {}
+    required_evidence = {
+        subject_hash,
+        *(str(value) for key, value in evidence.items() if key != "human_review_hash"),
+    }
+    try:
+        decision_row = verify_decision_record(
+            manager=manager,
+            decision_id=str(transition.get("decision_id") or ""),
+            version=str(transition.get("decision_version") or ""),
+            expected_subject=subject,
+            expected_chosen_action=action,
+            required_evidence_hashes=required_evidence,
+            expected_record_hash=str(transition.get("decision_record_hash") or ""),
+            expected_row_hash=str(transition.get("decision_registry_row_hash") or ""),
+        )
+    except (KnowledgeContractError, KnowledgeRegistryError, ValueError) as exc:
+        raise GovernanceError(f"material_transition_decision_invalid:{exc}") from exc
+    payload = decision_row.get("payload") or {}
+    approval = to_state == StrategyCandidateLifecycleState.RESEARCH_APPROVED.value
+    expected_policy = (
+        _STRATEGY_APPROVAL_POLICY_VERSION
+        if approval
+        else _MATERIAL_TRANSITION_POLICY_VERSION
+    )
+    expected_approver_type = "human" if approval else "policy"
+    if (
+        payload.get("policy_version") != expected_policy
+        or (payload.get("approver") or {}).get("approver_type")
+        != expected_approver_type
+    ):
+        raise GovernanceError("material_transition_decision_policy_mismatch")
 
 
 def _validate_transition(
@@ -1196,31 +1680,54 @@ def _validate_transition(
     approval_authorized: bool = True,
 ) -> None:
     if subject_type is GovernanceSubjectType.HYPOTHESIS:
-        enum = HypothesisLifecycleState
-        transitions = _HYPOTHESIS_TRANSITIONS
+        try:
+            target = HypothesisLifecycleState(to_state)
+            source = (
+                HypothesisLifecycleState(from_state) if from_state is not None else None
+            )
+        except ValueError as exc:
+            raise GovernanceError("governance_state_unknown") from exc
         initial = HypothesisLifecycleState.IDEA
+        if source is None:
+            if target is not initial:
+                raise GovernanceError(
+                    f"governance_initial_state_must_be:{initial.value}"
+                )
+        elif target not in _HYPOTHESIS_TRANSITIONS[source]:
+            raise GovernanceError(
+                f"governance_transition_not_allowed:{source.value}->{target.value}"
+            )
+        target_value = target.value
     else:
-        enum = StrategyCandidateLifecycleState
-        transitions = _STRATEGY_TRANSITIONS
-        initial = StrategyCandidateLifecycleState.DRAFT
-    try:
-        target = enum(to_state)
-        source = enum(from_state) if from_state is not None else None
-    except ValueError as exc:
-        raise GovernanceError("governance_state_unknown") from exc
-    if (
-        target is StrategyCandidateLifecycleState.RESEARCH_APPROVED
-        and not approval_authorized
-    ):
-        raise GovernanceError("governance_research_approval_requires_approval_service")
-    if source is None:
-        if target is not initial:
-            raise GovernanceError(f"governance_initial_state_must_be:{initial.value}")
-    elif target not in transitions[source]:
-        raise GovernanceError(
-            f"governance_transition_not_allowed:{source.value}->{target.value}"
-        )
-    required = _REQUIRED_EVIDENCE.get(target.value, frozenset())
+        try:
+            strategy_target = StrategyCandidateLifecycleState(to_state)
+            strategy_source = (
+                StrategyCandidateLifecycleState(from_state)
+                if from_state is not None
+                else None
+            )
+        except ValueError as exc:
+            raise GovernanceError("governance_state_unknown") from exc
+        if (
+            strategy_target is StrategyCandidateLifecycleState.RESEARCH_APPROVED
+            and not approval_authorized
+        ):
+            raise GovernanceError(
+                "governance_research_approval_requires_approval_service"
+            )
+        strategy_initial = StrategyCandidateLifecycleState.DRAFT
+        if strategy_source is None:
+            if strategy_target is not strategy_initial:
+                raise GovernanceError(
+                    f"governance_initial_state_must_be:{strategy_initial.value}"
+                )
+        elif strategy_target not in _STRATEGY_TRANSITIONS[strategy_source]:
+            raise GovernanceError(
+                "governance_transition_not_allowed:"
+                f"{strategy_source.value}->{strategy_target.value}"
+            )
+        target_value = strategy_target.value
+    required = _REQUIRED_EVIDENCE.get(target_value, frozenset())
     missing = sorted(required - set(evidence))
     if missing:
         raise GovernanceError(
@@ -1264,6 +1771,58 @@ def _normalize_requested_changes(
     return tuple(normalized)
 
 
+def _validate_nonapproval_review_state(
+    subject_type: GovernanceSubjectType,
+    current_state: str | None,
+) -> None:
+    if current_state is None:
+        raise GovernanceError("human_review_subject_lifecycle_missing")
+    if subject_type is GovernanceSubjectType.STRATEGY_CANDIDATE:
+        if current_state != StrategyCandidateLifecycleState.OUT_OF_SAMPLE_PASSED.value:
+            raise GovernanceError(
+                "human_review_candidate_lifecycle_not_reviewable:" + current_state
+            )
+        return
+    try:
+        HypothesisLifecycleState(current_state)
+    except ValueError as exc:
+        raise GovernanceError(
+            "human_review_hypothesis_lifecycle_invalid:" + current_state
+        ) from exc
+
+
+def _human_review_request_hash(
+    *,
+    subject: Mapping[str, str],
+    decision: str,
+    reviewer_id: str,
+    reviewer_role: str,
+    rationale: str,
+    reviewed_artifact_hash: str,
+    requested_changes: tuple[Mapping[str, str], ...],
+    resolved_requirement_ids: tuple[str, ...],
+) -> str:
+    semantic_request = {
+        "schema_version": GOVERNANCE_SCHEMA_VERSION,
+        "subject": {
+            "subject_type": str(subject.get("subject_type") or ""),
+            "subject_id": str(subject.get("subject_id") or ""),
+            "subject_version": str(subject.get("subject_version") or ""),
+        },
+        "decision": decision,
+        "reviewer_id": reviewer_id,
+        "reviewer_role": reviewer_role,
+        "rationale": rationale,
+        "reviewed_artifact_hash": reviewed_artifact_hash,
+        "requested_changes": [dict(item) for item in requested_changes],
+        "resolved_requirement_ids": list(resolved_requirement_ids),
+    }
+    return sha256_prefixed(
+        content_hash_payload(semantic_request),
+        label="human_review_request",
+    )
+
+
 def _outstanding_requirement_ids(
     rows: list[dict[str, Any]], subject: GovernanceSubject
 ) -> set[str]:
@@ -1286,7 +1845,10 @@ def _outstanding_requirement_ids(
     return outstanding
 
 
-def _validate_review_row(row: Mapping[str, Any], outstanding: set[str]) -> None:
+def _validate_review_row(
+    row: Mapping[str, Any],
+    outstanding: set[str],
+) -> str | None:
     decision = HumanReviewDecision(str(row.get("decision") or ""))
     if (
         not str(row.get("reviewer_id") or "").strip()
@@ -1300,7 +1862,16 @@ def _validate_review_row(row: Mapping[str, Any], outstanding: set[str]) -> None:
     )
     _require_timezone(str(row.get("decided_at") or ""))
     changes = _normalize_requested_changes(tuple(row.get("requested_changes") or ()))
-    resolved = {str(item) for item in row.get("resolved_requirement_ids") or []}
+    resolved_values = tuple(
+        str(item) for item in row.get("resolved_requirement_ids") or []
+    )
+    resolved = set(resolved_values)
+    review_request_id = _validate_human_review_request_binding(
+        row,
+        decision=decision,
+        changes=changes,
+        resolved_requirement_ids=resolved_values,
+    )
     if decision is HumanReviewDecision.CHANGES_REQUESTED:
         if not changes:
             raise GovernanceError("review_changes_missing")
@@ -1311,6 +1882,48 @@ def _validate_review_row(row: Mapping[str, Any], outstanding: set[str]) -> None:
         outstanding.clear()
     elif changes or resolved:
         raise GovernanceError("review_fields_invalid_for_decision")
+    return review_request_id
+
+
+def _validate_human_review_request_binding(
+    row: Mapping[str, Any],
+    *,
+    decision: HumanReviewDecision,
+    changes: tuple[Mapping[str, str], ...],
+    resolved_requirement_ids: tuple[str, ...],
+) -> str | None:
+    request_id = row.get("review_request_id")
+    request_hash = row.get("review_request_hash")
+    if request_id is None and request_hash is None:
+        return None
+    if decision is HumanReviewDecision.APPROVED:
+        raise GovernanceError("human_review_request_binding_not_allowed_for_approval")
+    if (
+        not isinstance(request_id, str)
+        or not request_id.strip()
+        or request_id != request_id.strip()
+        or len(request_id) > 255
+        or not isinstance(request_hash, str)
+    ):
+        raise GovernanceError("human_review_request_binding_invalid")
+    _validate_hashes({"review_request_hash": request_hash})
+    expected_hash = _human_review_request_hash(
+        subject={
+            "subject_type": str(row.get("subject_type") or ""),
+            "subject_id": str(row.get("subject_id") or ""),
+            "subject_version": str(row.get("subject_version") or ""),
+        },
+        decision=decision.value,
+        reviewer_id=str(row.get("reviewer_id") or "").strip(),
+        reviewer_role=str(row.get("reviewer_role") or "").strip(),
+        rationale=str(row.get("rationale") or "").strip(),
+        reviewed_artifact_hash=str(row.get("reviewed_artifact_hash") or ""),
+        requested_changes=changes,
+        resolved_requirement_ids=resolved_requirement_ids,
+    )
+    if request_hash != expected_hash:
+        raise GovernanceError("human_review_request_hash_mismatch")
+    return request_id
 
 
 def _row_subject_key(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:

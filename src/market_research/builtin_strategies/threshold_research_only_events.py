@@ -39,7 +39,7 @@ def build_threshold_research_only_events(
             execution_timing_policy.decision_guard_ms
         )
         reason = "threshold_close_above" if is_buy else "threshold_not_met"
-        features = {
+        features: dict[str, object] = {
             "candle_index": int(index),
             "close": close,
             "threshold_close_above": threshold,

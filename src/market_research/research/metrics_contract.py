@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from math import isfinite
 from statistics import mean, median, pstdev
-from typing import Any
+from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 
@@ -12,6 +12,32 @@ METRICS_SCHEMA_VERSION = 2
 DRAG_RATIO_BASIS_TRADED_NOTIONAL = "traded_notional"
 MS_PER_YEAR = 365.0 * 24.0 * 60.0 * 60.0 * 1000.0
 MS_PER_DAY = 24.0 * 60.0 * 60.0 * 1000.0
+
+
+class _PeriodReturnStats(TypedDict):
+    period_return_unit: str | None
+    period_return_observation_count: int
+    period_returns: tuple[float, ...]
+    sharpe_ratio: float | None
+    sortino_ratio: float | None
+    annualized_volatility_pct: float | None
+    annualized_downside_deviation_pct: float | None
+    value_at_risk_95_pct: float | None
+    conditional_value_at_risk_95_pct: float | None
+    annualization_policy: str | None
+
+
+class _DrawdownStats(TypedDict):
+    max_drawdown_pct: float
+    max_drawdown_duration_ms: int | None
+    recovery_duration_ms: int | None
+
+
+class _PortfolioUtilizationStats(TypedDict):
+    average_equity: float | None
+    average_cash_usage_pct: float | None
+    peak_cash_usage_pct: float | None
+    max_position_concentration_pct: float | None
 
 
 @dataclass(frozen=True)
@@ -172,16 +198,29 @@ class ReturnRiskMetrics:
     sharpe_ratio: float | None = None
     sortino_ratio: float | None = None
     annualization_policy: str | None = None
+    annualized_volatility_pct: float | None = None
+    annualized_downside_deviation_pct: float | None = None
+    max_drawdown_duration_ms: int | None = None
+    max_drawdown_duration_basis: str = "peak_to_trough"
+    recovery_duration_ms: int | None = None
+    recovery_duration_basis: str = "max_drawdown_trough_to_prior_peak"
+    value_at_risk_95_pct: float | None = None
+    conditional_value_at_risk_95_pct: float | None = None
+    beta: float | None = None
+    calmar_ratio: float | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return self.__dict__.copy()
+        payload = self.__dict__.copy()
+        payload["cumulative_return_pct"] = self.total_return_pct
+        payload["annualized_return_pct"] = self.cagr_pct
+        return payload
 
 
 @dataclass(frozen=True)
 class TradeQualityMetrics:
     closed_trade_count: int
     execution_count: int
-    win_rate: float
+    win_rate: float | None
     avg_win: float | None
     avg_loss: float | None
     payoff_ratio: float | None
@@ -191,9 +230,24 @@ class TradeQualityMetrics:
     expectancy_per_trade_pct: float | None
     max_consecutive_losses: int
     single_trade_dependency_score: float | None
+    median_trade_return_pct: float | None = None
+    max_trade_return_pct: float | None = None
+    min_trade_return_pct: float | None = None
+    avg_holding_time_ms: float | None = None
+    avg_mfe: float | None = None
+    avg_mae: float | None = None
+    avg_mfe_pct: float | None = None
+    avg_mae_pct: float | None = None
+    mfe_mae_pct_observation_count: int = 0
+    slippage_total: float = 0.0
+    slippage_per_closed_trade: float | None = None
+    net_expectancy_per_hour_krw: float | None = None
+    net_expectancy_per_capital_hour_pct: float | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return self.__dict__.copy()
+        payload = self.__dict__.copy()
+        payload["trade_count"] = self.closed_trade_count
+        return payload
 
 
 @dataclass(frozen=True)
@@ -267,14 +321,56 @@ class ParticipationMetrics:
 
 
 @dataclass(frozen=True)
+class PortfolioMetrics:
+    cumulative_return_pct: float
+    annualized_return_pct: float | None
+    max_drawdown_pct: float
+    max_drawdown_duration_ms: int | None
+    max_drawdown_duration_basis: str
+    annualized_volatility_pct: float | None
+    annualized_downside_deviation_pct: float | None
+    recovery_duration_ms: int | None
+    recovery_duration_basis: str
+    market_exposure_pct: float | None
+    turnover_ratio: float | None
+    turnover_basis: str
+    average_cash_usage_pct: float | None
+    peak_cash_usage_pct: float | None
+    max_concurrent_positions: int
+    max_position_concentration_pct: float | None
+    concentration_basis: str
+    beta: float | None
+    value_at_risk_95_pct: float | None
+    conditional_value_at_risk_95_pct: float | None
+    sharpe_ratio: float | None
+    sortino_ratio: float | None
+    calmar_ratio: float | None
+
+    def as_dict(self) -> dict[str, object]:
+        payload = self.__dict__.copy()
+        payload["tail_risk"] = {
+            "value_at_risk_95_pct": self.value_at_risk_95_pct,
+            "conditional_value_at_risk_95_pct": (self.conditional_value_at_risk_95_pct),
+        }
+        payload["risk_adjusted_performance"] = {
+            "sharpe_ratio": self.sharpe_ratio,
+            "sortino_ratio": self.sortino_ratio,
+            "calmar_ratio": self.calmar_ratio,
+        }
+        return payload
+
+
+@dataclass(frozen=True)
 class MetricContractV2:
     metrics_schema_version: int
     return_risk: ReturnRiskMetrics
     trade_quality: TradeQualityMetrics
     time_exposure: TimeExposureMetrics
     cost_execution: CostExecutionMetrics
+    portfolio: PortfolioMetrics
     participation: ParticipationMetrics | None = None
     limitation_reasons: tuple[str, ...] = field(default_factory=tuple)
+    unavailable_metrics: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def as_dict(self) -> dict[str, object]:
         payload = {
@@ -283,7 +379,12 @@ class MetricContractV2:
             "trade_quality": self.trade_quality.as_dict(),
             "time_exposure": self.time_exposure.as_dict(),
             "cost_execution": self.cost_execution.as_dict(),
+            "portfolio": self.portfolio.as_dict(),
             "limitation_reasons": list(self.limitation_reasons),
+            "metric_availability": {
+                path: {"status": "unavailable", "reason": reason}
+                for path, reason in self.unavailable_metrics
+            },
         }
         if self.participation is not None:
             payload["participation"] = self.participation.as_dict()
@@ -311,8 +412,15 @@ def build_metrics_v2(
     decision_records: tuple[dict[str, Any], ...] = (),
     participation_count_basis: str = "filled",
     participation_timezone: str = "Asia/Seoul",
+    benchmark_period_returns: tuple[float, ...] | None = None,
 ) -> MetricContractV2:
     limitations: list[str] = []
+    unavailable_metrics: dict[str, str] = {}
+
+    def mark_unavailable(path: str, reason: str) -> None:
+        limitations.append(reason)
+        unavailable_metrics[path] = reason
+
     points = tuple(sorted(equity_curve, key=lambda item: item.ts))
     period_start = points[0].ts if points else summary_period_start_ts
     period_end = points[-1].ts if points else summary_period_end_ts
@@ -336,11 +444,14 @@ def build_metrics_v2(
     )
     cagr_pct = _cagr_pct(total_return_pct=total_return_pct, elapsed_ms=elapsed_ms)
     if cagr_pct is None:
-        limitations.append("cagr_unavailable_without_positive_elapsed_time")
+        reason = "cagr_unavailable_without_positive_elapsed_time"
+        mark_unavailable("return_risk.cagr_pct", reason)
+        mark_unavailable("portfolio.annualized_return_pct", reason)
+    drawdown_stats = _drawdown_stats(points)
     max_drawdown_pct = (
         float(summary_max_drawdown_pct)
         if summary_max_drawdown_pct is not None
-        else _max_drawdown_pct(points)
+        else drawdown_stats["max_drawdown_pct"]
     )
     net_values = [float(trade.net_pnl) for trade in closed_trades]
     closed_trade_realized_pnl = sum(net_values)
@@ -362,9 +473,49 @@ def build_metrics_v2(
         limitations.append("open_position_excluded_from_holding_time_stats")
     period_return_stats = _period_return_stats(points)
     if period_return_stats["sharpe_ratio"] is None:
-        limitations.append("sharpe_unavailable_without_period_return_series")
+        reason = "sharpe_unavailable_without_variable_period_return_series"
+        mark_unavailable("return_risk.sharpe_ratio", reason)
+        mark_unavailable("portfolio.sharpe_ratio", reason)
     if period_return_stats["sortino_ratio"] is None:
-        limitations.append("sortino_unavailable_without_period_return_series")
+        reason = "sortino_unavailable_without_downside_period_return_series"
+        mark_unavailable("return_risk.sortino_ratio", reason)
+        mark_unavailable("portfolio.sortino_ratio", reason)
+    for metric_name in (
+        "annualized_volatility_pct",
+        "annualized_downside_deviation_pct",
+        "value_at_risk_95_pct",
+        "conditional_value_at_risk_95_pct",
+    ):
+        if period_return_stats[metric_name] is None:
+            reason = "portfolio_risk_unavailable_without_two_period_returns"
+            mark_unavailable(f"return_risk.{metric_name}", reason)
+            mark_unavailable(f"portfolio.{metric_name}", reason)
+    beta = _beta(period_return_stats["period_returns"], benchmark_period_returns)
+    if beta is None:
+        reason = "beta_unavailable_without_aligned_benchmark_return_series"
+        mark_unavailable("return_risk.beta", reason)
+        mark_unavailable("portfolio.beta", reason)
+    calmar_ratio = (
+        cagr_pct / max_drawdown_pct
+        if cagr_pct is not None and max_drawdown_pct > 0.0
+        else None
+    )
+    if calmar_ratio is None:
+        reason = "calmar_unavailable_without_cagr_and_positive_drawdown"
+        mark_unavailable("return_risk.calmar_ratio", reason)
+        mark_unavailable("portfolio.calmar_ratio", reason)
+    if drawdown_stats["max_drawdown_duration_ms"] is None:
+        reason = "drawdown_duration_unavailable_without_equity_curve"
+        mark_unavailable("return_risk.max_drawdown_duration_ms", reason)
+        mark_unavailable("portfolio.max_drawdown_duration_ms", reason)
+    if drawdown_stats["recovery_duration_ms"] is None:
+        reason = (
+            "recovery_duration_unavailable_without_recovered_max_drawdown"
+            if points
+            else "recovery_duration_unavailable_without_equity_curve"
+        )
+        mark_unavailable("return_risk.recovery_duration_ms", reason)
+        mark_unavailable("portfolio.recovery_duration_ms", reason)
     wins = [value for value in net_values if value > 0.0]
     losses = [value for value in net_values if value < 0.0]
     gross_profit = sum(wins)
@@ -375,11 +526,9 @@ def build_metrics_v2(
         limitations.append("profit_factor_unbounded_no_losses")
     avg_win = (gross_profit / len(wins)) if wins else None
     avg_loss = (sum(losses) / len(losses)) if losses else None
-    payoff_ratio = (
-        (avg_win / abs(avg_loss))
-        if avg_win is not None and avg_loss not in (None, 0.0)
-        else None
-    )
+    payoff_ratio = None
+    if avg_win is not None and avg_loss is not None and avg_loss != 0.0:
+        payoff_ratio = avg_win / abs(avg_loss)
     return_values = [
         float(trade.return_pct)
         for trade in closed_trades
@@ -390,10 +539,114 @@ def build_metrics_v2(
         if len(return_values) == len(closed_trades) and closed_trades
         else None
     )
-    if closed_trades and expectancy_pct is None:
-        limitations.append(
-            "expectancy_per_trade_pct_unavailable_without_entry_notional"
+    complete_trade_returns = bool(closed_trades) and len(return_values) == len(
+        closed_trades
+    )
+    trade_return_reason = (
+        "trade_return_metrics_unavailable_without_closed_trades"
+        if not closed_trades
+        else "trade_return_metrics_unavailable_without_complete_return_pct"
+    )
+    if not complete_trade_returns:
+        for metric_name in (
+            "expectancy_per_trade_pct",
+            "median_trade_return_pct",
+            "max_trade_return_pct",
+            "min_trade_return_pct",
+        ):
+            mark_unavailable(f"trade_quality.{metric_name}", trade_return_reason)
+    median_trade_return_pct = median(return_values) if complete_trade_returns else None
+    max_trade_return_pct = max(return_values) if complete_trade_returns else None
+    min_trade_return_pct = min(return_values) if complete_trade_returns else None
+    trade_holding_hours = _closed_trade_holding_hours(closed_trades)
+    avg_trade_holding_time_ms = (
+        mean(trade_holding_hours) * 60.0 * 60.0 * 1000.0
+        if trade_holding_hours
+        else None
+    )
+    total_holding_hours = sum(trade_holding_hours or ())
+    hourly_expectancy = (
+        closed_trade_realized_pnl / total_holding_hours
+        if total_holding_hours > 0.0
+        else None
+    )
+    if avg_trade_holding_time_ms is None:
+        mark_unavailable(
+            "trade_quality.avg_holding_time_ms",
+            "average_holding_unavailable_without_complete_trade_duration",
         )
+    if hourly_expectancy is None:
+        mark_unavailable(
+            "trade_quality.net_expectancy_per_hour_krw",
+            "hourly_expectancy_unavailable_without_positive_holding_time",
+        )
+    capital_hour_denominator = (
+        sum(
+            float(trade.entry_notional) * holding_hours
+            for trade, holding_hours in zip(closed_trades, trade_holding_hours)
+            if trade.entry_notional is not None and trade.entry_notional > 0.0
+        )
+        if trade_holding_hours is not None
+        and all(
+            trade.entry_notional is not None and trade.entry_notional > 0.0
+            for trade in closed_trades
+        )
+        else 0.0
+    )
+    capital_time_expectancy = (
+        closed_trade_realized_pnl / capital_hour_denominator * 100.0
+        if capital_hour_denominator > 0.0
+        else None
+    )
+    if capital_time_expectancy is None:
+        mark_unavailable(
+            "trade_quality.net_expectancy_per_capital_hour_pct",
+            "capital_time_expectancy_unavailable_without_notional_and_holding_time",
+        )
+    avg_mfe = _complete_trade_metric_mean(closed_trades, "mfe")
+    avg_mae = _complete_trade_metric_mean(closed_trades, "mae")
+    avg_mfe_pct = _complete_trade_metric_mean(closed_trades, "mfe_pct")
+    avg_mae_pct = _complete_trade_metric_mean(closed_trades, "mae_pct")
+    mfe_mae_pct_observation_count = sum(
+        1
+        for trade in closed_trades
+        if trade.mfe_pct is not None and trade.mae_pct is not None
+    )
+    for metric_name, value in (
+        ("avg_mfe", avg_mfe),
+        ("avg_mae", avg_mae),
+        ("avg_mfe_pct", avg_mfe_pct),
+        ("avg_mae_pct", avg_mae_pct),
+    ):
+        if value is None:
+            mark_unavailable(
+                f"trade_quality.{metric_name}",
+                "excursion_metric_unavailable_without_complete_closed_trade_path",
+            )
+    if not net_values:
+        for metric_name in (
+            "win_rate",
+            "avg_win",
+            "avg_loss",
+            "payoff_ratio",
+            "profit_factor",
+            "expectancy_per_trade_krw",
+            "single_trade_dependency_score",
+        ):
+            mark_unavailable(
+                f"trade_quality.{metric_name}",
+                "trade_quality_unavailable_without_closed_trades",
+            )
+    else:
+        if avg_win is None:
+            mark_unavailable("trade_quality.avg_win", "avg_win_unavailable_no_wins")
+        if avg_loss is None:
+            mark_unavailable("trade_quality.avg_loss", "avg_loss_unavailable_no_losses")
+        if payoff_ratio is None:
+            mark_unavailable(
+                "trade_quality.payoff_ratio",
+                "payoff_ratio_unavailable_without_wins_and_losses",
+            )
     total_abs = sum(abs(value) for value in net_values)
     largest_abs = max((abs(value) for value in net_values), default=0.0)
     closed_durations = [
@@ -413,7 +666,9 @@ def build_metrics_v2(
         else None
     )
     if exposure_time_pct is None:
-        limitations.append("exposure_time_unavailable_without_positive_elapsed_time")
+        reason = "exposure_time_unavailable_without_positive_elapsed_time"
+        mark_unavailable("time_exposure.exposure_time_pct", reason)
+        mark_unavailable("portfolio.market_exposure_pct", reason)
     active_bar_count = (
         int(summary_active_bar_count)
         if summary_active_bar_count is not None
@@ -433,6 +688,40 @@ def build_metrics_v2(
     else:
         fee_drag_ratio = fee_total / traded_notional
         slippage_drag_ratio = slippage_total / traded_notional
+    slippage_per_closed_trade = (
+        slippage_total / len(closed_trades) if closed_trades else None
+    )
+    if slippage_per_closed_trade is None:
+        mark_unavailable(
+            "trade_quality.slippage_per_closed_trade",
+            "slippage_per_trade_unavailable_without_closed_trades",
+        )
+    utilization = _portfolio_utilization_stats(points)
+    turnover_ratio = (
+        traded_notional / utilization["average_equity"]
+        if utilization["average_equity"] is not None
+        and utilization["average_equity"] > 0.0
+        else None
+    )
+    if turnover_ratio is None:
+        mark_unavailable(
+            "portfolio.turnover_ratio",
+            "turnover_unavailable_without_mean_equity_curve",
+        )
+    for metric_name, metric_value in (
+        ("average_cash_usage_pct", utilization["average_cash_usage_pct"]),
+        ("peak_cash_usage_pct", utilization["peak_cash_usage_pct"]),
+        (
+            "max_position_concentration_pct",
+            utilization["max_position_concentration_pct"],
+        ),
+    ):
+        if metric_value is None:
+            mark_unavailable(
+                f"portfolio.{metric_name}",
+                "portfolio_utilization_unavailable_without_equity_curve",
+            )
+    max_concurrent_positions = _max_concurrent_positions(position_intervals)
     quote_ages = [
         int(record.quote_age_ms)
         for record in execution_records
@@ -469,11 +758,23 @@ def build_metrics_v2(
             sharpe_ratio=period_return_stats["sharpe_ratio"],
             sortino_ratio=period_return_stats["sortino_ratio"],
             annualization_policy=period_return_stats["annualization_policy"],
+            annualized_volatility_pct=period_return_stats["annualized_volatility_pct"],
+            annualized_downside_deviation_pct=period_return_stats[
+                "annualized_downside_deviation_pct"
+            ],
+            max_drawdown_duration_ms=drawdown_stats["max_drawdown_duration_ms"],
+            recovery_duration_ms=drawdown_stats["recovery_duration_ms"],
+            value_at_risk_95_pct=period_return_stats["value_at_risk_95_pct"],
+            conditional_value_at_risk_95_pct=period_return_stats[
+                "conditional_value_at_risk_95_pct"
+            ],
+            beta=beta,
+            calmar_ratio=calmar_ratio,
         ),
         trade_quality=TradeQualityMetrics(
             closed_trade_count=len(closed_trades),
             execution_count=len(execution_records),
-            win_rate=(len(wins) / len(net_values)) if net_values else 0.0,
+            win_rate=(len(wins) / len(net_values)) if net_values else None,
             avg_win=avg_win,
             avg_loss=avg_loss,
             payoff_ratio=payoff_ratio,
@@ -487,6 +788,19 @@ def build_metrics_v2(
             single_trade_dependency_score=(largest_abs / total_abs)
             if total_abs > 0.0
             else None,
+            median_trade_return_pct=median_trade_return_pct,
+            max_trade_return_pct=max_trade_return_pct,
+            min_trade_return_pct=min_trade_return_pct,
+            avg_holding_time_ms=avg_trade_holding_time_ms,
+            avg_mfe=avg_mfe,
+            avg_mae=avg_mae,
+            avg_mfe_pct=avg_mfe_pct,
+            avg_mae_pct=avg_mae_pct,
+            mfe_mae_pct_observation_count=mfe_mae_pct_observation_count,
+            slippage_total=float(slippage_total),
+            slippage_per_closed_trade=slippage_per_closed_trade,
+            net_expectancy_per_hour_krw=hourly_expectancy,
+            net_expectancy_per_capital_hour_pct=capital_time_expectancy,
         ),
         time_exposure=TimeExposureMetrics(
             period_start_ts=int(period_start) if period_start is not None else None,
@@ -522,8 +836,40 @@ def build_metrics_v2(
             median_quote_age_ms=median(quote_ages) if quote_ages else None,
             p95_quote_age_ms=_percentile(quote_ages, 95) if quote_ages else None,
         ),
+        portfolio=PortfolioMetrics(
+            cumulative_return_pct=float(total_return_pct),
+            annualized_return_pct=cagr_pct,
+            max_drawdown_pct=float(max_drawdown_pct),
+            max_drawdown_duration_ms=drawdown_stats["max_drawdown_duration_ms"],
+            max_drawdown_duration_basis="peak_to_trough",
+            annualized_volatility_pct=period_return_stats["annualized_volatility_pct"],
+            annualized_downside_deviation_pct=period_return_stats[
+                "annualized_downside_deviation_pct"
+            ],
+            recovery_duration_ms=drawdown_stats["recovery_duration_ms"],
+            recovery_duration_basis="max_drawdown_trough_to_prior_peak",
+            market_exposure_pct=exposure_time_pct,
+            turnover_ratio=turnover_ratio,
+            turnover_basis="gross_filled_notional_over_mean_marked_equity",
+            average_cash_usage_pct=utilization["average_cash_usage_pct"],
+            peak_cash_usage_pct=utilization["peak_cash_usage_pct"],
+            max_concurrent_positions=max_concurrent_positions,
+            max_position_concentration_pct=utilization[
+                "max_position_concentration_pct"
+            ],
+            concentration_basis="single_instrument_gross_asset_weight",
+            beta=beta,
+            value_at_risk_95_pct=period_return_stats["value_at_risk_95_pct"],
+            conditional_value_at_risk_95_pct=period_return_stats[
+                "conditional_value_at_risk_95_pct"
+            ],
+            sharpe_ratio=period_return_stats["sharpe_ratio"],
+            sortino_ratio=period_return_stats["sortino_ratio"],
+            calmar_ratio=calmar_ratio,
+        ),
         participation=participation,
         limitation_reasons=tuple(sorted(set(limitations))),
+        unavailable_metrics=tuple(sorted(unavailable_metrics.items())),
     )
 
 
@@ -717,17 +1063,65 @@ def _cagr_pct(*, total_return_pct: float, elapsed_ms: int | None) -> float | Non
 
 
 def _max_drawdown_pct(points: tuple[EquityPoint, ...]) -> float:
-    peak = None
+    return _drawdown_stats(points)["max_drawdown_pct"]
+
+
+def _drawdown_stats(points: tuple[EquityPoint, ...]) -> _DrawdownStats:
+    ordered = tuple(sorted(points, key=lambda item: item.ts))
+    if not ordered:
+        return {
+            "max_drawdown_pct": 0.0,
+            "max_drawdown_duration_ms": None,
+            "recovery_duration_ms": None,
+        }
+    peak_equity: float | None = None
+    peak_ts: int | None = None
     max_drawdown = 0.0
+    max_peak_equity: float | None = None
+    max_peak_ts: int | None = None
+    max_trough_ts: int | None = None
     for point in points:
         equity = float(point.equity)
-        peak = equity if peak is None else max(peak, equity)
-        if peak and peak > 0.0:
-            max_drawdown = max(max_drawdown, (peak - equity) / peak)
-    return max_drawdown * 100.0
+        if not isfinite(equity):
+            continue
+        if peak_equity is None or equity >= peak_equity:
+            peak_equity = equity
+            peak_ts = int(point.ts)
+            continue
+        if peak_equity <= 0.0 or peak_ts is None:
+            continue
+        drawdown = (peak_equity - equity) / peak_equity
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+            max_peak_equity = peak_equity
+            max_peak_ts = peak_ts
+            max_trough_ts = int(point.ts)
+    if max_peak_ts is None or max_trough_ts is None:
+        return {
+            "max_drawdown_pct": 0.0,
+            "max_drawdown_duration_ms": 0,
+            "recovery_duration_ms": 0,
+        }
+    recovery_ts = next(
+        (
+            int(point.ts)
+            for point in ordered
+            if int(point.ts) > max_trough_ts
+            and max_peak_equity is not None
+            and float(point.equity) >= max_peak_equity
+        ),
+        None,
+    )
+    return {
+        "max_drawdown_pct": max_drawdown * 100.0,
+        "max_drawdown_duration_ms": max_trough_ts - max_peak_ts,
+        "recovery_duration_ms": (
+            recovery_ts - max_trough_ts if recovery_ts is not None else None
+        ),
+    }
 
 
-def _period_return_stats(points: tuple[EquityPoint, ...]) -> dict[str, object]:
+def _period_return_stats(points: tuple[EquityPoint, ...]) -> _PeriodReturnStats:
     ordered = tuple(sorted(points, key=lambda item: item.ts))
     returns: list[float] = []
     intervals: list[int] = []
@@ -750,8 +1144,13 @@ def _period_return_stats(points: tuple[EquityPoint, ...]) -> dict[str, object]:
         return {
             "period_return_unit": "portfolio_bar_return" if returns else None,
             "period_return_observation_count": len(returns),
+            "period_returns": tuple(returns),
             "sharpe_ratio": None,
             "sortino_ratio": None,
+            "annualized_volatility_pct": None,
+            "annualized_downside_deviation_pct": None,
+            "value_at_risk_95_pct": None,
+            "conditional_value_at_risk_95_pct": None,
             "annualization_policy": None,
         }
     interval_ms = median(intervals)
@@ -773,17 +1172,129 @@ def _period_return_stats(points: tuple[EquityPoint, ...]) -> dict[str, object]:
         if scale is not None and downside_deviation > 0.0
         else None
     )
+    value_at_risk_quantile = _float_percentile(returns, 5.0)
+    tail_returns = [value for value in returns if value <= value_at_risk_quantile]
     return {
         "period_return_unit": "portfolio_bar_return",
         "period_return_observation_count": len(returns),
+        "period_returns": tuple(returns),
         "sharpe_ratio": float(sharpe)
         if sharpe is not None and isfinite(sharpe)
         else None,
         "sortino_ratio": float(sortino)
         if sortino is not None and isfinite(sortino)
         else None,
+        "annualized_volatility_pct": (
+            float(volatility * scale * 100.0) if scale is not None else None
+        ),
+        "annualized_downside_deviation_pct": (
+            float(downside_deviation * scale * 100.0) if scale is not None else None
+        ),
+        "value_at_risk_95_pct": max(0.0, -value_at_risk_quantile * 100.0),
+        "conditional_value_at_risk_95_pct": max(0.0, -mean(tail_returns) * 100.0),
         "annualization_policy": "sqrt_periods_per_year_from_median_equity_point_interval",
     }
+
+
+def _beta(
+    portfolio_returns: tuple[float, ...],
+    benchmark_returns: tuple[float, ...] | None,
+) -> float | None:
+    if (
+        benchmark_returns is None
+        or len(portfolio_returns) < 2
+        or len(portfolio_returns) != len(benchmark_returns)
+        or not all(isfinite(value) for value in benchmark_returns)
+    ):
+        return None
+    portfolio_mean = mean(portfolio_returns)
+    benchmark_mean = mean(benchmark_returns)
+    benchmark_variance = mean(
+        (value - benchmark_mean) ** 2 for value in benchmark_returns
+    )
+    if benchmark_variance <= 0.0:
+        return None
+    covariance = mean(
+        (portfolio - portfolio_mean) * (benchmark - benchmark_mean)
+        for portfolio, benchmark in zip(portfolio_returns, benchmark_returns)
+    )
+    value = covariance / benchmark_variance
+    return float(value) if isfinite(value) else None
+
+
+def _closed_trade_holding_hours(
+    closed_trades: tuple[ClosedTradeRecord, ...],
+) -> tuple[float, ...] | None:
+    if not closed_trades:
+        return None
+    values: list[float] = []
+    for trade in closed_trades:
+        if trade.holding_minutes is not None:
+            hours = float(trade.holding_minutes) / 60.0
+        elif trade.entry_ts is not None and trade.exit_ts >= trade.entry_ts:
+            hours = (int(trade.exit_ts) - int(trade.entry_ts)) / (60.0 * 60.0 * 1000.0)
+        else:
+            return None
+        if not isfinite(hours) or hours < 0.0:
+            return None
+        values.append(hours)
+    return tuple(values)
+
+
+def _complete_trade_metric_mean(
+    closed_trades: tuple[ClosedTradeRecord, ...], field_name: str
+) -> float | None:
+    if not closed_trades:
+        return None
+    values: list[float] = []
+    for trade in closed_trades:
+        raw = getattr(trade, field_name)
+        if raw is None or not isfinite(float(raw)):
+            return None
+        values.append(float(raw))
+    return mean(values)
+
+
+def _portfolio_utilization_stats(
+    points: tuple[EquityPoint, ...],
+) -> _PortfolioUtilizationStats:
+    equities: list[float] = []
+    gross_asset_weights: list[float] = []
+    for point in points:
+        equity = float(point.equity)
+        cash = float(point.cash)
+        if equity <= 0.0 or not isfinite(equity) or not isfinite(cash):
+            continue
+        equities.append(equity)
+        gross_asset_weights.append(abs(equity - cash) / equity * 100.0)
+    return {
+        "average_equity": mean(equities) if equities else None,
+        "average_cash_usage_pct": mean(gross_asset_weights)
+        if gross_asset_weights
+        else None,
+        "peak_cash_usage_pct": max(gross_asset_weights)
+        if gross_asset_weights
+        else None,
+        "max_position_concentration_pct": max(gross_asset_weights)
+        if gross_asset_weights
+        else None,
+    }
+
+
+def _max_concurrent_positions(
+    position_intervals: tuple[PositionInterval, ...],
+) -> int:
+    events: list[tuple[int, int]] = []
+    for interval in position_intervals:
+        events.append((int(interval.open_ts), 1))
+        if interval.close_ts is not None and interval.close_ts >= interval.open_ts:
+            events.append((int(interval.close_ts), -1))
+    current = 0
+    maximum = 0
+    for _ts, delta in sorted(events, key=lambda item: (item[0], item[1])):
+        current = max(0, current + delta)
+        maximum = max(maximum, current)
+    return maximum
 
 
 def _exposure_ms(
@@ -820,6 +1331,19 @@ def _percentile(values: list[int], percentile: int) -> float:
     if len(ordered) == 1:
         return float(ordered[0])
     rank = (len(ordered) - 1) * (float(percentile) / 100.0)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = rank - lower
+    return float(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction)
+
+
+def _float_percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        raise ValueError("percentile requires values")
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    rank = (len(ordered) - 1) * (percentile / 100.0)
     lower = int(rank)
     upper = min(lower + 1, len(ordered) - 1)
     fraction = rank - lower

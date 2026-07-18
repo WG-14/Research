@@ -21,6 +21,8 @@ SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA publ
 SELECT format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', :'runtime_user') \gexec
 SELECT format('GRANT SELECT ON ALL TABLES IN SCHEMA research_ops TO %I', :'runtime_user') \gexec
 SELECT format('GRANT INSERT, UPDATE, DELETE ON research_ops.outbox_delivery, research_ops.outbox_operator_action, research_ops.worker_heartbeat, research_ops.experiment_identity, research_ops.experiment_request, research_ops.active_experiment_claim, research_ops.research_job_result_receipt TO %I', :'runtime_user') \gexec
+SELECT format('GRANT INSERT, UPDATE ON research_ops.service_alert, research_ops.service_alert_delivery TO %I', :'runtime_user') \gexec
+SELECT format('GRANT INSERT ON research_ops.service_alert_event TO %I', :'runtime_user') \gexec
 
 SELECT format('GRANT USAGE ON SCHEMA public, research_ops TO %I', :'diagnostics_user') \gexec
 SELECT format('GRANT SELECT ON ALL TABLES IN SCHEMA public, research_ops TO %I', :'diagnostics_user') \gexec
@@ -35,4 +37,5 @@ SELECT format('GRANT SELECT ON ALL TABLES IN SCHEMA public, research_ops TO %I',
 SELECT format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA public, research_ops TO %I', :'backup_user') \gexec
 SELECT format('GRANT UPDATE ON research_ops.runtime_control TO %I', :'backup_user') \gexec
 SELECT format('GRANT INSERT, UPDATE ON research_ops.validation_observation, research_ops.backup_set, research_ops.restore_drill TO %I', :'backup_user') \gexec
+SELECT format('GRANT INSERT ON research_ops.recovery_activation_event TO %I', :'backup_user') \gexec
 SQL

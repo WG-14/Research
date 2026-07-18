@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import locale
 import os
 import platform
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,45 @@ from .process_runtime import process_policy_observability
 from .code_provenance import collect_code_provenance
 from .resource_planner import plan_research_resources
 from .backtest_types import resolve_tick_observability_policy
+from .source_archive import publish_source_archive
+from market_research.paths import ResearchPathManager
+
+
+RESULT_AFFECTING_ENVIRONMENT_VARIABLES = (
+    "TZ",
+    "LANG",
+    "LC_ALL",
+    "LC_NUMERIC",
+    "PYTHONHASHSEED",
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+DETERMINISTIC_SINGLE_THREAD_ENVIRONMENT_VARIABLES = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def require_authoritative_source_eligibility(manifest: ExperimentManifest) -> None:
+    """Deny official repository execution before strategy code can run."""
+
+    if manifest.research_classification == "research_only":
+        return
+    provenance = collect_code_provenance(Path(__file__).resolve().parents[3])
+    if provenance.get("source_layout") != "repository_src":
+        return
+    if provenance.get("git_available") is not True:
+        raise RuntimeError("authoritative_execution_requires_git_source_identity")
+    if provenance.get("git_dirty") is not False:
+        raise RuntimeError("authoritative_execution_requires_clean_git_checkout")
 
 
 def parallel_work_task_count(
@@ -191,6 +232,7 @@ def build_research_execution_plan(
     created_at: str | None,
     include_walk_forward: bool = False,
     strategy_registry: Any,
+    manager: ResearchPathManager,
 ) -> ResearchExecutionPlan:
     candidates = iter_parameter_candidates(manifest.parameter_space)
     execution_scenarios = required_execution_scenarios(
@@ -233,6 +275,8 @@ def build_research_execution_plan(
         manifest=manifest,
         db_path=db_path,
         repository_version=repository_version,
+        manager=manager,
+        strategy_registry=strategy_registry,
     )
     effective_worker_source = "requested_pending_runtime_resolution"
     resource_plan = plan_research_resources(
@@ -514,19 +558,45 @@ def build_run_environment(
     manifest: ExperimentManifest,
     db_path: str | Path | None,
     repository_version: str | None,
+    manager: ResearchPathManager,
+    strategy_registry: Any,
 ) -> dict[str, Any]:
     resolved_db_path = (
         str(Path(db_path).expanduser().resolve()) if db_path is not None else None
     )
     code_provenance = collect_code_provenance(Path(__file__).resolve().parents[3])
+    source_archive = publish_source_archive(
+        manager=manager,
+        strategy_name=manifest.strategy_name,
+        strategy_registry=strategy_registry,
+    )
+    # Observation only: PYTHONHASHSEED takes effect at interpreter startup.
+    # Eligibility is validated later and must never be manufactured here.
+    result_affecting_environment = {
+        name: os.environ.get(name) for name in RESULT_AFFECTING_ENVIRONMENT_VARIABLES
+    }
+    runtime_semantics = {
+        "schema_version": 2,
+        "python_implementation": platform.python_implementation(),
+        "byte_order": sys.byteorder,
+        "timezone_names": list(time.tzname),
+        "locale": locale.setlocale(locale.LC_ALL, None),
+        "result_affecting_environment": result_affecting_environment,
+    }
     return {
         "repository_version": repository_version or "unknown",
         "code_provenance": code_provenance,
         "code_provenance_hash": code_provenance["code_provenance_hash"],
+        "source_archive": source_archive,
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
         "system": platform.system(),
         "machine": platform.machine(),
+        "runtime_semantics": runtime_semantics,
+        "runtime_semantics_hash": sha256_prefixed(
+            runtime_semantics,
+            label="research_runtime_semantics",
+        ),
         "cpu_count": os.cpu_count(),
         "effective_max_workers": manifest.research_run.execution.max_workers,
         "execution_mode": manifest.research_run.execution.mode,

@@ -134,8 +134,20 @@ def _matches_module_or_submodule(module: str, forbidden: str) -> bool:
 
 
 def _contains_sql_identifier(value: str, identifier: str) -> bool:
+    # A research result can legitimately describe simulated ``fills``.  The
+    # forbidden boundary is an operational SQL table reference, not the word
+    # appearing in an evidence/category label.  Require a SQL table clause so
+    # the guard remains sensitive to SELECT/INSERT/UPDATE/DDL statements while
+    # avoiding false positives from ordinary research vocabulary.
+    optional_schema = r'(?:["`\[]?[A-Za-z0-9_]+["`\]]?\s*\.\s*)?'
+    quoted_identifier = rf'["`\[]?{re.escape(identifier)}["`\]]?'
     return (
-        re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", value)
+        re.search(
+            rf"\b(?:from|join|into|update|table)\s+"
+            rf"{optional_schema}{quoted_identifier}(?![A-Za-z0-9_])",
+            value,
+            flags=re.IGNORECASE,
+        )
         is not None
     )
 

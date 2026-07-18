@@ -56,6 +56,7 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         "strategy_name": manifest.strategy_name,
         "source": "manifest_only_no_runtime_plugin_resolution",
     }
+    expected_decision_payload_bytes_per_event = 384
     estimated_plugin_runtime_us = 0
     pre_parallel_dataset_hash_payload_bytes = (
         expected_candles * 128 + split_count * 2048
@@ -63,9 +64,10 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
     max_workers = int(resource_plan.effective_max_workers)
     snapshot_bytes_per_worker = expected_candles * 160
     parallel_snapshot_fanout_bytes = snapshot_bytes_per_worker * max(1, max_workers)
-    event_bytes = max(
-        (int(item["expected_candle_count"]) for item in split_ranges), default=0
-    ) * int(plugin_complexity.get("expected_decision_payload_bytes_per_event") or 384)
+    event_bytes = (
+        max((int(item["expected_candle_count"]) for item in split_ranges), default=0)
+        * expected_decision_payload_bytes_per_event
+    )
     stage_trace_bytes = min(expected_candles * 6, 128) * 512
     parent_result_bytes = candidate_count * scenario_count * 4096
     memory_budget = (

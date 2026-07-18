@@ -4,6 +4,7 @@ import math
 import sqlite3
 from dataclasses import dataclass
 
+from .market_knowledge_time import validated_observed_at_ms
 from .market_ids import parse_market_id
 
 
@@ -30,6 +31,13 @@ class OrderbookTopSnapshot:
     spread_bps: float
     source: str
     observed_at_epoch_sec: float | None = None
+
+    def __post_init__(self) -> None:
+        validated_observed_at_ms(
+            event_ts=self.ts,
+            observed_at_epoch_sec=self.observed_at_epoch_sec,
+            evidence_name="orderbook_top",
+        )
 
     def as_db_tuple(self) -> tuple[int, str, float, float, float, str, float | None]:
         return (
@@ -70,8 +78,11 @@ def build_orderbook_top_snapshot(
     ask = float(ask_price)
     spread_bps = compute_spread_bps(bid_price=bid, ask_price=ask)
     observed = None if observed_at_epoch_sec is None else float(observed_at_epoch_sec)
-    if observed is not None and not math.isfinite(observed):
-        raise ValueError(f"invalid orderbook top observed_at_epoch_sec: {observed!r}")
+    validated_observed_at_ms(
+        event_ts=int(ts),
+        observed_at_epoch_sec=observed,
+        evidence_name="orderbook_top",
+    )
     return OrderbookTopSnapshot(
         ts=int(ts),
         pair=market,

@@ -78,6 +78,7 @@ h3 { margin-bottom: 6px; font-size: 1rem; }
 .metric-card span, .metric-card small, .summary-grid span { display: block; color: var(--muted); font-size: .76rem; }
 .metric-card strong { display: block; margin: 5px 0 1px; font-size: 1.65rem; letter-spacing: -.04em; }
 .metric-card-accent { border-color: #badcca; background: var(--green-soft); }
+.metric-card-warning { border-color: #e6c5c1; background: var(--red-soft); }
 .two-column, .form-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(290px, .8fr); gap: 18px; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 7px 22px rgba(21,37,31,.035); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 21px 24px 17px; border-bottom: 1px solid var(--line); }
@@ -129,6 +130,7 @@ h3 { margin-bottom: 6px; font-size: 1rem; }
 .field input, .field select, .filter-bar select, .login-card input { width: 100%; min-height: 44px; padding: 9px 12px; color: var(--ink); background: #fff; border: 1px solid #cbd4ce; border-radius: 9px; }
 .optional { color: var(--muted); font-size: .7rem; font-weight: 500; }
 .field-error { display: block; padding: 9px 11px; color: var(--red); background: var(--red-soft); border-radius: 8px; font-size: .77rem; }
+.poll-error { margin: 8px 0 0; }
 .form-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .check-list { display: grid; gap: 12px; padding: 0; list-style: none; font-size: .82rem; }
 .check-list li { position: relative; padding-left: 25px; }
@@ -143,6 +145,8 @@ h3 { margin-bottom: 6px; font-size: 1rem; }
 .evidence-list > div { display: grid; grid-template-columns: minmax(140px, .32fr) minmax(0,1fr); gap: 20px; padding: 11px 0; border-bottom: 1px solid #edf0ed; }
 .evidence-list dt { color: var(--muted); font-size: .76rem; }
 .evidence-list dd { margin: 0; font-size: .78rem; overflow-wrap: anywhere; }
+.advanced-details > summary { padding: 16px 24px; color: var(--green); cursor: pointer; font-size: .82rem; font-weight: 800; }
+.advanced-details[open] > summary { border-bottom: 1px solid var(--line); }
 code { padding: 2px 5px; color: #24483c; background: #edf2ef; border-radius: 5px; font-family: "Cascadia Code", Consolas, monospace; font-size: .78em; overflow-wrap: anywhere; }
 .next-step-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 24px; background: #fff7e6; border: 1px solid #efd69e; border-radius: var(--radius); }
 .next-step-card > div { display: flex; gap: 14px; }

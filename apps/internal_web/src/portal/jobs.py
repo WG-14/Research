@@ -8,7 +8,7 @@ from typing import Any
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import F, QuerySet
+from django.db.models import F
 from django.utils import timezone
 
 from market_research.application.capabilities import (
@@ -24,11 +24,11 @@ from market_research.application.contracts import (
 )
 from market_research.application.adapter_contracts import sha256_prefixed
 
+from .authorization import can_access_manifest, jobs_visible_to as jobs_visible_to
 from .audit import record_web_audit_event
-from .models import ManifestUpload, ResearchJob
+from .models import ManifestUpload, ResearchJob, ResourceAccessGrant
 from .security import (
     actor_snapshot,
-    can_view_all_jobs,
     reject_paths_in_job_payload,
     validate_sha256,
 )
@@ -40,7 +40,10 @@ ACTIVE_STATUSES = (
     ResearchJob.Status.RUNNING,
     ResearchJob.Status.CANCEL_REQUESTED,
 )
-WEB_JOB_CAPABILITY_CONTRACTS = {
+WEB_JOB_CAPABILITY_CONTRACTS: dict[
+    str,
+    tuple[str, type[Any], type[Any]],
+] = {
     ResearchJob.Capability.PREFLIGHT: (
         "ResearchApplicationService.preflight",
         ResearchPreflightRequest,
@@ -257,8 +260,10 @@ def enqueue_research_job(
 ) -> EnqueueResult:
     if not owner.has_perm("portal.submit_research_job"):
         raise PermissionDenied("research_job_submit_permission_required")
-    if manifest.owner_id != owner.pk and not owner.has_perm(
-        "portal.view_all_research_manifests"
+    if not can_access_manifest(
+        owner,
+        manifest,
+        access=ResourceAccessGrant.Access.SUBMIT,
     ):
         raise PermissionDenied("research_manifest_access_denied")
     key = str(idempotency_key or "").strip()
@@ -665,10 +670,3 @@ def finalize_cancelled(
             details={"error_code": job.error_code},
         )
     return job
-
-
-def jobs_visible_to(user: Any) -> QuerySet[ResearchJob]:
-    if not getattr(user, "is_authenticated", False):
-        return ResearchJob.objects.none()
-    queryset = ResearchJob.objects.select_related("owner", "manifest")
-    return queryset if can_view_all_jobs(user) else queryset.filter(owner=user)

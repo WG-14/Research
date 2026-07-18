@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .hashing import canonical_payload_hash
@@ -26,6 +27,35 @@ from .backtest_support import BacktestAccumulator, PendingFill
 from .streaming_evidence import StreamingEvidenceDigest
 
 
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_or_none(value: object) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _coerce_float(value: object, *, context: str) -> float:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise ValueError(f"{context}_must_be_numeric")
+    return float(value)
+
+
+def _coerce_int(value: object, *, context: str) -> int:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise ValueError(f"{context}_must_be_integer_compatible")
+    return int(value)
+
+
+@dataclass(frozen=True, slots=True)
+class _ResearchPositionAuthoritySnapshot:
+    position_state_hash: str
+    payload: dict[str, object]
+
+    def as_dict(self) -> dict[str, object]:
+        return dict(self.payload)
+
+
 def _research_position_authority_snapshot(
     *,
     qty: float,
@@ -33,9 +63,9 @@ def _research_position_authority_snapshot(
     order_rules_hash: str,
     fee_authority_hash: str,
     position_state_hash: str,
-) -> object:
+) -> _ResearchPositionAuthoritySnapshot:
     flat = float(qty) <= 0.0 and float(sellable_qty) <= 0.0
-    payload = {
+    payload: dict[str, object] = {
         "raw_total_asset_qty": max(0.0, float(qty)),
         "open_lot_count": 0,
         "dust_tracking_lot_count": 0,
@@ -60,22 +90,10 @@ def _research_position_authority_snapshot(
         "research_position_model": "cash_qty_simulation_v1",
     }
 
-    class Snapshot:
-        def __init__(self, value: dict[str, object]) -> None:
-            self.position_state_hash = str(value["position_state_hash"])
-            self._value = value
-
-        def as_dict(self) -> dict[str, object]:
-            return dict(self._value)
-
-    return Snapshot(payload)
-
-
-def _create_exit_rules(**kwargs: Any):
-    # Keep this local to avoid config -> research_profile -> research -> strategy -> config imports.
-    from market_research.strategy.exit_rules import create_exit_rules
-
-    return create_exit_rules(**kwargs)
+    return _ResearchPositionAuthoritySnapshot(
+        position_state_hash=position_state_hash,
+        payload=payload,
+    )
 
 
 def _regime_snapshot_value(snapshot: Any, key: str) -> str:
@@ -112,9 +130,7 @@ def _retained_detail_summary(
 
 
 def _trade_hash_payload(trade: dict[str, object]) -> dict[str, object]:
-    execution = (
-        trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
-    )
+    execution = _dict_or_empty(trade.get("execution"))
     return {
         "ts": trade.get("ts"),
         "side": trade.get("side"),
@@ -204,14 +220,23 @@ def _behavior_hashes(
         "composite_behavior_hash": composite_hash,
         "composite_behavior_hash_v2": composite_hash_v2,
         "behavior_hash": composite_hash,
-        "behavior_hash_material_count": int(decision_final["count"]),
-        "common_behavior_hash_material_count": int(common_final["count"]),
-        "strategy_behavior_hash_material_count": int(strategy_final["count"]),
+        "behavior_hash_material_count": _coerce_int(
+            decision_final["count"], context="behavior_hash_material_count"
+        ),
+        "common_behavior_hash_material_count": _coerce_int(
+            common_final["count"], context="common_behavior_hash_material_count"
+        ),
+        "strategy_behavior_hash_material_count": _coerce_int(
+            strategy_final["count"], context="strategy_behavior_hash_material_count"
+        ),
         "behavior_hash_material_retention_policy": str(
             decision_final["retention_policy"]
         ),
         "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
-        "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
+        "behavior_hash_material_sample_count": _coerce_int(
+            decision_final["sample_count"],
+            context="behavior_hash_material_sample_count",
+        ),
     }
 
 
@@ -281,7 +306,15 @@ def _complete_audit_trace(
     sink = context.audit_trace
     if sink is None:
         return None
-    return sink.complete(status=status)
+    completed = sink.complete(status=status)
+    if not isinstance(completed, dict):
+        raise TypeError("audit_trace_completion_must_be_mapping")
+    normalized: dict[str, object] = {}
+    for key, value in completed.items():
+        if not isinstance(key, str):
+            raise TypeError("audit_trace_completion_keys_must_be_strings")
+        normalized[key] = value
+    return normalized
 
 
 def _record_equity_mark(
@@ -347,7 +380,7 @@ def _timing_request_fields(
     return fields
 
 
-def _depth_request_fields(
+def resolve_depth_request_fields(
     *,
     dataset: DatasetSnapshot,
     reference: ExecutionReferenceEvent,
@@ -369,6 +402,11 @@ def _depth_request_fields(
             "orderbook_depth_ref": None,
             "depth_available": False,
             "depth_sufficient": False,
+            "depth_reference_target_ts": int(target_ts),
+            "depth_reference_deadline_ts": int(target_ts)
+            + int(timing_policy.max_quote_wait_ms),
+            "depth_resolution_ts": int(target_ts)
+            + int(timing_policy.max_quote_wait_ms),
             "execution_liquidity_evidence_type": "l2_depth_walk_queue_unaware",
             "execution_realism_limitations": (
                 "depth_snapshot_missing_for_depth_walk",
@@ -382,7 +420,13 @@ def _depth_request_fields(
         "orderbook_depth_snapshot": snapshot,
         "orderbook_depth_ref": snapshot.depth_ref(),
         "depth_snapshot_ts": int(snapshot.ts),
-        "depth_snapshot_age_ms": int(snapshot.ts) - int(target_ts),
+        "depth_snapshot_available_at_ts": snapshot.available_at_ms(),
+        "depth_snapshot_availability_basis": snapshot.availability_basis(),
+        "depth_snapshot_age_ms": snapshot.available_at_ms() - int(target_ts),
+        "depth_reference_target_ts": int(target_ts),
+        "depth_reference_deadline_ts": int(target_ts)
+        + int(timing_policy.max_quote_wait_ms),
+        "depth_resolution_ts": snapshot.available_at_ms(),
         "depth_available": True,
         "execution_liquidity_evidence_type": "l2_depth_walk_queue_unaware",
         "execution_realism_limitations": (
@@ -680,6 +724,8 @@ def _failed_fill(
         signal_reference_price=signal.signal_reference_price,
         signal_reference_source=signal.signal_reference_source,
         quote_ts=reference.quote_ts,
+        quote_available_at_ts=reference.quote_available_at_ts,
+        quote_availability_basis=reference.quote_availability_basis,
         quote_age_ms=reference.quote_age_ms,
         quote_source=reference.quote_source,
         requested_qty=request_qty,
@@ -721,6 +767,12 @@ def _failed_fill(
         latency_applied_to_submit_ts=reference.latency_applied_to_submit_ts,
         latency_applied_to_fill_reference=reference.latency_applied_to_fill_reference,
         latency_reference_policy_warning=reference.latency_reference_policy_warning,
+        execution_reference_target_ts=reference.execution_reference_target_ts,
+        execution_reference_deadline_ts=reference.execution_reference_deadline_ts,
+        execution_reference_resolution_ts=(reference.execution_reference_resolution_ts),
+        execution_resolution_ts=reference.execution_resolution_ts,
+        portfolio_effective_ts=reference.execution_resolution_ts,
+        order_intent_ts=signal.decision_ts,
         feature_snapshot=signal.feature_snapshot,
         regime_snapshot=signal.regime_snapshot,
         intra_candle_policy=reference.intra_candle_policy,
@@ -1059,9 +1111,13 @@ def _strategy_diagnostics_from_trades(
         reason = str(trade.get("exit_rule") or trade.get("exit_reason") or "unknown")
         exit_reason_distribution[reason] = exit_reason_distribution.get(reason, 0) + 1
         if trade.get("mae_pct") is not None:
-            mae_pct_by_trade.append(float(trade.get("mae_pct") or 0.0))
+            mae_pct_by_trade.append(
+                _coerce_float(trade.get("mae_pct"), context="trade_mae_pct")
+            )
         if trade.get("mfe_pct") is not None:
-            mfe_pct_by_trade.append(float(trade.get("mfe_pct") or 0.0))
+            mfe_pct_by_trade.append(
+                _coerce_float(trade.get("mfe_pct"), context="trade_mfe_pct")
+            )
         pnl = (
             trade.get("net_pnl")
             if trade.get("net_pnl") is not None
@@ -1069,10 +1125,14 @@ def _strategy_diagnostics_from_trades(
         )
         if (
             pnl is not None
-            and float(pnl) < 0.0
+            and _coerce_float(pnl, context="trade_net_pnl") < 0.0
             and trade.get("holding_minutes") is not None
         ):
-            loss_holding_minutes.append(float(trade.get("holding_minutes") or 0.0))
+            loss_holding_minutes.append(
+                _coerce_float(
+                    trade.get("holding_minutes"), context="trade_holding_minutes"
+                )
+            )
     payload = {
         "schema_version": 1,
         "exit_reason_distribution": dict(sorted(exit_reason_distribution.items())),
@@ -1152,11 +1212,12 @@ def _metrics_v2_ledgers_from_trades(
             if isinstance(trade, dict) and bool(trade.get("is_portfolio_applied_trade"))
         ],
         key=lambda trade: (
-            int(
+            _coerce_int(
                 trade.get("portfolio_effective_ts")
                 or trade.get("fill_ts")
                 or trade.get("ts")
-                or 0
+                or 0,
+                context="portfolio_effective_ts",
             ),
             str(trade.get("side") or ""),
         ),
@@ -1168,15 +1229,16 @@ def _metrics_v2_ledgers_from_trades(
     open_cost_basis = 0.0
     for trade in applied:
         side = str(trade.get("side") or "").upper()
-        ts = int(
+        ts = _coerce_int(
             trade.get("portfolio_effective_ts")
             or trade.get("fill_ts")
             or trade.get("ts")
-            or 0
+            or 0,
+            context="portfolio_effective_ts",
         )
-        qty = float(trade.get("qty") or 0.0)
-        price = float(trade.get("price") or 0.0)
-        fee = float(trade.get("fee") or 0.0)
+        qty = _coerce_float(trade.get("qty") or 0.0, context="trade_qty")
+        price = _coerce_float(trade.get("price") or 0.0, context="trade_price")
+        fee = _coerce_float(trade.get("fee") or 0.0, context="trade_fee")
         if side == "BUY" and qty > 0.0:
             if open_qty <= 1e-12:
                 open_ts = ts
@@ -1192,6 +1254,7 @@ def _metrics_v2_ledgers_from_trades(
                 else trade.get("closed_trade_pnl")
             )
             if pnl is not None:
+                net_pnl = _coerce_float(pnl, context="closed_trade_net_pnl")
                 closed.append(
                     ClosedTradeRecord(
                         entry_ts=open_ts,
@@ -1199,22 +1262,31 @@ def _metrics_v2_ledgers_from_trades(
                         entry_notional=allocated_basis
                         if allocated_basis > 0.0
                         else None,
-                        net_pnl=float(pnl),
-                        return_pct=(float(pnl) / allocated_basis * 100.0)
+                        net_pnl=net_pnl,
+                        return_pct=(net_pnl / allocated_basis * 100.0)
                         if allocated_basis > 0.0
                         else None,
                         holding_minutes=(
-                            float(trade.get("holding_minutes"))
+                            _coerce_float(
+                                trade.get("holding_minutes"),
+                                context="closed_trade_holding_minutes",
+                            )
                             if trade.get("holding_minutes") is not None
                             else None
                         ),
                         entry_price=(
-                            float(trade.get("entry_price"))
+                            _coerce_float(
+                                trade.get("entry_price"),
+                                context="closed_trade_entry_price",
+                            )
                             if trade.get("entry_price") is not None
                             else None
                         ),
                         exit_price=(
-                            float(trade.get("exit_price"))
+                            _coerce_float(
+                                trade.get("exit_price"),
+                                context="closed_trade_exit_price",
+                            )
                             if trade.get("exit_price") is not None
                             else None
                         ),
@@ -1238,44 +1310,51 @@ def _metrics_v2_ledgers_from_trades(
                             if trade.get("exit_reason") is not None
                             else None
                         ),
-                        mae=float(trade.get("mae"))
+                        mae=_coerce_float(trade.get("mae"), context="closed_trade_mae")
                         if trade.get("mae") is not None
                         else None,
-                        mfe=float(trade.get("mfe"))
+                        mfe=_coerce_float(trade.get("mfe"), context="closed_trade_mfe")
                         if trade.get("mfe") is not None
                         else None,
-                        mae_pct=float(trade.get("mae_pct"))
+                        mae_pct=_coerce_float(
+                            trade.get("mae_pct"), context="closed_trade_mae_pct"
+                        )
                         if trade.get("mae_pct") is not None
                         else None,
-                        mfe_pct=float(trade.get("mfe_pct"))
+                        mfe_pct=_coerce_float(
+                            trade.get("mfe_pct"), context="closed_trade_mfe_pct"
+                        )
                         if trade.get("mfe_pct") is not None
                         else None,
                         bars_to_mae=(
-                            int(trade.get("bars_to_mae"))
+                            _coerce_int(
+                                trade.get("bars_to_mae"),
+                                context="closed_trade_bars_to_mae",
+                            )
                             if trade.get("bars_to_mae") is not None
                             else None
                         ),
                         bars_to_mfe=(
-                            int(trade.get("bars_to_mfe"))
+                            _coerce_int(
+                                trade.get("bars_to_mfe"),
+                                context="closed_trade_bars_to_mfe",
+                            )
                             if trade.get("bars_to_mfe") is not None
                             else None
                         ),
-                        unrealized_pnl_path_summary=(
-                            dict(trade.get("unrealized_pnl_path_summary"))
-                            if isinstance(
-                                trade.get("unrealized_pnl_path_summary"), dict
-                            )
-                            else None
+                        unrealized_pnl_path_summary=_dict_or_none(
+                            trade.get("unrealized_pnl_path_summary")
                         ),
                         entry_feature_schema_version=(
-                            int(trade.get("entry_feature_schema_version"))
+                            _coerce_int(
+                                trade.get("entry_feature_schema_version"),
+                                context="entry_feature_schema_version",
+                            )
                             if trade.get("entry_feature_schema_version") is not None
                             else None
                         ),
-                        entry_feature_snapshot=(
-                            dict(trade.get("entry_feature_snapshot"))
-                            if isinstance(trade.get("entry_feature_snapshot"), dict)
-                            else None
+                        entry_feature_snapshot=_dict_or_none(
+                            trade.get("entry_feature_snapshot")
                         ),
                         entry_decision_hash=(
                             str(trade.get("entry_decision_hash"))
@@ -1287,8 +1366,14 @@ def _metrics_v2_ledgers_from_trades(
                             if trade.get("exit_decision_hash") is not None
                             else None
                         ),
-                        fee_total=float(trade.get("fee_total") or fee),
-                        slippage_total=float(trade.get("slippage_total") or 0.0),
+                        fee_total=_coerce_float(
+                            trade.get("fee_total") or fee,
+                            context="closed_trade_fee_total",
+                        ),
+                        slippage_total=_coerce_float(
+                            trade.get("slippage_total") or 0.0,
+                            context="closed_trade_slippage_total",
+                        ),
                     )
                 )
             open_qty = max(0.0, open_qty - qty)
@@ -1304,32 +1389,45 @@ def _metrics_v2_ledgers_from_trades(
 
 
 def _execution_record_from_trade(trade: dict[str, object]) -> ExecutionRecord:
-    execution = (
-        trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
-    )
-    assert isinstance(execution, dict)
+    execution = _dict_or_empty(trade.get("execution"))
     return ExecutionRecord(
         side=str(trade.get("side") or execution.get("side") or ""),
         status=str(execution.get("fill_status") or ""),
-        filled_qty=float(execution.get("filled_qty") or trade.get("qty") or 0.0),
-        price=(
-            float(execution.get("avg_fill_price"))
-            if execution.get("avg_fill_price") is not None
-            else (float(trade.get("price")) if trade.get("price") is not None else None)
+        filled_qty=_coerce_float(
+            execution.get("filled_qty") or trade.get("qty") or 0.0,
+            context="execution_filled_qty",
         ),
-        fee=float(execution.get("fee") or trade.get("fee") or 0.0),
+        price=(
+            _coerce_float(
+                execution.get("avg_fill_price"), context="execution_avg_fill_price"
+            )
+            if execution.get("avg_fill_price") is not None
+            else (
+                _coerce_float(trade.get("price"), context="execution_trade_price")
+                if trade.get("price") is not None
+                else None
+            )
+        ),
+        fee=_coerce_float(
+            execution.get("fee") or trade.get("fee") or 0.0,
+            context="execution_fee",
+        ),
         slippage=float(_trade_execution_slippage(trade)),
         quote_age_ms=int(execution["quote_age_ms"])
         if execution.get("quote_age_ms") is not None
         else None,
         ts=(
-            int(execution.get("fill_reference_ts"))
+            _coerce_int(
+                execution.get("fill_reference_ts"),
+                context="execution_fill_reference_ts",
+            )
             if execution.get("fill_reference_ts") is not None
-            else int(
+            else _coerce_int(
                 trade.get("fill_ts")
                 or trade.get("portfolio_effective_ts")
                 or trade.get("ts")
-                or 0
+                or 0,
+                context="execution_trade_ts",
             )
         ),
         entry_signal_source=(
@@ -1344,23 +1442,29 @@ def _execution_record_from_trade(trade: dict[str, object]) -> ExecutionRecord:
 
 
 def _trade_execution_slippage(trade: dict[str, object]) -> float:
-    execution = (
-        trade.get("execution") if isinstance(trade.get("execution"), dict) else {}
-    )
-    assert isinstance(execution, dict)
+    execution = _dict_or_empty(trade.get("execution"))
     status = str(execution.get("fill_status") or "")
     if status not in {"filled", "partial"}:
         return 0.0
     side = str(execution.get("side") or trade.get("side") or "").upper()
-    qty = float(execution.get("filled_qty") or trade.get("qty") or 0.0)
+    qty = _coerce_float(
+        execution.get("filled_qty") or trade.get("qty") or 0.0,
+        context="execution_slippage_qty",
+    )
     avg_price = execution.get("avg_fill_price")
     ref_price = execution.get("reference_price")
     if avg_price is None or ref_price is None or qty <= 0.0:
         return 0.0
+    avg_price_value = _coerce_float(
+        avg_price, context="execution_slippage_avg_fill_price"
+    )
+    ref_price_value = _coerce_float(
+        ref_price, context="execution_slippage_reference_price"
+    )
     if side == "BUY":
-        return max(0.0, (float(avg_price) - float(ref_price)) * qty)
+        return max(0.0, (avg_price_value - ref_price_value) * qty)
     if side == "SELL":
-        return max(0.0, (float(ref_price) - float(avg_price)) * qty)
+        return max(0.0, (ref_price_value - avg_price_value) * qty)
     return 0.0
 
 
@@ -1536,8 +1640,7 @@ def _max_consecutive_losses(values: list[float]) -> int:
 
 closed_trade_diagnostics = _closed_trade_diagnostics
 complete_audit_trace = _complete_audit_trace
-create_exit_rules = _create_exit_rules
-depth_request_fields = _depth_request_fields
+depth_request_fields = resolve_depth_request_fields
 empty_metrics = _empty_metrics
 empty_metrics_v2 = _empty_metrics_v2
 execution_reference_warnings = _execution_reference_warnings

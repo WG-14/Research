@@ -171,8 +171,11 @@ def test_platform_documentation_matches_strategy_discovery_and_partial_exit_cont
     assert "opt-in partial exits" in documentation
     assert "no partial exits" not in documentation
     assert "selection artifact schema 2" in documentation
-    assert "Reproduction receipt schema 8" in documentation
+    assert "Reproduction receipt schema 9" in documentation
+    assert "result-affecting environment" in documentation
     assert "same backtest or walk-forward path" in documentation
+    assert "`quote_ts` and `quote_available_at_ts`" in documentation
+    assert "portfolio effective time cannot precede" in documentation
 
 
 def test_generic_strategy_spec_rejects_legacy_concrete_spec_exports():
@@ -206,3 +209,22 @@ def test_sdk_strategy_spec_requires_explicit_registry_and_has_no_catalog_import(
 def test_compatibility_exit_adapter_has_no_concrete_strategy_import():
     source = Path("src/market_research/research/exit_rules.py").read_text()
     assert "builtin_strategies" not in source
+
+
+def test_retired_exit_rule_api_has_no_runtime_references():
+    retired = Path("src/market_research/research/exit_rules.py")
+    violations = []
+    for path in Path("src/market_research").rglob("*.py"):
+        if path == retired:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if any(
+            marker in source
+            for marker in (
+                "create_exit_rules",
+                "research.exit_rules",
+                "strategy.exit_rules",
+            )
+        ):
+            violations.append(str(path))
+    assert violations == []

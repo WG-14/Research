@@ -185,9 +185,18 @@ class HumanReviewRequest(ApplicationRequest):
     """Request to record a non-approval human governance decision.
 
     Reviewer identity and role intentionally do not appear here.  They are
-    derived exclusively from ``actor`` by the application service.
+    derived exclusively from ``actor`` by the application service.  Web
+    adapters should supply ``idempotency_key``; ``request_id`` is accepted as
+    the compatibility operation identifier for callers that have not split
+    tracing from idempotency yet.
     """
 
+    request_id: str | None = Field(default=None, min_length=1, max_length=255)
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+    )
     subject: GovernanceSubjectRef
     decision: Literal["APPROVED", "CHANGES_REQUESTED", "REJECTED"]
     rationale: str = Field(min_length=1)
@@ -195,6 +204,16 @@ class HumanReviewRequest(ApplicationRequest):
     requested_changes: tuple[RequestedChange, ...] = ()
     resolved_requirement_ids: tuple[str, ...] = ()
     prohibited_actor_ids: frozenset[str] = frozenset()
+
+    @field_validator("request_id", "idempotency_key")
+    @classmethod
+    def _normalize_operation_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("human_review_operation_identifier_required")
+        return normalized
 
     @field_validator("rationale")
     @classmethod

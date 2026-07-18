@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -362,6 +363,7 @@ def test_expected_portal_migrations_come_from_installed_web_package() -> None:
         "0006_webauditevent",
         "0007_governance_authority",
         "0008_imported_decision_report",
+        "0009_resourceaccessgrant",
     )
 
 
@@ -849,7 +851,7 @@ def test_signed_recovery_receipt_converges_after_control_response_loss(tmp_path)
         status="PASS",
         backup_manifest_hash="sha256:" + "a" * 64,
         started_at=now,
-        finished_at=now + timedelta(seconds=1),
+        finished_at=now + timedelta(microseconds=990_918),
         checks=(check,),
         git_sha="1" * 40,
         release_id="release-1",
@@ -884,6 +886,8 @@ def test_signed_recovery_receipt_converges_after_control_response_loss(tmp_path)
     assert recovered.status == original.status
     assert recovered.backup_manifest_hash == original.backup_manifest_hash
     assert recovered.checks == original.checks
+    assert recovered.duration_seconds == original.duration_seconds
+    assert document["duration_seconds"] == original.duration_seconds
     assert document["release"] == {
         "git_sha": original.git_sha,
         "release_id": original.release_id,
@@ -1132,6 +1136,60 @@ def test_recovery_requires_exact_release_bundle_environment(tmp_path, monkeypatc
         )
 
 
+def test_recovery_activation_content_hash_binds_the_complete_event() -> None:
+    activated_at = datetime(2026, 7, 17, 1, 2, 3, 456789, tzinfo=UTC)
+    verified = VerifiedBackup(
+        backup_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        manifest_hash="sha256:" + "1" * 64,
+        git_sha="2" * 40,
+        release_id="recovery-event-test",
+        build_digest="sha256:" + "3" * 64,
+        release_bundle_digest="sha256:" + "4" * 64,
+        migration_digest="sha256:" + "5" * 64,
+        postgresql_major=16,
+        fence_generation=7,
+        fence_token_hash="sha256:" + "6" * 64,
+        created_at=activated_at,
+        audit_row_count=0,
+        audit_terminal_hash="",
+        files=(),
+    )
+    receipt_hash = "sha256:" + "7" * 64
+    activation_id = backup_module._recovery_activation_identifier(
+        verified,
+        receipt_hash,
+    )
+    assert activation_id == backup_module._recovery_activation_identifier(
+        verified,
+        receipt_hash,
+    )
+    event = backup_module._RecoveryActivationEvent(
+        activation_id=activation_id,
+        backup_id=verified.backup_id,
+        backup_manifest_hash=verified.manifest_hash,
+        recovery_receipt_hash=receipt_hash,
+        release_bundle_digest=verified.release_bundle_digest,
+        requested_by="recovery-operator",
+        reason="signed_recovery_activation",
+        activated_at=activated_at,
+        prior_state="SEALED",
+        new_state="OPEN",
+        prior_generation=verified.fence_generation,
+        new_generation=verified.fence_generation + 1,
+        prior_fence_token_hash=verified.fence_token_hash,
+    )
+    changed_hashes = {
+        replace(event, requested_by="other-operator").content_hash,
+        replace(event, recovery_receipt_hash="sha256:" + "8" * 64).content_hash,
+        replace(event, release_bundle_digest="sha256:" + "9" * 64).content_hash,
+        replace(event, new_generation=event.new_generation + 1).content_hash,
+        replace(event, activated_at=activated_at + timedelta(seconds=1)).content_hash,
+    }
+    assert event.content_hash.startswith("sha256:")
+    assert event.content_hash not in changed_hashes
+    assert len(changed_hashes) == 5
+
+
 def test_signed_backup_schema_one_remains_readable(tmp_path):
     private_key = tmp_path / "legacy-signing.pem"
     public_key = tmp_path / "legacy-signing.pub.pem"
@@ -1247,8 +1305,27 @@ def test_deployment_scripts_preserve_backup_and_restore_contracts() -> None:
     grants = (root / "scripts" / "apply-migrations.sh").read_text()
     create = (root / "scripts" / "create-backup.sh").read_text()
     restore = (root / "scripts" / "restore-rehearsal.sh").read_text()
+    activation_migration = (
+        root
+        / "src"
+        / "research_operations"
+        / "migrations"
+        / "0005_recovery_activation_event.sql"
+    ).read_text()
+    alert_migration = (
+        root
+        / "src"
+        / "research_operations"
+        / "migrations"
+        / "0006_service_alert_workflow.sql"
+    ).read_text()
 
     assert "GRANT SELECT ON ALL SEQUENCES IN SCHEMA public, research_ops" in grants
+    assert "GRANT INSERT ON research_ops.recovery_activation_event" in grants
+    assert "GRANT INSERT ON research_ops.service_alert_event" in grants
+    assert "BEFORE UPDATE OR DELETE" in activation_migration
+    assert "recovery_activation_event_append_only" in activation_migration
+    assert "service_alert_event_append_only" in alert_migration
     assert "--exclude='./_internal_web/manifests'" in create
     assert "BACKUP_RESUME_ID" in create
     assert "DRAINING) ;;" in create
@@ -1257,5 +1334,7 @@ def test_deployment_scripts_preserve_backup_and_restore_contracts() -> None:
     assert "script_dir/safe-extract.py" in restore
     assert "SELECT current_database()" in restore
     assert "RESEARCH_OPS_RECOVERY_RESUME" in restore
+    assert "recovery_started_at=$(date -u" in restore
+    assert '--started-at "$recovery_started_at"' in restore
     assert "ALTER DATABASE %I SET default_transaction_read_only = on" in restore
     assert "identity_registry/$identity_basename" in restore

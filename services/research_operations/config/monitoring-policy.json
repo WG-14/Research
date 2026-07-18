@@ -1,5 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "alert_workflow": {
+    "acknowledgement": "actor_separated_with_reason_and_utc_time",
+    "delivery": "fenced_idempotent_https_or_loopback_http",
+    "escalation": "unacknowledged_deadline_driven",
+    "evidence": "append_only_hash_chain",
+    "receiver_url_source": "owner_private_file"
+  },
   "forbidden_metric_labels": [
     "absolute_path",
     "actor_id",
@@ -10,6 +17,8 @@
     "username"
   ],
   "required_alerts": {
+    "alert_delivery_failed": "research_ops_service_alert_delivery_failed > 0",
+    "alert_unacknowledged_due": "research_ops_service_alert_unacknowledged_due > 0",
     "audit_validation_failed": "research_ops_validation_last_pass == 0",
     "backup_stale": "research_ops_backup_present == 0 or research_ops_backup_age_seconds > 90000",
     "database_not_primary": "research_ops_database_primary == 0",

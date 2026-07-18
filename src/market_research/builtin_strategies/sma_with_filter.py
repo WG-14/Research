@@ -1,6 +1,6 @@
 """Built-in SMA-with-filter research plugin implementation."""
 
-from typing import Any, Mapping
+from typing import Any, Mapping, SupportsIndex, SupportsInt, cast
 
 from market_research.research.exit_decision import ExitDecision
 from .sma_exit_rules import evaluate_sma_exit_policy, materialize_sma_exit_policy
@@ -134,6 +134,17 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
             ),
             runtime_bound=name not in _SMA_RESEARCH_ONLY,
             behavior_affecting=name not in _SMA_RESEARCH_ONLY,
+            unit=(
+                "candles"
+                if name in _INT_PARAMETERS
+                else "ratio"
+                if name != "STRATEGY_EXIT_RULES"
+                else "comma_separated_rule_ids"
+            ),
+            description=f"Versioned SMA strategy parameter {name}.",
+            default_value=_SMA_DEFAULTS.get(name),
+            optimization_allowed=name not in _SMA_RESEARCH_ONLY,
+            since_version="sma_with_filter.research_runtime_contract.v2",
         )
         for name in _SMA_ACCEPTED
     ),
@@ -339,12 +350,22 @@ def _exit_decision(
 def _runtime_window_rows(parameters: dict[str, object]) -> int:
     return (
         max(
-            int(parameters["SMA_LONG"]),
-            int(parameters.get("SMA_FILTER_VOL_WINDOW") or 1),
-            int(parameters.get("SMA_FILTER_OVEREXT_LOOKBACK") or 1),
+            _as_int(parameters["SMA_LONG"], default=1),
+            _as_int(parameters.get("SMA_FILTER_VOL_WINDOW"), default=1),
+            _as_int(parameters.get("SMA_FILTER_OVEREXT_LOOKBACK"), default=1),
         )
         + 2
     )
+
+
+def _as_int(value: object, *, default: int) -> int:
+    if value is None:
+        return default
+    numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+    try:
+        return int(numeric)
+    except (TypeError, ValueError):
+        return default
 
 
 _runtime_factory = make_event_builder_runtime_factory(
@@ -354,6 +375,10 @@ _runtime_factory = make_event_builder_runtime_factory(
 
 
 def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
+    from market_research.research.strategy_manifest import (
+        builtin_strategy_manifest_hash,
+    )
+
     return ResearchStrategyPlugin(
         name=SMA_WITH_FILTER_SPEC.strategy_name,
         version=SMA_WITH_FILTER_SPEC.strategy_version,
@@ -371,6 +396,7 @@ def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
         runtime_factory=_runtime_factory,
         reconstruction_module=__name__,
         reconstruction_qualname="build_sma_with_filter_plugin",
+        package_manifest_hash=builtin_strategy_manifest_hash(__name__),
     )
 
 

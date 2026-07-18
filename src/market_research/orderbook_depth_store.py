@@ -4,11 +4,26 @@ import hashlib
 import json
 import math
 import sqlite3
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
+from .market_knowledge_time import validated_observed_at_ms
 from .market_ids import parse_market_id
 from .orderbook_top_store import ORDERBOOK_TOP_SOURCE
+
+
+class _DepthEvidenceRow(TypedDict):
+    ts: int
+    pair: str
+    source: str
+    side: str
+    level_index: int
+    price: float
+    size: float
+    cumulative_size: float
+    cumulative_notional: float
+    observed_at_epoch_sec: float | None
 
 
 @dataclass(frozen=True)
@@ -23,6 +38,13 @@ class OrderbookDepthLevel:
     cumulative_notional: float
     source: str
     observed_at_epoch_sec: float | None = None
+
+    def __post_init__(self) -> None:
+        validated_observed_at_ms(
+            event_ts=self.ts,
+            observed_at_epoch_sec=self.observed_at_epoch_sec,
+            evidence_name="orderbook_depth",
+        )
 
     def as_db_tuple(
         self,
@@ -50,6 +72,13 @@ class OrderbookDepthSnapshot:
     source: str
     observed_at_epoch_sec: float | None = None
 
+    def __post_init__(self) -> None:
+        validated_observed_at_ms(
+            event_ts=self.ts,
+            observed_at_epoch_sec=self.observed_at_epoch_sec,
+            evidence_name="orderbook_depth",
+        )
+
     @property
     def has_depth(self) -> bool:
         return bool(self.bids and self.asks)
@@ -58,7 +87,29 @@ class OrderbookDepthSnapshot:
         return (*self.bids, *self.asks)
 
     def depth_ref(self) -> str:
-        return f"{self.source}:{self.pair}:{self.ts}"
+        observation_identity = (
+            "event_time_assumption"
+            if self.observed_at_epoch_sec is None
+            else f"observed_at_ms:{self.available_at_ms()}"
+        )
+        return f"{self.source}:{self.pair}:{self.ts}:{observation_identity}"
+
+    def available_at_ms(self) -> int:
+        """Return the later of exchange event and source observation time."""
+
+        observed_at_ms = validated_observed_at_ms(
+            event_ts=self.ts,
+            observed_at_epoch_sec=self.observed_at_epoch_sec,
+            evidence_name="orderbook_depth",
+        )
+        return int(self.ts) if observed_at_ms is None else observed_at_ms
+
+    def availability_basis(self) -> str:
+        return (
+            "observed_at_epoch_sec"
+            if self.observed_at_epoch_sec is not None
+            else "event_time_as_knowledge_time_assumption"
+        )
 
 
 def build_orderbook_depth_snapshot(
@@ -74,8 +125,11 @@ def build_orderbook_depth_snapshot(
         raise ValueError("orderbook depth source is required")
     market = parse_market_id(pair)
     observed = None if observed_at_epoch_sec is None else float(observed_at_epoch_sec)
-    if observed is not None and not math.isfinite(observed):
-        raise ValueError(f"invalid orderbook depth observed_at_epoch_sec: {observed!r}")
+    validated_observed_at_ms(
+        event_ts=int(ts),
+        observed_at_epoch_sec=observed,
+        evidence_name="orderbook_depth",
+    )
     bids = _build_side_levels(
         ts=int(ts),
         pair=market,
@@ -151,18 +205,41 @@ def load_orderbook_depth_snapshot_after_or_equal(
     if source is not None:
         source_predicate = "AND source=?"
         params.append(source)
+    # SQLite integer casts truncate positive epoch milliseconds. Add one only
+    # when a fractional remainder exists so this exactly matches math.ceil()
+    # in OrderbookDepthSnapshot.available_at_ms().
+    observed_at_ms = """
+        CASE
+          WHEN observed_at_epoch_sec IS NULL THEN ts
+          ELSE MAX(
+            ts,
+            CAST(observed_at_epoch_sec * 1000.0 AS INTEGER)
+            + CASE
+                WHEN observed_at_epoch_sec * 1000.0
+                     > CAST(observed_at_epoch_sec * 1000.0 AS INTEGER)
+                THEN 1 ELSE 0
+              END
+          )
+        END
+    """
     row = conn.execute(
         f"""
         SELECT ts, source, observed_at_epoch_sec
         FROM orderbook_depth_levels
-        WHERE pair=? AND ts >= ? AND ts <= ? {source_predicate}
+        WHERE pair=?
+          AND ts >= ?
+          AND ({observed_at_ms}) >= ?
+          AND ({observed_at_ms}) <= ?
+          {source_predicate}
         GROUP BY ts, source, observed_at_epoch_sec
         HAVING SUM(CASE WHEN side='bid' THEN 1 ELSE 0 END) > 0
            AND SUM(CASE WHEN side='ask' THEN 1 ELSE 0 END) > 0
-        ORDER BY ts ASC, source ASC
+        ORDER BY ({observed_at_ms}) ASC,
+                 ts ASC,
+                 source ASC
         LIMIT 1
         """,
-        tuple(params),
+        tuple([params[0], int(target_ts), *params[1:]]),
     ).fetchone()
     if row is None:
         return None
@@ -171,9 +248,10 @@ def load_orderbook_depth_snapshot_after_or_equal(
         SELECT side, level_index, price, size
         FROM orderbook_depth_levels
         WHERE ts=? AND pair=? AND source=?
+          AND observed_at_epoch_sec IS ?
         ORDER BY side ASC, level_index ASC
         """,
-        (int(row[0]), market, str(row[1])),
+        (int(row[0]), market, str(row[1]), row[2]),
     ).fetchall()
     bids = [
         (float(price), float(size))
@@ -260,6 +338,10 @@ def summarize_orderbook_depth_evidence(
         "l2_depth_last_ts": None,
         "l2_depth_sources": [],
         "l2_depth_content_hash": None,
+        "l2_depth_observation_time_present_count": 0,
+        "l2_depth_observation_time_missing_count": 0,
+        "l2_depth_observation_time_invalid_count": 0,
+        "l2_depth_knowledge_time_basis": "unavailable",
         "depth_snapshot_selection_policy": "first_snapshot_after_or_equal_reference_ts_with_max_wait",
         "depth_walk_execution_model_available": True,
         "depth_walk_execution_model_used": False,
@@ -288,7 +370,8 @@ def summarize_orderbook_depth_evidence(
     where = " AND ".join(clauses)
     rows = conn.execute(
         f"""
-        SELECT ts, pair, source, side, level_index, price, size, cumulative_size, cumulative_notional
+        SELECT ts, pair, source, side, level_index, price, size, cumulative_size,
+               cumulative_notional, observed_at_epoch_sec
         FROM orderbook_depth_levels
         WHERE {where}
         ORDER BY ts ASC, pair ASC, source ASC, side ASC, level_index ASC
@@ -299,7 +382,7 @@ def summarize_orderbook_depth_evidence(
         base_payload["l2_depth_content_hash"] = _depth_evidence_hash([])
         return base_payload
 
-    row_payloads = [
+    row_payloads: list[_DepthEvidenceRow] = [
         {
             "ts": int(row[0]),
             "pair": str(row[1]),
@@ -310,18 +393,38 @@ def summarize_orderbook_depth_evidence(
             "size": float(row[6]),
             "cumulative_size": float(row[7]),
             "cumulative_notional": float(row[8]),
+            "observed_at_epoch_sec": (None if row[9] is None else float(row[9])),
         }
         for row in rows
     ]
-    sides_by_snapshot: dict[tuple[int, str], set[str]] = {}
+    sides_by_snapshot: dict[tuple[int, str, float | None], set[str]] = {}
     for item in row_payloads:
-        sides_by_snapshot.setdefault((int(item["ts"]), str(item["source"])), set()).add(
-            str(item["side"])
-        )
+        sides_by_snapshot.setdefault(
+            (
+                int(item["ts"]),
+                str(item["source"]),
+                item["observed_at_epoch_sec"],
+            ),
+            set(),
+        ).add(str(item["side"]))
     complete_snapshots = {
         key for key, sides in sides_by_snapshot.items() if {"bid", "ask"} <= sides
     }
     timestamps = [int(item["ts"]) for item in row_payloads]
+    observed_count = sum(1 for key in complete_snapshots if key[2] is not None)
+    missing_observed_count = len(complete_snapshots) - observed_count
+    invalid_observed_count = 0
+    for event_ts, _source, observed_at in complete_snapshots:
+        if observed_at is None:
+            continue
+        try:
+            validated_observed_at_ms(
+                event_ts=event_ts,
+                observed_at_epoch_sec=observed_at,
+                evidence_name="orderbook_depth",
+            )
+        except (TypeError, ValueError, OverflowError):
+            invalid_observed_count += 1
     base_payload.update(
         {
             "l2_depth_rows_available": True,
@@ -332,12 +435,22 @@ def summarize_orderbook_depth_evidence(
             "l2_depth_last_ts": max(timestamps),
             "l2_depth_sources": sorted({str(item["source"]) for item in row_payloads}),
             "l2_depth_content_hash": _depth_evidence_hash(row_payloads),
+            "l2_depth_observation_time_present_count": observed_count,
+            "l2_depth_observation_time_missing_count": missing_observed_count,
+            "l2_depth_observation_time_invalid_count": invalid_observed_count,
+            "l2_depth_knowledge_time_basis": (
+                "observed_at_epoch_sec"
+                if missing_observed_count == 0 and invalid_observed_count == 0
+                else "invalid_observation_time"
+                if invalid_observed_count
+                else "event_time_as_knowledge_time_assumption"
+            ),
         }
     )
     return base_payload
 
 
-def _depth_evidence_hash(rows: list[dict[str, Any]]) -> str:
+def _depth_evidence_hash(rows: Iterable[Mapping[str, Any]]) -> str:
     digest = hashlib.sha256()
     for row in rows:
         encoded = json.dumps(

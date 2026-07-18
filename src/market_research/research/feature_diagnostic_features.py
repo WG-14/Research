@@ -19,7 +19,8 @@ class FeatureValue:
 
 
 class FeatureProvider(Protocol):
-    name: str
+    @property
+    def name(self) -> str: ...
 
     def compute(
         self,

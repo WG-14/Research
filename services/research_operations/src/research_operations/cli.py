@@ -14,6 +14,56 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("audit-validate", help="record a full audit observation")
     subparsers.add_parser("metrics", help="emit a bounded Prometheus snapshot")
 
+    alert_raise = subparsers.add_parser(
+        "alert-raise",
+        help="raise one allowlisted offline service-health alert",
+    )
+    alert_raise.add_argument("--idempotency-key", required=True)
+    alert_raise.add_argument("--condition-code", required=True)
+    alert_raise.add_argument(
+        "--severity", required=True, choices=("WARNING", "CRITICAL")
+    )
+    alert_raise.add_argument("--source-actor-id", required=True)
+    alert_raise.add_argument("--endpoint-id", required=True)
+    alert_raise.add_argument(
+        "--acknowledgment-timeout-seconds", type=int, required=True
+    )
+
+    alert_delivery = subparsers.add_parser(
+        "alert-deliver-once",
+        help="deliver one claimed alert to the private-file configured receiver",
+    )
+    alert_delivery.add_argument("--worker-id", required=True)
+    alert_delivery.add_argument("--endpoint-id", required=True)
+    alert_delivery.add_argument("--lease-seconds", type=int, default=30)
+    alert_delivery.add_argument("--max-attempts", type=int, default=8)
+    alert_delivery.add_argument("--retry-delay-seconds", type=int, default=30)
+
+    alert_acknowledge = subparsers.add_parser(
+        "alert-acknowledge",
+        help="append an actor-separated alert acknowledgement",
+    )
+    alert_acknowledge.add_argument("--alert-id", required=True)
+    alert_acknowledge.add_argument("--actor-id", required=True)
+    alert_acknowledge.add_argument("--reason-code", required=True)
+
+    alert_escalate = subparsers.add_parser(
+        "alert-escalate-once",
+        help="escalate one unacknowledged due service-health alert",
+    )
+    alert_escalate.add_argument("--actor-id", required=True)
+    alert_escalate.add_argument("--endpoint-id", required=True)
+    alert_escalate.add_argument("--repeat-after-seconds", type=int, required=True)
+    alert_escalate.add_argument("--maximum-level", type=int, default=3)
+
+    alert_resolve = subparsers.add_parser(
+        "alert-resolve",
+        help="resolve one acknowledged service-health alert",
+    )
+    alert_resolve.add_argument("--alert-id", required=True)
+    alert_resolve.add_argument("--actor-id", required=True)
+    alert_resolve.add_argument("--reason-code", required=True)
+
     fence = subparsers.add_parser(
         "backup-fence", help="control coherent backup fencing"
     )
@@ -57,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     recovery.add_argument("--receipt-path", required=True)
     recovery.add_argument("--postgresql-major", required=True, type=int)
     recovery.add_argument("--maximum-records", type=int, default=100_000)
+    recovery.add_argument("--started-at")
 
     activate = subparsers.add_parser(
         "recovery-activate",

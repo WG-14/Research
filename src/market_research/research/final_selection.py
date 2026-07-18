@@ -955,9 +955,8 @@ def _must_pass_reasons(
     report_context: dict[str, Any],
 ) -> list[str]:
     reasons: list[str] = []
-    must_pass = (
-        contract.get("must_pass") if isinstance(contract.get("must_pass"), dict) else {}
-    )
+    raw_must_pass = contract.get("must_pass")
+    must_pass = raw_must_pass if isinstance(raw_must_pass, dict) else {}
     for field, expected in must_pass.items():
         actual = _must_pass_value(
             field=str(field), candidate=candidate, report_context=report_context

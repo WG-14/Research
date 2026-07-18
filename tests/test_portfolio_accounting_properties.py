@@ -124,3 +124,68 @@ def test_higher_common_execution_costs_do_not_increase_net_return():
         execution_model=FixedBpsExecutionModel(0.01, 100.0),
     )
     assert costly.metrics.return_pct <= zero.metrics.return_pct
+
+
+@pytest.mark.parametrize(
+    ("starting_cash", "initial_qty", "reason"),
+    (
+        (-1.0, 0.0, "ledger_starting_cash_invalid"),
+        (float("nan"), 0.0, "ledger_starting_cash_invalid"),
+        (1.0, -1.0, "ledger_initial_position_qty_invalid"),
+        (1.0, float("inf"), "ledger_initial_position_qty_invalid"),
+    ),
+)
+def test_ledger_rejects_invalid_initial_state(starting_cash, initial_qty, reason):
+    with pytest.raises(ValueError, match=reason):
+        PortfolioLedger(
+            starting_cash=starting_cash,
+            initial_position_qty=initial_qty,
+        )
+
+
+def test_ledger_rejects_out_of_order_fill_without_partial_mutation():
+    fill = _run(SpyModel()).fills[0]
+    first = replace(
+        fill,
+        fill_id="",
+        request_id="ordered-buy",
+        portfolio_effective_ts=200_000,
+    )
+    second = replace(
+        fill,
+        fill_id="",
+        request_id="backward-sell",
+        side="SELL",
+        filled_qty=fill.filled_qty / 2,
+        remaining_qty=fill.filled_qty / 2,
+        fill_status="partial",
+        fee=fill.fee / 2,
+        portfolio_effective_ts=199_999,
+    )
+    ledger = PortfolioLedger(starting_cash=1_000_000)
+    ledger.apply(first)
+    before = ledger.snapshot()
+
+    with pytest.raises(ValueError, match="ledger_fill_timestamp_out_of_order"):
+        ledger.apply(second)
+
+    assert ledger.snapshot() == before
+    assert len(ledger.entries) == 1
+
+
+def test_ledger_replay_rejects_identity_and_non_finite_tampering():
+    fill = _run(SpyModel()).fills[0]
+    ledger = PortfolioLedger(starting_cash=1_000_000)
+    entry = ledger.apply(fill)
+    assert entry is not None
+
+    with pytest.raises(ValueError, match="ledger_entry_id_content_mismatch"):
+        PortfolioLedger.replay(
+            starting_cash=1_000_000,
+            entries=(replace(entry, fill_id="tampered-fill"),),
+        )
+    with pytest.raises(ValueError, match="ledger_replay_non_finite_transaction"):
+        PortfolioLedger.replay(
+            starting_cash=1_000_000,
+            entries=(replace(entry, slippage=float("nan")),),
+        )

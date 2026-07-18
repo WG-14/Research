@@ -128,6 +128,7 @@ def build_research_readiness_report(
         },
         "environment": env_summary,
         "market": manifest.market,
+        "instrument_evidence": manifest.instrument_evidence(),
         "interval": manifest.interval,
         "readiness_mode": readiness_mode_payload(manifest),
         "dataset_quality_policy": dataset_quality_policy_payload(manifest),

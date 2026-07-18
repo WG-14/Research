@@ -43,3 +43,19 @@ class AdmissionClaimLost(OperationsError):
 
 class MaintenanceFenceActive(OperationsError):
     pass
+
+
+class AlertBindingConflict(OperationsError):
+    pass
+
+
+class AlertStateConflict(OperationsError):
+    pass
+
+
+class AlertDeliveryClaimLost(OperationsError):
+    pass
+
+
+class AlertTransportError(OperationsError):
+    pass

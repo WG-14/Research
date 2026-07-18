@@ -77,6 +77,14 @@ object lookup or mutation, and application services independently enforce the
 actor and capability permission. Login failure throttling uses secret-HMAC
 subjects so raw usernames and source addresses are not stored as throttle keys.
 
+Login success, login failure, and logout use the same secret-HMAC subjects and
+enter `WebAuditEvent` through the transactional outbox; credentials, raw account
+identifiers, and raw source addresses are never audit fields. Failure to insert
+the outbox intent is fail-closed for login and login failure. Logout always
+terminates the session even if insertion fails and returns a fixed unavailable
+response. A post-commit JSONL projection failure leaves the committed intent
+pending and makes audit readiness fail instead of discarding the event.
+
 Accepted actions record a correlation ID, immutable actor snapshot,
 capability, opaque target identity, outcome, and relevant content hashes. Web
 audit intent and ORM mutation share a database transaction. JSONL projection is
@@ -89,6 +97,13 @@ result; a prior reviewer cannot perform the final approval for the same
 evidence. Approval also requires current-password step-up, a hash-valid PASS
 result, a locked governance snapshot, resolved change requirements, and
 idempotent request evidence. Automated PASS never means human approval.
+
+Account and role lifecycle is externally governed and requires an independent
+approval path. Local role mutation is unsupported: the Django admin does not
+register User, Group, or Permission, and production portal code must not add,
+remove, or rewrite group or direct-permission assignments. RBAC seed migrations
+and isolated test fixtures may materialize reviewed roles; they are not a
+runtime grant workflow.
 
 ## Capability and GUI policy
 

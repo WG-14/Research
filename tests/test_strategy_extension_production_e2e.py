@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
+import subprocess
 import sys
+import zipfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +36,7 @@ from market_research.research.governance import (
     GovernanceSubjectType,
     append_lifecycle_transition,
     approve_strategy_candidate,
+    governance_registry_path,
 )
 from market_research.research.hashing import (
     content_hash_payload,
@@ -66,6 +69,8 @@ from market_research.research_cli.main import main as research_cli_main
 from market_research.settings import ResearchSettings
 from market_research.strategy_sdk.runtime import make_event_builder_runtime_factory
 from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
+from tests.clean_provenance_fixture import install_committed_checkout_provenance
 from tests.test_common_simulation_engine import _dataset as common_engine_dataset
 
 
@@ -87,6 +92,185 @@ _BUILTIN_STRATEGY_PARAMETERS: dict[str, dict[str, object]] = {
     "sma_with_filter": {"SMA_SHORT": 2, "SMA_LONG": 3},
     "threshold_research_only": {"THRESHOLD_CLOSE_ABOVE": 100.0},
 }
+
+
+@pytest.mark.research_e2e
+def test_fifth_strategy_is_discovered_and_executed_from_built_wheel(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "wheel-extension"
+    source_root = package_root / "src" / "market_research" / "builtin_strategies"
+    source_root.mkdir(parents=True)
+    module_name = "wheel_extension_acceptance_probe"
+    (source_root / f"{module_name}.py").write_text(
+        "from tests.test_strategy_extension_production_e2e import "
+        "build_momentum_entry_probe_plugin as STRATEGY_PLUGIN_FACTORY\n",
+        encoding="utf-8",
+    )
+    _write_extension_package_manifest(
+        source_root,
+        module_basename=module_name,
+        plugin=build_momentum_entry_probe_plugin(),
+    )
+    (package_root / "pyproject.toml").write_text(
+        """[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "market-research-wheel-extension-acceptance"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"market_research.builtin_strategies" = ["*.strategy.json"]
+""",
+        encoding="utf-8",
+    )
+    dist = package_root / "dist"
+    built = subprocess.run(
+        ["uv", "build", "--wheel", "--offline", "--out-dir", str(dist)],
+        cwd=package_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert built.returncode == 0, built.stderr
+    wheel = next(dist.glob("*.whl"))
+    installed = tmp_path / "wheel-installed"
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(installed)
+    wheel_package = installed / "market_research" / "builtin_strategies"
+    original_path = builtin_strategies.__path__
+    try:
+        builtin_strategies.__path__ = [*original_path, str(wheel_package)]
+        sys.modules.pop(f"market_research.builtin_strategies.{module_name}", None)
+        builtin_strategy_registry.cache_clear()
+        registry = builtin_strategy_registry()
+        plugin = registry.resolve(_STRATEGY_NAME)
+        parameters = {
+            "MOMENTUM_ENTRY_INDEX": 1,
+            "MOMENTUM_ENTRY_STRIDE": 4,
+            "MOMENTUM_MIN_RETURN_RATIO": 0.005,
+            "MOMENTUM_HOLD_BARS": 1,
+        }
+        compiled = StrategyCompiler(registry).compile(
+            strategy_name=_STRATEGY_NAME,
+            raw_parameters=parameters,
+            fee_rate=0.001,
+            slippage_bps=10.0,
+        )
+        result = run_common_simulation_backtest(
+            plugin=plugin,
+            registry=registry,
+            compiled_contract=compiled,
+            dataset=common_engine_dataset(),
+            parameter_values=parameters,
+            fee_rate=0.001,
+            slippage_bps=10.0,
+            execution_timing_policy=ExecutionTimingPolicy(
+                fill_reference_policy="next_candle_open",
+                allow_same_candle_close_fill=False,
+            ),
+            portfolio_policy=legacy_research_portfolio_policy(),
+        )
+        assert result.metrics.trade_count >= 1
+        assert result.metrics_hash.startswith("sha256:")
+    finally:
+        builtin_strategies.__path__ = original_path
+        sys.modules.pop(f"market_research.builtin_strategies.{module_name}", None)
+        builtin_strategy_registry.cache_clear()
+
+    assert _STRATEGY_NAME not in builtin_strategy_registry().plugins
+
+
+def _write_extension_package_manifest(
+    root: Path,
+    *,
+    module_basename: str,
+    plugin: ResearchStrategyPlugin,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "strategy_id": plugin.name,
+        "display_name": f"{plugin.name} test extension",
+        "strategy_version": plugin.version,
+        "contract_version": "research-strategy-plugin.v6",
+        "status": "ACTIVE",
+        "owner": {
+            "team": "research-platform-tests",
+            "responsibility": "extension-acceptance-contract",
+        },
+        "supported_assets": ["test_fixture_asset"],
+        "supported_markets": ["immutable_test_market"],
+        "required_data": [
+            {
+                "name": name,
+                "required": True,
+                "fields": ["ts", "open", "high", "low", "close", "volume"],
+                "timeframe": "fixture_declared",
+                "timezone": "UTC",
+                "min_rows": 2,
+            }
+            for name in plugin.required_data
+        ],
+        "entrypoint": (
+            f"{plugin.reconstruction_module}:{plugin.reconstruction_qualname}"
+        ),
+        "parameter_schema_source": "strategy_spec",
+        "output_schema": {
+            "decision_stream": "research-decision-event.v1",
+            "common_result": "research-common-result.v1",
+        },
+        "resource_limits": {
+            "max_runtime_seconds": 3600,
+            "max_memory_mb": 1400,
+            "max_cpu_cores": 1,
+            "max_output_bytes": 268435456,
+            "max_parallel_runs": 1,
+        },
+        "permissions": {
+            "network": "denied",
+            "database_write": False,
+            "filesystem_reads": ["immutable_dataset_snapshot"],
+            "filesystem_writes": ["platform_managed_temporary_output"],
+        },
+        "supported_platform_contract_versions": [6],
+        "aliases": [],
+        "hypothesis": {
+            "observed_phenomenon": "Recent completed-candle momentum may persist briefly.",
+            "economic_rationale": "Delayed adjustment can create a short research horizon.",
+            "expected_mechanism": "A causal momentum threshold emits a common decision event.",
+            "applicable_conditions": ["Immutable ordered candle fixtures"],
+            "failure_conditions": ["Momentum does not persist after declared costs"],
+            "entry_conditions": ["Declared causal momentum condition is satisfied"],
+            "exit_conditions": ["Declared holding or position-aware exit is satisfied"],
+            "invalidation_conditions": [
+                "Holdout performance fails the acceptance contract"
+            ],
+            "time_limit": "Bounded by the fixture experiment and package runtime limit.",
+            "data_leakage_risks": ["Future-candle access by an extension runtime"],
+            "known_limitations": [
+                "Synthetic acceptance fixture, not investment evidence"
+            ],
+            "retirement_criteria": [
+                "The extension contract is superseded or incompatible"
+            ],
+        },
+    }
+    (root / f"{module_basename}.strategy.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
 
 
 MOMENTUM_ENTRY_PROBE_SPEC = StrategySpec(
@@ -874,29 +1058,40 @@ def _write_validated_extension_manifest(
             "scheduled momentum remains positive under declared costs and "
             "execution stress"
         ),
-        "hypothesis_spec": {
-            "schema_version": 1,
-            "hypothesis_id": _VALIDATED_EXPERIMENT_ID,
-            "version": "1.0.0",
-            "phenomenon": (
+        "hypothesis_spec": hypothesis_spec_v2(
+            hypothesis_id=_VALIDATED_EXPERIMENT_ID,
+            version="1.0.0",
+            hypothesis_text=(
+                "Scheduled momentum remains positive under declared execution costs."
+            ),
+            phenomenon=(
                 "Periodic positive one-bar momentum remains positive after cost."
             ),
-            "mechanism": (
+            mechanism=(
                 "Continuation after a scheduled positive observation offsets "
                 "declared execution costs."
             ),
-            "observation_conditions": [
-                "immutable closed candles",
-                "immutable top-of-book evidence",
+            experiment_family_id=_VALIDATED_EXPERIMENT_ID + "-family",
+            market="KRW-BTC",
+            interval="240m",
+            competing_hypotheses=[
+                {
+                    "hypothesis_id": _VALIDATED_EXPERIMENT_ID,
+                    "version": "1.0.0",
+                    "hypothesis_text": (
+                        "Scheduled momentum remains positive under declared "
+                        "execution costs."
+                    ),
+                },
+                {
+                    "hypothesis_id": _VALIDATED_EXPERIMENT_ID + "-null",
+                    "version": "1.0.0",
+                    "hypothesis_text": (
+                        "Scheduled momentum has no positive expectancy after costs."
+                    ),
+                },
             ],
-            "comparison_target": "cash",
-            "falsification_criteria": [
-                "validation return is non-positive",
-                "stress or holdout fails",
-            ],
-            "experiment_family_id": _VALIDATED_EXPERIMENT_ID + "-family",
-            "registration_status": "unregistered",
-        },
+        ),
         "strategy_name": _VALIDATED_STRATEGY_NAME,
         "strategy_version": _VALIDATED_STRATEGY_VERSION,
         "research_classification": "validated_candidate",
@@ -1386,7 +1581,9 @@ def _write_extension_manifest(tmp_path: Path) -> tuple[Path, Path]:
 @pytest.mark.research_e2e
 def test_new_strategy_flows_through_production_cli_without_core_changes(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    install_committed_checkout_provenance(monkeypatch)
     baseline_registry = builtin_strategy_registry()
     baseline_names = frozenset(baseline_registry.plugins)
     assert baseline_names == frozenset(_BUILTIN_STRATEGY_PARAMETERS)
@@ -1399,6 +1596,11 @@ def test_new_strategy_flows_through_production_cli_without_core_changes(
         "from tests.test_strategy_extension_production_e2e import "
         "build_momentum_entry_probe_plugin as STRATEGY_PLUGIN_FACTORY\n",
         encoding="utf-8",
+    )
+    _write_extension_package_manifest(
+        bridge_root,
+        module_basename=_BRIDGE_MODULE_BASENAME,
+        plugin=build_momentum_entry_probe_plugin(),
     )
     original_package_path = builtin_strategies.__path__
     db_path, manifest_path = _write_extension_manifest(tmp_path)
@@ -1770,7 +1972,9 @@ def _record_validated_candidate_approval_prerequisites(
 @pytest.mark.research_e2e
 def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    install_committed_checkout_provenance(monkeypatch)
     baseline_registry = builtin_strategy_registry()
     baseline_names = frozenset(baseline_registry.plugins)
     context, manifest_path, top_of_book_artifact_hash = (
@@ -1783,6 +1987,11 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         "from tests.test_strategy_extension_production_e2e import "
         "build_validated_daily_momentum_plugin as STRATEGY_PLUGIN_FACTORY\n",
         encoding="utf-8",
+    )
+    _write_extension_package_manifest(
+        bridge_root,
+        module_basename=_VALIDATED_BRIDGE_MODULE_BASENAME,
+        plugin=build_validated_daily_momentum_plugin(),
     )
     validation_path = (tmp_path / "validated-summary.json").resolve()
     approval_path = (tmp_path / "validated-approval.json").resolve()
@@ -1828,6 +2037,19 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             report_content_hash_payload(validation)
         )
         assert validate_validated_research_result(validation) == []
+        assert validation["hypothesis_spec"]["schema_version"] == 2
+        assert (
+            validation["hypothesis_lineage_hash"]
+            == validation["hypothesis_spec"]["lineage_hash"]
+        )
+        assert (
+            validation["research_question_hash"]
+            == validation["hypothesis_spec"]["research_question_ref"]["question_hash"]
+        )
+        assert validation["observation_hashes"] == [
+            ref["observation_hash"]
+            for ref in validation["hypothesis_spec"]["observation_refs"]
+        ]
         assert validate_final_selection_report(validation) == []
         confirmation = validation["final_holdout_confirmation"]
         assert confirmation["confirmation_gate_result"] == "PASS"
@@ -1916,6 +2138,36 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             context=context,
         )
         assert approval_rc == 0
+        approval = json.loads(approval_path.read_text(encoding="utf-8"))
+        assert (
+            approval["hypothesis_contract_hash"]
+            == validation["hypothesis_contract_hash"]
+        )
+
+        # The representative E2E owns its retry proof: replaying the exact
+        # human-review stage must converge on the same approval without
+        # appending a second governance event.
+        governance_path = governance_registry_path(context.paths)
+        governance_before_retry = governance_path.read_bytes()
+        approval_retry_rc = research_cli_main(
+            [
+                "research-approve-strategy-candidate",
+                "--result",
+                str(validation_path),
+                "--subject-version",
+                "1",
+                "--reviewer",
+                "validated-extension-approver",
+                "--rationale",
+                "validated extension evidence reviewed",
+                "--out",
+                str(approval_path),
+            ],
+            context=context,
+        )
+        assert approval_retry_rc == 0
+        assert governance_path.read_bytes() == governance_before_retry
+        assert json.loads(approval_path.read_text(encoding="utf-8")) == approval
 
         package_rc = research_cli_main(
             [
@@ -1937,6 +2189,25 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         assert package["package_authority_result"] == "PASS"
         assert package["validation_result"] == "PASS"
         assert package["source_report_content_hash"] == validation["content_hash"]
+        assert (
+            package["hypothesis_contract_hash"]
+            == validation["hypothesis_contract_hash"]
+        )
+        assert (
+            package["hypothesis_lineage_hash"] == validation["hypothesis_lineage_hash"]
+        )
+        assert (
+            package["research_question_ref"]
+            == validation["hypothesis_spec"]["research_question_ref"]
+        )
+        assert (
+            package["observation_refs"]
+            == validation["hypothesis_spec"]["observation_refs"]
+        )
+        assert (
+            package["approved_hypothesis_contract_hash"]
+            == approval["hypothesis_contract_hash"]
+        )
         assert (
             package["final_holdout_confirmation_hash"] == confirmation["content_hash"]
         )

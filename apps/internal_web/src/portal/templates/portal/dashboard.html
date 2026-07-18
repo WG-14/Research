@@ -15,6 +15,7 @@
   <article class="metric-card"><span>진행 중</span><strong>{{ metrics.active|default:0 }}</strong><small>대기·실행 작업</small></article>
   <article class="metric-card"><span>검토 필요</span><strong>{{ metrics.review|default:0 }}</strong><small>완료된 후보 결과</small></article>
   <article class="metric-card"><span>이번 주 완료</span><strong>{{ metrics.completed|default:0 }}</strong><small>검증이 끝난 작업</small></article>
+  <article class="metric-card {% if metrics.failed %}metric-card-warning{% endif %}"><span>확인할 실패</span><strong>{{ metrics.failed|default:0 }}</strong><small>최근 7일 · 원인과 다음 행동 확인</small></article>
   <article class="metric-card metric-card-accent"><span>무결성 상태</span><strong>{{ metrics.integrity|default:"결과별 확인" }}</strong><small>상세 조회·다운로드 시 해시 검증</small></article>
 </section>
 
@@ -26,7 +27,7 @@
       {% for job in jobs %}
       <a class="job-row" href="{% url 'portal:job-detail' job.pk %}">
         <span class="status-icon status-{{ job.status|lower }}" aria-hidden="true"></span>
-        <span class="job-main"><strong>{{ job.display_name|default:job.capability_id }}</strong><small>{{ job.created_at|date:"Y.m.d H:i" }} · {{ job.owner.get_full_name|default:job.owner.username }}</small></span>
+        <span class="job-main"><strong>{{ job.display_name|default:job.capability_id }}</strong><small>{{ job.created_at|date:"Y.m.d H:i T" }} · {{ job.owner.get_full_name|default:job.owner.username }}</small></span>
         <span class="badge badge-{{ job.status|lower }}">{{ job.status_label }}</span>
         <span aria-hidden="true">›</span>
       </a>

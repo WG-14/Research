@@ -1,0 +1,1610 @@
+{
+  "generated_from": "django.apps[portal].model._meta",
+  "models": {
+    "portal.governancedecision": {
+      "constraints": [
+        {
+          "name": "portal_governance_subject_approval_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_governance_decision_shape_valid",
+          "type": "CheckConstraint"
+        },
+        {
+          "name": "portal_governance_decision_fields_required",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_governancedecision",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "subject_id",
+          "editable": true,
+          "max_length": null,
+          "name": "subject",
+          "null": false,
+          "primary_key": false,
+          "related_model": "portal.governancesubjectstate",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "operation_id",
+          "editable": true,
+          "max_length": 128,
+          "name": "operation_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "operation_payload_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "operation_payload_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "action",
+          "editable": true,
+          "max_length": 16,
+          "name": "action",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "decision",
+          "editable": true,
+          "max_length": 32,
+          "name": "decision",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "actor_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "actor_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "actor_role",
+          "editable": true,
+          "max_length": 64,
+          "name": "actor_role",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "rationale",
+          "editable": true,
+          "max_length": null,
+          "name": "rationale",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "TextField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "reviewed_artifact_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "reviewed_artifact_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "content_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "content_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "review_row_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "review_row_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "transition_row_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "transition_row_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "approval_artifact_ref",
+          "editable": true,
+          "max_length": 1024,
+          "name": "approval_artifact_ref",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": [
+        "created_at"
+      ]
+    },
+    "portal.governancedutyclaim": {
+      "constraints": [
+        {
+          "name": "portal_governance_actor_duty_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_governance_duty_actor_required",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_governancedutyclaim",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "subject_id",
+          "editable": true,
+          "max_length": null,
+          "name": "subject",
+          "null": false,
+          "primary_key": false,
+          "related_model": "portal.governancesubjectstate",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "actor_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "actor_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "duty",
+          "editable": true,
+          "max_length": 16,
+          "name": "duty",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": []
+    },
+    "portal.governancesubjectstate": {
+      "constraints": [
+        {
+          "name": "portal_governance_subject_identity_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_governance_approval_state_valid",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_governancesubjectstate",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "source_job_id",
+          "editable": true,
+          "max_length": null,
+          "name": "source_job",
+          "null": false,
+          "primary_key": false,
+          "related_model": "portal.researchjob",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "subject_type",
+          "editable": true,
+          "max_length": 64,
+          "name": "subject_type",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "subject_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "subject_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "subject_version",
+          "editable": true,
+          "max_length": 255,
+          "name": "subject_version",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "reviewed_artifact_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "reviewed_artifact_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "lifecycle_state",
+          "editable": true,
+          "max_length": 32,
+          "name": "lifecycle_state",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "lifecycle_version",
+          "editable": true,
+          "max_length": null,
+          "name": "lifecycle_version",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "PositiveBigIntegerField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "approved_by",
+          "editable": true,
+          "max_length": 255,
+          "name": "approved_by",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "approved_at",
+          "editable": true,
+          "max_length": null,
+          "name": "approved_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "updated_at",
+          "editable": false,
+          "max_length": null,
+          "name": "updated_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": []
+    },
+    "portal.importeddecisionreport": {
+      "constraints": [
+        {
+          "name": "portal_imported_report_run_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_imported_report_fields_required",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_importeddecisionreport",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "report_id",
+          "editable": true,
+          "max_length": 71,
+          "name": "report_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "report_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "report_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "storage_ref",
+          "editable": true,
+          "max_length": 1024,
+          "name": "storage_ref",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "import_manifest_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "import_manifest_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "source_size_bytes",
+          "editable": true,
+          "max_length": null,
+          "name": "source_size_bytes",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "PositiveBigIntegerField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "manifest_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "manifest_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "experiment_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "experiment_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "run_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "run_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "validation_result",
+          "editable": true,
+          "max_length": 32,
+          "name": "validation_result",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "selected_candidate_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "selected_candidate_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "market",
+          "editable": true,
+          "max_length": 255,
+          "name": "market",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "interval",
+          "editable": true,
+          "max_length": 64,
+          "name": "interval",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "strategy_name",
+          "editable": true,
+          "max_length": 255,
+          "name": "strategy_name",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "strategy_version",
+          "editable": true,
+          "max_length": 255,
+          "name": "strategy_version",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "dataset_snapshot_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "dataset_snapshot_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "dataset_content_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "dataset_content_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "code_revision",
+          "editable": true,
+          "max_length": 64,
+          "name": "code_revision",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "owner_id",
+          "editable": true,
+          "max_length": null,
+          "name": "owner",
+          "null": false,
+          "primary_key": false,
+          "related_model": "auth.user",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "visibility",
+          "editable": true,
+          "max_length": 16,
+          "name": "visibility",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "imported_by_id",
+          "editable": true,
+          "max_length": null,
+          "name": "imported_by",
+          "null": false,
+          "primary_key": false,
+          "related_model": "auth.user",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": [
+        "-created_at",
+        "-pk"
+      ]
+    },
+    "portal.loginthrottle": {
+      "constraints": [
+        {
+          "name": "portal_login_throttle_failure_positive",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_loginthrottle",
+      "fields": [
+        {
+          "blank": true,
+          "column": "id",
+          "editable": true,
+          "max_length": null,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "BigAutoField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "subject_hash",
+          "editable": true,
+          "max_length": 64,
+          "name": "subject_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "failure_count",
+          "editable": true,
+          "max_length": null,
+          "name": "failure_count",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "PositiveIntegerField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "window_started_at",
+          "editable": true,
+          "max_length": null,
+          "name": "window_started_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "blocked_until",
+          "editable": true,
+          "max_length": null,
+          "name": "blocked_until",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "updated_at",
+          "editable": false,
+          "max_length": null,
+          "name": "updated_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": []
+    },
+    "portal.manifestupload": {
+      "constraints": [
+        {
+          "name": "portal_manifest_owner_content_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_manifest_experiment_uniq",
+          "type": "UniqueConstraint"
+        }
+      ],
+      "database_table": "portal_manifestupload",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "owner_id",
+          "editable": true,
+          "max_length": null,
+          "name": "owner",
+          "null": false,
+          "primary_key": false,
+          "related_model": "auth.user",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "display_name",
+          "editable": true,
+          "max_length": 255,
+          "name": "display_name",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "storage_ref",
+          "editable": true,
+          "max_length": 1024,
+          "name": "storage_ref",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "content_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "content_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "manifest_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "manifest_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "size_bytes",
+          "editable": true,
+          "max_length": null,
+          "name": "size_bytes",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "PositiveBigIntegerField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "experiment_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "experiment_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "strategy_name",
+          "editable": true,
+          "max_length": 255,
+          "name": "strategy_name",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": [
+        "-created_at"
+      ]
+    },
+    "portal.researchjob": {
+      "constraints": [
+        {
+          "name": "portal_job_owner_idempotency_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_job_owner_active_request_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_job_one_active_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_job_success_has_result",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_researchjob",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "owner_id",
+          "editable": true,
+          "max_length": null,
+          "name": "owner",
+          "null": false,
+          "primary_key": false,
+          "related_model": "auth.user",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "manifest_id",
+          "editable": true,
+          "max_length": null,
+          "name": "manifest",
+          "null": false,
+          "primary_key": false,
+          "related_model": "portal.manifestupload",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "source_preflight_job_id",
+          "editable": true,
+          "max_length": null,
+          "name": "source_preflight_job",
+          "null": true,
+          "primary_key": false,
+          "related_model": "portal.researchjob",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "capability_id",
+          "editable": true,
+          "max_length": 64,
+          "name": "capability_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "status",
+          "editable": true,
+          "max_length": 24,
+          "name": "status",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "request_payload",
+          "editable": true,
+          "max_length": null,
+          "name": "request_payload",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "JSONField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "request_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "request_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "idempotency_key",
+          "editable": true,
+          "max_length": 64,
+          "name": "idempotency_key",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "actor_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "actor_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "actor_roles",
+          "editable": true,
+          "max_length": null,
+          "name": "actor_roles",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "JSONField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "actor_permissions",
+          "editable": true,
+          "max_length": null,
+          "name": "actor_permissions",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "JSONField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "correlation_id",
+          "editable": false,
+          "max_length": 32,
+          "name": "correlation_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "progress_stage",
+          "editable": true,
+          "max_length": 128,
+          "name": "progress_stage",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "progress_details",
+          "editable": true,
+          "max_length": null,
+          "name": "progress_details",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "JSONField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "heartbeat_at",
+          "editable": true,
+          "max_length": null,
+          "name": "heartbeat_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "lease_token",
+          "editable": false,
+          "max_length": 32,
+          "name": "lease_token",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "lease_expires_at",
+          "editable": true,
+          "max_length": null,
+          "name": "lease_expires_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "attempt_count",
+          "editable": true,
+          "max_length": null,
+          "name": "attempt_count",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "PositiveIntegerField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "version",
+          "editable": true,
+          "max_length": null,
+          "name": "version",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "PositiveBigIntegerField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "run_id",
+          "editable": true,
+          "max_length": 128,
+          "name": "run_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "result_ref",
+          "editable": true,
+          "max_length": 1024,
+          "name": "result_ref",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "result_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "result_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "research_outcome",
+          "editable": true,
+          "max_length": 16,
+          "name": "research_outcome",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "error_code",
+          "editable": true,
+          "max_length": 128,
+          "name": "error_code",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "updated_at",
+          "editable": false,
+          "max_length": null,
+          "name": "updated_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "queued_at",
+          "editable": false,
+          "max_length": null,
+          "name": "queued_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "started_at",
+          "editable": true,
+          "max_length": null,
+          "name": "started_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "cancel_requested_at",
+          "editable": true,
+          "max_length": null,
+          "name": "cancel_requested_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "finished_at",
+          "editable": true,
+          "max_length": null,
+          "name": "finished_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [
+        {
+          "fields": [
+            "status",
+            "created_at"
+          ],
+          "name": "portal_job_status_created"
+        },
+        {
+          "fields": [
+            "owner",
+            "created_at"
+          ],
+          "name": "portal_job_owner_created"
+        },
+        {
+          "fields": [
+            "lease_expires_at"
+          ],
+          "name": "portal_job_lease_expires"
+        }
+      ],
+      "ordering": [
+        "-created_at"
+      ]
+    },
+    "portal.resourceaccessgrant": {
+      "constraints": [
+        {
+          "name": "portal_resource_grant_one_principal",
+          "type": "CheckConstraint"
+        },
+        {
+          "name": "portal_resource_grant_fields_required",
+          "type": "CheckConstraint"
+        },
+        {
+          "name": "portal_resource_user_grant_uniq",
+          "type": "UniqueConstraint"
+        },
+        {
+          "name": "portal_resource_group_grant_uniq",
+          "type": "UniqueConstraint"
+        }
+      ],
+      "database_table": "portal_resourceaccessgrant",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": true,
+          "column": "principal_user_id",
+          "editable": true,
+          "max_length": null,
+          "name": "principal_user",
+          "null": true,
+          "primary_key": false,
+          "related_model": "auth.user",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "principal_group_id",
+          "editable": true,
+          "max_length": null,
+          "name": "principal_group",
+          "null": true,
+          "primary_key": false,
+          "related_model": "auth.group",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "resource_type",
+          "editable": true,
+          "max_length": 16,
+          "name": "resource_type",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "resource_id",
+          "editable": true,
+          "max_length": 255,
+          "name": "resource_id",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "access",
+          "editable": true,
+          "max_length": 16,
+          "name": "access",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "granted_by_id",
+          "editable": true,
+          "max_length": null,
+          "name": "granted_by",
+          "null": false,
+          "primary_key": false,
+          "related_model": "auth.user",
+          "type": "ForeignKey",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "rationale",
+          "editable": true,
+          "max_length": null,
+          "name": "rationale",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "TextField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [
+        {
+          "fields": [
+            "resource_type",
+            "resource_id",
+            "access"
+          ],
+          "name": "portal_resource_grant_lookup"
+        }
+      ],
+      "ordering": [
+        "resource_type",
+        "resource_id",
+        "access",
+        "created_at"
+      ]
+    },
+    "portal.webauditevent": {
+      "constraints": [
+        {
+          "name": "portal_audit_projection_state_valid",
+          "type": "CheckConstraint"
+        }
+      ],
+      "database_table": "portal_webauditevent",
+      "fields": [
+        {
+          "blank": false,
+          "column": "id",
+          "editable": false,
+          "max_length": 32,
+          "name": "id",
+          "null": false,
+          "primary_key": true,
+          "related_model": null,
+          "type": "UUIDField",
+          "unique": true
+        },
+        {
+          "blank": false,
+          "column": "payload",
+          "editable": true,
+          "max_length": null,
+          "name": "payload",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "JSONField",
+          "unique": false
+        },
+        {
+          "blank": false,
+          "column": "payload_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "payload_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": true
+        },
+        {
+          "blank": true,
+          "column": "projection_row_hash",
+          "editable": true,
+          "max_length": 71,
+          "name": "projection_row_hash",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "CharField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "projected_at",
+          "editable": true,
+          "max_length": null,
+          "name": "projected_at",
+          "null": true,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        },
+        {
+          "blank": true,
+          "column": "created_at",
+          "editable": false,
+          "max_length": null,
+          "name": "created_at",
+          "null": false,
+          "primary_key": false,
+          "related_model": null,
+          "type": "DateTimeField",
+          "unique": false
+        }
+      ],
+      "indexes": [],
+      "ordering": [
+        "created_at"
+      ]
+    }
+  },
+  "schema_version": "1.0",
+  "status": "current"
+}

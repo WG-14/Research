@@ -5,7 +5,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, SupportsIndex, SupportsInt, cast
 
 from market_research.paths import ResearchPathManager
 from market_research.storage_io import append_jsonl
@@ -75,59 +75,62 @@ def compute_row_hash(row: dict[str, Any]) -> str:
 
 
 def research_freedom_hash(payload: dict[str, Any]) -> str:
-    return sha256_prefixed(
-        {
-            "experiment_family_id": payload.get("experiment_family_id"),
-            "hypothesis_id": payload.get("hypothesis_id"),
-            "hypothesis_version": payload.get("hypothesis_version"),
-            "hypothesis_contract_hash": payload.get("hypothesis_contract_hash"),
-            "hypothesis_semantic_fingerprint": payload.get(
-                "hypothesis_semantic_fingerprint"
-            ),
-            "hypothesis_status": payload.get("hypothesis_status"),
-            "pre_registered_at": payload.get("pre_registered_at"),
-            "registration_evidence_hash": payload.get("registration_evidence_hash"),
-            "dataset_snapshot_id": payload.get("dataset_snapshot_id"),
-            "dataset_artifact_evidence_hash": payload.get(
-                "dataset_artifact_evidence_hash"
-            ),
-            "train_split_hash": payload.get("train_split_hash"),
-            "validation_split_hash": payload.get("validation_split_hash"),
-            "final_holdout_split_hash": payload.get("final_holdout_split_hash"),
-            "final_holdout_fingerprint": payload.get("final_holdout_fingerprint"),
-            "final_holdout_identity_hash": payload.get("final_holdout_identity_hash"),
-            "final_holdout_content_hash": payload.get("final_holdout_content_hash"),
-            "final_holdout_query_hash": payload.get("final_holdout_query_hash"),
-            "final_holdout_data_hash": payload.get("final_holdout_data_hash"),
-            "final_holdout_fingerprint_hash": payload.get(
-                "final_holdout_fingerprint_hash"
-            ),
-            "final_holdout_quality_hash": payload.get("final_holdout_quality_hash"),
-            "final_holdout_reuse_key_hash": payload.get("final_holdout_reuse_key_hash"),
-            "final_holdout_reuse_key_hash_v1": payload.get(
-                "final_holdout_reuse_key_hash_v1"
-            ),
-            "final_holdout_reuse_key_schema_version": payload.get(
-                "final_holdout_reuse_key_schema_version"
-            ),
-            "pre_exposure_reservation_key_hash": payload.get(
-                "pre_exposure_reservation_key_hash"
-            ),
-            "pre_exposure_reservation_key_schema_version": payload.get(
-                "pre_exposure_reservation_key_schema_version"
-            ),
-            "objective_metric": payload.get("objective_metric"),
-            "parameter_space_hash": payload.get("parameter_space_hash"),
-            "computed_attempt_index": payload.get("computed_attempt_index"),
-            "computed_holdout_reuse_count": payload.get("computed_holdout_reuse_count"),
-            "experiment_registry_prior_hash": payload.get(
-                "experiment_registry_prior_hash"
-            )
-            or payload.get("prior_registry_hash"),
-            "experiment_registry_row_hash": payload.get("experiment_registry_row_hash")
-            or payload.get("row_hash"),
-        }
-    )
+    material = {
+        "experiment_family_id": payload.get("experiment_family_id"),
+        "hypothesis_id": payload.get("hypothesis_id"),
+        "hypothesis_version": payload.get("hypothesis_version"),
+        "hypothesis_contract_hash": payload.get("hypothesis_contract_hash"),
+        "hypothesis_semantic_fingerprint": payload.get(
+            "hypothesis_semantic_fingerprint"
+        ),
+        "hypothesis_status": payload.get("hypothesis_status"),
+        "pre_registered_at": payload.get("pre_registered_at"),
+        "registration_evidence_hash": payload.get("registration_evidence_hash"),
+        "dataset_snapshot_id": payload.get("dataset_snapshot_id"),
+        "dataset_artifact_evidence_hash": payload.get("dataset_artifact_evidence_hash"),
+        "train_split_hash": payload.get("train_split_hash"),
+        "validation_split_hash": payload.get("validation_split_hash"),
+        "final_holdout_split_hash": payload.get("final_holdout_split_hash"),
+        "final_holdout_fingerprint": payload.get("final_holdout_fingerprint"),
+        "final_holdout_identity_hash": payload.get("final_holdout_identity_hash"),
+        "final_holdout_content_hash": payload.get("final_holdout_content_hash"),
+        "final_holdout_query_hash": payload.get("final_holdout_query_hash"),
+        "final_holdout_data_hash": payload.get("final_holdout_data_hash"),
+        "final_holdout_fingerprint_hash": payload.get("final_holdout_fingerprint_hash"),
+        "final_holdout_quality_hash": payload.get("final_holdout_quality_hash"),
+        "final_holdout_reuse_key_hash": payload.get("final_holdout_reuse_key_hash"),
+        "final_holdout_reuse_key_hash_v1": payload.get(
+            "final_holdout_reuse_key_hash_v1"
+        ),
+        "final_holdout_reuse_key_schema_version": payload.get(
+            "final_holdout_reuse_key_schema_version"
+        ),
+        "pre_exposure_reservation_key_hash": payload.get(
+            "pre_exposure_reservation_key_hash"
+        ),
+        "pre_exposure_reservation_key_schema_version": payload.get(
+            "pre_exposure_reservation_key_schema_version"
+        ),
+        "objective_metric": payload.get("objective_metric"),
+        "parameter_space_hash": payload.get("parameter_space_hash"),
+        "computed_attempt_index": payload.get("computed_attempt_index"),
+        "computed_holdout_reuse_count": payload.get("computed_holdout_reuse_count"),
+        "experiment_registry_prior_hash": payload.get("experiment_registry_prior_hash")
+        or payload.get("prior_registry_hash"),
+        "experiment_registry_row_hash": payload.get("experiment_registry_row_hash")
+        or payload.get("row_hash"),
+    }
+    if payload.get("hypothesis_lineage_hash") is not None:
+        material.update(
+            {
+                "hypothesis_lineage_hash": payload.get("hypothesis_lineage_hash"),
+                "research_question_id": payload.get("research_question_id"),
+                "research_question_version": payload.get("research_question_version"),
+                "research_question_hash": payload.get("research_question_hash"),
+                "observation_hashes": payload.get("observation_hashes"),
+            }
+        )
+    return sha256_prefixed(material)
 
 
 def research_identity_from_manifest(manifest: Any) -> dict[str, Any]:
@@ -150,6 +153,18 @@ def research_identity_from_manifest(manifest: Any) -> dict[str, Any]:
         version = str(spec.version)
         contract_hash = str(spec.contract_hash())
         semantic_fingerprint = str(spec.semantic_fingerprint())
+        lineage_hash = spec.lineage_hash()
+        question_ref = spec.research_question_ref
+        research_question_id = (
+            question_ref.question_id if question_ref is not None else None
+        )
+        research_question_version = (
+            question_ref.version if question_ref is not None else None
+        )
+        research_question_hash = (
+            question_ref.question_hash if question_ref is not None else None
+        )
+        observation_hashes = [item.observation_hash for item in spec.observation_refs]
         pre_registered_at = spec.pre_registered_at
         registration_evidence_hash = spec.registration_evidence_hash
         pre_registration_verified = bool(spec.pre_registration_verified)
@@ -164,6 +179,11 @@ def research_identity_from_manifest(manifest: Any) -> dict[str, Any]:
         version = None
         contract_hash = None
         semantic_fingerprint = None
+        lineage_hash = None
+        research_question_id = None
+        research_question_version = None
+        research_question_hash = None
+        observation_hashes = []
         pre_registered_at = None
         registration_evidence_hash = None
         pre_registration_verified = False
@@ -173,6 +193,11 @@ def research_identity_from_manifest(manifest: Any) -> dict[str, Any]:
         "hypothesis_version": version,
         "hypothesis_contract_hash": contract_hash,
         "hypothesis_semantic_fingerprint": semantic_fingerprint,
+        "hypothesis_lineage_hash": lineage_hash,
+        "research_question_id": research_question_id,
+        "research_question_version": research_question_version,
+        "research_question_hash": research_question_hash,
+        "observation_hashes": observation_hashes,
         "hypothesis_status": status,
         "hypothesis_identity_source": identity_source,
         "experiment_family_identity_source": family_source,
@@ -947,13 +972,18 @@ def _extend_registry_field_mismatch_reasons(
     evidence = evidence if isinstance(evidence, dict) else {}
     completion = completion if isinstance(completion, dict) else {}
     content_pending = bool(row.get("final_holdout_content_pending_until_completion"))
-    registry_fields = (
+    registry_fields: tuple[str, ...] = (
         "experiment_id",
         "experiment_family_id",
         "hypothesis_id",
         "hypothesis_version",
         "hypothesis_contract_hash",
         "hypothesis_semantic_fingerprint",
+        "hypothesis_lineage_hash",
+        "research_question_id",
+        "research_question_version",
+        "research_question_hash",
+        "observation_hashes",
         "hypothesis_status",
         "pre_registered_at",
         "registration_evidence_hash",
@@ -1371,7 +1401,8 @@ def _as_int(value: object) -> int | None:
     if isinstance(value, bool):
         return int(value)
     try:
-        return int(value)  # type: ignore[arg-type]
+        numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+        return int(numeric)
     except (TypeError, ValueError):
         return None
 

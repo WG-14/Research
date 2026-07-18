@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Never, overload
 
 
 class ImmutableContractError(TypeError):
     """Raised when code attempts to mutate canonical contract material."""
 
 
-class FrozenDict(dict):
+class FrozenDict(dict[str, Any]):
     """A JSON-compatible recursively immutable mapping."""
 
     def __init__(self, values: Mapping[str, Any] | None = None) -> None:
@@ -17,7 +17,7 @@ class FrozenDict(dict):
         for key, value in (values or {}).items():
             dict.__setitem__(self, str(key), deep_freeze(value))
 
-    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> Never:
         raise ImmutableContractError("immutable_contract_mutation_rejected")
 
     __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
@@ -34,6 +34,22 @@ def deep_freeze(value: Any) -> Any:
     if isinstance(value, (set, frozenset)):
         return frozenset(deep_freeze(item) for item in value)
     return value
+
+
+@overload
+def canonical_mutable(value: Mapping[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def canonical_mutable(value: tuple[Any, ...] | list[Any]) -> list[Any]: ...
+
+
+@overload
+def canonical_mutable(value: set[Any] | frozenset[Any]) -> list[Any]: ...
+
+
+@overload
+def canonical_mutable(value: Any) -> Any: ...
 
 
 def canonical_mutable(value: Any) -> Any:

@@ -11,6 +11,8 @@ from market_research.market_regime import (
 
 from . import backtest_support as support
 from .artifact_store import ArtifactBudgetExceeded
+from .backtest_types import BacktestRun
+from .decision_event import ResearchDecisionEvent
 from .metrics_contract import build_metrics_v2
 
 
@@ -26,14 +28,14 @@ class BacktestResultAssembler:
         starting_cash: float,
         initial_position_qty: float,
         parameter_stability_score: float | None,
-    ) -> support.BacktestRun:
+    ) -> BacktestRun:
         warnings = ["not_enough_candles"]
         audit_trace_index = _complete_audit_trace_observability(
             run_context,
             warnings=warnings,
             status="completed",
         )
-        return support.BacktestRun(
+        return BacktestRun(
             metrics=support.empty_metrics(parameter_stability_score),
             metrics_v2=support.empty_metrics_v2(
                 starting_cash=starting_cash,
@@ -65,10 +67,10 @@ class BacktestResultAssembler:
         parameter_stability_score: float | None,
         regime_snapshots: list[dict[str, object]],
         regime_coverage_accumulator: support.RegimeCoverageAccumulator,
-        decisions: list[dict[str, object]],
+        decisions: list[ResearchDecisionEvent],
         warnings: list[str],
         stage_trace_evidence: dict[str, object],
-    ) -> support.BacktestRun:
+    ) -> BacktestRun:
         last = candles[-1]
         final_equity = ledger.cash + ledger.qty * float(last.close)
         return_pct = (
@@ -114,7 +116,7 @@ class BacktestResultAssembler:
             position_intervals=position_intervals,
             closed_trades=closed_trade_records,
             execution_records=execution_records,
-            decision_records=tuple(decisions),
+            decision_records=tuple(decision.as_dict() for decision in decisions),
             participation_count_basis=str(
                 getattr(run_context, "participation_count_basis", None) or "filled"
             ),
@@ -164,7 +166,7 @@ class BacktestResultAssembler:
         resource_usage.setdefault(
             "stage_trace_hash", canonical_payload_hash(stage_trace_evidence)
         )
-        return support.BacktestRun(
+        return BacktestRun(
             metrics=metrics,
             metrics_v2=metrics_v2,
             trades=tuple(ledger.trade_ledger),

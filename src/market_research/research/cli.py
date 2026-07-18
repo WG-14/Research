@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
@@ -9,8 +10,10 @@ from typing import TYPE_CHECKING, Any
 from market_research.storage_io import write_json_atomic
 from market_research.application import (
     ActorContext,
+    GovernanceSubjectRef,
     HumanReviewRequest,
     ResearchGovernanceApplicationService,
+    RequestedChange,
     StrategyApprovalRequest,
 )
 
@@ -135,7 +138,7 @@ def cmd_research_record_human_review(
     resolved_requirement_ids: tuple[str, ...],
 ) -> int:
     try:
-        requested: tuple[dict[str, str], ...] = ()
+        requested: tuple[RequestedChange, ...] = ()
         if requested_changes_path:
             payload = json.loads(
                 Path(requested_changes_path).read_text(encoding="utf-8")
@@ -146,25 +149,30 @@ def cmd_research_record_human_review(
                 raise GovernanceError(
                     "human_review_requested_changes_file_must_be_array"
                 )
-            requested = tuple(payload)
+            requested = tuple(RequestedChange.model_validate(item) for item in payload)
+        subject = GovernanceSubjectRef.model_validate(
+            {
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "subject_version": subject_version,
+            }
+        )
         result = ResearchGovernanceApplicationService(context.paths).record_review(
-            HumanReviewRequest(
-                subject={
-                    "subject_type": subject_type,
-                    "subject_id": subject_id,
-                    "subject_version": subject_version,
-                },
-                decision=decision,
-                actor=ActorContext(
-                    actor_id=reviewer_id,
-                    roles=(reviewer_role,),
-                    permissions=frozenset({"*"}),
-                    source="cli",
-                ),
-                rationale=rationale,
-                reviewed_artifact_hash=reviewed_artifact_hash,
-                requested_changes=requested,
-                resolved_requirement_ids=resolved_requirement_ids,
+            HumanReviewRequest.model_validate(
+                {
+                    "subject": subject,
+                    "decision": decision,
+                    "actor": ActorContext(
+                        actor_id=reviewer_id,
+                        roles=(reviewer_role,),
+                        permissions=frozenset({"*"}),
+                        source="cli",
+                    ),
+                    "rationale": rationale,
+                    "reviewed_artifact_hash": reviewed_artifact_hash,
+                    "requested_changes": requested,
+                    "resolved_requirement_ids": resolved_requirement_ids,
+                }
             )
         )
     except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
@@ -813,6 +821,11 @@ def cmd_research_reproduce_run(
             )
             try:
                 reproduced_receipt = load_reproduction_receipt(reproduced_receipt_path)
+                reproduced_stable_fingerprint = reproduced_receipt["stable_fingerprint"]
+                if not isinstance(reproduced_stable_fingerprint, dict):
+                    raise ReproductionContractError(
+                        "receipt.stable_fingerprint is required"
+                    )
             except ReproductionContractError as exc:
                 raise _ReproductionExecutionError(
                     "reproduced_receipt_invalid", exc
@@ -868,7 +881,7 @@ def cmd_research_reproduce_run(
 
         # C. Fingerprint comparison is the only phase that can report DRIFT.
         comparison = compare_reproduction_fingerprints(
-            receipt["stable_fingerprint"], reproduced_receipt["stable_fingerprint"]
+            stable_fingerprint, reproduced_stable_fingerprint
         )
         status = comparison.status
         report_path = Path(
@@ -936,7 +949,7 @@ def _reproduction_error_payload(
     status: str,
     phase: str,
     error_code: str,
-    error: Exception,
+    error: BaseException,
     manifest_path: str,
     baseline_receipt_path: str,
     experiment_id: str | None,
@@ -1190,12 +1203,12 @@ def cmd_research_registry_validate(
         ):
             artifact_reasons.append("experiment_registry_path_mismatch")
     if (
-        report_loaded
+        isinstance(report, dict)
         and requires_candidate_validation(report.get("research_classification"))
         and not confirmation_loaded
     ):
         artifact_reasons.append("final_holdout_confirmation_missing")
-    if report_loaded:
+    if isinstance(report, dict):
         evidence_row_hash = (
             str(evidence.get("experiment_registry_row_hash") or "").strip()
             if isinstance(evidence, dict)
@@ -1235,7 +1248,7 @@ def cmd_research_registry_validate(
         )
         if evidence_required and not evidence_loaded:
             artifact_reasons.append("statistical_evidence_missing")
-        if evidence_loaded:
+        if isinstance(evidence, dict):
             artifact_reasons.extend(
                 _content_hash_reasons(
                     evidence, report_hash=False, label="statistical_evidence"
@@ -1251,7 +1264,7 @@ def cmd_research_registry_validate(
         )
     elif not confirmation_loaded:
         artifact_reasons.append("artifact_binding_not_checked")
-    if confirmation_loaded:
+    if isinstance(confirmation, dict):
         confirmation_bound_row_hash = (
             str(confirmation.get("experiment_registry_row_hash") or "").strip() or None
         )
@@ -1307,15 +1320,20 @@ def cmd_research_registry_validate(
             artifact_reasons.append(
                 "final_holdout_confirmation_canonical_completion_row_mismatch"
             )
-        selection_artifact = report.get("selection_artifact") if report_loaded else None
+        selection_artifact = (
+            report.get("selection_artifact") if isinstance(report, dict) else None
+        )
         if not isinstance(selection_artifact, dict):
             artifact_reasons.append(
                 "final_holdout_confirmation_selection_artifact_missing"
             )
         else:
-            if report.get("selection_artifact_hash") != selection_artifact.get(
-                "content_hash"
-            ):
+            report_selection_hash = (
+                report.get("selection_artifact_hash")
+                if isinstance(report, dict)
+                else None
+            )
+            if report_selection_hash != selection_artifact.get("content_hash"):
                 artifact_reasons.append("report_selection_artifact_hash_mismatch")
             artifact_reasons.extend(
                 validate_confirmation_artifact(
@@ -1347,6 +1365,7 @@ def cmd_research_registry_validate(
     if (
         validation_scope == "registry_and_artifacts"
         and confirmation_bound_row_hash
+        and isinstance(confirmation, dict)
         and any(
             row.get("row_hash") == confirmation_bound_row_hash for row in reservations
         )
@@ -1384,7 +1403,7 @@ def cmd_research_registry_validate(
             lifecycle["validation_permitted"] = False
             lifecycle["reasons"] = sorted(
                 set(
-                    [str(item) for item in lifecycle["reasons"]]
+                    list(_string_items(lifecycle.get("reasons")))
                     + ["experiment_registry_multiple_terminal_events"]
                 )
             )
@@ -1395,7 +1414,7 @@ def cmd_research_registry_validate(
         if lifecycle["artifact_bound"]:
             lifecycle["artifact_binding_valid"] = artifact_binding_valid
             lifecycle["reasons"] = sorted(
-                set([str(item) for item in lifecycle["reasons"]] + artifact_reasons)
+                set(list(_string_items(lifecycle.get("reasons"))) + artifact_reasons)
             )
         lifecycle_summary.append(lifecycle)
         ok = ok and bool(lifecycle["ok"])
@@ -1571,7 +1590,7 @@ def _print_validation_run_summary(payload: dict[str, object]) -> None:
     )
     print(
         "  validation_policy_required_stage_names="
-        f"{_format_items(tuple(str(item) for item in payload.get('validation_policy_required_stage_names') or []))}"
+        f"{_format_items(_string_items(payload.get('validation_policy_required_stage_names')))}"
     )
     print(
         f"  end_to_end_validation_result={payload.get('end_to_end_validation_result')}"
@@ -1585,10 +1604,8 @@ def _print_validation_run_summary(payload: dict[str, object]) -> None:
         f"  validation_artifact_hash={payload.get('validation_artifact_hash') or 'none'}"
     )
     print(f"  reproduce_ok={1 if payload.get('reproduce_ok') else 0}")
-    reasons = payload.get("fail_closed_reasons") or []
-    print(
-        f"  fail_closed_reasons={_format_items(tuple(str(item) for item in reasons))}"
-    )
+    reasons = list(_string_items(payload.get("fail_closed_reasons")))
+    print(f"  fail_closed_reasons={_format_items(tuple(reasons))}")
     print(f"  next_required_action={_validation_next_action(payload)}")
     print(
         f"  recommended_command={payload.get('recommended_command') or validation_next_action_payload(reasons).get('recommended_command') or 'none'}"
@@ -1618,7 +1635,7 @@ def _validation_next_action(payload: dict[str, object]) -> str:
         return str(payload.get("next_required_action"))
     if payload.get("end_to_end_validation_result") == "PASS":
         return "review_validation_run_and_validation_artifact"
-    reasons = [str(item) for item in payload.get("fail_closed_reasons") or []]
+    reasons = list(_string_items(payload.get("fail_closed_reasons")))
     mapped = validation_next_action_payload(reasons)
     if mapped.get("next_required_action") != "inspect_validation_run_failure_reasons":
         return str(mapped["next_required_action"])
@@ -1642,20 +1659,16 @@ def _first_participation_summary(report: dict[str, object]) -> dict[str, object]
                 return participation
             for metrics_key in ("validation_metrics_v2", "final_holdout_metrics_v2"):
                 metrics = candidate.get(metrics_key)
-                if isinstance(metrics, dict) and isinstance(
-                    metrics.get("participation"), dict
-                ):
-                    return metrics["participation"]
+                if isinstance(metrics, dict):
+                    metrics_participation = metrics.get("participation")
+                    if isinstance(metrics_participation, dict):
+                        return dict(metrics_participation)
     participation = report.get("participation_summary")
     return participation if isinstance(participation, dict) else {}
 
 
 def _print_report_summary(label: str, report: dict[str, object]) -> None:
-    artifact_paths = (
-        report.get("artifact_paths")
-        if isinstance(report.get("artifact_paths"), dict)
-        else {}
-    )
+    artifact_paths = _object_mapping(report.get("artifact_paths"))
     summary = build_research_run_summary(report)
     print(f"[{label}]")
     print(f"  experiment_id={report.get('experiment_id')}")
@@ -1672,7 +1685,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(
         "  final_selection_fail_reasons="
-        f"{_format_items(tuple(str(item) for item in report.get('final_selection_fail_reasons') or []))}"
+        f"{_format_items(_string_items(report.get('final_selection_fail_reasons')))}"
     )
     print(f"  selected_candidate_id={report.get('selected_candidate_id') or 'none'}")
     print(
@@ -1691,7 +1704,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(
         "  validation_blocking_reasons="
-        f"{_format_items(tuple(str(item) for item in report.get('validation_blocking_reasons') or []))}"
+        f"{_format_items(_string_items(report.get('validation_blocking_reasons')))}"
     )
     print(f"  candidate_gate_counts={_format_counts(summary.candidate_gate_counts)}")
     print(
@@ -1719,12 +1732,12 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     if participation_summary:
         print(
             "  daily_participation_fallback_counts="
-            f"intent:{int(participation_summary.get('fallback_entry_count') or 0)},"
-            f"submit_expected:{int(participation_summary.get('fallback_submit_expected_count') or 0)},"
-            f"submitted:{int(participation_summary.get('fallback_submitted_count') or 0)},"
-            f"filled:{int(participation_summary.get('fallback_filled_count') or 0)},"
-            f"closed:{int(participation_summary.get('fallback_closed_trade_count') or 0)},"
-            f"base_sma_buy:{int(participation_summary.get('base_sma_buy_count') or 0)}"
+            f"intent:{_int_value(participation_summary.get('fallback_entry_count'))},"
+            f"submit_expected:{_int_value(participation_summary.get('fallback_submit_expected_count'))},"
+            f"submitted:{_int_value(participation_summary.get('fallback_submitted_count'))},"
+            f"filled:{_int_value(participation_summary.get('fallback_filled_count'))},"
+            f"closed:{_int_value(participation_summary.get('fallback_closed_trade_count'))},"
+            f"base_sma_buy:{_int_value(participation_summary.get('base_sma_buy_count'))}"
         )
     print(f"  top_exit_reasons={_format_counts(summary.top_exit_reasons)}")
     print(
@@ -1789,7 +1802,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(
         "  statistical_evidence_limitations="
-        f"{_format_items(tuple(str(item) for item in report.get('statistical_evidence_limitations') or []))}"
+        f"{_format_items(_string_items(report.get('statistical_evidence_limitations')))}"
     )
     print(f"  return_panel_hash={report.get('return_panel_hash') or 'none'}")
     print(f"  return_unit={report.get('return_unit') or 'none'}")
@@ -1806,7 +1819,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(
         "  audit_fail_reasons="
-        f"{_format_items(tuple(str(item) for item in report.get('audit_trail_fail_reasons') or []))}"
+        f"{_format_items(_string_items(report.get('audit_trail_fail_reasons')))}"
     )
     execution_observability = report.get("execution_observability")
     if isinstance(execution_observability, dict):
@@ -1824,11 +1837,11 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
         )
         print(
             "  worker_budget_warning_reasons="
-            f"{_format_items(tuple(str(item) for item in execution_observability.get('worker_budget_warning_reasons') or []))}"
+            f"{_format_items(_string_items(execution_observability.get('worker_budget_warning_reasons')))}"
         )
         print(
             "  worker_observation_warning_reasons="
-            f"{_format_items(tuple(str(item) for item in execution_observability.get('worker_observation_warning_reasons') or []))}"
+            f"{_format_items(_string_items(execution_observability.get('worker_observation_warning_reasons')))}"
         )
     print(
         f"  family_trial_registry_path={report.get('family_trial_registry_path') or 'none'}"
@@ -1855,7 +1868,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(
         "  statistical_gate_fail_reasons="
-        f"{_format_items(tuple(str(item) for item in report.get('statistical_gate_fail_reasons') or []))}"
+        f"{_format_items(_string_items(report.get('statistical_gate_fail_reasons')))}"
     )
     _print_stress_suite_summary(report)
     print(
@@ -1883,7 +1896,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(
         "  execution_reality_gate_reasons="
-        f"{_format_items(tuple(str(item) for item in report.get('execution_reality_gate_reasons') or []))}"
+        f"{_format_items(_string_items(report.get('execution_reality_gate_reasons')))}"
     )
     signal_coverage = report.get("signal_quote_coverage_summary")
     if isinstance(signal_coverage, dict):
@@ -1927,10 +1940,8 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  report_path={artifact_paths.get('report_path')}")
     print(f"  derived_path={artifact_paths.get('derived_path')}")
     print(f"  content_hash={report.get('content_hash')}")
-    warnings = report.get("warnings") or []
-    print(
-        f"  warnings={','.join(str(item) for item in warnings) if warnings else 'none'}"
-    )
+    warnings = _string_items(report.get("warnings"))
+    print(f"  warnings={','.join(warnings) if warnings else 'none'}")
     _print_top_of_book_summary(report)
 
 
@@ -1956,6 +1967,26 @@ def _print_progress_event(label: str, event: dict[str, object]) -> None:
 
 def _format_optional(value: object) -> str:
     return "None" if value is None else str(value)
+
+
+def _string_items(value: object) -> tuple[str, ...]:
+    if not value:
+        return ()
+    if not isinstance(value, Iterable):
+        raise TypeError(f"'{type(value).__name__}' object is not iterable")
+    return tuple(str(item) for item in value)
+
+
+def _object_mapping(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _int_value(value: object) -> int:
+    if not value:
+        return 0
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise TypeError(f"int() argument has invalid type {type(value).__name__}")
+    return int(value)
 
 
 def _format_strategy_diagnostics_summary(summary: ResearchRunSummary) -> str:
@@ -2036,26 +2067,10 @@ def _print_metrics_v2_summary(report: dict[str, object]) -> None:
                     break
     if not isinstance(metrics, dict):
         return
-    return_risk = (
-        metrics.get("return_risk")
-        if isinstance(metrics.get("return_risk"), dict)
-        else {}
-    )
-    trade_quality = (
-        metrics.get("trade_quality")
-        if isinstance(metrics.get("trade_quality"), dict)
-        else {}
-    )
-    time_exposure = (
-        metrics.get("time_exposure")
-        if isinstance(metrics.get("time_exposure"), dict)
-        else {}
-    )
-    cost_execution = (
-        metrics.get("cost_execution")
-        if isinstance(metrics.get("cost_execution"), dict)
-        else {}
-    )
+    return_risk = _object_mapping(metrics.get("return_risk"))
+    trade_quality = _object_mapping(metrics.get("trade_quality"))
+    time_exposure = _object_mapping(metrics.get("time_exposure"))
+    cost_execution = _object_mapping(metrics.get("cost_execution"))
     print(
         "  metrics_v2_summary="
         f"schema={metrics.get('metrics_schema_version')} "
@@ -2121,29 +2136,12 @@ def _print_stress_suite_summary(payload: dict[str, object]) -> None:
     evidence = payload.get("validation_stress_suite")
     if not isinstance(evidence, dict):
         evidence = payload.get("best_validation_stress_suite")
-    trade_removal = (
-        evidence.get("trade_removal")
-        if isinstance(evidence, dict)
-        and isinstance(evidence.get("trade_removal"), dict)
-        else {}
-    )
-    monte_carlo = (
-        evidence.get("trade_order_monte_carlo")
-        if isinstance(evidence, dict)
-        and isinstance(evidence.get("trade_order_monte_carlo"), dict)
-        else {}
-    )
-    period_ablation = (
-        evidence.get("period_ablation")
-        if isinstance(evidence, dict)
-        and isinstance(evidence.get("period_ablation"), dict)
-        else {}
-    )
-    parameter_perturbation = (
-        evidence.get("parameter_perturbation")
-        if isinstance(evidence, dict)
-        and isinstance(evidence.get("parameter_perturbation"), dict)
-        else {}
+    evidence_mapping = _object_mapping(evidence)
+    trade_removal = _object_mapping(evidence_mapping.get("trade_removal"))
+    monte_carlo = _object_mapping(evidence_mapping.get("trade_order_monte_carlo"))
+    period_ablation = _object_mapping(evidence_mapping.get("period_ablation"))
+    parameter_perturbation = _object_mapping(
+        evidence_mapping.get("parameter_perturbation")
     )
     print(f"  stress_suite_required={1 if required else 0}")
     print(
@@ -2151,7 +2149,7 @@ def _print_stress_suite_summary(payload: dict[str, object]) -> None:
     )
     print(
         "  stress_suite_fail_reasons="
-        f"{_format_items(tuple(str(item) for item in payload.get('stress_suite_fail_reasons') or []))}"
+        f"{_format_items(_string_items(payload.get('stress_suite_fail_reasons')))}"
     )
     print(f"  stress_trade_removal_status={trade_removal.get('status') or 'none'}")
     print(f"  stress_period_ablation_status={period_ablation.get('status') or 'none'}")
@@ -2215,7 +2213,7 @@ def _print_experiment_registry_summary(payload: dict[str, object]) -> None:
     print(f"  registry_gate_result={payload.get('registry_gate_result') or 'none'}")
     print(
         "  registry_gate_fail_reasons="
-        f"{_format_items(tuple(str(item) for item in payload.get('registry_gate_fail_reasons') or []))}"
+        f"{_format_items(_string_items(payload.get('registry_gate_fail_reasons')))}"
     )
     print(f"  research_freedom_hash={payload.get('research_freedom_hash') or 'none'}")
 
@@ -2278,11 +2276,7 @@ def _print_execution_capability_summary(report: dict[str, object]) -> None:
     market_impact_available: object = report.get("market_impact_model_available")
     top_of_book_is_full_depth: object = report.get("top_of_book_is_full_depth")
     if isinstance(capability, dict):
-        available = (
-            capability.get("available_capabilities")
-            if isinstance(capability.get("available_capabilities"), dict)
-            else {}
-        )
+        available = _object_mapping(capability.get("available_capabilities"))
         unavailable = capability.get("unavailable_required_capabilities", unavailable)
         market_impact_available = available.get(
             "market_impact_model", market_impact_available

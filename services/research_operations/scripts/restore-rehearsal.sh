@@ -11,6 +11,7 @@ receipt=${3:?usage: restore-rehearsal.sh ABS_BACKUP ABS_NEW_NAMESPACE ABS_RECEIP
 resume=${RESEARCH_OPS_RECOVERY_RESUME:-false}
 case "$resume" in true|false) ;; *) exit 64 ;; esac
 case "$namespace" in /*) ;; *) exit 64 ;; esac
+recovery_started_at=$(date -u '+%Y-%m-%dT%H:%M:%S.%6NZ')
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 identity_basename=$(basename -- "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")
 case "$identity_basename" in ''|.|..|*/*) exit 64 ;; esac
@@ -70,4 +71,4 @@ export RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH="$namespace/identity_registry/
 export PGOPTIONS="-c default_transaction_read_only=on -c timezone=UTC"
 research-ops recovery-verify --backup-directory "$backup" \
   --restore-namespace "$namespace" --receipt-path "$receipt" \
-  --postgresql-major "$POSTGRES_MAJOR"
+  --postgresql-major "$POSTGRES_MAJOR" --started-at "$recovery_started_at"

@@ -95,7 +95,7 @@ def build_sma_with_filter_research_events(
             blocked.append("cost_edge")
         entry = "HOLD" if raw == "BUY" and blocked else raw
         candle = dataset.candles[index]
-        features = {
+        features: dict[str, object] = {
             "schema_version": 1,
             "candle_index": index,
             "close": closes[index],

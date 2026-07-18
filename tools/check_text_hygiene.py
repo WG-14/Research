@@ -109,6 +109,34 @@ def _is_allowed_technical_identifier(path: Path, line: str) -> bool:
     )
 
 
+def _allows_user_work_language(path: Path) -> bool:
+    """Allow the authenticated Web UI to use its users' working language."""
+
+    try:
+        relative = path.resolve().relative_to(PROJECT_ROOT.resolve())
+    except ValueError:
+        return False
+    return relative.parts[:3] in {
+        ("apps", "internal_web", "src"),
+        ("apps", "internal_web", "tests"),
+    }
+
+
+def _is_sha256_shell_glob(path: Path, line: str) -> bool:
+    """Recognize the deliberate 64-character digest glob in build-image.sh."""
+
+    try:
+        relative = path.resolve().relative_to(PROJECT_ROOT.resolve())
+    except ValueError:
+        return False
+    stripped = line.strip()
+    return (
+        relative == Path("services/research_operations/scripts/build-image.sh")
+        and stripped.startswith('case "$UV_PYTHON_IMAGE" in *@sha256:')
+        and stripped.count("?") == 64
+    )
+
+
 def scan_file(path: Path) -> list[Violation]:
     if not is_relevant_text_file(path):
         return []
@@ -130,11 +158,11 @@ def scan_file(path: Path) -> list[Violation]:
     for index, line in enumerate(text.splitlines(), start=1):
         if _is_allowed_technical_identifier(path, line):
             continue
-        if HANGUL_RE.search(line):
+        if HANGUL_RE.search(line) and not _allows_user_work_language(path):
             violations.append(Violation(rel, index, "hangul", line))
         if REPLACEMENT_RE.search(line):
             violations.append(Violation(rel, index, "replacement_character", line))
-        if QUESTION_RUN_RE.search(line):
+        if QUESTION_RUN_RE.search(line) and not _is_sha256_shell_glob(path, line):
             violations.append(Violation(rel, index, "suspicious_question_run", line))
         if KNOWN_MOJIBAKE_RE.search(line):
             violations.append(Violation(rel, index, "known_mojibake", line))

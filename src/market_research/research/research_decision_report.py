@@ -61,6 +61,7 @@ def build_research_decision_report(
                 "strategy_name": manifest.strategy_name,
                 "strategy_version": manifest.strategy_version,
                 "market": manifest.market,
+                "instrument_evidence": manifest.instrument_evidence(),
                 "interval": manifest.interval,
                 "dataset_splits": selection_report.get("dataset_splits") or {},
                 "parameter_space_hash": selection_report.get("parameter_space_hash"),
@@ -80,6 +81,9 @@ def build_research_decision_report(
                 "dataset_snapshot_id": selection_report.get("dataset_snapshot_id"),
                 "dataset_content_hash": selection_report.get("dataset_content_hash"),
                 "dataset_artifact": selection_report.get("dataset_artifact"),
+                "corporate_action_transformation_evidence": selection_report.get(
+                    "corporate_action_transformation_evidence"
+                ),
             },
             "core_performance": {
                 "validation_metrics": primary.get("validation_metrics")

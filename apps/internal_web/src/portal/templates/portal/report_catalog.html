@@ -19,7 +19,8 @@
     </div>
     <div class="responsive-table">
       <table>
-        <thead><tr><th>선택</th><th>연구</th><th>전략</th><th>검증</th><th>보고서 hash</th></tr></thead>
+        <caption class="sr-only">현재 계정에서 비교할 수 있는 검증 보고서</caption>
+        <thead><tr><th scope="col">선택</th><th scope="col">연구</th><th scope="col">전략</th><th scope="col">검증</th><th scope="col">보고서 hash</th></tr></thead>
         <tbody>
         {% for report in reports %}
           <tr>
@@ -67,7 +68,8 @@
   <div class="panel-head"><div><h2>비교 결과</h2><p>원본 비교 hash <code>{{ comparison.source_comparison_hash }}</code></p></div></div>
   <div class="responsive-table">
     <table>
-      <thead><tr><th>연구</th><th>선택 후보</th><th>검증 결과</th><th>원본 hash</th></tr></thead>
+      <caption class="sr-only">선택한 보고서의 비교 결과</caption>
+      <thead><tr><th scope="col">연구</th><th scope="col">선택 후보</th><th scope="col">검증 결과</th><th scope="col">원본 hash</th></tr></thead>
       <tbody>{% for item in comparison.comparison.reports %}<tr><td>{{ item.experiment_id }}</td><td>{{ item.selected_candidate_id|default:"—" }}</td><td>{{ item.validation_result }}</td><td><code>{{ item.source_report_hash|truncatechars:28 }}</code></td></tr>{% endfor %}</tbody>
     </table>
   </div>

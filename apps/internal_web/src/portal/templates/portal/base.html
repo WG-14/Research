@@ -21,22 +21,22 @@
         <span><strong>Research</strong><small>Console</small></span>
       </a>
       <nav class="nav-list">
-        <a class="nav-item {% if active_nav == 'dashboard' %}is-active{% endif %}" href="{% url 'portal:dashboard' %}">
+        <a class="nav-item {% if active_nav == 'dashboard' %}is-active{% endif %}" href="{% url 'portal:dashboard' %}"{% if active_nav == 'dashboard' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">⌂</span><span>대시보드</span>
         </a>
         {% if perms.portal.upload_research_manifest %}
-          <a class="nav-item {% if active_nav == 'new' %}is-active{% endif %}" href="{% url 'portal:manifest-upload' %}">
+          <a class="nav-item {% if active_nav == 'new' %}is-active{% endif %}" href="{% url 'portal:manifest-upload' %}"{% if active_nav == 'new' %} aria-current="page"{% endif %}>
             <span aria-hidden="true">＋</span><span>새 연구</span>
           </a>
         {% endif %}
-        <a class="nav-item {% if active_nav == 'jobs' %}is-active{% endif %}" href="{% url 'portal:job-list' %}">
+        <a class="nav-item {% if active_nav == 'jobs' %}is-active{% endif %}" href="{% url 'portal:job-list' %}"{% if active_nav == 'jobs' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">◫</span><span>작업 기록</span>
         </a>
-        <a class="nav-item {% if active_nav == 'reports' %}is-active{% endif %}" href="{% url 'portal:report-list' %}">
+        <a class="nav-item {% if active_nav == 'reports' %}is-active{% endif %}" href="{% url 'portal:report-list' %}"{% if active_nav == 'reports' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">≍</span><span>보고서 비교</span>
         </a>
         {% if perms.portal.record_research_review or perms.portal.approve_research_candidate %}
-        <a class="nav-item {% if active_nav == 'review' %}is-active{% endif %}" href="{% url 'portal:review-queue' %}">
+        <a class="nav-item {% if active_nav == 'review' %}is-active{% endif %}" href="{% url 'portal:review-queue' %}"{% if active_nav == 'review' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">✓</span><span>검토함</span>
         </a>
         {% endif %}
@@ -44,7 +44,7 @@
       <div class="sidebar-foot">
         <div class="system-boundary">
           <span class="status-dot" aria-hidden="true"></span>
-          <span><strong>오프라인 연구 전용</strong><small>실거래·계정 연결 없음</small></span>
+          <span><strong>오프라인 연구 전용</strong><small>실거래·계정 연결 없음<br>역할 변경은 외부 승인 절차 전용</small></span>
         </div>
       </div>
     </aside>
@@ -64,8 +64,8 @@
 
       <main id="main-content" class="content" tabindex="-1">
         {% if messages %}
-        <div class="message-stack" aria-live="polite">
-          {% for message in messages %}<div class="message message-{{ message.tags|default:'info' }}">{{ message }}</div>{% endfor %}
+        <div class="message-stack" aria-live="polite" aria-atomic="true">
+          {% for message in messages %}<div class="message message-{{ message.tags|default:'info' }}"{% if message.tags == 'error' %} role="alert"{% else %} role="status"{% endif %}>{{ message }}</div>{% endfor %}
         </div>
         {% endif %}
         {% block content %}{% endblock %}

@@ -19,6 +19,12 @@ from tests.research_sma_success_fixture import create_success_fixture
 from tests.test_frozen_dataset_multi_split_integration import (
     frozen_manifest_and_manager,
 )
+from tests.clean_provenance_fixture import install_committed_checkout_provenance
+
+
+@pytest.fixture(autouse=True)
+def _committed_receipt_source(monkeypatch):
+    install_committed_checkout_provenance(monkeypatch)
 
 
 def _context(tmp_path: Path) -> tuple[ResearchAppContext, Path, Path]:

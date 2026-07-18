@@ -17,6 +17,13 @@ def test_checked_in_provenance_example_is_a_valid_supported_contract() -> None:
     )
 
     assert provenance.source_priority == ("replace-with-provider-id",)
+    assert provenance.schema_version == 2
+    assert provenance.sources[0].source_kind == "file_export"
+    assert dict(provenance.sources[0].request_parameters) == {
+        "interval": "1m",
+        "market": "KRW-BTC",
+    }
+    assert provenance.sources[0].acquisition_status == "complete"
     assert tuple(stage.layer for stage in provenance.lineage) == (
         "raw",
         "cleaned",

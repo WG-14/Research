@@ -36,9 +36,10 @@ class ResearchPosition:
         )
 
     def unrealized_pnl_ratio(self, market_price: float) -> float:
-        if not self.in_position or self.entry_price in (None, 0.0):
+        entry_price = self.entry_price
+        if not self.in_position or entry_price is None or entry_price == 0.0:
             return 0.0
-        return (float(market_price) - float(self.entry_price)) / float(self.entry_price)
+        return (float(market_price) - float(entry_price)) / float(entry_price)
 
     def as_dict(
         self, *, market_price: float | None = None, candle_ts: int | None = None

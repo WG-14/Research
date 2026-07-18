@@ -22,6 +22,28 @@ class _Manifest:
     )
 
     @staticmethod
+    def instrument_evidence():
+        return {
+            "instrument_id": "inst_test_btc_0001",
+            "instrument_version_id": "instv_test_btc_0001_v1",
+            "instrument_contract_hash": "sha256:" + "a" * 64,
+            "asset_type": "spot",
+            "exchange_mic": "XOFF",
+            "trading_currency": "KRW",
+            "price_tick": "0.01",
+            "quantity_step": "0.0001",
+            "trading_unit": "1",
+            "identity_source": "manifest",
+            "corporate_action_set_id": "cas_test_btc_0001",
+            "corporate_action_set_hash": "sha256:" + "b" * 64,
+            "corporate_action_policy_id": "cap_raw_prices_v1",
+            "corporate_action_policy_hash": "sha256:" + "c" * 64,
+            "price_series": "raw",
+            "price_adjustment": "none",
+            "volume_adjustment": "none",
+        }
+
+    @staticmethod
     def manifest_hash():
         return "sha256:" + "1" * 64
 
@@ -62,6 +84,11 @@ def _report():
         "statistical_gate_result": "PASS",
         "walk_forward_gate_result": "PASS",
         "selection_artifact_hash": "sha256:" + "4" * 64,
+        "corporate_action_transformation_evidence": {
+            "artifact_type": "corporate_action_transformation_evidence",
+            "input_rows_hash": "sha256:" + "6" * 64,
+            "output_rows_hash": "sha256:" + "7" * 64,
+        },
     }
     confirmation = {
         "content_hash": "sha256:" + "5" * 64,
@@ -88,6 +115,10 @@ def test_decision_report_contains_every_required_review_section():
 
     assert set(report["sections"]) == set(REPORT_SECTIONS)
     assert report["sections"]["failure_periods"]["top_losing_trades"]
+    assert (
+        report["sections"]["data_quality"]["corporate_action_transformation_evidence"]
+        == selection["corporate_action_transformation_evidence"]
+    )
     assert report["sections"]["research_conclusion"] == {
         "automated_evidence_conclusion": "AUTOMATED_RESEARCH_EVIDENCE_PASSED",
         "validation_result": "PASS",

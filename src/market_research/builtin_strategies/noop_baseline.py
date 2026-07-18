@@ -3,6 +3,7 @@
 from market_research.research.strategy_contract import ResearchStrategyPlugin
 from market_research.research.strategy_spec import (
     StrategyFeatureDefinition,
+    StrategyParameterSchema,
     StrategyRuleDeclaration,
     StrategyRuleSpec,
     StrategySpec,
@@ -32,6 +33,27 @@ NOOP_BASELINE_SPEC = StrategySpec(
         "rules": (),
         "description": "No-op baseline never emits executable entry or exit intent.",
     },
+    parameter_schema=(
+        StrategyParameterSchema(
+            "NOOP_DECISION_START_INDEX",
+            "int",
+            min_value=0,
+            unit="candle_index",
+            description="First completed-candle index at which HOLD is emitted.",
+            default_value=0,
+            optimization_allowed=False,
+            since_version="noop_baseline.research_contract.v1",
+        ),
+        StrategyParameterSchema(
+            "NOOP_DECISION_REASON",
+            "str",
+            unit="label",
+            description="Audit reason attached to deterministic HOLD decisions.",
+            default_value="noop_baseline_hold",
+            optimization_allowed=False,
+            since_version="noop_baseline.research_contract.v1",
+        ),
+    ),
     rule_spec=StrategyRuleSpec(
         1,
         entry=StrategyRuleDeclaration("noop_hold", "Always emit HOLD.", "always"),
@@ -73,6 +95,10 @@ _runtime_factory = make_event_builder_runtime_factory(
 
 
 def build_noop_baseline_plugin() -> ResearchStrategyPlugin:
+    from market_research.research.strategy_manifest import (
+        builtin_strategy_manifest_hash,
+    )
+
     return ResearchStrategyPlugin(
         name=NOOP_BASELINE_SPEC.strategy_name,
         version=NOOP_BASELINE_SPEC.strategy_version,
@@ -85,6 +111,7 @@ def build_noop_baseline_plugin() -> ResearchStrategyPlugin:
         runtime_factory=_runtime_factory,
         reconstruction_module=__name__,
         reconstruction_qualname="build_noop_baseline_plugin",
+        package_manifest_hash=builtin_strategy_manifest_hash(__name__),
     )
 
 

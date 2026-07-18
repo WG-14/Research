@@ -105,7 +105,10 @@ def verify_postgresql(dsn: str | None = None) -> dict[str, Any]:
             "SELECT current_database(), current_user, "
             "current_setting('server_version_num')"
         )
-        database, user, version = cursor.fetchone()
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("postgresql_identity_query_returned_no_row")
+        database, user, version = row
     return {"database": database, "user": user, "server_version_num": int(version)}
 
 

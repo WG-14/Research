@@ -122,10 +122,11 @@ def record_web_audit_event(
         payload=payload,
         payload_hash=str(payload["intent_hash"]),
     )
-    transaction.on_commit(
-        lambda event_id=event.pk: project_web_audit_event(event_id),
-        robust=True,
-    )
+
+    def project_committed_event(event_id: uuid.UUID = event.pk) -> None:
+        project_web_audit_event(event_id)
+
+    transaction.on_commit(project_committed_event, robust=True)
     return event
 
 

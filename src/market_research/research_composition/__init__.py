@@ -1,4 +1,5 @@
 from .builtin_registry import (
+    builtin_strategy_catalog,
     builtin_strategy_registry,
     compile_builtin_strategy,
     load_builtin_manifest,
@@ -8,6 +9,7 @@ from .builtin_registry import (
 )
 
 __all__ = [
+    "builtin_strategy_catalog",
     "builtin_strategy_registry",
     "compile_builtin_strategy",
     "load_builtin_manifest",

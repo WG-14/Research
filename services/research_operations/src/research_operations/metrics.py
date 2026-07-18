@@ -28,6 +28,23 @@ _METRIC_HELP = {
     "research_ops_job_expired_leases": "Research jobs with expired execution leases.",
     "research_ops_job_queued": "Queued research jobs.",
     "research_ops_job_running": "Running research jobs.",
+    "research_ops_job_succeeded_total": "Terminal successful research jobs.",
+    "research_ops_job_failed_total": "Terminal failed research jobs.",
+    "research_ops_job_cancelled_total": "Terminal cancelled research jobs.",
+    "research_ops_job_timeout_total": "Research jobs failed by execution timeout.",
+    "research_ops_job_resource_exhausted_total": (
+        "Research jobs failed by a memory or process resource limit."
+    ),
+    "research_ops_job_contract_violation_total": (
+        "Research jobs rejected by capability or result contracts."
+    ),
+    "research_ops_job_retry_total": "Research job attempts beyond the first claim.",
+    "research_ops_job_average_runtime_seconds": (
+        "Average terminal research job execution duration."
+    ),
+    "research_ops_job_average_queue_seconds": (
+        "Average research job queue wait before execution."
+    ),
     "research_ops_job_receipts_unapplied": (
         "Durable research-job receipts not yet applied to terminal job state."
     ),
@@ -48,6 +65,16 @@ _METRIC_HELP = {
     ),
     "research_ops_restore_drill_last_pass": "Whether the latest restore drill passed.",
     "research_ops_restore_drill_present": "Whether a restore drill result exists.",
+    "research_ops_service_alert_delivery_failed": (
+        "Terminal failed service-health alert deliveries."
+    ),
+    "research_ops_service_alert_delivery_pending": (
+        "Pending or claimed service-health alert deliveries."
+    ),
+    "research_ops_service_alert_open": "Open service-health alerts.",
+    "research_ops_service_alert_unacknowledged_due": (
+        "Open service-health alerts past their acknowledgement deadline."
+    ),
     "research_ops_runtime_control_generation": "Monotonic runtime-control generation.",
     "research_ops_snapshot_collection_success": (
         "Whether this metrics snapshot is complete."
@@ -135,6 +162,25 @@ def collect_metrics(
                 WHERE applied_at IS NULL
                 """
             ).fetchone()
+            alerts = conn.execute(
+                """
+                SELECT
+                    (SELECT count(*)
+                     FROM research_ops.service_alert
+                     WHERE status = 'OPEN'),
+                    (SELECT count(*)
+                     FROM research_ops.service_alert
+                     WHERE status = 'OPEN'
+                       AND acknowledgment_deadline_at <= %s),
+                    (SELECT count(*)
+                     FROM research_ops.service_alert_delivery
+                     WHERE status IN ('PENDING', 'CLAIMED')),
+                    (SELECT count(*)
+                     FROM research_ops.service_alert_delivery
+                     WHERE status = 'FAILED')
+                """,
+                (now,),
+            ).fetchone()
             experiments = conn.execute(
                 """
                 SELECT count(*), count(*) FILTER (WHERE lease_expires_at <= %s)
@@ -151,7 +197,33 @@ def collect_metrics(
                     count(*) FILTER (
                         WHERE status IN ('RUNNING', 'CANCEL_REQUESTED')
                           AND lease_expires_at <= %s
-                    )
+                    ),
+                    count(*) FILTER (WHERE status = 'SUCCEEDED'),
+                    count(*) FILTER (WHERE status = 'FAILED'),
+                    count(*) FILTER (WHERE status = 'CANCELLED'),
+                    count(*) FILTER (
+                        WHERE status = 'FAILED'
+                          AND error_code = 'EXECUTION_TIMEOUT'
+                    ),
+                    count(*) FILTER (
+                        WHERE status = 'FAILED'
+                          AND error_code = 'RESOURCE_EXHAUSTED'
+                    ),
+                    count(*) FILTER (
+                        WHERE status = 'FAILED'
+                          AND error_code IN (
+                              'CAPABILITY_CONTRACT_INVALID',
+                              'RESULT_CONTRACT_INVALID'
+                          )
+                    ),
+                    COALESCE(sum(GREATEST(attempt_count - 1, 0)), 0),
+                    COALESCE(avg(EXTRACT(EPOCH FROM (finished_at - started_at)))
+                        FILTER (
+                            WHERE finished_at IS NOT NULL
+                              AND started_at IS NOT NULL
+                        ), 0),
+                    COALESCE(avg(EXTRACT(EPOCH FROM (started_at - queued_at)))
+                        FILTER (WHERE started_at IS NOT NULL), 0)
                 FROM public.portal_researchjob
                 """,
                 (now,),
@@ -189,6 +261,7 @@ def collect_metrics(
                 backup=backup,
                 restore=restore,
                 receipts=receipts,
+                alerts=alerts,
             )
         )
         values["research_ops_database_up"] = 1.0
@@ -212,8 +285,9 @@ def _complete_values(
     backup: Any,
     restore: Any,
     receipts: Any,
+    alerts: Any,
 ) -> dict[str, float]:
-    if primary is None or control is None or outbox is None:
+    if primary is None or control is None or outbox is None or alerts is None:
         raise ValueError("metrics_snapshot_incomplete")
     validation_present = validation is not None
     backup_time = backup[0] if backup is not None else None
@@ -239,6 +313,15 @@ def _complete_values(
         "research_ops_job_running": float(jobs[1]),
         "research_ops_job_cancel_requested": float(jobs[2]),
         "research_ops_job_expired_leases": float(jobs[3]),
+        "research_ops_job_succeeded_total": float(jobs[4]),
+        "research_ops_job_failed_total": float(jobs[5]),
+        "research_ops_job_cancelled_total": float(jobs[6]),
+        "research_ops_job_timeout_total": float(jobs[7]),
+        "research_ops_job_resource_exhausted_total": float(jobs[8]),
+        "research_ops_job_contract_violation_total": float(jobs[9]),
+        "research_ops_job_retry_total": float(jobs[10]),
+        "research_ops_job_average_runtime_seconds": float(jobs[11]),
+        "research_ops_job_average_queue_seconds": float(jobs[12]),
         "research_ops_validation_present": float(validation_present),
         "research_ops_validation_last_pass": float(
             validation_present and validation[0] == "PASS"
@@ -260,6 +343,10 @@ def _complete_values(
         "research_ops_outbox_workers_fresh": float(workers[0]),
         "research_ops_research_job_workers_fresh": float(workers[1]),
         "research_ops_job_receipts_unapplied": float(receipts[0]),
+        "research_ops_service_alert_open": float(alerts[0]),
+        "research_ops_service_alert_unacknowledged_due": float(alerts[1]),
+        "research_ops_service_alert_delivery_pending": float(alerts[2]),
+        "research_ops_service_alert_delivery_failed": float(alerts[3]),
     }
 
 
@@ -284,6 +371,8 @@ def _age(now: datetime, value: datetime) -> float:
 
 
 def _finite_nonnegative(value: object) -> float:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise TypeError("metric_value_must_be_numeric")
     parsed = float(value)
     if not math.isfinite(parsed) or parsed < 0:
         return 0.0

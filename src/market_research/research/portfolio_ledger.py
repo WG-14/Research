@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 from .execution_model.base import ExecutionFill
 from .hashing import sha256_prefixed
@@ -53,8 +54,14 @@ class PortfolioLedger:
     def __init__(
         self, *, starting_cash: float, initial_position_qty: float = 0.0
     ) -> None:
-        self.cash = float(starting_cash)
-        self.asset_qty = float(initial_position_qty)
+        resolved_cash = float(starting_cash)
+        resolved_qty = float(initial_position_qty)
+        if not isfinite(resolved_cash) or resolved_cash < 0.0:
+            raise ValueError("ledger_starting_cash_invalid")
+        if not isfinite(resolved_qty) or resolved_qty < 0.0:
+            raise ValueError("ledger_initial_position_qty_invalid")
+        self.cash = resolved_cash
+        self.asset_qty = resolved_qty
         self.cost_basis = 0.0
         self.realized_pnl = 0.0
         self.fee_total = 0.0
@@ -86,7 +93,26 @@ class PortfolioLedger:
         price = float(fill.avg_fill_price or 0.0)
         qty = float(fill.filled_qty)
         fee = float(fill.fee)
+        reference_price = float(fill.reference_price)
+        if not isfinite(qty) or qty <= 0.0:
+            raise ValueError("ledger_fill_quantity_invalid")
+        if not isfinite(price) or price <= 0.0:
+            raise ValueError("ledger_fill_price_invalid")
+        if not isfinite(reference_price) or reference_price <= 0.0:
+            raise ValueError("ledger_fill_reference_price_invalid")
+        if not isfinite(fee) or fee < 0.0:
+            raise ValueError("ledger_fill_fee_invalid")
         slippage = abs(price - float(fill.reference_price)) * qty
+        raw_effective_ts = (
+            fill.portfolio_effective_ts
+            if fill.portfolio_effective_ts is not None
+            else fill.fill_reference_ts or fill.submit_ts_assumption
+        )
+        effective_ts = int(raw_effective_ts)
+        if effective_ts < 0:
+            raise ValueError("ledger_effective_timestamp_invalid")
+        if self.entries and effective_ts < self.entries[-1].effective_ts:
+            raise ValueError("ledger_fill_timestamp_out_of_order")
         realized: float | None = None
         if fill.side == "BUY":
             cash_delta = -(qty * price + fee)
@@ -111,15 +137,8 @@ class PortfolioLedger:
             raise ValueError(f"unsupported_ledger_side:{fill.side}")
         self.fee_total += fee
         self.slippage_total += slippage
-        effective_ts = int(
-            fill.portfolio_effective_ts
-            if fill.portfolio_effective_ts is not None
-            else fill.fill_reference_ts or fill.submit_ts_assumption
-        )
         entry = LedgerEntry(
-            ledger_entry_id=sha256_prefixed(
-                {"fill_id": fill.fill_id, "effective_ts": effective_ts}
-            ),
+            ledger_entry_id=_ledger_entry_id(fill.fill_id, effective_ts),
             fill_id=fill.fill_id,
             side=fill.side,
             qty=qty,
@@ -157,14 +176,25 @@ class PortfolioLedger:
         initial_position_qty: float = 0.0,
     ) -> PortfolioSnapshot:
         """Reconstruct and validate the portfolio solely from authoritative entries."""
-        snapshot = PortfolioSnapshot(
-            float(starting_cash), float(initial_position_qty), 0.0, 0.0, 0.0, 0.0
-        )
+        snapshot = cls(
+            starting_cash=starting_cash,
+            initial_position_qty=initial_position_qty,
+        ).snapshot()
         seen: set[str] = set()
+        seen_effective_ts: int | None = None
         for entry in entries:
             if entry.ledger_entry_id in seen:
                 raise ValueError("duplicate_ledger_entry_id")
             seen.add(entry.ledger_entry_id)
+            if entry.ledger_entry_id != _ledger_entry_id(
+                entry.fill_id, entry.effective_ts
+            ):
+                raise ValueError("ledger_entry_id_content_mismatch")
+            if entry.effective_ts < 0:
+                raise ValueError("ledger_replay_effective_timestamp_invalid")
+            if seen_effective_ts is not None and entry.effective_ts < seen_effective_ts:
+                raise ValueError("ledger_replay_timestamp_out_of_order")
+            seen_effective_ts = entry.effective_ts
             expected = (
                 entry.cash_before,
                 entry.asset_qty_before,
@@ -182,6 +212,27 @@ class PortfolioLedger:
             qty = float(entry.qty)
             price = float(entry.price)
             fee = float(entry.fee)
+            transaction_values = (
+                qty,
+                price,
+                fee,
+                float(entry.slippage),
+                float(entry.notional),
+                float(entry.basis_allocation),
+                float(entry.cash_delta),
+                float(entry.cash_before),
+                float(entry.cash_after),
+                float(entry.asset_qty_before),
+                float(entry.asset_qty_after),
+                float(entry.cost_basis_before),
+                float(entry.cost_basis_after),
+                float(entry.realized_pnl_before),
+                float(entry.realized_pnl_after),
+                float(entry.fee_total_after),
+                float(entry.slippage_total_after),
+            )
+            if not all(isfinite(value) for value in transaction_values):
+                raise ValueError("ledger_replay_non_finite_transaction")
             if qty <= 0 or price <= 0 or fee < 0 or entry.slippage < 0:
                 raise ValueError("ledger_replay_invalid_transaction")
             if abs(float(entry.notional) - qty * price) > 1e-8:
@@ -238,3 +289,7 @@ class PortfolioLedger:
             if snapshot.cash < -1e-8 or snapshot.asset_qty < -1e-8:
                 raise ValueError("ledger_replay_invalid_state")
         return snapshot
+
+
+def _ledger_entry_id(fill_id: str, effective_ts: int) -> str:
+    return sha256_prefixed({"fill_id": fill_id, "effective_ts": int(effective_ts)})

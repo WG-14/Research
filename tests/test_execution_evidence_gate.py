@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from market_research.research.execution_evidence import (
@@ -55,3 +57,95 @@ def test_zero_intent_run_allows_zero_execution_counts():
         )["status"]
         == "PASS"
     )
+
+
+def test_persisted_fill_quote_knowledge_time_tampering_is_rejected() -> None:
+    model = SpyModel()
+    run = _run(model)
+    request = replace(
+        run.execution_requests[0],
+        request_id="",
+        fill_reference_policy="first_orderbook_after_decision",
+        fill_reference_source="first_orderbook_after_decision",
+        quote_ts=run.execution_requests[0].decision_ts,
+        quote_available_at_ts=None,
+    )
+    fill = replace(
+        run.fills[0],
+        fill_id="",
+        request_id=request.request_id,
+        fill_reference_policy="first_orderbook_after_decision",
+        fill_reference_source="first_orderbook_after_decision",
+        quote_ts=run.fills[0].decision_ts,
+        quote_available_at_ts=None,
+    )
+    corrupted = replace(run, execution_requests=(request,), fills=(fill,))
+
+    with pytest.raises(
+        ExecutionEvidenceError, match="orderbook_quote_knowledge_time_missing"
+    ):
+        validate_execution_evidence(
+            run=corrupted,
+            timing=ExecutionTimingPolicy(
+                fill_reference_policy="next_candle_open",
+                allow_same_candle_close_fill=False,
+            ),
+            model=model,
+        )
+
+
+def test_validation_bound_evidence_rejects_schema_downgrade_and_future_version() -> (
+    None
+):
+    model = SpyModel()
+    run = _run(model)
+    timing = ExecutionTimingPolicy(
+        fill_reference_policy="next_candle_open",
+        allow_same_candle_close_fill=False,
+    )
+    evidence = run.execution_event_summary
+    assert isinstance(evidence, dict)
+
+    evidence["execution_evidence_schema_version"] = 1
+    with pytest.raises(
+        ExecutionEvidenceError,
+        match="validation_bound_execution_evidence_requires_schema_version:3",
+    ):
+        validate_execution_evidence(run=run, timing=timing, model=model)
+
+    evidence["execution_evidence_schema_version"] = 999
+    with pytest.raises(
+        ExecutionEvidenceError,
+        match="unsupported_execution_evidence_schema_version:999",
+    ):
+        validate_execution_evidence(
+            run=run, timing=timing, model=model, validation_bound=False
+        )
+
+
+def test_schema_two_evidence_is_explicitly_read_only() -> None:
+    model = SpyModel()
+    run = _run(model)
+    evidence = run.execution_event_summary
+    assert isinstance(evidence, dict)
+    evidence["execution_evidence_schema_version"] = 2
+    for field in (
+        "decision_timeline_invariant_status",
+        "causal_timeline_validator",
+        "market_knowledge_time_policy",
+        "market_knowledge_time_basis_counts",
+        "market_knowledge_time_assumption_count",
+    ):
+        evidence.pop(field, None)
+
+    result = validate_execution_evidence(
+        run=run,
+        timing=ExecutionTimingPolicy(
+            fill_reference_policy="next_candle_open",
+            allow_same_candle_close_fill=False,
+        ),
+        model=model,
+        validation_bound=False,
+    )
+
+    assert result["status"] == "LEGACY_READ_ONLY"

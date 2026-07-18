@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from wsgiref.types import StartResponse
 
 from .backup import MUTATION_FENCE_ADVISORY_LOCK_ID
 from .database import connection
@@ -23,7 +24,6 @@ from .health import (
 )
 from .metrics import collect_metrics, render_prometheus
 
-StartResponse = Callable[[str, list[tuple[str, str]]], Any]
 WSGIApplication = Callable[[Mapping[str, Any], StartResponse], Iterable[bytes]]
 _JSON_HEADERS = [
     ("Content-Type", "application/json"),
@@ -245,8 +245,17 @@ def _research_web_application() -> WSGIApplication:
             )
             from market_research_web.wsgi import application
 
-            _WEB_APPLICATION = application
-    return _WEB_APPLICATION
+            def invoke_django(
+                environ: Mapping[str, Any],
+                start_response: StartResponse,
+            ) -> Iterable[bytes]:
+                return application(dict(environ), start_response)
+
+            _WEB_APPLICATION = invoke_django
+    configured_application = _WEB_APPLICATION
+    if configured_application is None:
+        raise RuntimeError("research_web_application_initialization_failed")
+    return configured_application
 
 
 def _web_unavailable(start_response: StartResponse) -> Iterable[bytes]:

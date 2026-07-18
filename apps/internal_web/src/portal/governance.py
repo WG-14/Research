@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -101,7 +101,14 @@ def record_job_review(
     context = load_review_context(job)
     subject: GovernanceSubjectRef = context["subject"]
     actor = _actor(user)
-    decision = str(cleaned_data["decision"])
+    raw_decision = str(cleaned_data["decision"])
+    decision: Literal["CHANGES_REQUESTED", "REJECTED"]
+    if raw_decision == "CHANGES_REQUESTED":
+        decision = "CHANGES_REQUESTED"
+    elif raw_decision == "REJECTED":
+        decision = "REJECTED"
+    else:
+        raise ValidationError("human_review_decision_invalid")
     requested_changes: tuple[RequestedChange, ...] = ()
     if decision == "CHANGES_REQUESTED":
         requested_changes = (
@@ -152,6 +159,7 @@ def record_job_review(
         ).record_review(
             HumanReviewRequest(
                 request_id=correlation_id,
+                idempotency_key=operation_id,
                 actor=actor,
                 subject=subject,
                 decision=decision,
@@ -271,6 +279,8 @@ def approve_job_candidate(
                 ),
             )
         )
+        if not result.content_hash:
+            raise GovernanceError("strategy_candidate_approval_hash_missing")
         try:
             authoritative = GovernanceDecision.objects.create(
                 subject=state,

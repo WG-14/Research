@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from .context import ResearchAppContext
 
 
-ParserBuilder = Callable[[argparse.ArgumentParser], None]
+ParserBuilder = Callable[[argparse.ArgumentParser], object]
 CommandHandler = Callable[[argparse.Namespace, ResearchAppContext], int | None]
 
 
@@ -18,7 +18,9 @@ class ResearchCommandSpec:
     build: ParserBuilder
     help: str
 
-    def register_parser(self, subparsers: argparse._SubParsersAction) -> None:
+    def register_parser(
+        self, subparsers: argparse._SubParsersAction[argparse.ArgumentParser]
+    ) -> None:
         parser = subparsers.add_parser(self.name, help=self.help, description=self.help)
         self.build(parser)
 

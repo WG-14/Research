@@ -237,7 +237,10 @@ class BenchmarkSuiteRunner:
         scenario_index: int,
         scenario_id: str,
     ) -> dict[str, Any]:
-        contract = self.manifest.benchmark_suite.random_entry
+        benchmark_suite = self.manifest.benchmark_suite
+        if benchmark_suite is None:
+            raise ValueError("benchmark_suite_contract_missing")
+        contract = benchmark_suite.random_entry
         seed_material = {
             "manifest_hash": self.manifest.manifest_hash(),
             "split_name": snapshot.split_name,
@@ -305,7 +308,10 @@ class BenchmarkSuiteRunner:
         scenario_index: int,
         scenario_id: str,
     ) -> dict[str, dict[str, Any]]:
-        contract = self.manifest.benchmark_suite.same_holding_period
+        benchmark_suite = self.manifest.benchmark_suite
+        if benchmark_suite is None:
+            raise ValueError("benchmark_suite_contract_missing")
+        contract = benchmark_suite.same_holding_period
         interval_ms = interval_to_milliseconds(snapshot.interval)
         plugin = build_internal_schedule_benchmark_plugin()
         out: dict[str, dict[str, Any]] = {}

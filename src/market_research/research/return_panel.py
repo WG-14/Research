@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, SupportsFloat, SupportsIndex, SupportsInt, cast
 
 from market_research.paths import ResearchPathManager
 
@@ -442,9 +442,10 @@ def _return_panel_series_reasons(panel: dict[str, Any]) -> list[str]:
     parsed_ordered_index = [_as_int(item) for item in ordered_index]
     if any(item is None for item in parsed_ordered_index):
         return ["return_panel_time_index_mismatch"]
-    if parsed_ordered_index != sorted(parsed_ordered_index):
+    numeric_ordered_index = [item for item in parsed_ordered_index if item is not None]
+    if numeric_ordered_index != sorted(numeric_ordered_index):
         reasons.append("return_panel_time_index_mismatch")
-    if sha256_prefixed(parsed_ordered_index) != panel.get("ordered_time_index_hash"):
+    if sha256_prefixed(numeric_ordered_index) != panel.get("ordered_time_index_hash"):
         reasons.append("return_panel_time_index_mismatch")
     rows = panel.get("candidate_return_series")
     if not isinstance(rows, list):
@@ -766,14 +767,16 @@ def _as_int(value: object) -> int | None:
     if isinstance(value, bool):
         return int(value)
     try:
-        return int(value)  # type: ignore[arg-type]
+        numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+        return int(numeric)
     except (TypeError, ValueError):
         return None
 
 
 def _as_float(value: object) -> float | None:
     try:
-        parsed = float(value)
+        numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+        parsed = float(numeric)
     except (TypeError, ValueError):
         return None
     if parsed != parsed or parsed in {float("inf"), float("-inf")}:

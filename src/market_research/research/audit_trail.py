@@ -11,7 +11,7 @@ from .artifact_store import ArtifactBudget, ResearchArtifactContext
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-AUDIT_TRACE_SCHEMA_VERSION = 2
+AUDIT_TRACE_SCHEMA_VERSION = 3
 TRACE_MANIFEST_SCHEMA_VERSION = 1
 TRACE_STATUS_COMPLETED = "completed"
 TRACE_STATUS_FAILED = "failed"
@@ -42,6 +42,8 @@ _FILL_STREAM_INDEX_KEY = "fill" + "s"
 _TRACE_STREAM_FILES = {
     "decision": "decisions.jsonl",
     "order_intent": "order_intents.jsonl",
+    "risk_decision": "risk_decisions.jsonl",
+    "order_policy_decision": "order_policy_decisions.jsonl",
     "execution_request": "execution_requests.jsonl",
     "fill": _FILL_STREAM_INDEX_KEY + ".jsonl",
     "ledger_entry": "ledger_entries.jsonl",
@@ -53,6 +55,8 @@ _TRACE_STREAM_FILES = {
 _TRACE_INDEX_KEYS = {
     "decision": "decisions",
     "order_intent": "order_intents",
+    "risk_decision": "risk_decisions",
+    "order_policy_decision": "order_policy_decisions",
     "execution_request": "execution_requests",
     "fill": _FILL_STREAM_INDEX_KEY,
     "ledger_entry": "ledger_entries",
@@ -195,6 +199,12 @@ class AuditTraceScope:
     def write_order_intent(self, payload: dict[str, Any]) -> None:
         self._write("order_intent", _event_ts(payload), payload)
 
+    def write_risk_decision(self, payload: dict[str, Any]) -> None:
+        self._write("risk_decision", _event_ts(payload), payload)
+
+    def write_order_policy_decision(self, payload: dict[str, Any]) -> None:
+        self._write("order_policy_decision", _event_ts(payload), payload)
+
     def write_execution_request(self, payload: dict[str, Any]) -> None:
         self._write("execution_request", _event_ts(payload), payload)
 
@@ -241,6 +251,10 @@ class AuditTraceScope:
             "equity_row_count": int(self._streams["equity"].count),
             "execution_row_count": int(self._streams["execution"].count),
             "order_intent_row_count": int(self._streams["order_intent"].count),
+            "risk_decision_row_count": int(self._streams["risk_decision"].count),
+            "order_policy_decision_row_count": int(
+                self._streams["order_policy_decision"].count
+            ),
             "execution_request_row_count": int(
                 self._streams["execution_request"].count
             ),
@@ -450,6 +464,16 @@ def _verify_index(*, index: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                 (_FILL_STREAM_INDEX_KEY, "audit_trail_fill_stream_missing"),
                 ("ledger_entries", "audit_trail_ledger_entry_stream_missing"),
                 ("metrics", "audit_trail_metrics_stream_missing"),
+            ]
+        )
+    if int(index.get("schema_version") or 1) >= 3:
+        required_streams.extend(
+            [
+                ("risk_decisions", "audit_trail_risk_decision_stream_missing"),
+                (
+                    "order_policy_decisions",
+                    "audit_trail_order_policy_decision_stream_missing",
+                ),
             ]
         )
     for stream_name, missing_reason in required_streams:

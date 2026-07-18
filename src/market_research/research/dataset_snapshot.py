@@ -6,9 +6,10 @@ import math
 from dataclasses import dataclass
 from bisect import bisect_left, bisect_right
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from market_research.research.intervals import interval_to_milliseconds
+from market_research.market_knowledge_time import validated_observed_at_ms
 from market_research.orderbook_depth_store import summarize_orderbook_depth_evidence
 from market_research.orderbook_depth_store import (
     build_orderbook_depth_snapshot,
@@ -53,6 +54,11 @@ class Candle:
     def as_tuple(self) -> tuple[int, float, float, float, float, float]:
         return (self.ts, self.open, self.high, self.low, self.close, self.volume)
 
+    def available_at_ms(self, *, interval: str) -> int:
+        """Return when the complete OHLCV row is causally knowable."""
+
+        return int(self.ts) + interval_to_milliseconds(interval)
+
 
 @dataclass(frozen=True)
 class TopOfBookQuote:
@@ -65,6 +71,13 @@ class TopOfBookQuote:
     observed_at_epoch_sec: float | None = None
     matched_candle_ts: int | None = None
     age_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        validated_observed_at_ms(
+            event_ts=self.ts,
+            observed_at_epoch_sec=self.observed_at_epoch_sec,
+            evidence_name="orderbook_top",
+        )
 
     def as_tuple(
         self,
@@ -89,9 +102,28 @@ class TopOfBookQuote:
             "best_ask": self.ask_price,
             "spread_bps": self.spread_bps,
             "top_of_book_ts": self.ts,
+            "top_of_book_available_at_ts": self.available_at_ms(),
+            "top_of_book_availability_basis": self.availability_basis(),
             "top_of_book_source": self.source,
             "top_of_book_age_ms": self.age_ms,
         }
+
+    def available_at_ms(self) -> int:
+        """Return the later of exchange event and source observation time."""
+
+        observed_at_ms = validated_observed_at_ms(
+            event_ts=self.ts,
+            observed_at_epoch_sec=self.observed_at_epoch_sec,
+            evidence_name="orderbook_top",
+        )
+        return int(self.ts) if observed_at_ms is None else observed_at_ms
+
+    def availability_basis(self) -> str:
+        return (
+            "observed_at_epoch_sec"
+            if self.observed_at_epoch_sec is not None
+            else "event_time_as_knowledge_time_assumption"
+        )
 
 
 @dataclass(frozen=True)
@@ -189,6 +221,7 @@ class DatasetSnapshot:
                 top_of_book=(self.options or {}).get("top_of_book", {}),
                 depth=(self.options or {}).get("depth", {}),
                 execution=(self.options or {}).get("execution", {}),
+                domain_contracts=(self.options or {}).get("domain_contracts", {}),
             )
             object.__setattr__(self, "_snapshot_query_hash_cache", cached)
         return str(cached)
@@ -253,22 +286,30 @@ class DatasetSnapshot:
     def sorted_execution_top_of_book_quotes(self) -> tuple[TopOfBookQuote, ...]:
         cached = getattr(self, "_sorted_execution_top_of_book_quotes", None)
         if cached is not None:
-            return cached
+            return cast(tuple[TopOfBookQuote, ...], cached)
         quotes = self.execution_top_of_book_quotes()
         if all(
-            (int(prev.ts), str(prev.source)) <= (int(curr.ts), str(curr.source))
+            (prev.available_at_ms(), int(prev.ts), str(prev.source))
+            <= (curr.available_at_ms(), int(curr.ts), str(curr.source))
             for prev, curr in zip(quotes, quotes[1:])
         ):
             sorted_quotes = quotes
         else:
             sorted_quotes = tuple(
-                sorted(quotes, key=lambda quote: (int(quote.ts), str(quote.source)))
+                sorted(
+                    quotes,
+                    key=lambda quote: (
+                        quote.available_at_ms(),
+                        int(quote.ts),
+                        str(quote.source),
+                    ),
+                )
             )
         object.__setattr__(self, "_sorted_execution_top_of_book_quotes", sorted_quotes)
         object.__setattr__(
             self,
             "_sorted_execution_top_of_book_timestamps",
-            tuple(int(quote.ts) for quote in sorted_quotes),
+            tuple(quote.available_at_ms() for quote in sorted_quotes),
         )
         return sorted_quotes
 
@@ -278,14 +319,18 @@ class DatasetSnapshot:
         quotes = self.sorted_execution_top_of_book_quotes()
         timestamps = getattr(self, "_sorted_execution_top_of_book_timestamps", None)
         if timestamps is None:
-            timestamps = tuple(int(quote.ts) for quote in quotes)
+            timestamps = tuple(quote.available_at_ms() for quote in quotes)
             object.__setattr__(
                 self, "_sorted_execution_top_of_book_timestamps", timestamps
             )
         max_ts = int(target_ts) + int(max_wait_ms)
         index = bisect_left(timestamps, int(target_ts))
-        if index < len(quotes) and int(quotes[index].ts) <= max_ts:
-            return quotes[index]
+        for quote in quotes[index:]:
+            available_at = quote.available_at_ms()
+            if available_at > max_ts:
+                break
+            if int(quote.ts) >= int(target_ts):
+                return quote
         return None
 
     def first_depth_snapshot_after_or_equal(
@@ -297,21 +342,26 @@ class DatasetSnapshot:
         snapshots = self.sorted_orderbook_depth_snapshots()
         timestamps = getattr(self, "_sorted_orderbook_depth_timestamps", None)
         if timestamps is None:
-            timestamps = tuple(int(snapshot.ts) for snapshot in snapshots)
+            timestamps = tuple(snapshot.available_at_ms() for snapshot in snapshots)
             object.__setattr__(self, "_sorted_orderbook_depth_timestamps", timestamps)
         max_ts = int(target_ts) + int(max_wait_ms)
         index = bisect_left(timestamps, int(target_ts))
-        if index < len(snapshots) and int(snapshots[index].ts) <= max_ts:
-            return snapshots[index]
+        for snapshot in snapshots[index:]:
+            available_at = snapshot.available_at_ms()
+            if available_at > max_ts:
+                break
+            if int(snapshot.ts) >= int(target_ts):
+                return snapshot
         return None
 
     def sorted_orderbook_depth_snapshots(self) -> tuple[OrderbookDepthSnapshot, ...]:
         cached = getattr(self, "_sorted_orderbook_depth_snapshots", None)
         if cached is not None:
-            return cached
+            return cast(tuple[OrderbookDepthSnapshot, ...], cached)
         snapshots = self.orderbook_depth_snapshots
         if all(
-            (int(prev.ts), str(prev.source)) <= (int(curr.ts), str(curr.source))
+            (prev.available_at_ms(), int(prev.ts), str(prev.source))
+            <= (curr.available_at_ms(), int(curr.ts), str(curr.source))
             for prev, curr in zip(snapshots, snapshots[1:])
         ):
             sorted_snapshots = snapshots
@@ -319,14 +369,18 @@ class DatasetSnapshot:
             sorted_snapshots = tuple(
                 sorted(
                     snapshots,
-                    key=lambda snapshot: (int(snapshot.ts), str(snapshot.source)),
+                    key=lambda snapshot: (
+                        snapshot.available_at_ms(),
+                        int(snapshot.ts),
+                        str(snapshot.source),
+                    ),
                 )
             )
         object.__setattr__(self, "_sorted_orderbook_depth_snapshots", sorted_snapshots)
         object.__setattr__(
             self,
             "_sorted_orderbook_depth_timestamps",
-            tuple(int(snapshot.ts) for snapshot in sorted_snapshots),
+            tuple(snapshot.available_at_ms() for snapshot in sorted_snapshots),
         )
         return sorted_snapshots
 
@@ -574,7 +628,7 @@ def _snapshot_materialization_contract(
     maximum_latency = max(
         (int(s.latency_ms) for s in manifest.execution_model.scenarios), default=0
     )
-    return {
+    payload: dict[str, object] = {
         "dataset_options": dict(manifest.dataset.options),
         "top_of_book": (
             {
@@ -613,6 +667,43 @@ def _snapshot_materialization_contract(
             "maximum_quote_wait_ms": int(manifest.execution_timing.max_quote_wait_ms),
         },
     }
+    domain_contracts: dict[str, object] = {}
+    if manifest.instrument.source == "manifest":
+        domain_contracts.update(
+            {
+                "instrument": {
+                    "instrument_id": manifest.instrument.instrument_id,
+                    "instrument_version_id": manifest.instrument.instrument_version_id,
+                    "instrument_contract_hash": manifest.instrument.contract_hash(),
+                    "price_tick": str(manifest.instrument.price_tick),
+                    "quantity_step": str(manifest.instrument.quantity_step),
+                    "trading_unit": str(manifest.instrument.trading_unit),
+                    "trading_currency": manifest.instrument.trading_currency,
+                },
+                "corporate_actions": {
+                    "action_set_id": manifest.corporate_action_set.action_set_id,
+                    "action_set_hash": manifest.corporate_action_set.contract_hash(),
+                    "adjustment_policy_id": manifest.corporate_action_policy.policy_id,
+                    "adjustment_policy_hash": manifest.corporate_action_policy.contract_hash(),
+                    "price_series": manifest.corporate_action_policy.price_series,
+                    "event_version_count": len(manifest.corporate_action_set.events),
+                    "event_selection_policy": (
+                        "latest_version_effective_and_observed_at_as_of"
+                    ),
+                    "raw_to_adjusted_evidence_contract": (
+                        "corporate_action_transformation_evidence/v1"
+                    ),
+                    "post_delisting_observation_policy": "reject",
+                },
+            }
+        )
+    if manifest.universe is not None:
+        domain_contracts["point_in_time_universe"] = manifest.universe.evidence()
+    if manifest.market_calendar is not None:
+        domain_contracts["market_calendar"] = manifest.market_calendar.evidence()
+    if domain_contracts:
+        payload["domain_contracts"] = domain_contracts
+    return payload
 
 
 def _load_sqlite_dataset_range(
@@ -828,6 +919,13 @@ def _build_source_agnostic_dataset_quality_report(
     depth_complete_snapshots_available = bool(
         depth_summary["l2_depth_complete_snapshots_available"]
     )
+    depth_gate_reasons: list[str] = []
+    if int(depth_summary["l2_depth_observation_time_missing_count"]):
+        depth_gate_reasons.append("orderbook_depth_observation_time_missing")
+    if int(depth_summary["l2_depth_observation_time_invalid_count"]):
+        depth_gate_reasons.append("orderbook_depth_observation_time_invalid")
+    if depth_gate_reasons and snapshot.orderbook_depth_required:
+        reasons.extend(depth_gate_reasons)
     depth_provenance = snapshot.orderbook_depth_adapter_provenance or {}
     depth_provenance_hash = (
         sha256_prefixed(depth_provenance) if depth_provenance else None
@@ -934,6 +1032,14 @@ def _build_source_agnostic_dataset_quality_report(
         "l2_depth_evidence_available": depth_complete_snapshots_available,
         "l2_depth_requested": bool(snapshot.orderbook_depth_requested),
         "l2_depth_required": bool(snapshot.orderbook_depth_required),
+        "l2_depth_gate_status": (
+            "FAIL"
+            if depth_gate_reasons and snapshot.orderbook_depth_required
+            else "WARN"
+            if depth_gate_reasons
+            else "PASS"
+        ),
+        "l2_depth_gate_reasons": depth_gate_reasons,
         "l2_depth_source": snapshot.orderbook_depth_source,
         "l2_depth_source_content_hash": depth_provenance.get(
             "source_artifact_content_hash"
@@ -1153,6 +1259,10 @@ def _orderbook_depth_summary_from_snapshot(
         _depth_snapshot_payload(item)
         for item in sorted(snapshots, key=lambda item: (int(item.ts), str(item.source)))
     ]
+    observed_count = sum(
+        1 for item in snapshots if item.observed_at_epoch_sec is not None
+    )
+    missing_observed_count = len(snapshots) - observed_count
     return {
         "l2_depth_rows_available": row_count > 0,
         "l2_depth_complete_snapshots_available": True,
@@ -1162,6 +1272,14 @@ def _orderbook_depth_summary_from_snapshot(
         "l2_depth_last_ts": max(int(item.ts) for item in snapshots),
         "l2_depth_sources": sources,
         "l2_depth_content_hash": sha256_prefixed(payload),
+        "l2_depth_observation_time_present_count": observed_count,
+        "l2_depth_observation_time_missing_count": missing_observed_count,
+        "l2_depth_observation_time_invalid_count": 0,
+        "l2_depth_knowledge_time_basis": (
+            "observed_at_epoch_sec"
+            if missing_observed_count == 0
+            else "event_time_as_knowledge_time_assumption"
+        ),
     }
 
 
@@ -1175,6 +1293,10 @@ def _empty_orderbook_depth_summary() -> dict[str, Any]:
         "l2_depth_last_ts": None,
         "l2_depth_sources": [],
         "l2_depth_content_hash": None,
+        "l2_depth_observation_time_present_count": 0,
+        "l2_depth_observation_time_missing_count": 0,
+        "l2_depth_observation_time_invalid_count": 0,
+        "l2_depth_knowledge_time_basis": "unavailable",
     }
 
 
@@ -1388,7 +1510,15 @@ def _load_orderbook_depth_event_snapshots(
             (float(row[6]), float(row[7]))
         )
     snapshots: list[OrderbookDepthSnapshot] = []
-    for (ts, pair, snapshot_source, observed), sides in sorted(grouped.items()):
+
+    def snapshot_group_sort_key(item: Any) -> tuple[object, ...]:
+        ts, pair, snapshot_source, observed = item[0]
+        observation_key = (0, 0.0) if observed is None else (1, float(observed))
+        return (int(ts), str(pair), str(snapshot_source), *observation_key)
+
+    for (ts, pair, snapshot_source, observed), sides in sorted(
+        grouped.items(), key=snapshot_group_sort_key
+    ):
         if not sides.get("bid") or not sides.get("ask"):
             continue
         snapshots.append(
@@ -1427,10 +1557,17 @@ def _add_top_of_book_quality_fields(
     ][:20]
     coverage_pct = (joined / expected * 100.0) if expected else 0.0
     reasons: list[str] = []
+    execution_quotes = snapshot.execution_top_of_book_quotes()
+    observed_count = sum(
+        1 for quote in execution_quotes if quote.observed_at_epoch_sec is not None
+    )
+    missing_observed_count = len(execution_quotes) - observed_count
     if joined < expected:
         reasons.append("top_of_book_missing")
     if coverage_pct < float(snapshot.top_of_book_min_coverage_pct):
         reasons.append("top_of_book_coverage_below_threshold")
+    if missing_observed_count:
+        reasons.append("top_of_book_observation_time_missing")
     gate_status = "PASS"
     if reasons:
         gate_status = (
@@ -1458,6 +1595,16 @@ def _add_top_of_book_quality_fields(
             "top_of_book_missing_count": expected - joined,
             "top_of_book_missing_sample": missing_sample,
             "top_of_book_coverage_pct": round(coverage_pct, 8),
+            "top_of_book_observation_time_present_count": observed_count,
+            "top_of_book_observation_time_missing_count": missing_observed_count,
+            "top_of_book_observation_time_invalid_count": 0,
+            "top_of_book_knowledge_time_basis": (
+                "observed_at_epoch_sec"
+                if missing_observed_count == 0 and execution_quotes
+                else "event_time_as_knowledge_time_assumption"
+                if execution_quotes
+                else "unavailable"
+            ),
             "top_of_book_gate_status": gate_status,
             "top_of_book_gate_reasons": reasons,
             "top_of_book_source_content_hash": top_provenance.get(
@@ -1617,8 +1764,8 @@ class SQLiteCandleAdapter:
     adapter_name = "sqlite_candle_adapter"
     adapter_version = "1"
     supported_capabilities = frozenset({"candles"})
-    supported_top_of_book_sources = frozenset()
-    supported_depth_sources = frozenset()
+    supported_top_of_book_sources: frozenset[str] = frozenset()
+    supported_depth_sources: frozenset[str] = frozenset()
     supports_sqlite_streaming_quality_scan = True
     requires_runtime_db = True
     requires_artifact_manifest = False
@@ -1796,8 +1943,8 @@ class FrozenSQLiteCandleAdapter:
     requires_runtime_db = False
     requires_artifact_manifest = True
     supported_capabilities = frozenset({"candles"})
-    supported_top_of_book_sources = frozenset()
-    supported_depth_sources = frozenset()
+    supported_top_of_book_sources: frozenset[str] = frozenset()
+    supported_depth_sources: frozenset[str] = frozenset()
     supports_sqlite_streaming_quality_scan = True
 
     def resolve(

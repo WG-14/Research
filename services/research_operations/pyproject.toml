@@ -27,7 +27,7 @@ market-research = { workspace = true }
 market-research-internal-web = { workspace = true }
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "../.."]
 testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [

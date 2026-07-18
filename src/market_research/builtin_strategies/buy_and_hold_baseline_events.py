@@ -43,7 +43,7 @@ def build_buy_and_hold_baseline_events(
         decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(
             execution_timing_policy.decision_guard_ms
         )
-        features = {
+        features: dict[str, object] = {
             "candle_index": int(index),
             "buy_index": int(buy_index),
             "close": float(candle.close),

@@ -127,6 +127,7 @@ ALLOWED_HOSTS = _csv_env(
     default=("localhost", "127.0.0.1", "[::1]", "testserver"),
 )
 CSRF_TRUSTED_ORIGINS = _csv_env("INTERNAL_WEB_CSRF_TRUSTED_ORIGINS")
+CSRF_FAILURE_VIEW = "portal.api_views.csrf_failure"
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -194,6 +195,14 @@ STATIC_ROOT = _repository_external_path_env(
 LOGIN_URL = "portal:login"
 LOGIN_REDIRECT_URL = "portal:dashboard"
 LOGOUT_REDIRECT_URL = "portal:login"
+
+# Role mutation is intentionally not a locally enabled capability.  Accounts
+# and group assignments arrive from an externally governed identity lifecycle
+# with separate approval; the portal and Django admin expose no grant surface.
+INTERNAL_WEB_LOCAL_ROLE_MUTATION_SUPPORTED = False
+INTERNAL_WEB_ROLE_LIFECYCLE_POLICY = (
+    "external_identity_lifecycle_with_separate_approval_required"
+)
 
 FILE_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = 3 * 1024 * 1024

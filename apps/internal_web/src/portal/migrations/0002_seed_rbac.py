@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from django.apps.registry import Apps
 from django.db import migrations
+from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
 
 GROUP_PERMISSION_MAP = {
@@ -63,7 +65,7 @@ PERMISSION_MODELS = {
 }
 
 
-def seed_rbac(apps, schema_editor):
+def seed_rbac(apps: Apps, schema_editor: BaseDatabaseSchemaEditor) -> None:
     Group = apps.get_model("auth", "Group")
     Permission = apps.get_model("auth", "Permission")
     ContentType = apps.get_model("contenttypes", "ContentType")
@@ -86,7 +88,7 @@ def seed_rbac(apps, schema_editor):
         group.permissions.set([permissions[codename] for codename in sorted(codenames)])
 
 
-def unseed_rbac(apps, schema_editor):
+def unseed_rbac(apps: Apps, schema_editor: BaseDatabaseSchemaEditor) -> None:
     Group = apps.get_model("auth", "Group")
     Group.objects.filter(name__in=GROUP_PERMISSION_MAP).delete()
 

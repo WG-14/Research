@@ -11,6 +11,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.18,<2",
     "pip-audit==2.10.1",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
@@ -29,7 +30,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-market_research = ["_build_provenance.json"]
+market_research = ["_build_provenance.json", "builtin_strategies/*.strategy.json"]
 
 [tool.uv.workspace]
 members = [
@@ -69,3 +70,24 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+disallow_any_unimported = true
+plugins = ["mypy_django_plugin.main"]
+mypy_path = [
+    "src",
+    "apps/internal_web/src",
+    "services/research_operations/src",
+]
+namespace_packages = true
+explicit_package_bases = true
+show_error_codes = true
+pretty = true
+warn_unused_configs = true
+
+[tool.django-stubs]
+django_settings_module = "market_research_web.settings_test"
+strict_settings = true
+strict_model_abstract_attrs = true

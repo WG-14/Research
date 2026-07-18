@@ -73,6 +73,8 @@ def test_persisted_trace_reconstructs_metric_to_input_lineage(tmp_path: Path) ->
     )
 
     intents = _payloads(scope.root / "order_intents.jsonl")
+    risk_decisions = _payloads(scope.root / "risk_decisions.jsonl")
+    order_policy_decisions = _payloads(scope.root / "order_policy_decisions.jsonl")
     requests = _payloads(scope.root / "execution_requests.jsonl")
     fills = _payloads(scope.root / "fills.jsonl")
     ledger = _payloads(scope.root / "ledger_entries.jsonl")
@@ -87,8 +89,26 @@ def test_persisted_trace_reconstructs_metric_to_input_lineage(tmp_path: Path) ->
     assert ledger[0]["fill_id"] == fills[0]["fill_id"]
     assert fills[0]["request_id"] == requests[0]["request_id"]
     assert requests[0]["intent_id"] == intents[0]["intent_id"]
+    assert risk_decisions[0]["intent_id"] == intents[0]["intent_id"]
+    assert risk_decisions[0]["allowed"] is True
+    assert risk_decisions[0]["reason_code"] == "none"
+    assert risk_decisions[0]["evidence_hash"].startswith("sha256:")
+    assert order_policy_decisions[0]["intent_id"] == intents[0]["intent_id"]
+    assert order_policy_decisions[0]["allowed"] is True
+    assert order_policy_decisions[0]["rounding_operation"] == (
+        "identity_float_no_exchange_lot_rounding"
+    )
     assert intents[0]["decision_id"] == decisions[1]["decision_id"]
     assert decisions[1]["input_candle"]["row_hash"].startswith("sha256:")
+    assert decisions[1]["input_candle"]["event_time_role"] == ("ohlcv_interval_start")
+    assert (
+        decisions[1]["input_candle"]["available_at_ts"]
+        <= decisions[1]["input_candle"]["strategy_view_boundary_ts"]
+    )
+    assert (
+        decisions[1]["input_candle"]["strategy_view_boundary_ts"]
+        <= decisions[1]["input_candle"]["decision_ts"]
+    )
     assert "feature_snapshot" in decisions[1]
     assert "blocked_filters" in decisions[1]
     assert (
@@ -100,3 +120,6 @@ def test_persisted_trace_reconstructs_metric_to_input_lineage(tmp_path: Path) ->
         is True
     )
     assert manifest["trace_index_count"] == 1
+    assert run.audit_trace_index["schema_version"] == 3
+    assert run.audit_trace_index["risk_decision_row_count"] == 1
+    assert run.audit_trace_index["order_policy_decision_row_count"] == 1

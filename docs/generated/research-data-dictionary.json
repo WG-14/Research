@@ -1,0 +1,1323 @@
+{
+  "artifact_type": "research_data_dictionary",
+  "content_hash": "sha256:5c3de0b46f4c79a8711d22b0be009764c11f84bd9baa172c5b8bbb06f30dd696",
+  "dictionary_version": "2026-07-17.2",
+  "fields": [
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Binding to all retained corporate-action event versions.",
+      "name": "action_set_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Binding to split, dividend, price-series, and volume policy.",
+      "name": "adjustment_policy_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Boundary before which the backward factor is applied.",
+      "name": "applications[].effective_at",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "RFC 3339 timestamp",
+      "unit": "economic event instant",
+      "valid_range": "timezone-aware timestamp"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Time after which this event version may affect results.",
+      "name": "applications[].observed_at",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "RFC 3339 timestamp",
+      "unit": "research knowledge instant",
+      "valid_range": "timezone-aware timestamp >= published_at"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Exact split or total-return factor applied to prior OHLC prices.",
+      "name": "applications[].price_factor",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "canonical decimal string",
+      "unit": "multiplicative price factor",
+      "valid_range": "finite decimal > 0"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Row-set hash immediately after applying one event.",
+      "name": "applications[].rows_hash_after",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Row-set hash immediately before applying one event.",
+      "name": "applications[].rows_hash_before",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Exact inverse-split factor applied when selected by policy.",
+      "name": "applications[].volume_factor",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "canonical decimal string",
+      "unit": "multiplicative volume factor",
+      "valid_range": "finite decimal > 0"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Hash of exact canonical Decimal raw OHLCV rows.",
+      "name": "input_rows_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Causal cutoff used to select the latest observable event version.",
+      "name": "known_at",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "RFC 3339 timestamp",
+      "unit": "research knowledge instant",
+      "valid_range": "timezone-aware timestamp"
+    },
+    {
+      "available_at": "After known_at and after all referenced event observed_at values.",
+      "change_history": [
+        {
+          "description": "Added raw-to-adjusted split/dividend evidence, causal event versions, delisting rejection, and per-event before/after hashes.",
+          "effective_date": "2026-07-17",
+          "version": "corporate_action_transformation_evidence/v1"
+        }
+      ],
+      "dataset": "corporate_action_transformation_evidence",
+      "generation_method": "Derived deterministically from immutable raw Decimal OHLCV and the latest corporate-action version known by the causal cutoff.",
+      "meaning": "Hash of the exact adjusted rows produced by the policy.",
+      "name": "output_rows_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.corporate_action_contract",
+      "provider": "Research-derived evidence over externally prepared inputs.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Recorded by the external preparation build.",
+      "meaning": "Immutable version of external acquisition/preparation code.",
+      "name": "acquisition_code_version",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "source code version",
+      "valid_range": "non-empty immutable revision"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Derived from external acquisition outcome.",
+      "meaning": "Whether source acquisition completed, was partial, or failed.",
+      "name": "acquisition_status",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON enum string",
+      "unit": "acquisition completeness",
+      "valid_range": "complete | partial | failed"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Computed over the externally prepared immutable payload.",
+      "meaning": "Hash binding the immutable externally prepared source content.",
+      "name": "content_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Measured from the acquired source payload.",
+      "meaning": "Inclusive end of source temporal coverage.",
+      "name": "coverage_end_ts",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON integer",
+      "unit": "milliseconds since Unix epoch UTC",
+      "valid_range": "integer >= coverage_start_ts"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Measured from the acquired source payload.",
+      "meaning": "Inclusive beginning of source temporal coverage.",
+      "name": "coverage_start_ts",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON integer",
+      "unit": "milliseconds since Unix epoch UTC",
+      "valid_range": "integer >= 0 and <= coverage_end_ts"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Declared by the external preparation pipeline.",
+      "meaning": "Provider-scoped immutable dataset identifier.",
+      "name": "dataset_id",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "dataset identity",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Normalized by the external preparation pipeline.",
+      "meaning": "Empty for complete acquisition; required for partial or failed status.",
+      "name": "error_code",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "machine-readable error identity",
+      "valid_range": "empty when complete; non-empty otherwise"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Declared by the external preparation pipeline.",
+      "meaning": "Stable identifier for the external data provider.",
+      "name": "provider_id",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "provider identity",
+      "valid_range": "non-empty; unique within sources"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Captured by the external preparation pipeline clock.",
+      "meaning": "Time at which the complete or partial response was received.",
+      "name": "received_at",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "RFC 3339 UTC string",
+      "unit": "UTC instant",
+      "valid_range": "timezone-aware UTC; >= requested_at"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Declared by the external preparation pipeline.",
+      "meaning": "Immutable provider release identifier.",
+      "name": "release_id",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "release identity",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Captured and redacted by the external preparation pipeline.",
+      "meaning": "Non-secret parameters that selected the acquired source payload.",
+      "name": "request_parameters",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON object<string,string>",
+      "unit": "request metadata",
+      "valid_range": "sorted string map; secret-like keys forbidden"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Captured by the external preparation pipeline clock.",
+      "meaning": "Time at which external acquisition was requested.",
+      "name": "requested_at",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "RFC 3339 UTC string",
+      "unit": "UTC instant",
+      "valid_range": "timezone-aware UTC; <= received_at"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Copied from provider metadata or preparation configuration.",
+      "meaning": "Provider response, protocol, or export-format version.",
+      "name": "response_version",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON string",
+      "unit": "provider response version",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Counted by the external preparation pipeline.",
+      "meaning": "Number of external acquisition retries before this evidence record.",
+      "name": "retry_count",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON integer",
+      "unit": "attempt count excluding first attempt",
+      "valid_range": "integer >= 0"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
+          "effective_date": "2025-01-01",
+          "version": "dataset_source_provenance/v1"
+        },
+        {
+          "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
+          "effective_date": "2026-07-17",
+          "version": "dataset_source_provenance/v2"
+        }
+      ],
+      "dataset": "dataset_source_provenance.sources[]",
+      "generation_method": "Declared by the external preparation pipeline.",
+      "meaning": "How the external immutable source was obtained before repository use.",
+      "name": "source_kind",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_provenance",
+      "provider": "External preparation pipeline; validated but never acquired by Research.",
+      "type": "JSON enum string",
+      "unit": "source transport class",
+      "valid_range": "external_api | file_export | object_snapshot | vendor_archive"
+    },
+    {
+      "available_at": "Only after the candle closes.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from validated externally prepared OHLCV.",
+      "meaning": "Last eligible trade price in the candle.",
+      "name": "close",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite REAL / IEEE-754 binary64",
+      "unit": "quote currency per base unit",
+      "valid_range": "finite value > 0 and low <= close <= high"
+    },
+    {
+      "available_at": "Only after the candle closes.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from validated externally prepared OHLCV.",
+      "meaning": "Maximum eligible trade price in the candle.",
+      "name": "high",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite REAL / IEEE-754 binary64",
+      "unit": "quote currency per base unit",
+      "valid_range": "finite value > 0 and high >= max(open, low, close)"
+    },
+    {
+      "available_at": "Before dataset freeze; fixed for the immutable artifact.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from the validated freeze request interval field.",
+      "meaning": "Duration represented by one OHLCV observation.",
+      "name": "interval",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite TEXT / canonical interval string",
+      "unit": "bar duration",
+      "valid_range": "interval token accepted by interval_to_milliseconds"
+    },
+    {
+      "available_at": "Only after the candle closes.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from validated externally prepared OHLCV.",
+      "meaning": "Minimum eligible trade price in the candle.",
+      "name": "low",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite REAL / IEEE-754 binary64",
+      "unit": "quote currency per base unit",
+      "valid_range": "finite value > 0 and low <= min(open, high, close)"
+    },
+    {
+      "available_at": "At candle open, but the canonical row is released at candle close.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from validated externally prepared OHLCV.",
+      "meaning": "First eligible trade price in the candle.",
+      "name": "open",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite REAL / IEEE-754 binary64",
+      "unit": "quote currency per base unit",
+      "valid_range": "finite value > 0 and low <= open <= high"
+    },
+    {
+      "available_at": "Before dataset freeze; fixed for the immutable artifact.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from the validated freeze request market field.",
+      "meaning": "Instrument whose observations are stored in the row.",
+      "name": "pair",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite TEXT / UTF-8 string",
+      "unit": "canonical instrument identifier",
+      "valid_range": "non-empty canonical instrument identifier"
+    },
+    {
+      "available_at": "Full row is knowable only at ts + interval duration.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied without temporal shifting from the prepared row.",
+      "meaning": "Inclusive opening timestamp of the candle.",
+      "name": "ts",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite INTEGER / signed 64-bit epoch timestamp",
+      "unit": "milliseconds since Unix epoch UTC",
+      "valid_range": "integer >= 0; unique with pair and interval"
+    },
+    {
+      "available_at": "Only after the candle closes.",
+      "change_history": [
+        {
+          "description": "Initial immutable canonical OHLCV storage contract.",
+          "effective_date": "2025-01-01",
+          "version": "frozen_sqlite_candles/v1"
+        }
+      ],
+      "dataset": "frozen_sqlite_candles",
+      "generation_method": "Copied from validated externally prepared OHLCV.",
+      "meaning": "Eligible base-asset quantity accumulated during the candle.",
+      "name": "volume",
+      "nullable": false,
+      "owner_module": "market_research.research.dataset_freeze",
+      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "type": "SQLite REAL / IEEE-754 binary64",
+      "unit": "base-asset units",
+      "valid_range": "finite value >= 0"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Identity of the market-session authority.",
+      "name": "calendar_id",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "stable calendar identity",
+      "valid_range": "cal_ followed by 8-64 lowercase identifier characters"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Version identity bound into manifests and reports.",
+      "name": "calendar_version_id",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "immutable calendar version identity",
+      "valid_range": "calv_ followed by 8-64 lowercase identifier characters"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Fail-closed handling for nonexistent or ambiguous local session times.",
+      "name": "dst_transition_policy",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON enum string",
+      "unit": "DST ambiguity policy",
+      "valid_range": "iana_tzdb_reject_ambiguous_or_nonexistent_local_time"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Dated exception with publication, observation, reason, and source hash.",
+      "name": "exceptions[]",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON array",
+      "unit": "holiday or early-close rule",
+      "valid_range": "one holiday or early_close per local date"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Distinguishes always-open from explicitly scheduled markets.",
+      "name": "market_mode",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON enum string",
+      "unit": "calendar mode",
+      "valid_range": "continuous_24x7 | session"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Earliest instant this authority version can affect a session query.",
+      "name": "observed_at",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "RFC 3339 timestamp",
+      "unit": "research knowledge instant",
+      "valid_range": "timezone-aware timestamp >= published_at"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Hash binding the external calendar authority content.",
+      "name": "source_content_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Hash binding the external calendar schema.",
+      "name": "source_schema_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Timezone authority for local trading dates and session rules.",
+      "name": "timezone_name",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "IANA timezone identity",
+      "valid_range": "installed IANA ZoneInfo name"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Version of the timezone rules used during external preparation/review.",
+      "name": "tzdb_version",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "timezone database version",
+      "valid_range": "non-empty immutable tzdb release identity"
+    },
+    {
+      "available_at": "At authority or exception observed_at, never publication alone.",
+      "change_history": [
+        {
+          "description": "Added continuous and session-market authority with IANA timezone, tzdb version, DST policy, holidays, and early closes.",
+          "effective_date": "2026-07-17",
+          "version": "market_calendar_authority/v1"
+        }
+      ],
+      "dataset": "market_calendar_authority",
+      "generation_method": "Prepared and versioned outside Research; evaluated locally with ZoneInfo.",
+      "meaning": "Canonical weekly session schedule, including overnight close offset.",
+      "name": "weekly_sessions[]",
+      "nullable": false,
+      "owner_module": "market_research.research.market_calendar_contract",
+      "provider": "External calendar authority through an immutable local artifact.",
+      "type": "JSON array",
+      "unit": "local weekday/open/close rule",
+      "valid_range": "unique weekday 0..6; HH:MM times; close day offset 0 or 1"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Canonical attributes captured with and corrected by the membership version.",
+      "name": "memberships[].attributes[]",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON array of typed name/value/unit objects",
+      "unit": "point-in-time constituent attributes",
+      "valid_range": "unique lexicographically sorted attribute names and typed canonical values"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Human-readable reason retained with every corrected version.",
+      "name": "memberships[].correction_reason",
+      "nullable": true,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string or null",
+      "unit": "correction rationale",
+      "valid_range": "null only at version 1; non-empty for later versions"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Stable instrument identity, independent of a current vendor symbol.",
+      "name": "memberships[].instrument_id",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "canonical instrument identity",
+      "valid_range": "inst_ followed by 8-64 lowercase identifier characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Stable identity whose versions describe one constituent membership fact.",
+      "name": "memberships[].membership_id",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "logical membership identity",
+      "valid_range": "um_ followed by 8-64 lowercase identifier characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Unique identity for one retained initial or corrected membership version.",
+      "name": "memberships[].membership_version_id",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "immutable membership version identity",
+      "valid_range": "umv_ followed by 8-64 lowercase identifier characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Earliest time Research may use this membership version.",
+      "name": "memberships[].observed_at",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "RFC 3339 timestamp",
+      "unit": "research knowledge instant",
+      "valid_range": "timezone-aware timestamp >= published_at and prior version observed_at"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Time the external authority published this membership version.",
+      "name": "memberships[].published_at",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "RFC 3339 timestamp",
+      "unit": "publication instant",
+      "valid_range": "timezone-aware timestamp <= observed_at"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Hash binding the exact external record supporting this version.",
+      "name": "memberships[].source_content_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Retained active, inactive, delisted, or withdrawn evidence state.",
+      "name": "memberships[].status",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON enum string",
+      "unit": "membership lifecycle state",
+      "valid_range": "active | inactive | delisted | withdrawn"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Prior immutable membership version replaced by this correction.",
+      "name": "memberships[].supersedes_version_id",
+      "nullable": true,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string or null",
+      "unit": "correction lineage identity",
+      "valid_range": "null only at version 1; otherwise immediately prior version id"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "First date on which the membership version is economically effective.",
+      "name": "memberships[].valid_from",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "ISO 8601 date string",
+      "unit": "inclusive economic date",
+      "valid_range": "valid date <= valid_to when valid_to exists"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Last effective date; retained for inactive and delisted constituents.",
+      "name": "memberships[].valid_to",
+      "nullable": true,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "ISO 8601 date string or null",
+      "unit": "inclusive economic date",
+      "valid_range": "null for open active range; otherwise >= valid_from"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Correction sequence used to select the latest fact known at query time.",
+      "name": "memberships[].version",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON integer",
+      "unit": "contiguous version number",
+      "valid_range": "integer >= 1; contiguous per membership_id"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Hash binding the complete externally prepared universe artifact.",
+      "name": "source_content_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Hash binding the schema used to prepare the universe artifact.",
+      "name": "source_schema_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Identity shared by every membership version in the artifact.",
+      "name": "universe_id",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "stable universe identity",
+      "valid_range": "univ_ followed by 8-64 lowercase identifier characters"
+    },
+    {
+      "available_at": "At the field's observed_at; artifact metadata is available no earlier than the artifact observed_at.",
+      "change_history": [
+        {
+          "description": "Added immutable membership and attribute versions, effective dates, knowledge times, correction chains, and source hash bindings.",
+          "effective_date": "2026-07-17",
+          "version": "point_in_time_universe/v1"
+        }
+      ],
+      "dataset": "point_in_time_universe",
+      "generation_method": "Prepared outside Research; parsed strictly and retained without network discovery or in-place correction.",
+      "meaning": "Identity of the externally prepared universe artifact version.",
+      "name": "universe_version_id",
+      "nullable": false,
+      "owner_module": "market_research.research.universe_contract",
+      "provider": "External universe authority through an immutable local artifact.",
+      "type": "JSON string",
+      "unit": "immutable universe version identity",
+      "valid_range": "univv_ followed by 8-64 lowercase identifier characters"
+    }
+  ],
+  "schema_version": 1
+}

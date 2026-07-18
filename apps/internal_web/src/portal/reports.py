@@ -32,7 +32,7 @@ from market_research.application.adapter_contracts import (
     validate_research_decision_report,
 )
 
-from .jobs import jobs_visible_to
+from .authorization import jobs_visible_to
 from .models import ImportedDecisionReport, ResearchJob
 from .presenters import redact_server_topology
 from .report_imports import validate_managed_import_record

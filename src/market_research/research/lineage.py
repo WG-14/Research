@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, SupportsIndex, SupportsInt, cast
 
 from market_research.paths import ResearchPathManager
 from market_research.settings import ResearchSettings
@@ -441,6 +441,7 @@ def reproduce_validation(
                 "validation_content_hash",
                 expected_validation_hash,
                 actual_validation_hash,
+                "validation_content_hash_mismatch",
             )
         )
         return ReproducibilityResult(summary)
@@ -542,16 +543,12 @@ def reproduce_validation(
         validation.get("statistical_gate_fail_reasons") or []
     )
     summary["stress_suite_contract_hash"] = validation.get("stress_suite_contract_hash")
+    raw_validation_stress = validation.get("validation_stress_suite")
     validation_stress = (
-        validation.get("validation_stress_suite")
-        if isinstance(validation.get("validation_stress_suite"), dict)
-        else {}
+        raw_validation_stress if isinstance(raw_validation_stress, dict) else {}
     )
-    final_stress = (
-        validation.get("final_holdout_stress_suite")
-        if isinstance(validation.get("final_holdout_stress_suite"), dict)
-        else {}
-    )
+    raw_final_stress = validation.get("final_holdout_stress_suite")
+    final_stress = raw_final_stress if isinstance(raw_final_stress, dict) else {}
     summary["validation_stress_suite_hash"] = validation_stress.get("stress_suite_hash")
     summary["final_holdout_stress_suite_hash"] = final_stress.get("stress_suite_hash")
     summary["selection_universe_hash"] = lineage.get("selection_universe_hash")
@@ -1394,7 +1391,8 @@ def _as_int(value: object) -> int | None:
     if isinstance(value, bool):
         return int(value)
     try:
-        return int(value)  # type: ignore[arg-type]
+        numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+        return int(numeric)
     except (TypeError, ValueError):
         return None
 

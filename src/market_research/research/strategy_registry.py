@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import importlib
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
@@ -88,17 +88,18 @@ class StrategyRegistry:
                 )
             plugins.append(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "strategy_name": plugin.name,
                     "strategy_version": plugin.version,
                     "factory_module": module,
                     "factory_qualname": qualname,
+                    "package_manifest_hash": plugin.package_manifest_hash,
                     "plugin_contract_hash": self.plugin_contract_hashes[name],
                     "strategy_spec_hash": plugin.spec.spec_hash(),
                 }
             )
         material = {
-            "schema_version": 1,
+            "schema_version": 2,
             "registry_content_hash": self.content_hash,
             "plugins": plugins,
         }
@@ -120,6 +121,7 @@ _PLUGIN_DESCRIPTOR_FIELDS = frozenset(
         "strategy_version",
         "factory_module",
         "factory_qualname",
+        "package_manifest_hash",
         "plugin_contract_hash",
         "strategy_spec_hash",
     }
@@ -137,7 +139,7 @@ def reconstruct_strategy_registry(descriptor: Mapping[str, Any]) -> StrategyRegi
         key: descriptor[key]
         for key in ("schema_version", "registry_content_hash", "plugins")
     }
-    if descriptor.get("schema_version") != 1 or descriptor.get(
+    if descriptor.get("schema_version") != 2 or descriptor.get(
         "descriptor_hash"
     ) != sha256_prefixed(material):
         raise StrategyRegistryError("strategy_registry_descriptor_hash_mismatch")
@@ -145,7 +147,10 @@ def reconstruct_strategy_registry(descriptor: Mapping[str, Any]) -> StrategyRegi
     if not isinstance(raw_plugins, (list, tuple)):
         raise StrategyRegistryError("strategy_registry_descriptor_plugins_invalid")
     names = [
-        item.get("strategy_name") for item in raw_plugins if isinstance(item, Mapping)
+        name
+        for item in raw_plugins
+        if isinstance(item, Mapping)
+        and isinstance((name := item.get("strategy_name")), str)
     ]
     if (
         len(names) != len(raw_plugins)
@@ -155,7 +160,7 @@ def reconstruct_strategy_registry(descriptor: Mapping[str, Any]) -> StrategyRegi
         raise StrategyRegistryError("strategy_registry_descriptor_order_invalid")
     plugins: list[ResearchStrategyPlugin] = []
     for item in raw_plugins:
-        if set(item) != _PLUGIN_DESCRIPTOR_FIELDS or item.get("schema_version") != 1:
+        if set(item) != _PLUGIN_DESCRIPTOR_FIELDS or item.get("schema_version") != 2:
             raise StrategyRegistryError("strategy_plugin_descriptor_invalid")
         name = str(item["strategy_name"])
         try:
@@ -175,6 +180,13 @@ def reconstruct_strategy_registry(descriptor: Mapping[str, Any]) -> StrategyRegi
         ):
             raise StrategyRegistryError(
                 f"strategy_plugin_reconstruction_identity_mismatch:{name}"
+            )
+        expected_manifest_hash = item["package_manifest_hash"]
+        if plugin.package_manifest_hash is None and expected_manifest_hash is not None:
+            plugin = replace(plugin, package_manifest_hash=expected_manifest_hash)
+        if plugin.package_manifest_hash != expected_manifest_hash:
+            raise StrategyRegistryError(
+                f"strategy_plugin_manifest_hash_mismatch:{name}"
             )
         if plugin.spec.spec_hash() != item["strategy_spec_hash"]:
             raise StrategyRegistryError(f"strategy_plugin_spec_hash_mismatch:{name}")

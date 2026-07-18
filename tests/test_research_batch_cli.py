@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+import market_research.research.batch_runner as batch_runner
 from market_research.research.batch_runner import _run_one_manifest
+from market_research.research.isolated_process import IsolatedProcessResult
 from market_research.research_cli.main import build_parser
 from tests.test_run_lifecycle import _context
 
@@ -28,14 +29,23 @@ def test_batch_child_uses_registered_backtest_arguments_only(
     manifest_path.write_text("{}", encoding="utf-8")
     observed: dict[str, object] = {}
 
-    def fake_run(
-        command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_run(command: list[str], **kwargs: object) -> IsolatedProcessResult:
         observed["command"] = list(command)
         observed["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+        return IsolatedProcessResult(
+            returncode=0,
+            status="succeeded",
+            failure_reason=None,
+            output="ok\n",
+            isolation={"process_model": "test"},
+        )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(batch_runner, "run_isolated_command", fake_run)
+    monkeypatch.setattr(
+        batch_runner,
+        "_batch_isolation_policy",
+        lambda _manifest: object(),
+    )
     result = _run_one_manifest(
         path=manifest_path,
         manifest=SimpleNamespace(experiment_id="batch-child"),

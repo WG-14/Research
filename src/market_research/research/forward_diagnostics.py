@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from market_research.research.dataset_snapshot import (
     DatasetQualityReport,
@@ -50,6 +51,17 @@ from market_research.research.split_usage_policy import (
     FINAL_HOLDOUT_DIAGNOSTIC_CONTAMINATION_RISK,
     validate_split_usage,
 )
+
+
+class _MetricWithWarnings(Protocol):
+    @property
+    def feature_name(self) -> str: ...
+
+    @property
+    def horizon_label(self) -> str: ...
+
+    @property
+    def warnings(self) -> tuple[str, ...]: ...
 
 
 FINAL_HOLDOUT_WARNING_REASON = FINAL_HOLDOUT_DIAGNOSTIC_CONTAMINATION_RISK
@@ -449,7 +461,7 @@ def _availability_warnings(
 
 
 def _metric_warning_rows(
-    metrics: tuple[FeatureBucketMetric, ...],
+    metrics: tuple[_MetricWithWarnings, ...],
 ) -> tuple[dict[str, object], ...]:
     rows: list[dict[str, object]] = []
     for metric in metrics:

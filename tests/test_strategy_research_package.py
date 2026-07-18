@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from market_research.research.strategy_package import (
     StrategyPackageError,
     build_strategy_research_package,
 )
+from market_research.research.validation_pipeline import (
+    validate_validated_research_result,
+)
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.hashing import report_content_hash_payload
+from market_research.research.hypothesis_contract import parse_hypothesis_spec
+from market_research.research.knowledge_registry import freeze_validation_admission
 from market_research.research.final_selection import (
     FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION,
     FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION,
@@ -18,7 +26,10 @@ from market_research.research.experiment_registry import (
     append_attempt_completion,
     reserve_research_attempt,
 )
-from market_research.research_composition import builtin_strategy_registry
+from market_research.research_composition import (
+    builtin_strategy_registry,
+    parse_builtin_manifest,
+)
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.governance import (
     GovernanceSubject,
@@ -27,6 +38,7 @@ from market_research.research.governance import (
     approve_strategy_candidate,
 )
 from tests.test_run_lifecycle import _context
+from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 
 
 def _result():
@@ -41,10 +53,17 @@ def _result():
     strategy_spec = registry.resolve("noop_baseline").spec.as_dict()
     capability = compiled["capability_contract"]
     evidence = {
+        "execution_evidence_schema_version": 3,
         "declared_execution_timing_hash": "sha256:t",
         "executed_execution_timing_hash": "sha256:t",
+        "declared_execution_timing_policy_hash": "sha256:t",
+        "executed_execution_timing_policy_hash": "sha256:t",
+        "execution_timing_stream_hash": "sha256:timing-stream",
         "declared_execution_model_hash": "sha256:m",
         "executed_execution_model_hash": "sha256:m",
+        "execution_attempt_count": 1,
+        "execution_reference_failure_count": 0,
+        "model_eligible_request_count": 1,
         "execution_request_count": 1,
         "execution_model_invocation_count": 1,
         "fill_count": 1,
@@ -53,7 +72,20 @@ def _result():
         "execution_request_stream_hash": "sha256:r",
         "execution_fill_stream_hash": "sha256:f",
         "portfolio_ledger_hash": "sha256:l",
+        "ledger_stream_hash": "sha256:l",
         "timing_invariant_status": "PASS",
+        "decision_timeline_invariant_status": "PASS",
+        "causal_timeline_validator": "execution_invariants.v1",
+        "market_knowledge_time_policy": (
+            "event_time_lte_observed_availability_lte_portfolio_effective_time"
+        ),
+        "market_knowledge_time_basis_counts": {
+            "quote_observed_at": 0,
+            "quote_event_time_assumption": 0,
+            "depth_observed_at": 0,
+            "depth_event_time_assumption": 0,
+        },
+        "market_knowledge_time_assumption_count": 0,
     }
     scenario = {
         "scenario_id": "base",
@@ -166,20 +198,35 @@ def _result():
             confirmation_material, label="final_holdout_confirmation"
         ),
     }
-    hypothesis_spec = {
-        "schema_version": 1,
-        "hypothesis_id": "edge",
-        "version": "1",
-        "phenomenon": "The candidate has positive conditional expectancy.",
-        "mechanism": "The declared deterministic rule captures the proposed edge.",
-        "observation_conditions": ["immutable candle data"],
-        "comparison_target": "cash",
-        "falsification_criteria": ["non-positive final holdout return"],
-        "experiment_family_id": "edge-family",
-        "registration_status": "unregistered",
-        "pre_registered_at": None,
-        "registration_evidence_hash": None,
-    }
+    parsed_hypothesis = parse_hypothesis_spec(
+        hypothesis_spec_v2(
+            hypothesis_id="edge",
+            version="1",
+            hypothesis_text="The candidate has positive conditional expectancy.",
+            phenomenon="The candidate has positive conditional expectancy.",
+            mechanism="The deterministic rule captures the proposed edge.",
+            experiment_family_id="edge-family",
+            competing_hypotheses=[
+                {
+                    "hypothesis_id": "edge",
+                    "version": "1",
+                    "hypothesis_text": (
+                        "The candidate has positive conditional expectancy."
+                    ),
+                },
+                {
+                    "hypothesis_id": "null-edge",
+                    "version": "1",
+                    "hypothesis_text": (
+                        "The candidate has no positive conditional expectancy."
+                    ),
+                },
+            ],
+        )
+    )
+    hypothesis_spec = parsed_hypothesis.as_dict()
+    question_ref = parsed_hypothesis.research_question_ref
+    assert question_ref is not None
     report = {
         "schema_version": 3,
         "artifact_type": "validated_research_result",
@@ -204,7 +251,14 @@ def _result():
         "gate_result": "PASS",
         "hypothesis_id": "edge",
         "hypothesis_version": "1",
-        "hypothesis_contract_hash": sha256_prefixed(hypothesis_spec),
+        "hypothesis_contract_hash": parsed_hypothesis.contract_hash(),
+        "hypothesis_lineage_hash": parsed_hypothesis.lineage_hash(),
+        "research_question_id": question_ref.question_id,
+        "research_question_version": question_ref.version,
+        "research_question_hash": question_ref.question_hash,
+        "observation_hashes": [
+            item.observation_hash for item in parsed_hypothesis.observation_refs
+        ],
         "hypothesis_spec": hypothesis_spec,
         "market": "KRW-BTC",
         "interval": "1m",
@@ -232,8 +286,63 @@ def _result():
     return report
 
 
+def _bind_validation_admission(report, manager):
+    if report.get("validation_admission_binding_schema_version") == 1:
+        return
+    manifest_payload = json.loads(
+        Path("examples/research/sma_filter_manifest.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest_payload["experiment_id"] = "validated-candidate-fixture"
+    manifest_payload["hypothesis_spec"] = report["hypothesis_spec"]
+    manifest = parse_builtin_manifest(manifest_payload)
+    admission = freeze_validation_admission(
+        manager=manager,
+        manifest=manifest,
+        admitted_at="2026-01-01T00:00:00+00:00",
+    )
+    manifest_hash = manifest.manifest_hash()
+
+    selection_artifact = report["selection_artifact"]
+    selection_artifact["manifest_hash"] = manifest_hash
+    selection_material = {
+        key: value for key, value in selection_artifact.items() if key != "content_hash"
+    }
+    selection_artifact["content_hash"] = sha256_prefixed(
+        selection_material,
+        label="selection_artifact",
+    )
+    confirmation = report["final_holdout_confirmation"]
+    confirmation["manifest_hash"] = manifest_hash
+    confirmation["selection_artifact_hash"] = selection_artifact["content_hash"]
+    confirmation["final_holdout_result_hash"] = compute_final_holdout_result_hash(
+        confirmation
+    )
+    confirmation_material = {
+        key: value for key, value in confirmation.items() if key != "content_hash"
+    }
+    confirmation["content_hash"] = sha256_prefixed(
+        confirmation_material,
+        label="final_holdout_confirmation",
+    )
+    report.update(
+        {
+            "experiment_id": manifest.experiment_id,
+            "manifest_hash": manifest_hash,
+            "validation_admission_binding_schema_version": 1,
+            "knowledge_registry_path": admission["path"],
+            "validation_admission_record_hash": admission["admission_record_hash"],
+            "validation_admission_row_hash": admission["admission_row_hash"],
+            "validation_admission": admission["admission"],
+        }
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+
 def _approval(report, tmp_path):
     manager = _context(tmp_path).paths
+    _bind_validation_admission(report, manager)
     confirmation = report["final_holdout_confirmation"]
     if not confirmation.get("experiment_registry_path"):
         reservation = reserve_research_attempt(
@@ -418,6 +527,17 @@ def test_package_self_contains_complete_review_specification(monkeypatch, tmp_pa
 
     assert package["schema_version"] == 5
     assert package["hypothesis"] == report["hypothesis_spec"]
+    assert package["hypothesis_contract_hash"] == report["hypothesis_contract_hash"]
+    assert package["hypothesis_lineage_hash"] == report["hypothesis_lineage_hash"]
+    assert (
+        package["research_question_ref"]
+        == report["hypothesis_spec"]["research_question_ref"]
+    )
+    assert package["observation_refs"] == report["hypothesis_spec"]["observation_refs"]
+    assert (
+        package["approved_hypothesis_contract_hash"]
+        == report["hypothesis_contract_hash"]
+    )
     assert package["target_asset"] == {"market": "KRW-BTC", "interval": "1m"}
     assert package["feature_definitions"]
     assert package["entry_conditions"]["entry"]["rule_id"] == "noop_hold"
@@ -433,6 +553,63 @@ def test_package_self_contains_complete_review_specification(monkeypatch, tmp_pa
     assert package["known_limitations"]["data"] == {"queue_position_available": False}
     assert package["approval_record"]["reviewer_id"] == "approver-a"
     assert package["approval_record"]["approved_at"]
+
+
+def test_package_preserves_internal_instrument_and_action_identity(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    report = _result()
+    report["instrument_evidence"] = {
+        "instrument_id": "inst_test_btc_0001",
+        "instrument_version_id": "instv_test_btc_0001_v1",
+        "instrument_contract_hash": "sha256:" + "a" * 64,
+        "asset_type": "spot",
+        "exchange_mic": "XOFF",
+        "trading_currency": "KRW",
+        "price_tick": "0.01",
+        "quantity_step": "0.0001",
+        "trading_unit": "1",
+        "identity_source": "manifest",
+        "corporate_action_set_id": "cas_test_btc_0001",
+        "corporate_action_set_hash": "sha256:" + "b" * 64,
+        "corporate_action_policy_id": "cap_raw_prices_v1",
+        "corporate_action_policy_hash": "sha256:" + "c" * 64,
+        "price_series": "raw",
+        "price_adjustment": "none",
+        "volume_adjustment": "none",
+    }
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    package = build_strategy_research_package(
+        report,
+        approval=_approval(report, tmp_path),
+        manager=_context(tmp_path).paths,
+    )
+
+    assert package["target_asset"] == {
+        "market": "KRW-BTC",
+        "interval": "1m",
+        "instrument_evidence": report["instrument_evidence"],
+    }
+
+
+def test_validated_result_rejects_missing_or_mismatched_lineage_binding():
+    missing = _result()
+    missing.pop("hypothesis_lineage_hash")
+    assert (
+        "validated_research_result_hypothesis_lineage_hash_mismatch"
+        in validate_validated_research_result(missing)
+    )
+
+    mismatched = _result()
+    mismatched["observation_hashes"] = ["sha256:" + "f" * 64]
+    assert (
+        "validated_research_result_observation_hashes_mismatch"
+        in validate_validated_research_result(mismatched)
+    )
 
 
 def test_package_rejects_missing_feature_definitions(monkeypatch):
@@ -466,9 +643,42 @@ def test_package_rejects_missing_execution_evidence(monkeypatch):
         lambda report: [],
     )
     value = _result()
-    value["candidates"][0]["execution_evidence"].pop("portfolio_ledger_hash")
+    value["candidates"][0]["execution_evidence"].pop("ledger_stream_hash")
     with pytest.raises(StrategyPackageError, match="missing_execution_evidence"):
         build_strategy_research_package(value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        (
+            "decision_timeline_invariant_status",
+            "FAIL",
+            "decision_timeline_invariant_failure",
+        ),
+        (
+            "market_knowledge_time_assumption_count",
+            1,
+            "knowledge_time_assumption_not_allowed",
+        ),
+        ("causal_timeline_validator", "unknown", "causal_validator_mismatch"),
+        (
+            "market_knowledge_time_policy",
+            "unknown",
+            "knowledge_time_policy_mismatch",
+        ),
+    ],
+)
+def test_package_rejects_tampered_v3_causal_evidence(monkeypatch, field, value, reason):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    report = _result()
+    report["candidates"][0]["execution_evidence"][field] = value
+
+    with pytest.raises(StrategyPackageError, match=reason):
+        build_strategy_research_package(report)
 
 
 def test_package_rejects_tampered_selection_or_confirmation_binding(monkeypatch):

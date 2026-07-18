@@ -169,8 +169,13 @@ class ExperimentAdmissionStore:
                     # Exact retries converge on the active request, but never
                     # inherit the current process's bearer lease capability.
                     return AdmissionDecision(
-                        **namespace,
-                        run_id=active[3],
+                        authority=namespace["authority"],
+                        experiment_id=namespace["experiment_id"],
+                        manifest_hash=namespace["manifest_hash"],
+                        request_id=namespace["request_id"],
+                        request_hash=namespace["request_hash"],
+                        owner_id=namespace["owner_id"],
+                        run_id=_required_uuid(active[3], "active_run_id"),
                         status=ACTIVE,
                         acquired=False,
                         lease_expires_at=active[6],
@@ -245,7 +250,7 @@ class ExperimentAdmissionStore:
                     ),
                 )
 
-            fencing_token = conn.execute(
+            fencing_row = conn.execute(
                 """
                 UPDATE research_ops.experiment_identity
                 SET fencing_counter = fencing_counter + 1, updated_at = %s
@@ -253,7 +258,10 @@ class ExperimentAdmissionStore:
                 RETURNING fencing_counter
                 """,
                 (observed_at, namespace["authority"], namespace["experiment_id"]),
-            ).fetchone()[0]
+            ).fetchone()
+            if fencing_row is None:
+                raise RuntimeError("experiment_fencing_token_update_failed")
+            fencing_token = int(fencing_row[0])
             lease_token = uuid.uuid4()
             lease_expires_at = observed_at + timedelta(seconds=lease_seconds)
             conn.execute(
@@ -280,12 +288,17 @@ class ExperimentAdmissionStore:
                 ),
             )
         return AdmissionDecision(
-            **namespace,
-            run_id=run_id,
+            authority=namespace["authority"],
+            experiment_id=namespace["experiment_id"],
+            manifest_hash=namespace["manifest_hash"],
+            request_id=namespace["request_id"],
+            request_hash=namespace["request_hash"],
+            owner_id=namespace["owner_id"],
+            run_id=_required_uuid(run_id, "run_id"),
             status=ACTIVE,
             acquired=True,
             lease_token=lease_token,
-            fencing_token=int(fencing_token),
+            fencing_token=fencing_token,
             lease_expires_at=lease_expires_at,
         )
 
@@ -690,14 +703,25 @@ def _terminal_decision(
     namespace: dict[str, str], request: tuple[object, ...]
 ) -> AdmissionDecision:
     return AdmissionDecision(
-        **namespace,
-        run_id=request[2],
+        authority=namespace["authority"],
+        experiment_id=namespace["experiment_id"],
+        manifest_hash=namespace["manifest_hash"],
+        request_id=namespace["request_id"],
+        request_hash=namespace["request_hash"],
+        owner_id=namespace["owner_id"],
+        run_id=_required_uuid(request[2], "terminal_run_id"),
         status=str(request[3]),
         acquired=False,
         result_ref=str(request[4]),
         result_hash=str(request[5]),
         error_code=str(request[6]),
     )
+
+
+def _required_uuid(value: object, field: str) -> uuid.UUID:
+    if not isinstance(value, uuid.UUID):
+        raise RuntimeError(f"{field}_invalid")
+    return value
 
 
 def _active_decision(decision: AdmissionDecision) -> None:

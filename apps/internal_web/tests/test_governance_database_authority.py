@@ -5,12 +5,23 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.db import IntegrityError, transaction
 
 from market_research.application import GovernanceSubjectRef
-from market_research.research.governance import GovernanceError
+from market_research.paths import ResearchPathManager
+from market_research.research.governance import (
+    GovernanceError,
+    GovernanceSubject,
+    GovernanceSubjectType,
+    append_lifecycle_transition,
+    governance_registry_path,
+    load_governance_rows,
+)
+from market_research.settings import ResearchSettings
+import portal.governance as governance_module
 from portal.governance import (
     approve_job_candidate,
     load_review_context,
@@ -166,6 +177,143 @@ def test_audit_intent_failure_rolls_back_authoritative_review_state(
     assert not GovernanceDutyClaim.objects.exists()
     assert not GovernanceDecision.objects.exists()
     assert not WebAuditEvent.objects.exists()
+
+
+def test_exact_review_retry_reconciles_file_append_after_database_rollback(
+    reviewer_user,
+    passed_job,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_context(monkeypatch)
+    paths = ResearchPathManager.from_settings(
+        ResearchSettings(
+            data_root=tmp_path / "data",
+            artifact_root=tmp_path / "artifacts",
+            report_root=tmp_path / "reports",
+            cache_root=tmp_path / "cache",
+            db_path=tmp_path / "research.sqlite3",
+            max_workers=1,
+            random_seed=0,
+        ),
+        project_root=Path(__file__).resolve().parents[3],
+    )
+    monkeypatch.setattr(settings, "RESEARCH_PATHS", paths)
+    monkeypatch.setattr(
+        settings,
+        "INTERNAL_WEB_AUDIT_PATH",
+        paths.artifact_path("_internal_web", "audit", "web_audit.jsonl"),
+    )
+    subject_ref = _subject()
+    subject = GovernanceSubject(
+        GovernanceSubjectType.STRATEGY_CANDIDATE,
+        subject_ref.subject_id,
+        subject_ref.subject_version,
+    )
+    for source, target, evidence in (
+        (None, "DRAFT", {}),
+        (
+            "DRAFT",
+            "BACKTESTED",
+            {"backtest_report_hash": "sha256:" + "1" * 64},
+        ),
+        (
+            "BACKTESTED",
+            "ROBUSTNESS_PASSED",
+            {"stress_suite_hash": "sha256:" + "2" * 64},
+        ),
+        (
+            "ROBUSTNESS_PASSED",
+            "OUT_OF_SAMPLE_PASSED",
+            {"final_holdout_confirmation_hash": "sha256:" + "3" * 64},
+        ),
+    ):
+        append_lifecycle_transition(
+            manager=paths,
+            subject=subject,
+            from_state=source,
+            to_state=target,
+            actor_id="researcher-a",
+            reason=f"advance candidate to {target}",
+            evidence_hashes=evidence,
+        )
+
+    correlation_id = str(uuid.uuid4())
+    cleaned_data = {
+        "decision": "REJECTED",
+        "rationale": "the reviewed evidence does not support this candidate",
+    }
+    actual_record_audit = governance_module.record_web_audit_event
+    monkeypatch.setattr(
+        governance_module,
+        "record_web_audit_event",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        record_job_review(
+            user=reviewer_user,
+            job=passed_job,
+            cleaned_data=cleaned_data,
+            correlation_id=correlation_id,
+        )
+
+    review_rows = [
+        row
+        for row in load_governance_rows(governance_registry_path(paths))
+        if row.get("event_type") == "human_review_decision"
+    ]
+    assert len(review_rows) == 1
+    assert review_rows[0]["review_request_id"] == correlation_id
+    assert not GovernanceSubjectState.objects.exists()
+    assert not GovernanceDecision.objects.exists()
+    assert not WebAuditEvent.objects.exists()
+
+    with pytest.raises(GovernanceError, match="human_review_idempotency_conflict"):
+        record_job_review(
+            user=reviewer_user,
+            job=passed_job,
+            cleaned_data={
+                **cleaned_data,
+                "rationale": "the same correlation cannot bind another review",
+            },
+            correlation_id=correlation_id,
+        )
+    assert not GovernanceSubjectState.objects.exists()
+    assert not GovernanceDecision.objects.exists()
+    assert (
+        len(
+            [
+                row
+                for row in load_governance_rows(governance_registry_path(paths))
+                if row.get("event_type") == "human_review_decision"
+            ]
+        )
+        == 1
+    )
+
+    monkeypatch.setattr(
+        governance_module,
+        "record_web_audit_event",
+        actual_record_audit,
+    )
+    result = record_job_review(
+        user=reviewer_user,
+        job=passed_job,
+        cleaned_data=cleaned_data,
+        correlation_id=correlation_id,
+    )
+
+    replay_rows = [
+        row
+        for row in load_governance_rows(governance_registry_path(paths))
+        if row.get("event_type") == "human_review_decision"
+    ]
+    assert len(replay_rows) == 1
+    assert result["row_hash"] == review_rows[0]["row_hash"]
+    assert GovernanceSubjectState.objects.count() == 1
+    assert GovernanceDecision.objects.count() == 1
+    assert WebAuditEvent.objects.count() == 1
 
 
 def test_database_unique_claim_enforces_separation_of_duties(

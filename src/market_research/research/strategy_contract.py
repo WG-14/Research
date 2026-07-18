@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
-import marshal
+import json
 import re
+from types import CodeType
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from .decision_event import ResearchDecisionEvent
@@ -82,13 +83,77 @@ def _source_artifact(value: Any) -> str:
         return inspect.getsource(value)
     except (OSError, TypeError):
         code = getattr(value, "__code__", None)
-        return marshal.dumps(code).hex() if code is not None else repr(type(value))
+        if isinstance(code, CodeType):
+            return json.dumps(
+                {
+                    "code": _stable_code_payload(code),
+                    "defaults": _stable_code_value(
+                        getattr(value, "__defaults__", None)
+                    ),
+                    "kwdefaults": _stable_code_value(
+                        getattr(value, "__kwdefaults__", None)
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+        return repr(type(value))
+
+
+def _stable_code_payload(code: CodeType) -> dict[str, object]:
+    """Return behavior bytecode without CPython's mutable quickening state."""
+    return {
+        "argcount": code.co_argcount,
+        "posonlyargcount": code.co_posonlyargcount,
+        "kwonlyargcount": code.co_kwonlyargcount,
+        "nlocals": code.co_nlocals,
+        "stacksize": code.co_stacksize,
+        "flags": code.co_flags,
+        "bytecode": code.co_code.hex(),
+        "exceptiontable": code.co_exceptiontable.hex(),
+        "constants": [_stable_code_value(item) for item in code.co_consts],
+        "names": list(code.co_names),
+        "varnames": list(code.co_varnames),
+        "freevars": list(code.co_freevars),
+        "cellvars": list(code.co_cellvars),
+    }
+
+
+def _stable_code_value(value: Any) -> object:
+    if isinstance(value, CodeType):
+        return {"code_object": _stable_code_payload(value)}
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    if isinstance(value, tuple):
+        return {"tuple": [_stable_code_value(item) for item in value]}
+    if isinstance(value, frozenset):
+        items = [_stable_code_value(item) for item in value]
+        return {"frozenset": sorted(items, key=repr)}
+    if isinstance(value, list):
+        return {"list": [_stable_code_value(item) for item in value]}
+    if isinstance(value, dict):
+        items = [
+            (_stable_code_value(key), _stable_code_value(item))
+            for key, item in value.items()
+        ]
+        return {"dict": sorted(items, key=repr)}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if value is Ellipsis:
+        return {"ellipsis": True}
+    if isinstance(value, complex):
+        return {"complex": [value.real, value.imag]}
+    return {
+        "type": f"{type(value).__module__}:{type(value).__qualname__}",
+        "repr": repr(value),
+    }
 
 
 def _transitive_behavior_binding(hook: Callable[..., Any]) -> dict[str, str]:
     """Bind the deterministic, cycle-safe graph of strategy-owned behavior."""
     components: dict[str, str] = {}
-    visited: set[str] = set()
+    visited_values: set[int] = set()
     root_module = str(getattr(hook, "__module__", ""))
     root_namespace = root_module.split(".", 1)[0]
 
@@ -101,31 +166,48 @@ def _transitive_behavior_binding(hook: Callable[..., Any]) -> dict[str, str]:
             bool(root_namespace) and module.startswith(f"{root_namespace}.")
         )
 
-    def visit(value: Any) -> None:
+    def visit(value: Any, *, identity_hint: str | None = None) -> None:
         if not (inspect.isfunction(value) or inspect.isclass(value)):
             return
         module = str(getattr(value, "__module__", ""))
         if not is_strategy_owned_module(module):
             return
-        identity = (
+        identity = identity_hint or (
             f"{module}:{getattr(value, '__qualname__', type(value).__qualname__)}"
         )
-        if identity in visited:
+        value_identity = id(value)
+        if value_identity in visited_values:
             return
-        visited.add(identity)
+        visited_values.add(value_identity)
         components[identity] = sha256_prefixed(_source_artifact(value))
         if inspect.isclass(value):
-            for _, member in sorted(vars(value).items()):
+            for member_name, member in sorted(vars(value).items()):
                 if inspect.isfunction(member) or inspect.isclass(member):
-                    visit(member)
+                    # dataclasses creates methods with a shared synthetic
+                    # ``__create_fn__.<locals>`` qualname.  Bind class members
+                    # through their owning class so two generated methods can
+                    # neither alias nor make the hash depend on import order.
+                    visit(member, identity_hint=f"{identity}.{member_name}")
             return
         code = getattr(value, "__code__", None)
         globals_map = getattr(value, "__globals__", {})
         for name in sorted(set(getattr(code, "co_names", ()))):
-            visit(globals_map.get(name))
-        for cell in getattr(value, "__closure__", ()) or ():
+            referenced = globals_map.get(name)
+            referenced_qualname = str(getattr(referenced, "__qualname__", ""))
+            visit(
+                referenced,
+                identity_hint=(
+                    f"{identity}.<global:{name}>"
+                    if "<locals>" in referenced_qualname
+                    else None
+                ),
+            )
+        for cell_index, cell in enumerate(getattr(value, "__closure__", ()) or ()):
             try:
-                visit(cell.cell_contents)
+                visit(
+                    cell.cell_contents,
+                    identity_hint=f"{identity}.<closure:{cell_index}>",
+                )
             except ValueError:
                 continue
 
@@ -419,6 +501,7 @@ class ResearchStrategyPlugin:
     execution_authority: str = "common_simulation_engine"
     reconstruction_module: str | None = None
     reconstruction_qualname: str | None = None
+    package_manifest_hash: str | None = None
 
     def __post_init__(self) -> None:
         name = str(self.name or "").strip().lower()
@@ -438,6 +521,10 @@ class ResearchStrategyPlugin:
             raise ValueError(
                 f"research_strategy_custom_execution_authority_rejected:{name}"
             )
+        if self.package_manifest_hash is not None and not is_sha256_hash(
+            self.package_manifest_hash
+        ):
+            raise ValueError(f"research_strategy_package_manifest_hash_invalid:{name}")
         object.__setattr__(self, "name", name)
         object.__setattr__(
             self,
@@ -503,15 +590,15 @@ class ResearchStrategyPlugin:
             if hook is not None:
                 components = _transitive_behavior_binding(hook)
                 hooks[role] = {
-                    "module": hook.__module__,
-                    "qualname": hook.__qualname__,
+                    "module": _callable_module(hook),
+                    "qualname": _callable_qualname(hook),
                     "role": role,
                     "hook_contract_version": self.decision_contract_version,
                     "source_artifact_hash": sha256_prefixed(components),
                     "transitive_behavior_components": components,
                 }
         return {
-            "schema_version": 4,
+            "schema_version": 6,
             "name": self.name,
             "version": self.version,
             "strategy_spec_hash": self.spec.spec_hash(),
@@ -529,16 +616,25 @@ class ResearchStrategyPlugin:
             "event_builder_module": self.event_builder.__module__,
             "event_builder_qualname": self.event_builder.__qualname__,
             "parameter_materializer_module": (
-                self.parameter_materializer.__module__
+                _callable_module(self.parameter_materializer)
                 if self.parameter_materializer is not None
                 else None
             ),
-            "source_artifact_binding": "recursive_strategy_owned_components_v3",
+            "source_artifact_binding": "recursive_strategy_owned_components_v4",
             "reconstruction_identity": {
                 "module": self.reconstruction_module,
                 "qualname": self.reconstruction_qualname,
             },
+            "package_manifest_hash": self.package_manifest_hash,
         }
 
     def contract_hash(self) -> str:
         return sha256_prefixed(self.contract_payload())
+
+
+def _callable_module(hook: object) -> str:
+    return str(getattr(hook, "__module__", type(hook).__module__))
+
+
+def _callable_qualname(hook: object) -> str:
+    return str(getattr(hook, "__qualname__", type(hook).__qualname__))

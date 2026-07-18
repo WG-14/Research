@@ -82,6 +82,106 @@ class ManifestUpload(models.Model):
         raise ValidationError("manifest_upload_is_immutable")
 
 
+class ResourceAccessGrant(models.Model):
+    """Immutable, resource-scoped authorization assigned outside the portal.
+
+    Django model permissions answer whether an actor may perform a kind of
+    operation at all.  This row answers *which* manifest, experiment, or
+    strategy the actor may access.  The portal deliberately exposes no grant
+    mutation route or writable admin surface; grants arrive from the governed
+    identity lifecycle and are only consumed here.
+    """
+
+    class ResourceType(models.TextChoices):
+        MANIFEST = "MANIFEST", "Manifest"
+        EXPERIMENT = "EXPERIMENT", "Experiment"
+        STRATEGY = "STRATEGY", "Strategy"
+
+    class Access(models.TextChoices):
+        VIEW = "VIEW", "View"
+        SUBMIT = "SUBMIT", "Submit research"
+        REVIEW = "REVIEW", "Review"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    principal_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="research_resource_access_grants",
+    )
+    principal_group = models.ForeignKey(
+        "auth.Group",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="research_resource_access_grants",
+    )
+    resource_type = models.CharField(max_length=16, choices=ResourceType.choices)
+    resource_id = models.CharField(max_length=255)
+    access = models.CharField(max_length=16, choices=Access.choices)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="research_resource_access_grants_issued",
+    )
+    rationale = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("resource_type", "resource_id", "access", "created_at")
+        indexes = [
+            models.Index(
+                fields=("resource_type", "resource_id", "access"),
+                name="portal_resource_grant_lookup",
+            )
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(principal_user__isnull=False, principal_group__isnull=True)
+                    | Q(principal_user__isnull=True, principal_group__isnull=False)
+                ),
+                name="portal_resource_grant_one_principal",
+            ),
+            models.CheckConstraint(
+                condition=(~Q(resource_id="") & ~Q(rationale="")),
+                name="portal_resource_grant_fields_required",
+            ),
+            models.UniqueConstraint(
+                fields=(
+                    "principal_user",
+                    "resource_type",
+                    "resource_id",
+                    "access",
+                ),
+                condition=Q(principal_user__isnull=False),
+                name="portal_resource_user_grant_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=(
+                    "principal_group",
+                    "resource_type",
+                    "resource_id",
+                    "access",
+                ),
+                condition=Q(principal_group__isnull=False),
+                name="portal_resource_group_grant_uniq",
+            ),
+        ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if not self._state.adding:
+            raise ValidationError("resource_access_grant_is_immutable")
+        self.resource_id = str(self.resource_id or "").strip()
+        self.rationale = str(self.rationale or "").strip()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValidationError("resource_access_grant_is_immutable")
+
+
 class LoginThrottle(models.Model):
     """Database-backed counters keyed only by secret HMAC subjects."""
 

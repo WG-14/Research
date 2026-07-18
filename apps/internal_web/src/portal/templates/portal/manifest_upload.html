@@ -13,8 +13,8 @@
         <h2>JSON manifest를 놓거나 선택</h2>
         <p>최대 2 MB · 파일 내용과 확장자를 모두 검사합니다.</p>
         {{ form.manifest_file }}
-        <label class="button button-secondary" for="{{ form.manifest_file.id_for_label }}">파일 선택</label>
-        <strong class="selected-file" data-file-name>선택된 파일 없음</strong>
+        <label class="button button-secondary" for="{{ form.manifest_file.id_for_label }}" role="button" tabindex="0" data-file-picker>파일 선택</label>
+        <strong class="selected-file" data-file-name role="status" aria-live="polite">선택된 파일 없음</strong>
         {% for error in form.manifest_file.errors %}<span class="field-error">{{ error }}</span>{% endfor %}
       </div>
       <div class="field">

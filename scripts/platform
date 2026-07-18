@@ -4,6 +4,19 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$root"
 
+# These defaults are applied by the shell before Python starts. Strict
+# reproduction rejects random hash seeding or multithreaded numeric backends;
+# callers may supply another fixed PYTHONHASHSEED, but thread limits remain 1.
+: "${PYTHONHASHSEED:=0}"
+OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1
+MKL_NUM_THREADS=1
+NUMEXPR_NUM_THREADS=1
+BLIS_NUM_THREADS=1
+VECLIB_MAXIMUM_THREADS=1
+export PYTHONHASHSEED OMP_NUM_THREADS OPENBLAS_NUM_THREADS MKL_NUM_THREADS
+export NUMEXPR_NUM_THREADS BLIS_NUM_THREADS VECLIB_MAXIMUM_THREADS
+
 case "${1:-}" in
   bootstrap)
     exec uv sync --all-packages --all-groups --frozen
@@ -43,9 +56,38 @@ case "${1:-}" in
       src tests apps/internal_web/src apps/internal_web/tests \
       services/research_operations/src services/research_operations/tests
     ;;
+  typecheck)
+    typecheck_root=$(mktemp -d "${TMPDIR:-/tmp}/market-research-typecheck.XXXXXX")
+    trap 'rm -rf "$typecheck_root"' EXIT HUP INT TERM
+    export RESEARCH_DATA_ROOT="$typecheck_root/datasets"
+    export RESEARCH_ARTIFACT_ROOT="$typecheck_root/artifacts"
+    export RESEARCH_REPORT_ROOT="$typecheck_root/reports"
+    export RESEARCH_CACHE_ROOT="$typecheck_root/cache"
+    export RESEARCH_OPS_SOURCE_ROOT="$root"
+    : "${INTERNAL_WEB_SECRET_KEY:=typecheck-only-not-for-runtime-use}"
+    export INTERNAL_WEB_SECRET_KEY
+    uv run --frozen --no-sync --package market-research mypy \
+      --no-incremental --config-file pyproject.toml -p market_research
+    uv run --frozen --no-sync --package market-research mypy \
+      --no-incremental --config-file pyproject.toml \
+      -p market_research_web -p portal
+    uv run --frozen --no-sync --package market-research mypy \
+      --no-incremental --config-file pyproject.toml -p research_operations
+    ;;
   compile)
     exec uv run --package market-research python -m compileall -q \
       src apps/internal_web/src services/research_operations/src
+    ;;
+  docs-check)
+    uv run --package market-research python tools/check_dataset_dictionary.py
+    uv run --package market-research-internal-web \
+      python tools/check_internal_web_contracts.py
+    exec uv run --package market-research python tools/check_documentation.py
+    ;;
+  verify-complete)
+    shift
+    exec uv run --frozen --no-sync --package market-research \
+      python tools/platform_completeness.py "$@"
     ;;
   audit)
     requirements="${TMPDIR:-/tmp}/research-platform-runtime-requirements.txt"
@@ -74,8 +116,12 @@ case "${1:-}" in
     shift
     exec uv run --package research-operations research-ops recovery-verify "$@"
     ;;
+  research)
+    shift
+    exec uv run --frozen --package market-research market-research "$@"
+    ;;
   *)
-    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|compile|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill}" >&2
+    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|typecheck|compile|docs-check|verify-complete|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill|research}" >&2
     exit 64
     ;;
 esac

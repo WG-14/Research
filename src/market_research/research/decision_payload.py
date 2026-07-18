@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from .hashing import canonical_payload_hash
 
 from . import backtest_support as support
+
+
+class _DecisionSurface(TypedDict):
+    raw_signal: str
+    raw_reason: str
+    raw_filter_would_block: bool
+    entry_signal: str
+    exit_signal: str
+    final_signal: str
+    blocked_filters: list[str]
+    entry_blocked: bool
+    protective_exit_overrode_entry: bool
+    exit_filter_suppression_prevented: bool
 
 
 @dataclass(frozen=True)
@@ -556,10 +569,9 @@ class DecisionPayloadBuilder:
                 if policy_decision.execution_intent is not None
                 else None
             )
-            diagnostics = (
-                dict(payload["strategy_diagnostics"])
-                if isinstance(payload.get("strategy_diagnostics"), dict)
-                else {}
+            raw_diagnostics = payload.get("strategy_diagnostics")
+            diagnostics: dict[str, object] = (
+                dict(raw_diagnostics) if isinstance(raw_diagnostics, dict) else {}
             )
             diagnostics.update(
                 {
@@ -589,7 +601,7 @@ def _decision_surface(
     risk_decision: Any,
     policy_decision: Any | None,
     sellable_qty: float,
-) -> dict[str, object]:
+) -> _DecisionSurface:
     action = risk_decision.final_signal
     raw_signal = str(strategy_envelope.provenance.get("raw_signal") or "HOLD").upper()
     raw_reason = str(strategy_envelope.provenance.get("raw_reason") or event.reason)
@@ -602,7 +614,9 @@ def _decision_surface(
     exit_signal = str(
         strategy_envelope.provenance.get("exit_signal") or raw_signal
     ).upper()
-    blocked_filters = list(strategy_envelope.provenance.get("blocked_filters") or ())
+    blocked_filters = [
+        str(item) for item in strategy_envelope.provenance.get("blocked_filters") or ()
+    ]
     if policy_decision is not None:
         entry_blocked = bool(policy_decision.entry_blocked)
         protective_exit_overrode_entry = bool(
@@ -650,7 +664,9 @@ def _context_hash(canonical_context: Any | None, field: str) -> str:
 
 def _attach_common_exit_diagnostic_counts(payload: dict[str, object]) -> None:
     increments: dict[str, int] = {}
-    for evaluation in payload.get("exit_evaluations") or []:
+    raw_evaluations = payload.get("exit_evaluations")
+    evaluations = raw_evaluations if isinstance(raw_evaluations, (list, tuple)) else ()
+    for evaluation in evaluations:
         if not isinstance(evaluation, dict) or not bool(evaluation.get("triggered")):
             continue
         rule = str(evaluation.get("rule") or "")

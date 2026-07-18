@@ -22,7 +22,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     """Keep research package imports free of execution/runtime dependencies."""
     if name in {"run_research_backtest", "run_research_walk_forward"}:
         from .validation_protocol import (

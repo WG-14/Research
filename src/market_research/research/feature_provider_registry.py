@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from itertools import product
 from typing import Literal
 
@@ -162,9 +162,10 @@ def _spec(
 
 
 def _definition_hash(provider: FeatureProvider) -> str:
+    raw_parameters = getattr(provider, "__dict__", None)
     parameters = (
-        asdict(provider)
-        if hasattr(provider, "__dataclass_fields__")
+        {str(key): value for key, value in raw_parameters.items()}
+        if isinstance(raw_parameters, dict)
         else {"name": provider.name}
     )
     return sha256_prefixed(

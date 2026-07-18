@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import fmean
-from typing import Any
+from typing import Any, TypedDict
 
 
 HOLDING_BUCKETS = ("00-05m", "06-15m", "16-30m", "31-45m", "46-60m")
@@ -43,6 +43,12 @@ CONTROL_REQUIRED_ACCEPTANCE_FIELDS = (
     "sum_trades",
 )
 PAIR_CONTEXT_FIELDS = ("market", "interval", "cost_model_hash", "portfolio_policy_hash")
+
+
+class _PairedABValidation(TypedDict):
+    schema_version: int
+    blockers: list[str]
+    summary_rows: list[dict[str, object]]
 
 
 def build_rootcause_report(payload: Any) -> dict[str, object]:
@@ -147,7 +153,7 @@ def classify_acceptance(payload: Any) -> dict[str, object]:
     )
 
 
-def validate_paired_ab_summary(payload: Any) -> dict[str, object]:
+def validate_paired_ab_summary(payload: Any) -> _PairedABValidation:
     rows = _summary_rows(payload)
     blockers: list[str] = []
     normalized: list[dict[str, object]] = []
@@ -378,7 +384,7 @@ def _normalize_float_field(
     row_id: str,
 ) -> float | None:
     try:
-        return float(row[field])
+        return _as_float(row[field])
     except (TypeError, ValueError):
         blockers.append(f"invalid_numeric_summary_field:{row_id}:{field}")
         return None
@@ -392,11 +398,11 @@ def _normalize_int_field(
     row_id: str,
 ) -> int | None:
     try:
-        value = int(row[field])
+        value = _as_int(row[field])
     except (TypeError, ValueError):
         blockers.append(f"invalid_integer_summary_field:{row_id}:{field}")
         return None
-    if value != float(row[field]):
+    if value != _as_float(row[field]):
         blockers.append(f"invalid_integer_summary_field:{row_id}:{field}")
         return None
     return value
@@ -425,7 +431,7 @@ def _aggregate_acceptance_rows(
         period_count = len({str(row["period"]) for row in rows})
         first_period_count = rows[0].get("period_count")
         if first_period_count is not None:
-            period_count = int(first_period_count)
+            period_count = _as_int(first_period_count)
         return {
             "avg_return_pct": fmean(
                 _required_float(row, "avg_return_pct") for row in rows
@@ -472,11 +478,23 @@ def _missing_acceptance_field_blockers(
 
 
 def _required_float(row: dict[str, object], field: str) -> float:
-    return float(row[field])
+    return _as_float(row[field])
 
 
 def _required_int(row: dict[str, object], field: str) -> int:
-    return int(row[field])
+    return _as_int(row[field])
+
+
+def _as_float(value: object) -> float:
+    if not isinstance(value, (str, int, float)):
+        raise TypeError("numeric value must be a string, integer, or float")
+    return float(value)
+
+
+def _as_int(value: object) -> int:
+    if not isinstance(value, (str, int, float)):
+        raise TypeError("integer value must be a string, integer, or float")
+    return int(value)
 
 
 def _acceptance_result(
@@ -514,7 +532,7 @@ def _summary_by(
         grouped[tuple(str(trade.get(key) or "unknown") for key in keys)].append(trade)
     rows: list[dict[str, object]] = []
     for group_key, group_trades in sorted(grouped.items()):
-        row = {
+        row: dict[str, object] = {
             key.removeprefix("_"): value
             for key, value in zip(keys, group_key, strict=True)
         }
@@ -524,17 +542,17 @@ def _summary_by(
 
 
 def _trade_summary(trades: list[dict[str, object]]) -> dict[str, object]:
-    pnls = [float(trade.get("net_pnl") or 0.0) for trade in trades]
-    holding = [float(trade.get("holding_minutes") or 0.0) for trade in trades]
-    mfe = [float(trade.get("mfe_pct") or 0.0) for trade in trades]
-    mae = [float(trade.get("mae_pct") or 0.0) for trade in trades]
+    pnls = [_as_float(trade.get("net_pnl") or 0.0) for trade in trades]
+    holding = [_as_float(trade.get("holding_minutes") or 0.0) for trade in trades]
+    mfe = [_as_float(trade.get("mfe_pct") or 0.0) for trade in trades]
+    mae = [_as_float(trade.get("mae_pct") or 0.0) for trade in trades]
     reclaim = [
-        float(trade.get("net_pnl") or 0.0)
+        _as_float(trade.get("net_pnl") or 0.0)
         for trade in trades
         if _exit_key(trade) == "reclaim"
     ]
     maxhold = [
-        float(trade.get("net_pnl") or 0.0)
+        _as_float(trade.get("net_pnl") or 0.0)
         for trade in trades
         if _exit_key(trade) == "maxhold"
     ]
@@ -554,9 +572,11 @@ def _trade_summary(trades: list[dict[str, object]]) -> dict[str, object]:
 
 
 def _holding_bucket_summary(trades: list[dict[str, object]]) -> list[dict[str, object]]:
-    grouped = {bucket: [] for bucket in HOLDING_BUCKETS}
+    grouped: dict[str, list[dict[str, object]]] = {
+        bucket: [] for bucket in HOLDING_BUCKETS
+    }
     for trade in trades:
-        grouped[_holding_bucket(float(trade.get("holding_minutes") or 0.0))].append(
+        grouped[_holding_bucket(_as_float(trade.get("holding_minutes") or 0.0))].append(
             trade
         )
     return [
@@ -589,7 +609,7 @@ def _exit_key(trade: dict[str, object]) -> str:
 def _trade_samples(
     trades: list[dict[str, object]], limit: int = 3
 ) -> dict[str, object]:
-    ordered = sorted(trades, key=lambda trade: float(trade.get("net_pnl") or 0.0))
+    ordered = sorted(trades, key=lambda trade: _as_float(trade.get("net_pnl") or 0.0))
     return {"worst": ordered[:limit], "best": list(reversed(ordered[-limit:]))}
 
 

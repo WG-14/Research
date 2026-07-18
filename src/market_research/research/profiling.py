@@ -5,13 +5,15 @@ import io
 import pstats
 import time
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeAlias, TypeVar, cast
 
 from market_research.paths import ResearchPathError, ResearchPathManager
 from market_research.storage_io import write_json_atomic
 
 
 T = TypeVar("T")
+ProfileFunction: TypeAlias = tuple[str, int, str]
+ProfileStat: TypeAlias = tuple[int, int, float, float, object]
 
 
 def run_with_cprofile(
@@ -102,9 +104,10 @@ def _safe_part(value: str) -> str:
 
 def _hotspots(profiler: cProfile.Profile) -> list[dict[str, Any]]:
     stats = pstats.Stats(profiler)
+    stats_data = cast(dict[ProfileFunction, ProfileStat], getattr(stats, "stats"))
     rows: list[dict[str, Any]] = []
     for func, stat in sorted(
-        stats.stats.items(), key=lambda item: item[1][3], reverse=True
+        stats_data.items(), key=lambda item: item[1][3], reverse=True
     )[:10]:
         cc, nc, tt, ct, _callers = stat
         filename, line_no, function_name = func

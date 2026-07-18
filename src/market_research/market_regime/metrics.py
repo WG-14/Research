@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, SupportsFloat, SupportsIndex, cast
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ def aggregate_regime_performance(
         )
         for regime in sorted(regimes):
             values = [
-                float(
+                _as_float(
                     trade.get("net_pnl")
                     if trade.get("net_pnl") is not None
                     else trade.get("closed_trade_pnl") or 0.0
@@ -133,7 +133,7 @@ def aggregate_regime_performance(
                 == regime
             ]
             fees = [
-                float(
+                _as_float(
                     trade.get("fee_total")
                     if trade.get("fee_total") is not None
                     else trade.get("fee") or 0.0
@@ -190,6 +190,11 @@ def aggregate_regime_performance(
                 )
             )
     return tuple(rows)
+
+
+def _as_float(value: object) -> float:
+    numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+    return float(numeric)
 
 
 def _is_filled_trade(trade: dict[str, Any]) -> bool:

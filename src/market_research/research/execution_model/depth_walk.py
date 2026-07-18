@@ -5,7 +5,6 @@ from typing import Any
 
 from market_research.orderbook_depth_store import (
     OrderbookDepthLevel,
-    OrderbookDepthSnapshot,
 )
 
 from .base import ExecutionFill, ExecutionRequest, model_params_hash
@@ -14,7 +13,6 @@ from .base import ExecutionFill, ExecutionRequest, model_params_hash
 @dataclass
 class DepthWalkExecutionModel:
     fee_rate: float
-    depth_snapshot: OrderbookDepthSnapshot | None = None
 
     name: str = "depth_walk"
     version: str = "research_depth_walk_v1"
@@ -24,16 +22,14 @@ class DepthWalkExecutionModel:
             "type": self.name,
             "version": self.version,
             "fee_rate": float(self.fee_rate),
-            "depth_ref": self.depth_snapshot.depth_ref()
-            if self.depth_snapshot is not None
-            else "per_request_depth_snapshot",
+            "depth_ref": "verified_per_request_depth_snapshot_only",
             "queue_position_mode": "unavailable",
             "market_impact_mode": "unavailable",
         }
 
     def simulate(self, request: ExecutionRequest) -> ExecutionFill:
         side = str(request.side).upper()
-        depth_snapshot = request.orderbook_depth_snapshot or self.depth_snapshot
+        depth_snapshot = request.orderbook_depth_snapshot
         if depth_snapshot is None:
             return _missing_depth_fill(request=request, model=self, side=side)
         if side == "BUY":
@@ -89,10 +85,11 @@ class DepthWalkExecutionModel:
                     / float(request.reference_price)
                 ) * 10_000.0
 
+        depth_available_at_ts = depth_snapshot.available_at_ms()
         depth_age_ms = (
-            int(depth_snapshot.ts) - int(request.fill_reference_ts)
+            depth_available_at_ts - int(request.fill_reference_ts)
             if request.fill_reference_ts is not None
-            else (int(depth_snapshot.ts) - int(request.decision_ts))
+            else (depth_available_at_ts - int(request.decision_ts))
         )
         return ExecutionFill(
             signal_ts=int(request.signal_ts),
@@ -113,6 +110,8 @@ class DepthWalkExecutionModel:
             signal_reference_price=request.signal_reference_price,
             signal_reference_source=request.signal_reference_source,
             quote_ts=request.quote_ts,
+            quote_available_at_ts=request.quote_available_at_ts,
+            quote_availability_basis=request.quote_availability_basis,
             quote_age_ms=request.quote_age_ms,
             quote_source=request.quote_source,
             requested_qty=float(requested_qty),
@@ -133,6 +132,8 @@ class DepthWalkExecutionModel:
             requested_notional=float(requested_notional),
             filled_notional=float(filled_notional),
             depth_snapshot_ts=int(depth_snapshot.ts),
+            depth_snapshot_available_at_ts=depth_available_at_ts,
+            depth_snapshot_availability_basis=depth_snapshot.availability_basis(),
             depth_snapshot_age_ms=int(depth_age_ms),
             depth_levels_consumed=int(levels_consumed),
             depth_available=True,
@@ -166,6 +167,13 @@ class DepthWalkExecutionModel:
             latency_applied_to_submit_ts=request.latency_applied_to_submit_ts,
             latency_applied_to_fill_reference=request.latency_applied_to_fill_reference,
             latency_reference_policy_warning=request.latency_reference_policy_warning,
+            execution_reference_target_ts=request.execution_reference_target_ts,
+            execution_reference_deadline_ts=request.execution_reference_deadline_ts,
+            execution_reference_resolution_ts=request.execution_reference_resolution_ts,
+            execution_resolution_ts=request.execution_resolution_ts,
+            depth_reference_target_ts=request.depth_reference_target_ts,
+            depth_reference_deadline_ts=request.depth_reference_deadline_ts,
+            depth_resolution_ts=request.depth_resolution_ts,
             feature_snapshot=request.feature_snapshot,
             regime_snapshot=request.regime_snapshot,
             entry_signal_source=request.entry_signal_source,
@@ -208,6 +216,8 @@ def _missing_depth_fill(
         signal_reference_price=request.signal_reference_price,
         signal_reference_source=request.signal_reference_source,
         quote_ts=request.quote_ts,
+        quote_available_at_ts=request.quote_available_at_ts,
+        quote_availability_basis=request.quote_availability_basis,
         quote_age_ms=request.quote_age_ms,
         quote_source=request.quote_source,
         requested_qty=float(requested_qty),
@@ -230,6 +240,8 @@ def _missing_depth_fill(
         else float(requested_notional),
         filled_notional=0.0,
         depth_snapshot_ts=request.depth_snapshot_ts,
+        depth_snapshot_available_at_ts=request.depth_snapshot_available_at_ts,
+        depth_snapshot_availability_basis=request.depth_snapshot_availability_basis,
         depth_snapshot_age_ms=request.depth_snapshot_age_ms,
         depth_levels_consumed=0,
         depth_available=False,
@@ -255,6 +267,13 @@ def _missing_depth_fill(
         latency_applied_to_submit_ts=request.latency_applied_to_submit_ts,
         latency_applied_to_fill_reference=request.latency_applied_to_fill_reference,
         latency_reference_policy_warning=request.latency_reference_policy_warning,
+        execution_reference_target_ts=request.execution_reference_target_ts,
+        execution_reference_deadline_ts=request.execution_reference_deadline_ts,
+        execution_reference_resolution_ts=request.execution_reference_resolution_ts,
+        execution_resolution_ts=request.execution_resolution_ts,
+        depth_reference_target_ts=request.depth_reference_target_ts,
+        depth_reference_deadline_ts=request.depth_reference_deadline_ts,
+        depth_resolution_ts=request.depth_resolution_ts,
         feature_snapshot=request.feature_snapshot,
         regime_snapshot=request.regime_snapshot,
         entry_signal_source=request.entry_signal_source,

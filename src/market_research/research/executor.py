@@ -295,8 +295,10 @@ def _future_exception_result(*, task: Any, exc: Exception) -> ResearchWorkResult
 
 
 def _task_work_unit(task: Any) -> ResearchWorkUnit:
-    if isinstance(task, dict) and isinstance(task.get("work_unit"), ResearchWorkUnit):
-        return task["work_unit"]
+    if isinstance(task, dict):
+        work_unit = task.get("work_unit")
+        if isinstance(work_unit, ResearchWorkUnit):
+            return work_unit
     raise TypeError("parallel task failure cannot be mapped without ResearchWorkUnit")
 
 

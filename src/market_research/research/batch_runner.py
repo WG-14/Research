@@ -3,19 +3,24 @@ from __future__ import annotations
 import glob
 import inspect
 import os
-import subprocess
+import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from market_research.storage_io import write_json_atomic, write_text_atomic
+from market_research.paths import ResearchPathManager
+from market_research.storage_io import write_json_atomic
 
 from .experiment_manifest import load_manifest_with_registry
 from .strategy_registry import StrategyRegistry
 from .report_writer import research_paths
 from .resource_planner import detect_resource_contract
+from .isolated_process import IsolatedProcessPolicy, run_isolated_command
+from .parameter_space import count_parameter_candidates
+from .data_plane import split_names
+from .experiment_manifest import required_execution_scenarios
 
 
 @dataclass(frozen=True)
@@ -31,7 +36,7 @@ def run_research_batch(
     command: str,
     fail_fast: bool,
     out_path: str | Path | None,
-    manager: Any,
+    manager: ResearchPathManager,
     project_root: Path,
     strategy_registry: StrategyRegistry,
 ) -> ResearchBatchResult:
@@ -174,34 +179,30 @@ def _run_one_manifest(
         "--manifest",
         str(path),
     ]
-    completed = subprocess.run(
+    policy = _batch_isolation_policy(manifest)
+    completed = run_isolated_command(
         cmd,
-        cwd=str(project_root),
-        env={**os.environ, **_research_cli_environment(manager), **(child_env or {})},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    write_text_atomic(
-        log_path,
-        "COMMAND "
-        + " ".join(cmd)
-        + "\n\nSTDOUT\n"
-        + completed.stdout
-        + "\nSTDERR\n"
-        + completed.stderr,
+        cwd=project_root,
+        env=_research_cli_environment(manager, child_env=child_env),
+        readable_roots=_batch_readable_roots(
+            manager,
+            project_root=project_root,
+            manifest_path=path,
+        ),
+        writable_roots=_batch_writable_roots(manager),
+        policy=policy,
+        output_path=log_path,
     )
     return {
         "manifest_path": str(path),
         "experiment_id": manifest.experiment_id,
-        "status": "succeeded" if completed.returncode == 0 else "failed",
+        "status": completed.status,
         "exit_code": int(completed.returncode),
         "elapsed_s": round(time.perf_counter() - started, 6),
         "report_path": str(report_path.resolve()),
         "log_path": str(log_path.resolve()),
-        "failure_reason": None
-        if completed.returncode == 0
-        else "subprocess_exit_nonzero",
+        "failure_reason": completed.failure_reason,
+        "isolation": dict(completed.isolation),
     }
 
 
@@ -233,7 +234,9 @@ def allocate_batch_child_process_budget(
     }
 
 
-def _batch_summary_path(*, manager: Any, out_path: str | Path | None) -> Path:
+def _batch_summary_path(
+    *, manager: ResearchPathManager, out_path: str | Path | None
+) -> Path:
     if out_path is None:
         path = manager.report_path("research", "batch", "research_batch_summary.json")
     else:
@@ -245,7 +248,7 @@ def _batch_summary_path(*, manager: Any, out_path: str | Path | None) -> Path:
     return resolved
 
 
-def _ensure_allowed(manager: Any, path: Path) -> None:
+def _ensure_allowed(manager: ResearchPathManager, path: Path) -> None:
     resolved = path.resolve()
     if _is_within(resolved, manager.project_root.resolve()):
         raise ValueError(
@@ -257,7 +260,9 @@ def _ensure_allowed(manager: Any, path: Path) -> None:
         )
 
 
-def _research_cli_environment(manager: Any) -> dict[str, str]:
+def _research_cli_environment(
+    manager: Any, *, child_env: dict[str, str] | None = None
+) -> dict[str, str]:
     settings = getattr(manager, "settings", None)
     if settings is None:
         return {}
@@ -268,7 +273,77 @@ def _research_cli_environment(manager: Any) -> dict[str, str]:
         "RESEARCH_CACHE_ROOT": getattr(settings, "cache_root", None),
         "RESEARCH_DB_PATH": getattr(settings, "db_path", None),
     }
-    return {key: str(value) for key, value in values.items() if value is not None}
+    allowed_parent = {
+        key: os.environ[key]
+        for key in (
+            "PATH",
+            "VIRTUAL_ENV",
+            "PYTHONPATH",
+            "LANG",
+            "LC_ALL",
+            "TZ",
+            "LD_LIBRARY_PATH",
+        )
+        if os.environ.get(key)
+    }
+    deterministic = {
+        "PYTHONHASHSEED": "0",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "TMPDIR": "/tmp",
+    }
+    return {
+        **allowed_parent,
+        **deterministic,
+        **{key: str(value) for key, value in values.items() if value is not None},
+        **(child_env or {}),
+    }
+
+
+def _batch_isolation_policy(manifest: Any) -> IsolatedProcessPolicy:
+    limits = manifest.research_run.resource_limits
+    per_run = float(limits.max_runtime_s_per_candidate_split or 3600.0)
+    run_count = (
+        count_parameter_candidates(manifest.parameter_space)
+        * len(required_execution_scenarios(manifest.execution_model.scenarios))
+        * len(split_names(manifest))
+    )
+    wall_timeout = max(1.0, per_run * max(1, run_count) + 30.0)
+    memory_limit = float(limits.max_total_memory_mb or limits.max_rss_mb or 1400.0)
+    output_limit = int(limits.max_artifact_bytes or 640 * 1024 * 1024)
+    return IsolatedProcessPolicy(
+        wall_timeout_seconds=wall_timeout,
+        memory_limit_mb=memory_limit,
+        output_limit_bytes=output_limit,
+        process_limit=max(16, int(manifest.research_run.execution.max_workers) * 8),
+        network_access=False,
+    )
+
+
+def _batch_writable_roots(manager: Any) -> tuple[Path, ...]:
+    roots = [manager.artifact_root, manager.report_root, manager.cache_root]
+    identity_path = manager.experiment_identity_registry_path()
+    roots.append(identity_path.parent)
+    return tuple(roots)
+
+
+def _batch_readable_roots(
+    manager: Any,
+    *,
+    project_root: Path,
+    manifest_path: Path,
+) -> tuple[Path, ...]:
+    roots = {
+        project_root.resolve(),
+        Path(sys.prefix).resolve(),
+        manager.data_root.resolve(),
+        manifest_path.resolve(),
+    }
+    if manager.db_path is not None:
+        roots.add(manager.db_path.resolve())
+    return tuple(sorted(roots, key=str))
 
 
 def _is_within(path: Path, parent: Path) -> bool:

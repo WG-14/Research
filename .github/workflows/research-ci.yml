@@ -8,6 +8,15 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONHASHSEED: "0"
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  BLIS_NUM_THREADS: "1"
+  VECLIB_MAXIMUM_THREADS: "1"
+
 jobs:
   test:
     name: Core tests and distribution boundaries
@@ -37,6 +46,13 @@ jobs:
         run: |
           uv lock --check
           uv sync --frozen --package market-research
+      - name: Install and verify the strategy process sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          command -v bwrap
+          command -v prlimit
+          command -v timeout
       - run: uv run --no-sync python -m compileall -q src/market_research
       - name: Run focused Core boundary tests
         run: >-
@@ -46,6 +62,8 @@ jobs:
           tests/test_offline_data_boundary.py
           tests/test_execution_calibration_boundary.py
           tests/test_research_semantics_v2_contract.py
+          tests/test_strategy_package_manifest.py
+          tests/test_strategy_process_isolation.py
       - name: Run the complete Core suite once
         run: uv run --no-sync pytest -q
       - name: Build only the Core distribution
@@ -74,6 +92,10 @@ jobs:
               "market_research/__main__.py",
               "market_research/application/__init__.py",
               "market_research/research_bootstrap.py",
+              "market_research/builtin_strategies/noop_baseline.strategy.json",
+              "market_research/builtin_strategies/buy_and_hold_baseline.strategy.json",
+              "market_research/builtin_strategies/sma_with_filter.strategy.json",
+              "market_research/builtin_strategies/threshold_research_only.strategy.json",
           }
           assert required <= names, required - names
           assert any(name.startswith("market_research/research/") for name in names)
@@ -239,6 +261,16 @@ jobs:
         run: |
           uv lock --check
           uv sync --frozen --all-packages --all-groups
+      - name: Type-check all production distributions
+        run: scripts/platform typecheck
+      - name: Enforce format, lint, compile, and documentation contracts
+        run: |
+          scripts/platform lint
+          uv run --no-sync ruff format --check \
+            src tests apps/internal_web/src apps/internal_web/tests \
+            services/research_operations/src services/research_operations/tests
+          scripts/platform compile
+          scripts/platform docs-check
       - name: Audit locked runtime dependencies
         run: |
           uv export --frozen --all-packages --no-dev --no-emit-workspace \
@@ -253,6 +285,8 @@ jobs:
           tests/test_repository_research_only_boundary.py
           tests/test_market_research_namespace_boundary.py
           tests/test_offline_data_boundary.py
+          tests/test_architecture_strategy_boundaries.py
+          tests/test_strategy_package_manifest.py
           tests/test_internal_web_architecture_contract.py
           tests/test_release_metadata.py
           tests/test_release_manifest.py
@@ -305,12 +339,14 @@ jobs:
           assert not any(name.startswith(("portal/", "research_operations/")) for name in core)
           assert "portal/templates/registration/login.html" in web
           assert "portal/static/portal/app.css" in web
-          assert "portal/migrations/0008_imported_decision_report.py" in web
+          assert "portal/migrations/0009_resourceaccessgrant.py" in web
           required_sql = {
               "research_operations/migrations/0001_initial.sql",
               "research_operations/migrations/0002_runtime_control.sql",
               "research_operations/migrations/0003_research_job_receipt.sql",
               "research_operations/migrations/0004_worker_release_provenance.sql",
+              "research_operations/migrations/0005_recovery_activation_event.sql",
+              "research_operations/migrations/0006_service_alert_workflow.sql",
           }
           assert required_sql <= operations, required_sql - operations
 
@@ -352,7 +388,8 @@ jobs:
           assert portal.__name__ == "portal"
           assert research_operations.__name__ == "research_operations"
           migrations = resources.files("research_operations.migrations")
-          assert migrations.joinpath("0004_worker_release_provenance.sql").is_file()
+          assert migrations.joinpath("0005_recovery_activation_event.sql").is_file()
+          assert migrations.joinpath("0006_service_alert_workflow.sql").is_file()
           PY
           "$tmpdir/venv/bin/python" \
             "$GITHUB_WORKSPACE/tools/verify_installed_release.py" \
@@ -491,6 +528,13 @@ jobs:
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      BLIS_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
       DJANGO_SETTINGS_MODULE: market_research_web.settings_test
       INTERNAL_WEB_SECRET_KEY: ci-only-operations-secret-0123456789abcdef
       INTERNAL_WEB_DATABASE_ENGINE: postgresql
@@ -507,6 +551,7 @@ jobs:
       INTERNAL_WEB_DATABASE_APPLICATION_NAME: market-research-web
       RESEARCH_OPS_SOURCE_ROOT: ${{ github.workspace }}
       RESEARCH_OPS_TEST_DATABASE_URL: postgresql://postgres:operations-ci-password@127.0.0.1:5432/research_ops_ci?sslmode=disable
+      RESEARCH_OPS_CI_RELEASE_MANIFEST: /tmp/research-ops-ci-release.json
       RESEARCH_DATA_ROOT: /tmp/market-research-operations/datasets
       RESEARCH_ARTIFACT_ROOT: /tmp/market-research-operations/artifacts
       RESEARCH_REPORT_ROOT: /tmp/market-research-operations/reports
@@ -527,6 +572,14 @@ jobs:
         run: |
           uv lock --check
           uv sync --frozen --all-packages --all-groups
+      - name: Build exact release inputs for the blank-restore rehearsal
+        run: |
+          set -euo pipefail
+          scripts/platform build
+          uv run --no-sync python tools/release_manifest.py \
+            --release-id "ci-${GITHUB_SHA}" \
+            --artifacts-dir dist/platform \
+            --output "$RESEARCH_OPS_CI_RELEASE_MANIFEST"
       - name: Apply Web migrations required by Operations foreign keys
         run: uv run --no-sync python apps/internal_web/manage.py migrate --noinput --settings=market_research_web.settings_test
       - name: Run the complete Operations suite with zero skips

@@ -19,6 +19,7 @@ promotion gate.
 - [ ] Focused tests for every changed boundary pass first.
 - [ ] Pytest collection passes for Research, Web, and Operations.
 - [ ] The Research full suite runs exactly once after focused checks and passes.
+- [ ] Bubblewrap, `prlimit`, and `timeout` are installed; strategy package, network/filesystem isolation, timeout, memory, and output fault tests pass without skips.
 - [ ] The Web full suite passes against supported PostgreSQL with all PostgreSQL-specific tests executed and zero unexpected skips.
 - [ ] The Operations full suite passes against supported PostgreSQL with all integration tests executed and zero unexpected skips.
 - [ ] Browser E2E covers login, authorization denial, CSRF, validation submission, review/approval separation, report access, and safe error projection through the supported stack.
@@ -59,6 +60,7 @@ promotion gate.
 - [ ] Preflight passes against the actual release, external paths, owners, PKI, secrets, storage receipt, off-site policy, retention, RPO, and RTO.
 - [ ] Web, operations API, two outbox workers, admitted job worker, and validator start under systemd and report the same release.
 - [ ] SIGTERM drains within the declared timeout; crash restart and host reboot recover without duplicate publication.
+- [ ] The admitted job dispatcher runs in a supervised spawn child; forced child timeout, memory death, invalid output, and crash fail only that fenced job and the parent accepts later work.
 - [ ] Database-down, validator-stale, worker-stale, outbox-failure, receipt-pending, backup-fence, and release-mismatch conditions close the appropriate readiness endpoint and recover after the dependency is restored.
 
 ## Security and organization-owned gates

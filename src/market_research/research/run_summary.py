@@ -68,11 +68,8 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
             gate = _safe_label(
                 scenario.get("scenario_acceptance_gate_result"), default="UNKNOWN"
             )
-            cost_model = (
-                scenario.get("cost_model")
-                if isinstance(scenario.get("cost_model"), dict)
-                else {}
-            )
+            raw_cost_model = scenario.get("cost_model")
+            cost_model = raw_cost_model if isinstance(raw_cost_model, dict) else {}
             fee_rate = _safe_float(cost_model.get("fee_rate"))
             if role == "base":
                 base_gate_counts[gate] += 1
@@ -183,7 +180,7 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
         if nearest_candidate is not None
         else (),
         strategy_diagnostics_summary=diagnostics_summary,
-        top_exit_reasons=dict(diagnostics_summary.get("top_exit_reasons") or {}),
+        top_exit_reasons=_int_mapping(diagnostics_summary.get("top_exit_reasons")),
         validation_raw_sell_filter_blocked_while_in_position_count=_safe_int(
             diagnostics_summary.get(
                 "validation_raw_sell_filter_blocked_while_in_position_count"
@@ -315,7 +312,7 @@ def _strategy_diagnostics_summary(container: dict[str, Any]) -> dict[str, object
         or {}
     )
     final_holdout = _diagnostics_dict(container, "final_holdout_strategy_diagnostics")
-    top_exit_reasons = Counter()
+    top_exit_reasons: Counter[str] = Counter()
     for diagnostics in (validation, final_holdout or {}):
         distribution = (
             diagnostics.get("exit_reason_distribution")
@@ -353,6 +350,12 @@ def _strategy_diagnostics_summary(container: dict[str, Any]) -> dict[str, object
             else None
         ),
     }
+
+
+def _int_mapping(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): count for key, count in value.items() if isinstance(count, int)}
 
 
 def _next_action(

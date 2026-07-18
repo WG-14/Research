@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, SupportsFloat, SupportsIndex, SupportsInt, cast
 
 from market_research.paths import ResearchPathError, ResearchPathManager
 from .artifact_store import ResearchArtifactContext
@@ -986,13 +986,15 @@ def _metric_value(
         return None
     benchmark_value = 0.0
     if benchmark == "buy_and_hold":
-        benchmark_value = _as_float(metrics.get("benchmark_buy_and_hold_return_pct"))
-        if benchmark_value is None:
+        buy_and_hold_value = _as_float(metrics.get("benchmark_buy_and_hold_return_pct"))
+        if buy_and_hold_value is None:
             return None
+        benchmark_value = buy_and_hold_value
     elif benchmark == "configured":
-        benchmark_value = _as_float(metrics.get("benchmark_configured_return_pct"))
-        if benchmark_value is None:
+        configured_value = _as_float(metrics.get("benchmark_configured_return_pct"))
+        if configured_value is None:
             return None
+        benchmark_value = configured_value
     if benchmark in {"cash", "buy_and_hold", "configured"}:
         return raw - benchmark_value
     return raw
@@ -1300,7 +1302,8 @@ def _seed_from_hash(value: str) -> int:
 
 def _as_float(value: object) -> float | None:
     try:
-        parsed = float(value)
+        numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+        parsed = float(numeric)
     except (TypeError, ValueError):
         return None
     if parsed != parsed or parsed in {float("inf"), float("-inf")}:
@@ -1312,7 +1315,8 @@ def _as_int(value: object) -> int | None:
     if isinstance(value, bool):
         return int(value)
     try:
-        return int(value)  # type: ignore[arg-type]
+        numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+        return int(numeric)
     except (TypeError, ValueError):
         return None
 

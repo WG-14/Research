@@ -3,6 +3,7 @@
 from market_research.research.strategy_contract import ResearchStrategyPlugin
 from market_research.research.strategy_spec import (
     StrategyFeatureDefinition,
+    StrategyParameterSchema,
     StrategyRuleDeclaration,
     StrategyRuleSpec,
     StrategySpec,
@@ -29,6 +30,27 @@ BUY_AND_HOLD_BASELINE_SPEC = StrategySpec(
         "rules": (),
         "description": "Executable canary emits one BUY intent, then HOLD decisions.",
     },
+    parameter_schema=(
+        StrategyParameterSchema(
+            "BUY_HOLD_BUY_INDEX",
+            "int",
+            required=True,
+            min_value=0,
+            unit="candle_index",
+            description="Zero-based completed-candle index for the single entry.",
+            optimization_allowed=False,
+            since_version="buy_and_hold_baseline.research_contract.v1",
+        ),
+        StrategyParameterSchema(
+            "BUY_HOLD_DECISION_REASON",
+            "str",
+            unit="label",
+            description="Audit reason attached to the deterministic entry decision.",
+            default_value="buy_and_hold_architecture_canary",
+            optimization_allowed=False,
+            since_version="buy_and_hold_baseline.research_contract.v1",
+        ),
+    ),
     rule_spec=StrategyRuleSpec(
         1,
         entry=StrategyRuleDeclaration(
@@ -83,6 +105,10 @@ _runtime_factory = make_event_builder_runtime_factory(
 
 
 def build_buy_and_hold_baseline_plugin() -> ResearchStrategyPlugin:
+    from market_research.research.strategy_manifest import (
+        builtin_strategy_manifest_hash,
+    )
+
     return ResearchStrategyPlugin(
         name=BUY_AND_HOLD_BASELINE_SPEC.strategy_name,
         version=BUY_AND_HOLD_BASELINE_SPEC.strategy_version,
@@ -95,6 +121,7 @@ def build_buy_and_hold_baseline_plugin() -> ResearchStrategyPlugin:
         runtime_factory=_runtime_factory,
         reconstruction_module=__name__,
         reconstruction_qualname="build_buy_and_hold_baseline_plugin",
+        package_manifest_hash=builtin_strategy_manifest_hash(__name__),
     )
 
 

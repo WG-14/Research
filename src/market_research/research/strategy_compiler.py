@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NoReturn
 
 from .backtest_types import BacktestRunContext
 from .hashing import sha256_prefixed
@@ -186,7 +186,7 @@ _CAPABILITY_DIRECTIONS = frozenset({"long_only"})
 _CAPABILITY_PORTFOLIO_MODES = frozenset({"single_asset_cash_qty"})
 
 
-def _invalid(reason: str, detail: str = "") -> None:
+def _invalid(reason: str, detail: str = "") -> NoReturn:
     raise StrategyCompilationError(reason, detail)
 
 
@@ -203,6 +203,34 @@ def _is_canonical_json_value(value: object) -> bool:
     if isinstance(value, (list, tuple)):
         return all(_is_canonical_json_value(item) for item in value)
     return False
+
+
+def _typed_string_key_mapping(value: Mapping[object, object]) -> dict[str, object]:
+    typed: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            _invalid("compiled_contract_noncanonical_nested_value")
+        typed[key] = item
+    return typed
+
+
+def _validated_parameter_sources(
+    values: Mapping[str, object],
+    *,
+    parameter_keys: set[str],
+) -> dict[str, str]:
+    if set(values) != parameter_keys:
+        _invalid("compiled_contract_parameter_source_map_invalid")
+    sources: dict[str, str] = {}
+    for key, value in values.items():
+        if (
+            not isinstance(value, str)
+            or not value
+            or value not in ALLOWED_PARAMETER_SOURCES
+        ):
+            _invalid("compiled_contract_parameter_source_map_invalid")
+        sources[key] = value
+    return sources
 
 
 def _validate_non_negative_optional_int(value: object, field: str) -> None:
@@ -366,89 +394,120 @@ def validate_compiled_strategy_contract(
             "compiled_contract_unknown_field", ",".join(unknown)
         )
     material = dict(payload)
-    recorded = material.pop("compiled_contract_hash")
+    recorded_value = material.pop("compiled_contract_hash")
+    schema_version = material.get("schema_version")
     if (
-        isinstance(material.get("schema_version"), bool)
-        or not isinstance(material.get("schema_version"), int)
-        or material.get("schema_version") != StrategyCompiler.SCHEMA_VERSION
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != StrategyCompiler.SCHEMA_VERSION
     ):
         raise StrategyCompilationError("compiled_contract_schema_version_unsupported")
-    mapping_fields = (
-        "raw_parameters",
-        "materialized_parameters",
-        "parameter_source_map",
-        "data_requirements",
-        "capability_contract",
-    )
-    if any(not isinstance(material.get(name), dict) for name in mapping_fields):
+
+    raw_parameters_value = material.get("raw_parameters")
+    materialized_parameters_value = material.get("materialized_parameters")
+    parameter_source_map_value = material.get("parameter_source_map")
+    data_requirements_value = material.get("data_requirements")
+    capability_contract_value = material.get("capability_contract")
+    if not isinstance(raw_parameters_value, dict):
         raise StrategyCompilationError("compiled_contract_nested_payload_invalid")
-    if (
-        not isinstance(material.get("strategy_name"), str)
-        or not material["strategy_name"]
-    ):
+    if not isinstance(materialized_parameters_value, dict):
+        raise StrategyCompilationError("compiled_contract_nested_payload_invalid")
+    if not isinstance(parameter_source_map_value, dict):
+        raise StrategyCompilationError("compiled_contract_nested_payload_invalid")
+    if not isinstance(data_requirements_value, dict):
+        raise StrategyCompilationError("compiled_contract_nested_payload_invalid")
+    if not isinstance(capability_contract_value, dict):
+        raise StrategyCompilationError("compiled_contract_nested_payload_invalid")
+
+    strategy_name = material.get("strategy_name")
+    if not isinstance(strategy_name, str) or not strategy_name:
         raise StrategyCompilationError(
             "compiled_contract_nested_payload_invalid", "strategy_name"
         )
-    if (
-        not isinstance(material.get("strategy_version"), str)
-        or not material["strategy_version"]
-    ):
+
+    strategy_version = material.get("strategy_version")
+    if not isinstance(strategy_version, str) or not strategy_version:
         raise StrategyCompilationError(
             "compiled_contract_nested_payload_invalid", "strategy_version"
         )
     if not _is_canonical_json_value(material):
         raise StrategyCompilationError("compiled_contract_noncanonical_nested_value")
-    parameter_keys = set(material["materialized_parameters"])
-    if set(material["parameter_source_map"]) != parameter_keys or any(
-        not isinstance(value, str)
-        or not value
-        or value not in ALLOWED_PARAMETER_SOURCES
-        for value in material["parameter_source_map"].values()
-    ):
-        raise StrategyCompilationError("compiled_contract_parameter_source_map_invalid")
-    _validate_data_requirements(material["data_requirements"])
-    capability = material["capability_contract"]
-    _validate_capability_contract(capability)
-    _validate_exit_policy(
-        material.get("exit_policy"),
-        exit_mode=material.get("exit_mode"),
-        strategy_name=material["strategy_name"],
+
+    raw_parameters = _typed_string_key_mapping(raw_parameters_value)
+    materialized_parameters = _typed_string_key_mapping(materialized_parameters_value)
+    parameter_source_values = _typed_string_key_mapping(parameter_source_map_value)
+    data_requirements = _typed_string_key_mapping(data_requirements_value)
+    capability = _typed_string_key_mapping(capability_contract_value)
+    parameter_keys = set(materialized_parameters)
+    parameter_source_map = _validated_parameter_sources(
+        parameter_source_values,
+        parameter_keys=parameter_keys,
     )
+    _validate_data_requirements(data_requirements)
+    _validate_capability_contract(capability)
+
+    exit_policy_value = material.get("exit_policy")
+    exit_mode_value = material.get("exit_mode")
+    _validate_exit_policy(
+        exit_policy_value,
+        exit_mode=exit_mode_value,
+        strategy_name=strategy_name,
+    )
+    if not isinstance(exit_mode_value, str):
+        raise StrategyCompilationError(
+            "compiled_contract_nested_payload_invalid", "exit_mode"
+        )
+    exit_mode = exit_mode_value
+    exit_policy = (
+        _typed_string_key_mapping(exit_policy_value)
+        if isinstance(exit_policy_value, Mapping)
+        else None
+    )
+
     hash_fields = (
         "materialized_parameters_hash",
         "capability_contract_hash",
         "strategy_plugin_contract_hash",
         "strategy_registry_hash",
     )
+    validated_hashes: dict[str, str] = {}
     for name in hash_fields:
-        if not is_sha256_hash(material.get(name)):
+        value = material.get(name)
+        if not isinstance(value, str) or not is_sha256_hash(value):
             raise StrategyCompilationError(
                 "compiled_contract_hash_format_invalid", name
             )
-    if not is_sha256_hash(recorded):
+        validated_hashes[name] = value
+    if not isinstance(recorded_value, str) or not is_sha256_hash(recorded_value):
         raise StrategyCompilationError(
             "compiled_contract_hash_format_invalid", "compiled_contract_hash"
         )
+    recorded = recorded_value
     if (
-        sha256_prefixed(material["materialized_parameters"])
-        != material["materialized_parameters_hash"]
+        sha256_prefixed(materialized_parameters)
+        != validated_hashes["materialized_parameters_hash"]
     ):
         raise StrategyCompilationError("materialized_parameters_hash_mismatch")
-    if (
-        sha256_prefixed(material["capability_contract"])
-        != material["capability_contract_hash"]
-    ):
+    if sha256_prefixed(capability) != validated_hashes["capability_contract_hash"]:
         raise StrategyCompilationError("capability_contract_hash_mismatch")
     if sha256_prefixed(material) != recorded:
         raise StrategyCompilationError("compiled_contract_hash_mismatch")
     expectations = (
-        ("strategy_name", expected_strategy_name),
-        ("strategy_version", expected_strategy_version),
-        ("strategy_registry_hash", expected_registry_hash),
-        ("strategy_plugin_contract_hash", expected_plugin_hash),
+        ("strategy_name", strategy_name, expected_strategy_name),
+        ("strategy_version", strategy_version, expected_strategy_version),
+        (
+            "strategy_registry_hash",
+            validated_hashes["strategy_registry_hash"],
+            expected_registry_hash,
+        ),
+        (
+            "strategy_plugin_contract_hash",
+            validated_hashes["strategy_plugin_contract_hash"],
+            expected_plugin_hash,
+        ),
     )
-    for name, expected in expectations:
-        if expected is not None and material[name] != expected:
+    for name, actual, expected in expectations:
+        if expected is not None and actual != expected:
             raise StrategyCompilationError("compiled_contract_identity_mismatch", name)
     if expected_compiled_hash is not None and recorded != expected_compiled_hash:
         raise StrategyCompilationError(
@@ -457,24 +516,20 @@ def validate_compiled_strategy_contract(
     if original_contract is not None:
         return original_contract
     return CompiledStrategyContract(
-        schema_version=material["schema_version"],
-        strategy_name=material["strategy_name"],
-        strategy_version=material["strategy_version"],
-        raw_parameters=dict(material["raw_parameters"]),
-        materialized_parameters=dict(material["materialized_parameters"]),
-        parameter_source_map=dict(material["parameter_source_map"]),
-        materialized_parameters_hash=material["materialized_parameters_hash"],
-        data_requirements=dict(material["data_requirements"]),
-        exit_policy=(
-            dict(material["exit_policy"])
-            if material.get("exit_policy") is not None
-            else None
-        ),
-        exit_mode=material["exit_mode"],
-        capability_contract=dict(material["capability_contract"]),
-        capability_contract_hash=material["capability_contract_hash"],
-        strategy_plugin_contract_hash=material["strategy_plugin_contract_hash"],
-        strategy_registry_hash=material["strategy_registry_hash"],
+        schema_version=schema_version,
+        strategy_name=strategy_name,
+        strategy_version=strategy_version,
+        raw_parameters=raw_parameters,
+        materialized_parameters=materialized_parameters,
+        parameter_source_map=parameter_source_map,
+        materialized_parameters_hash=validated_hashes["materialized_parameters_hash"],
+        data_requirements=data_requirements,
+        exit_policy=exit_policy,
+        exit_mode=exit_mode,
+        capability_contract=capability,
+        capability_contract_hash=validated_hashes["capability_contract_hash"],
+        strategy_plugin_contract_hash=validated_hashes["strategy_plugin_contract_hash"],
+        strategy_registry_hash=validated_hashes["strategy_registry_hash"],
         compiled_contract_hash=recorded,
     )
 

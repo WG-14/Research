@@ -332,8 +332,10 @@ def _validate_report_binding(
     conditions = sections.get("hypothesis_and_experiment_conditions")
     data_quality = sections.get("data_quality")
     conclusion = sections.get("research_conclusion")
-    if not all(
-        isinstance(value, dict) for value in (conditions, data_quality, conclusion)
+    if (
+        not isinstance(conditions, dict)
+        or not isinstance(data_quality, dict)
+        or not isinstance(conclusion, dict)
     ):
         raise ValidationError("historical_report_evidence_sections_incomplete")
 

@@ -16,7 +16,7 @@ import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Callable, Sequence
+from typing import Callable, Never, Sequence
 
 
 OPERATED_RUNTIME_PROFILE = "operated"
@@ -200,7 +200,7 @@ class _OperatedExecutionCapability:
     def __deepcopy__(self, _memo: object) -> None:
         raise TypeError("operated_execution_capability_not_copyable")
 
-    def __reduce__(self) -> None:
+    def __reduce__(self) -> Never:
         raise TypeError("operated_execution_capability_not_serializable")
 
 

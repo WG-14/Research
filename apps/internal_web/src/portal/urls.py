@@ -2,11 +2,28 @@ from __future__ import annotations
 
 from django.urls import path
 
-from . import views
+from . import api_views, views
 
 
 app_name = "portal"
 urlpatterns = [
+    path("api/v1/openapi.json", api_views.openapi_document, name="api-openapi"),
+    path("api/v1/jobs/", api_views.job_list, name="api-job-list"),
+    path(
+        "api/v1/manifests/<uuid:manifest_id>/jobs/",
+        api_views.job_submit,
+        name="api-job-submit",
+    ),
+    path(
+        "api/v1/jobs/<uuid:job_id>/",
+        api_views.job_detail,
+        name="api-job-detail",
+    ),
+    path(
+        "api/v1/jobs/<uuid:job_id>/cancel/",
+        api_views.job_cancel,
+        name="api-job-cancel",
+    ),
     path("login/", views.PortalLoginView.as_view(), name="login"),
     path("logout/", views.PortalLogoutView.as_view(), name="logout"),
     path("", views.dashboard, name="dashboard"),

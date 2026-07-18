@@ -38,6 +38,7 @@
     "src/market_research/research/strategy_registry.py",
     "src/market_research/research/strategy_compiler.py",
     "src/market_research/research/strategy_spec.py",
+    "src/market_research/research/strategy_manifest.py",
     "src/market_research/research/exit_decision.py",
     "src/market_research/research/immutable_contract.py"
   ],

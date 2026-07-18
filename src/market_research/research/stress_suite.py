@@ -301,15 +301,18 @@ def analyze_trade_order_monte_carlo(
         fail_reasons.append("stress_monte_carlo_no_closed_trades")
         if contract.get(
             "min_survival_probability"
-        ) is not None and survival_probability < float(
-            contract.get("min_survival_probability")
+        ) is not None and survival_probability < _required_float(
+            contract.get("min_survival_probability"),
+            "min_survival_probability",
         ):
             fail_reasons.append("stress_monte_carlo_survival_probability_failed")
         return {
             "status": "PASS" if not fail_reasons else "FAIL",
             "iterations": int(contract.get("iterations") or 0),
             "survival_probability": survival_probability,
-            "ruin_max_drawdown_pct": float(contract.get("ruin_max_drawdown_pct")),
+            "ruin_max_drawdown_pct": _required_float(
+                contract.get("ruin_max_drawdown_pct"), "ruin_max_drawdown_pct"
+            ),
             "fail_reasons": sorted(set(fail_reasons)),
             "limitations": list(MONTE_CARLO_LIMITATIONS),
         }
@@ -320,7 +323,9 @@ def analyze_trade_order_monte_carlo(
     seed = int(seed_hash.split(":", 1)[1][:16], 16)
     rng = random.Random(seed)
     iterations = int(contract.get("iterations") or 0)
-    ruin_mdd = float(contract.get("ruin_max_drawdown_pct"))
+    ruin_mdd = _required_float(
+        contract.get("ruin_max_drawdown_pct"), "ruin_max_drawdown_pct"
+    )
     pnls = [float(trade.net_pnl) for trade in closed_trades]
     terminal_equities: list[float] = []
     max_drawdowns: list[float] = []
@@ -336,7 +341,9 @@ def analyze_trade_order_monte_carlo(
         if mdd <= ruin_mdd:
             survival_count += 1
     survival_probability = survival_count / iterations if iterations > 0 else 0.0
-    if survival_probability < float(contract.get("min_survival_probability")):
+    if survival_probability < _required_float(
+        contract.get("min_survival_probability"), "min_survival_probability"
+    ):
         fail_reasons.append("stress_monte_carlo_survival_probability_failed")
     return _json_safe(
         {
@@ -626,12 +633,12 @@ def analyze_parameter_perturbation(
     base_candidate = candidate_by_params.get(
         _parameter_signature(base_parameter_values)
     )
-    base_metrics = (
+    raw_base_metrics = (
         base_candidate.get("validation_metrics")
         if isinstance(base_candidate, dict)
-        and isinstance(base_candidate.get("validation_metrics"), dict)
-        else {}
+        else None
     )
+    base_metrics = raw_base_metrics if isinstance(raw_base_metrics, dict) else {}
     base_return = _finite_or_none(base_metrics.get("return_pct"))
     base_trade_count = _finite_or_none(base_metrics.get("trade_count"))
     cases: list[dict[str, Any]] = []
@@ -653,14 +660,16 @@ def analyze_parameter_perturbation(
                 matched_gate = None
             else:
                 matched_candidate_id = matched.get("candidate_id")
+                raw_validation_metrics = matched.get("validation_metrics")
                 validation_metrics = (
-                    matched.get("validation_metrics")
-                    if isinstance(matched.get("validation_metrics"), dict)
+                    raw_validation_metrics
+                    if isinstance(raw_validation_metrics, dict)
                     else {}
                 )
+                raw_final_holdout_metrics = matched.get("final_holdout_metrics")
                 final_holdout_metrics = (
-                    matched.get("final_holdout_metrics")
-                    if isinstance(matched.get("final_holdout_metrics"), dict)
+                    raw_final_holdout_metrics
+                    if isinstance(raw_final_holdout_metrics, dict)
                     else None
                 )
                 validation_return = _finite_or_none(
@@ -819,12 +828,10 @@ def analyze_parameter_perturbation(
 def analyze_risk_adjusted_score(
     *, contract: dict[str, Any], metrics_v2: dict[str, Any] | None
 ) -> dict[str, Any]:
-    return_risk = (
-        metrics_v2.get("return_risk")
-        if isinstance(metrics_v2, dict)
-        and isinstance(metrics_v2.get("return_risk"), dict)
-        else {}
+    raw_return_risk = (
+        metrics_v2.get("return_risk") if isinstance(metrics_v2, dict) else None
     )
+    return_risk = raw_return_risk if isinstance(raw_return_risk, dict) else {}
     cagr = _finite_or_none(return_risk.get("cagr_pct"))
     mdd = _finite_or_none(return_risk.get("max_drawdown_pct"))
     calmar = (
@@ -881,19 +888,24 @@ def analyze_signal_omission(
     min_retention = float(contract.get("min_return_retention_pct") or 0.0)
     min_omitted = int(contract.get("min_omitted_entry_signals") or 1)
     base_return = _finite_or_none(original_metrics.get("return_pct"))
-    by_rate = {float(run.get("omission_rate_pct")): run for run in runs}
+    by_rate: dict[float, dict[str, Any]] = {}
+    for run in runs:
+        rate = _finite_or_none(run.get("omission_rate_pct"))
+        if rate is not None:
+            by_rate[rate] = run
     cases: list[dict[str, Any]] = []
     fail_reasons: list[str] = []
     for rate in expected_rates:
-        run = by_rate.get(rate)
+        matched_run = by_rate.get(rate)
         reasons: list[str] = []
-        if not isinstance(run, dict):
+        if not isinstance(matched_run, dict):
             reasons.append("stress_signal_omission_run_missing")
             evidence: dict[str, Any] = {}
             stressed_return = None
         else:
-            evidence = run.get("decision_stream_perturbation_evidence") or {}
-            stressed_return = _finite_or_none(run.get("return_pct"))
+            raw_evidence = matched_run.get("decision_stream_perturbation_evidence")
+            evidence = raw_evidence if isinstance(raw_evidence, dict) else {}
+            stressed_return = _finite_or_none(matched_run.get("return_pct"))
             if evidence.get("layer") != "decision_stream_pre_execution":
                 reasons.append("stress_signal_omission_wrong_layer")
             if int(evidence.get("omitted_entry_signal_count") or 0) < min_omitted:
@@ -1131,11 +1143,22 @@ def _finite_or_none(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _json_safe(value: Any) -> Any:
+def _required_float(value: Any, field: str) -> float:
+    parsed = _finite_or_none(value)
+    if parsed is None:
+        raise ValueError(f"stress_suite_{field}_must_be_finite")
+    return parsed
+
+
+def _json_safe(value: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): _json_safe_value(item) for key, item in value.items()}
+
+
+def _json_safe_value(value: Any) -> Any:
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
+        return [_json_safe_value(item) for item in value]
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     return value

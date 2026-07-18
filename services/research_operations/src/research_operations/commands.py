@@ -9,21 +9,123 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .admission import AdmissionDecision, ExperimentAdmissionStore
 from .migrate import apply_migrations
 from .outbox import OutboxStore
 from .worker import DjangoAuditProjector, OutboxWorker, WorkerSettings
 
+if TYPE_CHECKING:
+    from .backup import VerifiedBackup
+
 
 def dispatch(args: argparse.Namespace) -> int:
+    if args.command == "alert-raise":
+        from .alerting import ServiceAlertStore
+
+        service_alert = ServiceAlertStore().raise_alert(
+            idempotency_key=args.idempotency_key,
+            condition_code=args.condition_code,
+            severity=args.severity,
+            source_actor_id=args.source_actor_id,
+            endpoint_id=args.endpoint_id,
+            acknowledgment_timeout_seconds=args.acknowledgment_timeout_seconds,
+        )
+        _write(_alert_payload(service_alert))
+        return 0
+
+    if args.command == "alert-deliver-once":
+        from .alerting import LoopbackOrHttpsAlertTransport, ServiceAlertStore
+        from .errors import AlertTransportError
+
+        service_alert_store = ServiceAlertStore()
+        claim = service_alert_store.claim_delivery(
+            worker_id=args.worker_id,
+            endpoint_id=args.endpoint_id,
+            lease_seconds=args.lease_seconds,
+            max_attempts=args.max_attempts,
+        )
+        if claim is None:
+            _write({"processed": False})
+            return 0
+        transport = LoopbackOrHttpsAlertTransport(
+            _required_secret_file("RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE")
+        )
+        try:
+            response_code = transport.send(claim)
+        except AlertTransportError:
+            status = service_alert_store.record_delivery_failure(
+                claim,
+                reason_code="delivery_transport_failed",
+                max_attempts=args.max_attempts,
+                retry_delay_seconds=args.retry_delay_seconds,
+            )
+            _write(
+                {
+                    "alert_id": str(claim.alert_id),
+                    "delivery_id": str(claim.delivery_id),
+                    "processed": True,
+                    "status": status,
+                }
+            )
+            return 3
+        service_alert_store.mark_delivered(claim, response_code=response_code)
+        _write(
+            {
+                "alert_id": str(claim.alert_id),
+                "delivery_id": str(claim.delivery_id),
+                "processed": True,
+                "status": "DELIVERED",
+            }
+        )
+        return 0
+
+    if args.command == "alert-acknowledge":
+        from .alerting import ServiceAlertStore
+
+        service_alert = ServiceAlertStore().acknowledge(
+            alert_id=args.alert_id,
+            actor_id=args.actor_id,
+            reason_code=args.reason_code,
+        )
+        _write(_alert_payload(service_alert))
+        return 0
+
+    if args.command == "alert-escalate-once":
+        from .alerting import ServiceAlertStore
+
+        escalated_alert = ServiceAlertStore().escalate_due(
+            actor_id=args.actor_id,
+            endpoint_id=args.endpoint_id,
+            repeat_after_seconds=args.repeat_after_seconds,
+            maximum_level=args.maximum_level,
+        )
+        if escalated_alert is None:
+            _write({"processed": False})
+            return 0
+        payload = _alert_payload(escalated_alert)
+        payload["processed"] = True
+        _write(payload)
+        return 0
+
+    if args.command == "alert-resolve":
+        from .alerting import ServiceAlertStore
+
+        service_alert = ServiceAlertStore().resolve(
+            alert_id=args.alert_id,
+            actor_id=args.actor_id,
+            reason_code=args.reason_code,
+        )
+        _write(_alert_payload(service_alert))
+        return 0
+
     if args.command == "audit-validate":
         from .health import record_audit_validation
 
-        result = record_audit_validation()
-        _write(result)
-        return 0 if result["status"] == "PASS" else 3
+        audit_result = record_audit_validation()
+        _write(audit_result)
+        return 0 if audit_result["status"] == "PASS" else 3
 
     if args.command == "metrics":
         from .metrics import collect_metrics, render_prometheus
@@ -43,16 +145,22 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "recovery-verify":
         from .backup import (
             create_signed_recovery_receipt,
+            parse_recovery_started_at,
             record_restore_drill,
             verify_restored_application_state,
             verify_signed_recovery_receipt,
         )
 
         verified = _verify_backup(args)
-        result = verify_restored_application_state(
+        recovery_verification = verify_restored_application_state(
             verified_backup=verified,
             restore_namespace=Path(args.restore_namespace),
             maximum_records=args.maximum_records,
+            started_at=(
+                parse_recovery_started_at(args.started_at)
+                if args.started_at is not None
+                else None
+            ),
         )
         receipt_path = Path(args.receipt_path)
         verification_key = Path(
@@ -64,21 +172,21 @@ def dispatch(args: argparse.Namespace) -> int:
                 registered_result,
                 registered_document,
             ) = verify_signed_recovery_receipt(
-                verification=result,
+                verification=recovery_verification,
                 receipt_path=receipt_path,
                 verification_public_key=verification_key,
             )
         else:
             receipt_hash, _signature_path = create_signed_recovery_receipt(
-                verification=result,
+                verification=recovery_verification,
                 receipt_path=receipt_path,
                 signing_private_key=Path(
                     _required_env("RESEARCH_OPS_BACKUP_SIGNING_KEY_FILE")
                 ),
                 verification_public_key=verification_key,
             )
-            registered_result = result
-            registered_document = result.document()
+            registered_result = recovery_verification
+            registered_document = recovery_verification.document()
         drill_id = record_restore_drill(
             control_dsn=_required_secret_file("RESEARCH_OPS_CONTROL_DATABASE_URL_FILE"),
             verification=registered_result,
@@ -108,13 +216,13 @@ def dispatch(args: argparse.Namespace) -> int:
         )
         state = recovery_activation_state(verified)
         if state == "SEALED":
-            result = verify_restored_application_state(
+            activation_verification = verify_restored_application_state(
                 verified_backup=verified,
                 restore_namespace=Path(args.restore_namespace),
                 maximum_records=args.maximum_records,
             )
             receipt_hash, signed_result, _document = verify_signed_recovery_receipt(
-                verification=result,
+                verification=activation_verification,
                 receipt_path=Path(args.receipt_path),
                 verification_public_key=Path(
                     _required_env("RESEARCH_OPS_BACKUP_VERIFICATION_KEY_FILE")
@@ -136,8 +244,13 @@ def dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "migrate":
-        result = apply_migrations()
-        _write({"applied": result.applied, "already_applied": result.already_applied})
+        migration_result = apply_migrations()
+        _write(
+            {
+                "applied": migration_result.applied,
+                "already_applied": migration_result.already_applied,
+            }
+        )
         return 0
 
     if args.command == "outbox-scan":
@@ -157,7 +270,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "outbox-worker":
         store = OutboxStore()
-        worker = OutboxWorker(
+        outbox_worker = OutboxWorker(
             store=store,
             projector=DjangoAuditProjector(),
             settings=WorkerSettings(
@@ -171,12 +284,12 @@ def dispatch(args: argparse.Namespace) -> int:
         if args.once:
             store.worker_heartbeat(worker_id=args.worker_id, state="STARTING")
             try:
-                processed = worker.run_one()
+                processed = outbox_worker.run_one()
             finally:
                 store.worker_heartbeat(worker_id=args.worker_id, state="STOPPED")
             _write({"processed": processed})
         else:
-            worker.run_forever()
+            outbox_worker.run_forever()
         return 0
 
     if args.command == "research-job-worker":
@@ -185,7 +298,7 @@ def dispatch(args: argparse.Namespace) -> int:
             ResearchJobWorkerSettings,
         )
 
-        worker = ResearchJobWorker(
+        research_worker = ResearchJobWorker(
             admissions=ExperimentAdmissionStore(),
             settings=ResearchJobWorkerSettings(
                 worker_id=args.worker_id,
@@ -194,26 +307,26 @@ def dispatch(args: argparse.Namespace) -> int:
             ),
         )
         if args.once:
-            worker.heartbeat_store.worker_heartbeat(
-                worker_id=worker.worker_heartbeat_id,
+            research_worker.heartbeat_store.worker_heartbeat(
+                worker_id=research_worker.worker_heartbeat_id,
                 state="STARTING",
             )
             try:
-                processed = worker.run_one()
+                processed = research_worker.run_one()
             finally:
-                worker.heartbeat_store.worker_heartbeat(
-                    worker_id=worker.worker_heartbeat_id,
+                research_worker.heartbeat_store.worker_heartbeat(
+                    worker_id=research_worker.worker_heartbeat_id,
                     state="STOPPED",
                 )
             _write({"processed": processed})
         else:
-            worker.run_forever()
+            research_worker.run_forever()
         return 0
 
     if args.command == "admitted-run":
         from .admitted import run_admitted_research_command
 
-        result = run_admitted_research_command(
+        admitted_result = run_admitted_research_command(
             command=args.research_command,
             manifest_path=args.manifest,
             request_id=args.request_id,
@@ -227,12 +340,14 @@ def dispatch(args: argparse.Namespace) -> int:
         )
         _write(
             {
-                "admission": _decision_payload(result.admission),
-                "executed": result.executed,
-                "residual_publication_window": result.residual_publication_window,
+                "admission": _decision_payload(admitted_result.admission),
+                "executed": admitted_result.executed,
+                "residual_publication_window": (
+                    admitted_result.residual_publication_window
+                ),
             }
         )
-        return result.exit_code
+        return admitted_result.exit_code
 
     if args.command == "admission-status":
         admissions = ExperimentAdmissionStore()
@@ -357,7 +472,7 @@ def _backup_manifest_create(args: argparse.Namespace) -> int:
     return 0
 
 
-def _verify_backup(args: argparse.Namespace):
+def _verify_backup(args: argparse.Namespace) -> VerifiedBackup:
     from .backup import verify_backup_set
 
     return verify_backup_set(
@@ -404,7 +519,16 @@ def _decision_payload(decision: AdmissionDecision) -> dict[str, Any]:
     # through argv-derived operator commands, stdout, logs, or diagnostics.
     payload.pop("lease_token", None)
     payload.pop("fencing_token", None)
-    return _json_value(payload)
+    return {str(key): _json_value(value) for key, value in payload.items()}
+
+
+def _alert_payload(alert: Any) -> dict[str, Any]:
+    return {
+        "alert_id": str(alert.alert_id),
+        "escalation_level": int(alert.escalation_level),
+        "last_event_hash": str(alert.last_event_hash),
+        "status": str(alert.status),
+    }
 
 
 def _json_value(value: Any) -> Any:

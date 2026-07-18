@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import suppress
 from dataclasses import dataclass
 from importlib import resources
 
@@ -23,7 +24,8 @@ class MigrationResult:
 def apply_migrations(dsn: str | None = None) -> MigrationResult:
     root = resources.files("research_operations.migrations")
     migration_files = sorted(
-        item for item in root.iterdir() if item.name.endswith(".sql")
+        (item for item in root.iterdir() if item.name.endswith(".sql")),
+        key=lambda item: item.name,
     )
     applied: list[str] = []
     existing: list[str] = []
@@ -69,8 +71,20 @@ def apply_migrations(dsn: str | None = None) -> MigrationResult:
                 )
                 conn.commit()
                 applied.append(name)
-        finally:
+        except BaseException:
+            # A failed DDL statement leaves PostgreSQL's transaction aborted.
+            # Roll it back before attempting the session-level unlock; never
+            # replace the authoritative migration error with a cleanup error.
+            # Closing the connection in the outer context remains the final
+            # lock-release guarantee if either cleanup operation cannot run.
+            with suppress(Exception):
+                conn.rollback()
+                conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_ID,))
+                conn.commit()
+            raise
+        else:
             conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_ID,))
+            conn.commit()
     return MigrationResult(tuple(applied), tuple(existing))
 
 

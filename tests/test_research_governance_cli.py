@@ -32,6 +32,41 @@ def test_governance_cli_records_transition_and_human_change_request(
         execute_research_command("research-governance-transition", transition, context)
         == 0
     )
+    for source, target, evidence in (
+        (
+            "DRAFT",
+            "BACKTESTED",
+            ["backtest_report_hash=sha256:" + "1" * 64],
+        ),
+        (
+            "BACKTESTED",
+            "ROBUSTNESS_PASSED",
+            ["stress_suite_hash=sha256:" + "2" * 64],
+        ),
+        (
+            "ROBUSTNESS_PASSED",
+            "OUT_OF_SAMPLE_PASSED",
+            ["final_holdout_confirmation_hash=sha256:" + "3" * 64],
+        ),
+    ):
+        advance = argparse.Namespace(
+            subject_type="strategy_candidate",
+            subject_id="candidate-1",
+            subject_version="1",
+            from_state=source,
+            to_state=target,
+            actor="researcher-a",
+            reason=f"advance candidate to {target}",
+            evidence=evidence,
+        )
+        assert (
+            execute_research_command(
+                "research-governance-transition",
+                advance,
+                context,
+            )
+            == 0
+        )
 
     changes_path = tmp_path / "changes.json"
     changes_path.write_text(

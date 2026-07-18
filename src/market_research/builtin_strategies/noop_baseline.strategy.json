@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "strategy_id": "noop_baseline",
+  "display_name": "No-op Baseline",
+  "strategy_version": "noop_baseline.research_contract.v1",
+  "contract_version": "research-strategy-plugin.v6",
+  "status": "ACTIVE",
+  "owner": {
+    "team": "research-platform",
+    "responsibility": "baseline-contract-maintenance"
+  },
+  "supported_assets": ["manifest_declared_single_asset"],
+  "supported_markets": ["manifest_declared_offline_market"],
+  "required_data": [
+    {
+      "name": "candles",
+      "required": true,
+      "fields": ["ts", "open", "high", "low", "close", "volume"],
+      "timeframe": "manifest_declared",
+      "timezone": "manifest_declared",
+      "min_rows": 1
+    }
+  ],
+  "entrypoint": "market_research.builtin_strategies.noop_baseline:build_noop_baseline_plugin",
+  "parameter_schema_source": "strategy_spec",
+  "output_schema": {
+    "decision_stream": "research-decision-event.v1",
+    "common_result": "research-common-result.v1"
+  },
+  "resource_limits": {
+    "max_runtime_seconds": 3600,
+    "max_memory_mb": 1400,
+    "max_cpu_cores": 1,
+    "max_output_bytes": 268435456,
+    "max_parallel_runs": 1
+  },
+  "permissions": {
+    "network": "denied",
+    "database_write": false,
+    "filesystem_reads": ["immutable_dataset_snapshot"],
+    "filesystem_writes": ["platform_managed_temporary_output"]
+  },
+  "supported_platform_contract_versions": [6],
+  "aliases": [],
+  "hypothesis": {
+    "observed_phenomenon": "Zero exposure is the cash opportunity-cost reference for strategy research.",
+    "economic_rationale": "A candidate must improve on doing nothing after costs and risk.",
+    "expected_mechanism": "Deterministic HOLD decisions preserve starting cash and produce no trades.",
+    "applicable_conditions": ["Any immutable ordered candle dataset", "Cash is an admissible comparison target"],
+    "failure_conditions": ["The common engine creates a position without an entry intent"],
+    "entry_conditions": ["Never enter"],
+    "exit_conditions": ["Never exit because no position is opened"],
+    "invalidation_conditions": ["Any trade is produced", "Identical inputs produce different decisions"],
+    "time_limit": "Bounded by experiment end and declared runtime limit.",
+    "data_leakage_risks": ["Future candle access despite no signal need"],
+    "known_limitations": ["Not an alpha hypothesis", "Does not model cash yield"],
+    "retirement_criteria": ["A reviewed cash-baseline contract supersedes this version"]
+  }
+}

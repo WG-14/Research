@@ -41,7 +41,9 @@ def parse_immutable_locator(value: Any) -> ImmutableLocator:
         raise LocatorValidationError("immutable_locator_unknown_type")
     path = value.get("path")
     content_hash = value.get("artifact_content_hash")
-    if not all(isinstance(item, str) and item.strip() for item in (path, content_hash)):
+    if not isinstance(path, str) or not path.strip():
+        raise LocatorValidationError("immutable_locator_identity_material_missing")
+    if not isinstance(content_hash, str) or not content_hash.strip():
         raise LocatorValidationError("immutable_locator_identity_material_missing")
     resolved = Path(path).expanduser()
     if not resolved.is_absolute():

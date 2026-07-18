@@ -340,6 +340,143 @@ def _supported_hypothesis(
     return subject
 
 
+def test_nonapproval_review_is_idempotent_and_key_conflict_fails_closed(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    request = {
+        "manager": manager,
+        "subject": subject,
+        "decision": HumanReviewDecision.REJECTED,
+        "reviewer_id": "reviewer-a",
+        "reviewer_role": "research_reviewer",
+        "rationale": "reviewed evidence does not support the candidate",
+        "reviewed_artifact_hash": _hash("4"),
+        "review_request_id": "review-request-1",
+    }
+
+    first = append_human_review(**request)
+    replay = append_human_review(**request)
+
+    assert replay == first
+    assert first["review_request_id"] == "review-request-1"
+    assert first["review_request_hash"].startswith("sha256:")
+    rows = [
+        json.loads(line)
+        for line in governance_registry_path(manager)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len([row for row in rows if row.get("review_request_id")]) == 1
+    with pytest.raises(GovernanceError, match="human_review_idempotency_conflict"):
+        append_human_review(
+            **{
+                **request,
+                "rationale": "same key cannot describe another review",
+            }
+        )
+    assert validate_governance_registry(manager)["status"] == "PASS"
+
+
+def test_nonapproval_review_requires_an_authoritative_reviewable_lifecycle(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    missing_candidate = GovernanceSubject(
+        GovernanceSubjectType.STRATEGY_CANDIDATE,
+        "missing-candidate",
+        "1",
+    )
+    review = {
+        "manager": manager,
+        "decision": HumanReviewDecision.REJECTED,
+        "reviewer_id": "reviewer-a",
+        "reviewer_role": "research_reviewer",
+        "rationale": "independent human review",
+        "reviewed_artifact_hash": _hash("4"),
+    }
+    with pytest.raises(GovernanceError, match="subject_lifecycle_missing"):
+        append_human_review(subject=missing_candidate, **review)
+
+    draft_candidate = GovernanceSubject(
+        GovernanceSubjectType.STRATEGY_CANDIDATE,
+        "draft-candidate",
+        "1",
+    )
+    append_lifecycle_transition(
+        manager=manager,
+        subject=draft_candidate,
+        from_state=None,
+        to_state="DRAFT",
+        actor_id="researcher-a",
+        reason="candidate initialized",
+    )
+    with pytest.raises(GovernanceError, match="lifecycle_not_reviewable:DRAFT"):
+        append_human_review(subject=draft_candidate, **review)
+
+    missing_hypothesis = GovernanceSubject(
+        GovernanceSubjectType.HYPOTHESIS,
+        "missing-hypothesis",
+        "1",
+    )
+    with pytest.raises(GovernanceError, match="subject_lifecycle_missing"):
+        append_human_review(subject=missing_hypothesis, **review)
+
+    hypothesis = GovernanceSubject(
+        GovernanceSubjectType.HYPOTHESIS,
+        "reviewable-hypothesis",
+        "1",
+    )
+    append_lifecycle_transition(
+        manager=manager,
+        subject=hypothesis,
+        from_state=None,
+        to_state="IDEA",
+        actor_id="researcher-a",
+        reason="hypothesis registered",
+        evidence_hashes={"hypothesis_semantic_fingerprint": _hash("9")},
+    )
+    row = append_human_review(subject=hypothesis, **review)
+    assert row["subject_id"] == "reviewable-hypothesis"
+    assert validate_governance_registry(manager)["status"] == "PASS"
+
+
+def test_registry_validation_keeps_unbound_legacy_review_readable(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    path = governance_registry_path(manager)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    material = {
+        "schema_version": 1,
+        "event_type": "human_review_decision",
+        "subject_type": "strategy_candidate",
+        "subject_id": "legacy-candidate",
+        "subject_version": "1",
+        "decision": "REJECTED",
+        "reviewer_id": "legacy-reviewer",
+        "reviewer_role": "research_reviewer",
+        "rationale": "legacy row predates request binding",
+        "reviewed_artifact_hash": _hash("4"),
+        "requested_changes": [],
+        "resolved_requirement_ids": [],
+        "decided_at": "2025-01-01T00:00:00+00:00",
+        "sequence": 0,
+        "prior_hash": None,
+    }
+    row = {
+        **material,
+        "row_hash": sha256_prefixed(
+            content_hash_payload(material),
+            label="research_governance_row",
+        ),
+    }
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    assert validate_governance_registry(manager)["status"] == "PASS"
+
+
 def test_changes_requested_must_be_resolved_before_human_approval(
     tmp_path: Path,
 ) -> None:

@@ -208,6 +208,17 @@ def build_dataset_quality_report_sql(
     depth_complete_snapshots_available = bool(
         depth_summary["l2_depth_complete_snapshots_available"]
     )
+    depth_required = bool(
+        getattr(getattr(manifest.dataset, "depth", None), "required", False)
+        or getattr(getattr(manifest, "execution_timing", None), "depth_required", False)
+    )
+    depth_gate_reasons: list[str] = []
+    if int(depth_summary["l2_depth_observation_time_missing_count"]):
+        depth_gate_reasons.append("orderbook_depth_observation_time_missing")
+    if int(depth_summary["l2_depth_observation_time_invalid_count"]):
+        depth_gate_reasons.append("orderbook_depth_observation_time_invalid")
+    if depth_gate_reasons and depth_required:
+        reasons.extend(depth_gate_reasons)
     payload: dict[str, Any] = {
         "schema_version": 2,
         "artifact_type": "dataset_quality_report",
@@ -286,6 +297,15 @@ def build_dataset_quality_report_sql(
         "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
         "depth_evidence_available": depth_complete_snapshots_available,
         "l2_depth_evidence_available": depth_complete_snapshots_available,
+        "l2_depth_required": depth_required,
+        "l2_depth_gate_status": (
+            "FAIL"
+            if depth_gate_reasons and depth_required
+            else "WARN"
+            if depth_gate_reasons
+            else "PASS"
+        ),
+        "l2_depth_gate_reasons": depth_gate_reasons,
         "depth_availability_source": (
             "sqlite_orderbook_depth_levels_complete_snapshots"
             if depth_complete_snapshots_available
@@ -837,6 +857,34 @@ def _top_of_book_split_sql(
             )[0]
             or 0
         )
+        observation_counts = conn.execute(
+            f"""
+            SELECT
+              SUM(CASE WHEN observed_at_epoch_sec IS NULL THEN 1 ELSE 0 END),
+              SUM(
+                CASE
+                  WHEN observed_at_epoch_sec IS NOT NULL
+                   AND (
+                     observed_at_epoch_sec <= -1.0e308
+                     OR observed_at_epoch_sec >= 1.0e308
+                     OR CAST(observed_at_epoch_sec * 1000.0 AS INTEGER)
+                        + CASE
+                            WHEN observed_at_epoch_sec * 1000.0
+                                 > CAST(observed_at_epoch_sec * 1000.0 AS INTEGER)
+                            THEN 1 ELSE 0
+                          END < ts
+                   )
+                  THEN 1 ELSE 0
+                END
+              )
+            FROM orderbook_top_snapshots
+            WHERE pair=? AND ts >= ? AND ts <= ? {source_predicate}
+            """,
+            tuple(params),
+        ).fetchone() or (0, 0)
+        missing_observed_quote_count = int(observation_counts[0] or 0)
+        invalid_observed_quote_count = int(observation_counts[1] or 0)
+        observed_quote_count = quote_count - missing_observed_quote_count
         if quote_count == 0:
             return _top_of_book_fail_payload(
                 spec=spec,
@@ -912,6 +960,10 @@ def _top_of_book_split_sql(
         reasons.append("top_of_book_missing")
     if coverage_pct < float(spec.min_coverage_pct):
         reasons.append("top_of_book_coverage_below_threshold")
+    if missing_observed_quote_count:
+        reasons.append("top_of_book_observation_time_missing")
+    if invalid_observed_quote_count:
+        reasons.append("top_of_book_observation_time_invalid")
     gate_status = "PASS"
     if reasons:
         gate_status = (
@@ -926,6 +978,16 @@ def _top_of_book_split_sql(
         "top_of_book_join_tolerance_ms": spec.join_tolerance_ms,
         "top_of_book_expected_signal_count": expected_signal_count,
         "top_of_book_available_row_count": quote_count,
+        "top_of_book_observation_time_present_count": observed_quote_count,
+        "top_of_book_observation_time_missing_count": (missing_observed_quote_count),
+        "top_of_book_observation_time_invalid_count": invalid_observed_quote_count,
+        "top_of_book_knowledge_time_basis": (
+            "observed_at_epoch_sec"
+            if missing_observed_quote_count == 0 and invalid_observed_quote_count == 0
+            else "invalid_observation_time"
+            if invalid_observed_quote_count
+            else "event_time_as_knowledge_time_assumption"
+        ),
         "top_of_book_joined_count": joined,
         "top_of_book_missing_count": expected_signal_count - joined,
         "top_of_book_missing_sample": [int(row[0]) for row in sample_rows],
@@ -953,6 +1015,10 @@ def _depth_summary_sql(
             "l2_depth_last_ts": None,
             "l2_depth_sources": [],
             "l2_depth_content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "l2_depth_observation_time_present_count": 0,
+            "l2_depth_observation_time_missing_count": 0,
+            "l2_depth_observation_time_invalid_count": 0,
+            "l2_depth_knowledge_time_basis": "unavailable",
             "depth_snapshot_selection_policy": "first_snapshot_after_or_equal_reference_ts_with_max_wait",
             "depth_walk_execution_model_available": True,
             "depth_walk_execution_model_used": False,
@@ -990,6 +1056,10 @@ def _top_of_book_fail_payload(
         "top_of_book_join_tolerance_ms": spec.join_tolerance_ms,
         "top_of_book_expected_signal_count": expected,
         "top_of_book_available_row_count": 0,
+        "top_of_book_observation_time_present_count": 0,
+        "top_of_book_observation_time_missing_count": 0,
+        "top_of_book_observation_time_invalid_count": 0,
+        "top_of_book_knowledge_time_basis": "unavailable",
         "top_of_book_joined_count": 0,
         "top_of_book_missing_count": expected,
         "top_of_book_missing_sample": [],

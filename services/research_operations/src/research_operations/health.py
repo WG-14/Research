@@ -741,6 +741,10 @@ def _database_snapshot(
             """,
             (AUDIT_OBSERVATION_KIND,),
         ).fetchone()
+    if heartbeat is None:
+        raise RuntimeError("worker_heartbeat_snapshot_missing")
+    if unapplied_receipts is None:
+        raise RuntimeError("research_job_receipt_snapshot_missing")
     return {
         "primary": primary,
         "migrations": dict(migrations),
@@ -788,12 +792,15 @@ def _migration_check(database: Mapping[str, Any], observed_at: datetime) -> Chec
             observed_at,
             ops_mismatch_count + portal_mismatch_count,
         )
+    migration_count = (len(actual) if isinstance(actual, dict) else 0) + (
+        len(actual_portal) if isinstance(actual_portal, (list, tuple)) else 0
+    )
     return CheckResult(
         "migration_leaves",
         "PASS",
         "migration_leaves_match",
         observed_at,
-        len(actual) + len(actual_portal),
+        migration_count,
     )
 
 
@@ -1341,10 +1348,12 @@ def record_audit_validation(
             passed = False
             reason_count += 1
             stream_hash = None
-        safe_evidence = {
+        safe_counts = counts
+        safe_stream_hash = str(stream_hash) if stream_hash is not None else None
+        safe_evidence: dict[str, object] = {
             "status": "PASS" if passed else "FAIL",
-            "counts": counts,
-            "stream_hash": stream_hash,
+            "counts": safe_counts,
+            "stream_hash": safe_stream_hash,
         }
         evidence_hash = (
             "sha256:"
@@ -1363,10 +1372,12 @@ def record_audit_validation(
         reason_code = "audit_validator_unavailable"
         reason_count = 1
         evidence_hash = ""
+        safe_counts = {}
+        safe_stream_hash = None
         safe_evidence = {
             "status": "FAIL",
-            "counts": {},
-            "stream_hash": None,
+            "counts": safe_counts,
+            "stream_hash": safe_stream_hash,
         }
     now = now or utcnow()
     with connection(dsn) as conn:
@@ -1392,8 +1403,8 @@ def record_audit_validation(
                 reason_count,
                 now,
                 evidence_hash,
-                int(safe_evidence.get("counts", {}).get("row_count", 0)),
-                str(safe_evidence.get("stream_hash") or ""),
+                safe_counts.get("row_count", 0),
+                safe_stream_hash or "",
             ),
         )
     _CACHE.clear()
@@ -1440,7 +1451,11 @@ def _bounded_int(
 def _nonnegative_int(value: object) -> int:
     if isinstance(value, bool):
         raise ValueError("count_invalid")
-    parsed = int(value or 0)
+    if value is None:
+        return 0
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise ValueError("count_invalid")
+    parsed = int(value)
     if parsed < 0:
         raise ValueError("count_invalid")
     return parsed

@@ -5,7 +5,7 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast, overload
 
 
 REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS = frozenset(
@@ -173,7 +173,23 @@ def report_content_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in payload.items()
         if key not in REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS
     }
-    return logical_evidence_hash_payload(logical_payload)
+    return cast(dict[str, Any], logical_evidence_hash_payload(logical_payload))
+
+
+@overload
+def logical_evidence_hash_payload(value: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def logical_evidence_hash_payload(value: list[Any]) -> list[Any]: ...
+
+
+@overload
+def logical_evidence_hash_payload(value: tuple[Any, ...]) -> list[Any]: ...
+
+
+@overload
+def logical_evidence_hash_payload(value: Any) -> Any: ...
 
 
 def logical_evidence_hash_payload(value: Any) -> Any:

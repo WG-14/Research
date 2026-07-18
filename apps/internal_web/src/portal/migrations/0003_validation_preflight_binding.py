@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 
 import django.db.models.deletion
+from django.apps.registry import Apps
 from django.db import migrations, models
+from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
 
 OLD_PREFLIGHT_CAPABILITY = "research-readiness"
 PREFLIGHT_CAPABILITY = "research-preflight"
 
 
-def _request_hash(payload: dict) -> str:
+def _request_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -22,7 +25,12 @@ def _request_hash(payload: dict) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _rewrite_preflight_capability(apps, *, source: str, target: str) -> None:
+def _rewrite_preflight_capability(
+    apps: Apps,
+    *,
+    source: str,
+    target: str,
+) -> None:
     ResearchJob = apps.get_model("portal", "ResearchJob")
     for job in ResearchJob.objects.filter(capability_id=source).iterator():
         payload = job.request_payload
@@ -37,7 +45,10 @@ def _rewrite_preflight_capability(apps, *, source: str, target: str) -> None:
         )
 
 
-def forward_preflight_capability(apps, schema_editor):
+def forward_preflight_capability(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     _rewrite_preflight_capability(
         apps,
         source=OLD_PREFLIGHT_CAPABILITY,
@@ -45,7 +56,10 @@ def forward_preflight_capability(apps, schema_editor):
     )
 
 
-def reverse_preflight_capability(apps, schema_editor):
+def reverse_preflight_capability(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     _rewrite_preflight_capability(
         apps,
         source=PREFLIGHT_CAPABILITY,
@@ -53,7 +67,10 @@ def reverse_preflight_capability(apps, schema_editor):
     )
 
 
-def populate_actor_permissions(apps, schema_editor):
+def populate_actor_permissions(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     """Snapshot effective owner permissions for jobs created before this schema."""
 
     ResearchJob = apps.get_model("portal", "ResearchJob")
@@ -95,7 +112,10 @@ def populate_actor_permissions(apps, schema_editor):
         )
 
 
-def preserve_actor_permissions(apps, schema_editor):
+def preserve_actor_permissions(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     """The field is removed on reverse; no data rewrite is required."""
 
 

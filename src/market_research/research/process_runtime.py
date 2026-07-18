@@ -5,7 +5,7 @@ import os
 import platform
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, SupportsIndex, SupportsInt, TypeGuard, cast
 
 
 ALLOWED_RESEARCH_START_METHODS = ("auto_safe", "auto", "forkserver", "spawn", "fork")
@@ -280,7 +280,8 @@ def _parent_thread_count() -> int:
 
 def _positive_int(value: object, name: str) -> int:
     try:
-        parsed = int(value)
+        numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+        parsed = int(numeric)
     except (TypeError, ValueError) as exc:
         raise ResearchProcessRuntimeError(f"{name} must be a positive integer") from exc
     if parsed < 1:
@@ -288,7 +289,7 @@ def _positive_int(value: object, name: str) -> int:
     return parsed
 
 
-def _is_positive_int(value: object) -> bool:
+def _is_positive_int(value: str | None) -> TypeGuard[str]:
     try:
         return int(str(value)) > 0
     except (TypeError, ValueError):

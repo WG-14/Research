@@ -9,12 +9,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, TypedDict
 
 from ..hashing import sha256_prefixed
 
 
-def canonical_candle_rows(rows: Iterable[tuple[Any, ...]]) -> list[dict[str, object]]:
+class CanonicalCandleRow(TypedDict):
+    ts: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+def canonical_candle_rows(rows: Iterable[tuple[Any, ...]]) -> list[CanonicalCandleRow]:
     """Canonical snapshot rows (the materialized snapshot has no pair column)."""
     return [
         {
@@ -186,19 +195,25 @@ def snapshot_query_hash(
     top_of_book: Mapping[str, Any] | None = None,
     depth: Mapping[str, Any] | None = None,
     execution: Mapping[str, Any] | None = None,
+    domain_contracts: Mapping[str, Any] | None = None,
 ) -> str:
     """Hash the requested materialization slice, independently of row content."""
+    payload: dict[str, Any] = {
+        "hash_domain": "snapshot_query_v1",
+        "market": str(market),
+        "interval": str(interval),
+        "requested_range": {"start_ts": int(start_ts), "end_ts": int(end_ts)},
+        "dataset_options": dict(dataset_options or {}),
+        "top_of_book": dict(top_of_book or {}),
+        "depth": dict(depth or {}),
+        "execution": dict(execution or {}),
+    }
+    # Optional extension keeps legacy snapshot hashes stable while making an
+    # explicitly declared instrument/action authority part of the query.
+    if domain_contracts:
+        payload["domain_contracts"] = dict(domain_contracts)
     return sha256_prefixed(
-        {
-            "hash_domain": "snapshot_query_v1",
-            "market": str(market),
-            "interval": str(interval),
-            "requested_range": {"start_ts": int(start_ts), "end_ts": int(end_ts)},
-            "dataset_options": dict(dataset_options or {}),
-            "top_of_book": dict(top_of_book or {}),
-            "depth": dict(depth or {}),
-            "execution": dict(execution or {}),
-        },
+        payload,
         label="snapshot_query_hash",
     )
 

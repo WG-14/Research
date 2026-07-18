@@ -112,6 +112,78 @@ def test_source_provenance_priority_and_supported_semantics_fail_closed() -> Non
         parse_dataset_source_provenance(payload)
 
 
+def test_source_provenance_v2_preserves_external_acquisition_evidence() -> None:
+    source = TEST_SOURCE_PROVENANCE.sources[0]
+
+    assert TEST_SOURCE_PROVENANCE.schema_version == 2
+    assert source.source_kind == "file_export"
+    assert dict(source.request_parameters) == {
+        "interval": "1m",
+        "market": "KRW-BTC",
+    }
+    assert source.requested_at == "2026-01-01T00:00:00Z"
+    assert source.received_at == "2026-01-01T00:00:01Z"
+    assert source.response_version == "test-export-v1"
+    assert source.acquisition_code_version == "external-fixture-v1"
+    assert source.retry_count == 0
+    assert source.acquisition_status == "complete"
+    assert source.error_code == ""
+
+
+def test_incomplete_source_is_preserved_but_cannot_freeze_authoritative_artifact(
+    tmp_path: Path,
+) -> None:
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    payload["sources"][0]["acquisition_status"] = "partial"
+    payload["sources"][0]["error_code"] = "provider_response_truncated"
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+    provenance = parse_dataset_source_provenance(payload)
+
+    assert provenance.sources[0].acquisition_status == "partial"
+    assert provenance.sources[0].error_code == "provider_response_truncated"
+    with pytest.raises(ArtifactManifestError, match="source_not_complete"):
+        build_artifact_manifest(
+            artifact_id="immutable-candle:partial",
+            path=str((tmp_path / "candles.sqlite").resolve()),
+            content_hash="sha256:" + "a" * 64,
+            schema_hash="sha256:" + "b" * 64,
+            row_count=2,
+            market="KRW-BTC",
+            interval="1m",
+            start_ts=1,
+            end_ts=2,
+            coverage_start_ts=1,
+            coverage_end_ts=2,
+            source_provenance=provenance,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    (
+        ("sensitive", "request_parameters_sensitive"),
+        ("time_order", "received_before_requested"),
+        ("negative_retry", "retry_count_negative"),
+        ("missing_error", "incomplete_source_requires_error"),
+    ),
+)
+def test_source_acquisition_contract_fails_closed(mutation: str, reason: str) -> None:
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    source = payload["sources"][0]
+    if mutation == "sensitive":
+        source["request_parameters"]["api_token"] = "must-never-be-recorded"
+    elif mutation == "time_order":
+        source["received_at"] = "2025-12-31T23:59:59Z"
+    elif mutation == "negative_retry":
+        source["retry_count"] = -1
+    elif mutation == "missing_error":
+        source["acquisition_status"] = "failed"
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+
+    with pytest.raises(SourceProvenanceError, match=reason):
+        parse_dataset_source_provenance(payload)
+
+
 def test_artifact_scope_must_be_covered_by_each_declared_source(tmp_path: Path) -> None:
     narrow = build_dataset_source_provenance(
         sources=(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.clean_provenance_fixture import install_committed_checkout_provenance
 
 import json
 import sqlite3
@@ -182,7 +183,10 @@ def frozen_manifest_and_manager(
     )
 
 
-def test_backtest_candidate_search_does_not_materialize_final_holdout(tmp_path) -> None:
+def test_backtest_candidate_search_does_not_materialize_final_holdout(
+    tmp_path, monkeypatch
+) -> None:
+    install_committed_checkout_provenance(monkeypatch)
     frozen, manifest, manager = frozen_manifest_and_manager(tmp_path)
     report = run_research_backtest(
         manifest=manifest,

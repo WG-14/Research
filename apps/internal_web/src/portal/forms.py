@@ -286,7 +286,10 @@ class HistoricalDecisionReportImportForm(forms.Form):
     def __init__(self, *args: Any, operator: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.operator = operator
-        self.fields["owner"].queryset = (
+        owner_field = self.fields["owner"]
+        if not isinstance(owner_field, forms.ModelChoiceField):
+            raise RuntimeError("historical_report_owner_field_invalid")
+        owner_field.queryset = (
             get_user_model().objects.filter(is_active=True).order_by("username", "pk")
         )
 
@@ -328,7 +331,10 @@ class ResearchJobSubmissionForm(forms.Form):
         queryset = ManifestUpload.objects.all()
         if not owner.has_perm("portal.view_all_research_manifests"):
             queryset = queryset.filter(owner=owner)
-        self.fields["manifest"].queryset = queryset.order_by("-created_at")
+        manifest_field = self.fields["manifest"]
+        if not isinstance(manifest_field, forms.ModelChoiceField):
+            raise RuntimeError("research_job_manifest_field_invalid")
+        manifest_field.queryset = queryset.order_by("-created_at")
 
     def save(
         self,
@@ -381,7 +387,7 @@ class HumanReviewForm(forms.Form):
     )
 
     def clean(self) -> dict[str, Any]:
-        cleaned = super().clean()
+        cleaned = super().clean() or {}
         change_fields = (
             "requirement_id",
             "change_description",

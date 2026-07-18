@@ -14,7 +14,6 @@ from .backtest_common import (
     _trade_hash_payload as _trade_hash_payload,
     closed_trade_diagnostics as closed_trade_diagnostics,
     complete_audit_trace as complete_audit_trace,
-    create_exit_rules as create_exit_rules,
     depth_request_fields as depth_request_fields,
     empty_execution_event_summary as empty_execution_event_summary,
     empty_metrics as empty_metrics,

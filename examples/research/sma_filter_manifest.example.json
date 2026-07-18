@@ -2,16 +2,77 @@
   "experiment_id": "sma_filter_v1_2026_05",
   "hypothesis": "In an uptrend with sufficient volatility/liquidity, the SMA strategy has positive expectancy after fees and slippage.",
   "hypothesis_spec": {
-    "schema_version": 1,
+    "schema_version": 2,
     "hypothesis_id": "sma-uptrend-filter-positive-expectancy",
     "version": "1.0.0",
+    "hypothesis_text": "Filtered SMA crossovers have positive out-of-sample expectancy after costs.",
+    "actor_id": "researcher-a",
+    "created_at": "2025-12-04T00:00:00+00:00",
     "phenomenon": "SMA crossovers conditioned on trend, volatility, and liquidity have positive out-of-sample expectancy after costs.",
     "mechanism": "Trend persistence and delayed price adjustment can sustain directional movement after a filtered crossover.",
     "observation_conditions": ["uptrend regime", "sufficient volatility", "sufficient liquidity", "complete closed-candle data"],
     "comparison_target": "cash",
     "falsification_criteria": ["validation return is not positive", "profit factor is below 1.1", "required walk-forward stability fails"],
     "experiment_family_id": "sma-uptrend-filter-family",
-    "registration_status": "unregistered"
+    "registration_status": "unregistered",
+    "pre_registered_at": null,
+    "registration_evidence_hash": null,
+    "observations": [
+      {
+        "schema_version": 1,
+        "observation_id": "obs-sma-crossover-conditional-return",
+        "version": "1.0.0",
+        "statement": "Closed-candle samples show clustered positive returns after some SMA crossovers.",
+        "actor_id": "researcher-a",
+        "observed_at": "2025-12-01T00:00:00+00:00",
+        "recorded_at": "2025-12-02T00:00:00+00:00",
+        "market": "KRW-BTC",
+        "interval": "1m",
+        "confidence": 0.6,
+        "status": "recorded",
+        "fact_status": "not_verified",
+        "evidence_hashes": ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+      }
+    ],
+    "research_question": {
+      "schema_version": 1,
+      "question_id": "rq-sma-crossover-conditional-expectancy",
+      "version": "1.0.0",
+      "question_text": "Do SMA crossovers predict positive conditional expectancy after costs?",
+      "actor_id": "researcher-a",
+      "recorded_at": "2025-12-03T00:00:00+00:00",
+      "observation_refs": [
+        {
+          "observation_id": "obs-sma-crossover-conditional-return",
+          "version": "1.0.0",
+          "observation_hash": "sha256:68b4a90fbf00217427786a3c5e200db90dc36c0ce73c971e54dae79256c4b993"
+        }
+      ],
+      "competing_hypotheses": [
+        {
+          "hypothesis_id": "sma-uptrend-filter-positive-expectancy",
+          "version": "1.0.0",
+          "hypothesis_text": "Filtered SMA crossovers have positive out-of-sample expectancy after costs."
+        },
+        {
+          "hypothesis_id": "sma-uptrend-null",
+          "version": "1.0.0",
+          "hypothesis_text": "SMA crossovers have no positive conditional expectancy after costs."
+        }
+      ]
+    },
+    "research_question_ref": {
+      "question_id": "rq-sma-crossover-conditional-expectancy",
+      "version": "1.0.0",
+      "question_hash": "sha256:84345b860abfe83ad92e3df96b0f33b64f33fc1341e656b3c1a37843f141a0a9"
+    },
+    "observation_refs": [
+      {
+        "observation_id": "obs-sma-crossover-conditional-return",
+        "version": "1.0.0",
+        "observation_hash": "sha256:68b4a90fbf00217427786a3c5e200db90dc36c0ce73c971e54dae79256c4b993"
+      }
+    ]
   },
   "strategy_name": "sma_with_filter",
   "strategy_version": "sma_with_filter.research_runtime_contract.v2",

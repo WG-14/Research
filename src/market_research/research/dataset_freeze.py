@@ -12,6 +12,7 @@ from typing import Any
 
 from ..storage_io import write_json_atomic
 from .datasets.artifact_manifest import (
+    ArtifactManifest,
     ArtifactManifestError,
     build_artifact_manifest,
     load_artifact_manifest,
@@ -31,6 +32,14 @@ from market_research.research.intervals import interval_to_milliseconds
 
 class DatasetFreezeError(ValueError):
     pass
+
+
+CANONICAL_CANDLES_TABLE_DDL = (
+    "CREATE TABLE candles (pair TEXT NOT NULL, interval TEXT NOT NULL, "
+    "ts INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, "
+    "low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, "
+    "PRIMARY KEY(pair, interval, ts))"
+)
 
 
 def _repo_root() -> Path:
@@ -219,9 +228,7 @@ def _write_sqlite(
     # `path` is always a same-filesystem staging path, never a published path.
     conn = sqlite3.connect(path)
     try:
-        conn.execute(
-            "CREATE TABLE candles (pair TEXT NOT NULL, interval TEXT NOT NULL, ts INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, PRIMARY KEY(pair, interval, ts))"
-        )
+        conn.execute(CANONICAL_CANDLES_TABLE_DDL)
         for index, row in enumerate(rows):
             conn.execute(
                 "INSERT INTO candles(pair, interval, ts, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -287,7 +294,7 @@ def _verify_bundle(
     expected_schema: str | None = None,
     expected_provenance_hash: str,
     committed: bool,
-):
+) -> ArtifactManifest:
     if not db_path.is_file() or not manifest_path.is_file():
         raise DatasetFreezeError("artifact_bundle_incomplete")
     if committed:
@@ -345,11 +352,7 @@ def _canonical_candles_schema_hash() -> str:
     """Schema expected from this freezer's fixed immutable candle contract."""
     conn = sqlite3.connect(":memory:")
     try:
-        conn.execute(
-            "CREATE TABLE candles (pair TEXT NOT NULL, interval TEXT NOT NULL, ts INTEGER NOT NULL, "
-            "open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, "
-            "volume REAL NOT NULL, PRIMARY KEY(pair, interval, ts))"
-        )
+        conn.execute(CANONICAL_CANDLES_TABLE_DDL)
         table_info = [
             tuple(row) for row in conn.execute("PRAGMA table_info(candles)").fetchall()
         ]
@@ -381,7 +384,11 @@ def _is_destination_conflict(exc: OSError) -> bool:
 
 
 def _result(
-    manifest, artifact_path: Path, manifest_path: Path, *, reused_existing: bool
+    manifest: ArtifactManifest,
+    artifact_path: Path,
+    manifest_path: Path,
+    *,
+    reused_existing: bool,
 ) -> dict[str, Any]:
     return {
         "artifact_id": manifest.artifact_id,

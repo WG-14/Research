@@ -149,13 +149,16 @@ def build_artifact_manifest(
         path=str(Path(path).resolve()), artifact_content_hash=content_hash
     )
     payload = dict(identity)
-    payload["artifact"] = {**identity["artifact"], "uri": locator.path}
+    payload["artifact"] = {
+        "content_hash": content_hash,
+        "schema_hash": schema_hash,
+        "row_count": int(row_count),
+        "uri": locator.path,
+    }
     payload["artifact_identity_hash"] = identity_hash
     payload["locator"] = locator.as_dict()
     digest = artifact_manifest_hash(payload)
-    return ArtifactManifest(
-        **_parse_values({**payload, "artifact_manifest_hash": digest}, locator=locator)
-    )
+    return _parse_values({**payload, "artifact_manifest_hash": digest}, locator=locator)
 
 
 def parse_artifact_manifest(payload: dict[str, Any]) -> ArtifactManifest:
@@ -180,7 +183,7 @@ def parse_artifact_manifest(payload: dict[str, Any]) -> ArtifactManifest:
         locator = parse_immutable_locator(payload.get("locator"))
     except LocatorValidationError as exc:
         raise ArtifactManifestError(str(exc)) from exc
-    return ArtifactManifest(**_parse_values(payload, locator=locator))
+    return _parse_values(payload, locator=locator)
 
 
 def load_artifact_manifest(
@@ -213,11 +216,15 @@ def load_artifact_manifest(
 
 def _parse_values(
     payload: dict[str, Any], *, locator: ContentAddressedLocal
-) -> dict[str, Any]:
+) -> ArtifactManifest:
     artifact = payload.get("artifact")
     scope = payload.get("scope")
     canonicalization = payload.get("canonicalization")
-    if not all(isinstance(item, dict) for item in (artifact, scope, canonicalization)):
+    if not isinstance(artifact, dict):
+        raise ArtifactManifestError("artifact_manifest_sections_invalid")
+    if not isinstance(scope, dict):
+        raise ArtifactManifestError("artifact_manifest_sections_invalid")
+    if not isinstance(canonicalization, dict):
         raise ArtifactManifestError("artifact_manifest_sections_invalid")
     _reject_unknown(artifact, _ARTIFACT_FIELDS, "artifact_manifest.artifact")
     _reject_unknown(scope, _SCOPE_FIELDS, "artifact_manifest.scope")
@@ -261,33 +268,33 @@ def _parse_values(
     uri = _text(artifact.get("uri"))
     if uri != locator.path:
         raise ArtifactManifestError("artifact_manifest_uri_locator_mismatch")
-    values = {
-        "schema_version": ARTIFACT_MANIFEST_SCHEMA_VERSION,
-        "artifact_type": artifact_type,
-        "artifact_id": artifact_id,
-        "format": physical_format,
-        "locator": locator,
-        "content_hash": _hash(artifact.get("content_hash")),
-        "schema_hash": _hash(artifact.get("schema_hash")),
-        "row_count": row_count,
-        "market": _text(scope.get("market")),
-        "interval": _text(scope.get("interval")),
-        "start_ts": start_ts,
-        "end_ts": end_ts,
-        "coverage_start_ts": coverage_start_ts,
-        "coverage_end_ts": coverage_end_ts,
-        "canonicalization_name": canonical_name,
-        "canonicalization_version": canonical_version,
-        "source_provenance": source_provenance,
-        "artifact_identity_hash": _hash(payload.get("artifact_identity_hash")),
-        "artifact_manifest_hash": _hash(payload.get("artifact_manifest_hash")),
-    }
-    identity = ArtifactManifest(**values).identity_payload()
-    if artifact_manifest_hash(identity) != values["artifact_identity_hash"]:
+    manifest = ArtifactManifest(
+        schema_version=ARTIFACT_MANIFEST_SCHEMA_VERSION,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        format=physical_format,
+        locator=locator,
+        content_hash=_hash(artifact.get("content_hash")),
+        schema_hash=_hash(artifact.get("schema_hash")),
+        row_count=row_count,
+        market=_text(scope.get("market")),
+        interval=_text(scope.get("interval")),
+        start_ts=start_ts,
+        end_ts=end_ts,
+        coverage_start_ts=coverage_start_ts,
+        coverage_end_ts=coverage_end_ts,
+        canonicalization_name=canonical_name,
+        canonicalization_version=canonical_version,
+        source_provenance=source_provenance,
+        artifact_identity_hash=_hash(payload.get("artifact_identity_hash")),
+        artifact_manifest_hash=_hash(payload.get("artifact_manifest_hash")),
+    )
+    identity = manifest.identity_payload()
+    if artifact_manifest_hash(identity) != manifest.artifact_identity_hash:
         raise ArtifactManifestError("artifact_manifest_identity_hash_mismatch")
-    if locator.artifact_content_hash != values["content_hash"]:
+    if locator.artifact_content_hash != manifest.content_hash:
         raise ArtifactManifestError("artifact_manifest_locator_binding_mismatch")
-    return values
+    return manifest
 
 
 def _reject_unknown(

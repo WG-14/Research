@@ -1,12 +1,23 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "artifact_type": "dataset_source_provenance",
   "sources": [
     {
       "provider_id": "replace-with-provider-id",
       "dataset_id": "replace-with-dataset-id",
       "release_id": "replace-with-immutable-release-id",
-      "acquired_at": "2026-05-02T00:00:00Z",
+      "source_kind": "file_export",
+      "request_parameters": {
+        "interval": "1m",
+        "market": "KRW-BTC"
+      },
+      "requested_at": "2026-05-02T00:00:00Z",
+      "received_at": "2026-05-02T00:00:01Z",
+      "response_version": "replace-with-provider-response-version",
+      "acquisition_code_version": "replace-with-external-preparation-version",
+      "retry_count": 0,
+      "acquisition_status": "complete",
+      "error_code": "",
       "coverage_start_ts": 1672531200000,
       "coverage_end_ts": 1777679999999,
       "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -47,5 +58,5 @@
       "transformation_id": "replace-with-standardization-contract-id"
     }
   ],
-  "provenance_manifest_hash": "sha256:a503ce133a040efa27635803dd4e983d9973807d571863fd62811739f684733f"
+  "provenance_manifest_hash": "sha256:764f5addd4db8b8a563722db83bb7474006c9ecf09453bde885b6a2227de87c9"
 }

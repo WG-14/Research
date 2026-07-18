@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from market_research.paths import ResearchPathError, ResearchPathManager
 
@@ -107,7 +107,10 @@ def bind_research_validation_experiment(
         "manifest_hash": normalized_hash,
     }
 
-    def mutation(snapshot: HashChainSnapshot, stage: Any) -> dict[str, Any]:
+    def mutation(
+        snapshot: HashChainSnapshot,
+        stage: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
         semantic_reasons, _bindings = _identity_semantics(snapshot.rows)
         if semantic_reasons:
             raise ExperimentIdentityIntegrityError(

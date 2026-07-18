@@ -44,6 +44,12 @@ workspace lock and one release manifest.
   admission completion and the Django terminal update;
 - `0004_worker_release_provenance.sql`: release SHA/ID/build provenance for
   worker heartbeats and backup sets.
+- `0005_recovery_activation_event.sql`: append-only, content-hashed recovery
+  activation evidence bound to the backup, signed receipt, release bundle,
+  operator, and runtime-control transition.
+- `0006_service_alert_workflow.sql`: allowlisted offline service-health alerts,
+  fenced delivery claims, actor-separated acknowledgement, deadline escalation,
+  and append-only hash-chained event evidence.
 
 The owner-only migration gate applies Django and Operations migrations,
 collects static assets, revokes inherited privileges, and grants the runtime,
@@ -58,6 +64,21 @@ Claims use `FOR UPDATE SKIP LOCKED`; terminal updates compare worker identity,
 opaque lease token, increasing fencing token, expiry, and payload hash.
 Transient failures use bounded retry; permanent/exhausted failures enter a
 bound dead-letter state that requires an authorized operator decision.
+
+`ServiceAlertStore` is a separate operational-health workflow. Its condition
+allowlist covers database, worker, audit, backup, restore, certificate,
+preflight, and readiness failures only. Exact raises converge on an immutable
+request binding; receiver delivery uses a fenced lease and stable idempotency
+key; acknowledgement records actor, UTC time, and a bounded reason code and
+must be performed by an actor other than the source probe. Unacknowledged due
+alerts create a new escalation-level delivery. Every state transition appends
+a hash-chained event protected by a PostgreSQL update/delete rejection trigger.
+The HTTP adapter permits HTTPS or loopback HTTP, never follows redirects, and
+sends no paths, credentials, free-text exception bodies, or topology labels.
+
+Receiver URLs are read only from the owner-controlled private file named by
+`RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE`; they are not accepted in argv, stored
+in PostgreSQL, emitted in command output, or included in alert evidence.
 
 `ExperimentAdmissionStore` serializes `(authority, experiment_id)` across web
 and admitted CLI adapters. Exact requests converge, different active requests
@@ -103,6 +124,17 @@ See:
 - `deploy/native/README.md` for installation and preflight;
 - `docs/runbook.md` for observation, backup, recovery, upgrade, and rollback;
 - the monorepo `docs/release-checklist.md` for promotion evidence.
+
+The Operations PostgreSQL CI job performs a repository-level E4 blank-restore
+rehearsal for every change. It creates representative immutable dataset,
+manifest, completed-job, audit, report, and reproduction evidence; runs the
+official signed backup flow; restores with `pg_restore` into a newly created
+blank database and filesystem namespace; and verifies release, migration,
+audit, object-reference, dataset, report, and reproduction bindings before
+deleting only that random target database. The signed recovery receipt records
+the measured duration. This CI evidence is not E5 production proof and does not
+establish organization PKI, encrypted off-site custody, named-owner separation
+of duties, or an approved/promoted RPO or RTO.
 
 The repository supplies contracts and tests, not organization approval. Every
 promoted release still needs real named owners, organization PKI and alerting,

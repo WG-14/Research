@@ -3,6 +3,7 @@
 from market_research.research.strategy_contract import ResearchStrategyPlugin
 from market_research.research.strategy_spec import (
     StrategyFeatureDefinition,
+    StrategyParameterSchema,
     StrategyRuleDeclaration,
     StrategyRuleSpec,
     StrategySpec,
@@ -26,6 +27,18 @@ THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
         "rules": (),
         "description": "Research-only threshold strategy with no explicit exit.",
     },
+    parameter_schema=(
+        StrategyParameterSchema(
+            "THRESHOLD_CLOSE_ABOVE",
+            "float",
+            required=True,
+            min_value=0.0,
+            unit="quote_currency_per_asset",
+            description="Completed-candle close threshold required for entry.",
+            optimization_allowed=True,
+            since_version="threshold_research_only.research_contract.v1",
+        ),
+    ),
     rule_spec=StrategyRuleSpec(
         1,
         entry=StrategyRuleDeclaration(
@@ -81,6 +94,10 @@ _runtime_factory = make_event_builder_runtime_factory(
 
 
 def build_threshold_research_only_plugin() -> ResearchStrategyPlugin:
+    from market_research.research.strategy_manifest import (
+        builtin_strategy_manifest_hash,
+    )
+
     return ResearchStrategyPlugin(
         name=THRESHOLD_RESEARCH_ONLY_SPEC.strategy_name,
         version=THRESHOLD_RESEARCH_ONLY_SPEC.strategy_version,
@@ -93,6 +110,7 @@ def build_threshold_research_only_plugin() -> ResearchStrategyPlugin:
         runtime_factory=_runtime_factory,
         reconstruction_module=__name__,
         reconstruction_qualname="build_threshold_research_only_plugin",
+        package_manifest_hash=builtin_strategy_manifest_hash(__name__),
     )
 
 

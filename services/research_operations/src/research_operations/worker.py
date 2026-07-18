@@ -8,6 +8,7 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass
+from errno import EDQUOT, ENOSPC
 from types import FrameType
 from typing import Any, Protocol
 
@@ -241,13 +242,27 @@ def _log_worker_error(*, worker_id: str, category: str, exc: BaseException) -> N
 
 
 def classify_projection_error(exc: BaseException) -> tuple[str, bool]:
+    # Resource exhaustion and local configuration failures do not become
+    # healthy merely by immediately replaying the same event.  Preserve them
+    # as first-class, queryable dead-letter categories so an operator can
+    # repair capacity/permissions and deliberately requeue the hash-bound
+    # event.  Keep dependency timeouts and generic I/O failures retryable.
+    if isinstance(exc, MemoryError):
+        return "resource_exhausted", True
+    if isinstance(exc, TimeoutError):
+        return "transient_timeout", False
+    if isinstance(exc, PermissionError):
+        return "permanent_permission", True
+    if isinstance(exc, FileNotFoundError):
+        return "permanent_storage", True
+    if isinstance(exc, OSError) and exc.errno in {EDQUOT, ENOSPC}:
+        return "resource_exhausted", True
     if isinstance(exc, (ValueError, TypeError, ValidationError)):
         return "permanent_contract", True
     if isinstance(
         exc,
         (
             OSError,
-            TimeoutError,
             psycopg.OperationalError,
             psycopg.InterfaceError,
             DjangoOperationalError,

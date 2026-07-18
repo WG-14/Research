@@ -29,11 +29,33 @@ SAFE_ERROR_MESSAGES = {
     "APPLICATION_PERMISSION_DENIED": "요청 당시 권한 기록이 현재 기능 계약을 충족하지 못했습니다.",
 }
 
+SAFE_ERROR_ACTIONS = {
+    "CANCELLED_BEFORE_START": "필요한 경우 같은 연구 정의에서 사전 점검을 새로 시작하세요.",
+    "CANCELLED_BY_REQUEST": "입력 변경이 없다면 같은 연구 정의에서 새 요청으로 다시 시작할 수 있습니다.",
+    "WORKER_LEASE_EXPIRED": "관리자에게 문의 ID를 전달해 worker 상태를 확인한 뒤 다시 실행하세요.",
+    "MANIFEST_INVALID": "연구 정의 파일의 필수 필드와 Research Semantics 버전을 수정해 다시 등록하세요.",
+    "MANIFEST_CONTENT_HASH_MISMATCH": "원본 파일을 변경하지 말고 새 실험 ID로 다시 등록한 뒤 관리자에게 알리세요.",
+    "RESEARCH_INPUT_UNAVAILABLE": "manifest가 가리키는 외부 데이터셋과 읽기 권한을 확인하세요.",
+    "RESEARCH_REQUEST_INVALID": "연구 정의와 사전 점검 결과가 같은 실험·hash에 묶였는지 확인하세요.",
+    "RESEARCH_VALIDATION_FAILED": "결과의 실패 진단과 acceptance gate를 확인하고 새 연구 정의로 재검증하세요.",
+    "VALIDATION_RUN_FAILED": "오류 코드와 문의 ID로 중단된 안전 규칙을 확인한 뒤 입력을 수정하세요.",
+    "RESULT_CONTRACT_INVALID": "결과를 사용하지 말고 관리자에게 문의 ID와 결과 hash를 전달하세요.",
+    "UNEXPECTED_WORKER_ERROR": "관리자에게 문의 ID를 전달해 worker 로그를 확인하세요.",
+    "APPLICATION_PERMISSION_DENIED": "작업 제출 후 역할이 바뀌었는지 관리자에게 확인하세요.",
+}
+
 
 def safe_error_message(job: ResearchJob) -> str:
     return SAFE_ERROR_MESSAGES.get(
         job.error_code,
         "작업을 완료하지 못했습니다. 오류 코드와 문의 ID를 관리자에게 전달해 주세요.",
+    )
+
+
+def safe_error_action(job: ResearchJob) -> str:
+    return SAFE_ERROR_ACTIONS.get(
+        job.error_code,
+        "오류 코드와 문의 ID를 관리자에게 전달하고 입력·데이터 상태를 확인하세요.",
     )
 
 

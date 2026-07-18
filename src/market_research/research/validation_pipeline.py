@@ -23,6 +23,16 @@ from .final_selection import (
     validate_selection_artifact_binding,
 )
 from .hashing import report_content_hash_payload, sha256_prefixed
+from .hypothesis_contract import (
+    HYPOTHESIS_LINEAGE_SCHEMA_VERSION,
+    parse_hypothesis_spec,
+    validate_hypothesis_lineage_target,
+)
+from .knowledge_registry import (
+    KnowledgeRegistryError,
+    freeze_validation_admission,
+    validation_admission_binding_reasons,
+)
 from .validation_protocol import (
     run_final_holdout_confirmation,
     run_research_backtest,
@@ -50,7 +60,11 @@ VALIDATION_STAGE_ORDER = (
 )
 
 
-def validate_validated_research_result(report: object) -> list[str]:
+def validate_validated_research_result(
+    report: object,
+    *,
+    manager: ResearchPathManager | None = None,
+) -> list[str]:
     """Validate the terminal schema-3 result used for approval and packaging."""
 
     if not isinstance(report, dict):
@@ -69,6 +83,17 @@ def validate_validated_research_result(report: object) -> list[str]:
         validation_bound = False
     if not validation_bound:
         reasons.append("validated_research_result_classification_invalid")
+    reasons.extend(_validated_hypothesis_lineage_reasons(report))
+    # A terminal schema-3 result always requires schema-2 hypothesis lineage,
+    # so its pre-validation admission is part of the same non-optional
+    # authority contract.  Treating an absent marker as legacy would permit a
+    # caller to strip every admission field, recompute the ordinary report
+    # content hash, and bypass canonical preregistration verification.  Legacy
+    # artifacts remain available through the explicit read-only migration
+    # paths; they are not promotable validated results.
+    if report.get("validation_admission_binding_schema_version") != 1:
+        reasons.append("validation_admission_binding_schema_invalid")
+    reasons.extend(validation_admission_binding_reasons(report, manager=manager))
     if report.get("end_to_end_validation_result") != "PASS":
         reasons.append("validated_research_result_terminal_gate_not_passed")
     blocking = report.get("validation_blocking_reasons")
@@ -135,6 +160,46 @@ def validate_validated_research_result(report: object) -> list[str]:
     ):
         reasons.append("validated_research_result_selected_candidate_mismatch")
     return sorted(set(reasons))
+
+
+def _validated_hypothesis_lineage_reasons(report: dict[str, Any]) -> list[str]:
+    try:
+        spec = parse_hypothesis_spec(report.get("hypothesis_spec"))
+    except (TypeError, ValueError):
+        return ["validated_research_result_hypothesis_lineage_invalid"]
+    reasons: list[str] = []
+    if spec.schema_version != HYPOTHESIS_LINEAGE_SCHEMA_VERSION:
+        reasons.append("validated_research_result_hypothesis_lineage_required")
+        return reasons
+    try:
+        validate_hypothesis_lineage_target(
+            spec,
+            market=str(report.get("market") or ""),
+            interval=str(report.get("interval") or ""),
+        )
+    except ValueError:
+        reasons.append("validated_research_result_hypothesis_lineage_target_mismatch")
+    if spec.contract_hash() != report.get("hypothesis_contract_hash"):
+        reasons.append("validated_research_result_hypothesis_contract_hash_mismatch")
+    if spec.lineage_hash() != report.get("hypothesis_lineage_hash"):
+        reasons.append("validated_research_result_hypothesis_lineage_hash_mismatch")
+    question_ref = spec.research_question_ref
+    if question_ref is None or (
+        report.get("research_question_id") != question_ref.question_id
+        or report.get("research_question_version") != question_ref.version
+        or report.get("research_question_hash") != question_ref.question_hash
+    ):
+        reasons.append("validated_research_result_research_question_ref_mismatch")
+    if report.get("observation_hashes") != [
+        item.observation_hash for item in spec.observation_refs
+    ]:
+        reasons.append("validated_research_result_observation_hashes_mismatch")
+    if (
+        report.get("hypothesis_id") != spec.hypothesis_id
+        or report.get("hypothesis_version") != spec.version
+    ):
+        reasons.append("validated_research_result_hypothesis_identity_mismatch")
+    return reasons
 
 
 def validation_next_action_payload(reasons: Any) -> dict[str, str]:
@@ -325,7 +390,7 @@ def aggregate_validation_gates(
 def run_research_validation(
     *,
     manifest: ExperimentManifest,
-    db_path: str | Path,
+    db_path: str | Path | None,
     manager: Any,
     manifest_path: str,
     mode: str = "strict",
@@ -340,6 +405,19 @@ def run_research_validation(
 ) -> dict[str, Any]:
     if mode != "strict":
         raise ValidationRunError("validation_run_mode_unsupported")
+    validation_admission: dict[str, Any] | None = None
+    if (
+        manifest.hypothesis_spec is not None
+        and manifest.hypothesis_spec.schema_version == HYPOTHESIS_LINEAGE_SCHEMA_VERSION
+    ):
+        try:
+            validation_admission = freeze_validation_admission(
+                manager=manager,
+                manifest=manifest,
+                admitted_at=generated_at,
+            )
+        except KnowledgeRegistryError as exc:
+            raise ValidationRunError(f"validation_admission_failed:{exc}") from exc
     walk_forward_required = bool(
         getattr(manifest.acceptance_gate, "walk_forward_required", False)
     )
@@ -423,6 +501,17 @@ def run_research_validation(
         if confirmation
         else None,
     }
+    if validation_admission is not None:
+        reproduction_binding_material.update(
+            {
+                "validation_admission_record_hash": validation_admission[
+                    "admission_record_hash"
+                ],
+                "validation_admission_row_hash": validation_admission[
+                    "admission_row_hash"
+                ],
+            }
+        )
     reproduction_binding = {
         **reproduction_binding_material,
         "content_hash": sha256_prefixed(
@@ -451,11 +540,17 @@ def run_research_validation(
         "hypothesis_semantic_fingerprint": hypothesis_identity[
             "hypothesis_semantic_fingerprint"
         ],
+        "hypothesis_lineage_hash": hypothesis_identity["hypothesis_lineage_hash"],
+        "research_question_id": hypothesis_identity["research_question_id"],
+        "research_question_version": hypothesis_identity["research_question_version"],
+        "research_question_hash": hypothesis_identity["research_question_hash"],
+        "observation_hashes": hypothesis_identity["observation_hashes"],
         "hypothesis": manifest.hypothesis,
         "hypothesis_spec": manifest.hypothesis_spec.as_dict()
         if manifest.hypothesis_spec is not None
         else None,
         "market": manifest.market,
+        "instrument_evidence": manifest.instrument_evidence(),
         "interval": manifest.interval,
         "strategy_name": manifest.strategy_name,
         "strategy_version": manifest.strategy_version,
@@ -498,6 +593,20 @@ def run_research_validation(
         "validation_blocking_reasons": blocking_reasons,
         "end_to_end_validation_result": status,
     }
+    if validation_admission is not None:
+        summary.update(
+            {
+                "validation_admission_binding_schema_version": 1,
+                "knowledge_registry_path": validation_admission["path"],
+                "validation_admission_record_hash": validation_admission[
+                    "admission_record_hash"
+                ],
+                "validation_admission_row_hash": validation_admission[
+                    "admission_row_hash"
+                ],
+                "validation_admission": validation_admission["admission"],
+            }
+        )
     decision_report = build_research_decision_report(
         manifest=manifest,
         selection_report=selection_report,

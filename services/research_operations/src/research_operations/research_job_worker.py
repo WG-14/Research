@@ -7,15 +7,24 @@ import os
 import signal
 import sys
 import threading
+import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
+from errno import EDQUOT, ENOSPC
+from pathlib import Path
 from types import FrameType
 from typing import Any
 
 import psycopg
 from django.db import OperationalError as DjangoOperationalError
+from market_research.application.process_sandbox import (
+    IsolatedProcessError,
+    IsolatedProcessPolicy,
+    run_isolated_command,
+)
+from market_research.storage_io import write_json_atomic
 
 from .admission import (
     ACTIVE,
@@ -61,6 +70,14 @@ class ResearchJobWorkerSettings:
             raise ValueError("worker_poll_interval_invalid")
         if not 6 <= self.admission_lease_seconds <= 3600:
             raise ValueError("admission_lease_seconds_invalid")
+
+
+class IsolatedJobProcessError(RuntimeError):
+    """The supervised production dispatcher child failed without safe detail."""
+
+
+class SandboxUnavailableError(IsolatedJobProcessError):
+    """The mandatory operated execution sandbox could not be initialized."""
 
 
 class FencedJobProgressReporter:
@@ -162,11 +179,15 @@ class ResearchJobWorker:
             from market_research_web.operations_contract import ResearchJobDispatcher
 
             dispatcher = ResearchJobDispatcher()
+            isolate_dispatcher = True
+        else:
+            isolate_dispatcher = False
         self.admissions = admissions
         self.settings = settings
         if settings.admission_lease_seconds > _job_lease_seconds():
             raise ValueError("admission_lease_must_not_exceed_job_lease")
         self.dispatcher = dispatcher
+        self.isolate_dispatcher = isolate_dispatcher
         self.heartbeat_store = heartbeat_store or OutboxStore()
         self.worker_heartbeat_id = (
             settings.worker_id
@@ -305,7 +326,14 @@ class ResearchJobWorker:
         progress: Any,
         decision: AdmissionDecision,
     ) -> Any:
-        """Dispatch once under an in-memory, Operations-issued capability."""
+        """Dispatch under an Operations capability and production process fence."""
+
+        if getattr(self, "isolate_dispatcher", False):
+            return _run_isolated_dispatcher_child(
+                job_id=job.pk,
+                decision=decision,
+                progress=progress,
+            )
 
         with research_job_execution_context(decision):
             return self.dispatcher.execute(job, progress)
@@ -395,9 +423,10 @@ class ResearchJobWorker:
                 stage="waiting_for_admission",
                 details={},
             )
-            decision = self._acquire_when_available(job)
-            if decision is None:
+            refreshed_decision = self._acquire_when_available(job)
+            if refreshed_decision is None:
                 return None
+            decision = refreshed_decision
             self._heartbeat_state("WORKING", event_id=job.pk)
         return decision
 
@@ -437,11 +466,12 @@ class ResearchJobWorker:
             raise AdmissionClaimLost("research_job_receipt_binding_invalid")
         from market_research_web.operations_contract import (
             JobExecutionResult,
+            SafeArtifactRef,
             complete_job_success,
         )
 
         result = JobExecutionResult(
-            result_ref=receipt.result_ref,
+            result_ref=SafeArtifactRef.parse(receipt.result_ref),
             result_hash=receipt.result_hash,
             run_id=receipt.core_run_id,
             research_outcome=receipt.research_outcome,
@@ -490,7 +520,9 @@ class ResearchJobWorker:
         elif isinstance(exc, (AdmissionClaimLost, JobLeaseLost)):
             error_code = "ADMISSION_OR_JOB_LEASE_LOST"
         else:
-            error_code = "UNEXPECTED_WORKER_ERROR"
+            error_code = (
+                classify_research_job_runtime_error(exc) or "UNEXPECTED_WORKER_ERROR"
+            )
         with suppress(AdmissionClaimLost):
             self.admissions.fail(decision, error_code=error_code)
         with suppress(JobLeaseLost, JobCancellationRequested):
@@ -499,6 +531,207 @@ class ResearchJobWorker:
                 lease_token=job.lease_token,
                 error_code=error_code,
             )
+
+
+def classify_research_job_runtime_error(exc: BaseException) -> str | None:
+    """Map host/runtime failures to stable, aggregateable job error codes.
+
+    Domain and result-contract exceptions are classified by the caller.  This
+    helper covers failures that would otherwise collapse into the generic
+    worker bucket, while never persisting exception text or host paths.
+    """
+
+    if isinstance(exc, SandboxUnavailableError):
+        return "SANDBOX_UNAVAILABLE"
+    if isinstance(exc, IsolatedJobProcessError):
+        return "WORKER_CRASH"
+    if isinstance(exc, MemoryError):
+        return "RESOURCE_EXHAUSTED"
+    if isinstance(exc, TimeoutError):
+        return "EXECUTION_TIMEOUT"
+    if isinstance(exc, PermissionError):
+        return "STORAGE_PERMISSION_DENIED"
+    if isinstance(exc, FileNotFoundError):
+        return "RESEARCH_INPUT_UNAVAILABLE"
+    if isinstance(exc, OSError) and exc.errno in {EDQUOT, ENOSPC}:
+        return "STORAGE_EXHAUSTED"
+    if isinstance(exc, OSError):
+        return "RESEARCH_INPUT_UNAVAILABLE"
+    return None
+
+
+def _run_isolated_dispatcher_child(
+    *,
+    job_id: uuid.UUID,
+    decision: AdmissionDecision,
+    progress: Any,
+) -> Any:
+    """Run admitted application work inside the mandatory OS sandbox."""
+
+    configure_django()
+    from django.conf import settings as django_settings
+    from market_research_web.operations_contract import (
+        JobCancellationRequested,
+        ResearchJob,
+        ResearchJobDispatcher,
+    )
+
+    job = ResearchJob.objects.select_related(
+        "owner", "manifest", "source_preflight_job"
+    ).get(pk=job_id)
+    dispatcher = ResearchJobDispatcher()
+    sandbox_root = django_settings.RESEARCH_PATHS.artifact_path(
+        "_operations_sandbox", str(job_id)
+    ).resolve()
+    control_root = sandbox_root / "control"
+    control_root.mkdir(parents=True, exist_ok=True)
+    request_path = control_root / "request.json"
+    result_path = control_root / "result.json"
+    log_path = control_root / "sandbox.log"
+    with research_job_execution_context(decision):
+        request = dispatcher.build_sandbox_request(job, sandbox_root=sandbox_root)
+    write_json_atomic(request_path, request)
+    settings_value = request["settings"]
+    if not isinstance(settings_value, dict):
+        raise IsolatedJobProcessError("isolated_research_job_settings_invalid")
+    runtime_project_root = Path(str(request["runtime_project_root"])).resolve()
+    package_source_root = Path(__file__).resolve().parents[4] / "src"
+    readable_roots = {
+        Path(sys.prefix).resolve(),
+        runtime_project_root,
+        package_source_root.resolve(),
+        Path(str(request["manifest_path"])).resolve(),
+        Path(str(settings_value["data_root"])).resolve(),
+    }
+    db_path = settings_value.get("db_path")
+    if isinstance(db_path, str) and db_path:
+        readable_roots.add(Path(db_path).resolve())
+    progress({"stage": "preparing_sandbox"})
+    last_cancellation_check = 0.0
+    cancellation_cache = False
+
+    def cancellation_requested() -> bool:
+        nonlocal last_cancellation_check, cancellation_cache
+        now = time.monotonic()
+        if now - last_cancellation_check < 1.0:
+            return cancellation_cache
+        last_cancellation_check = now
+        cancellation_cache = ResearchJob.objects.filter(
+            pk=job_id,
+            status=ResearchJob.Status.CANCEL_REQUESTED,
+        ).exists()
+        return cancellation_cache
+
+    child_env = {
+        "PATH": os.pathsep.join((str(Path(sys.executable).parent), "/usr/bin", "/bin")),
+        "VIRTUAL_ENV": str(Path(sys.prefix).resolve()),
+        "PYTHONPATH": str(package_source_root.resolve()),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+        "PYTHONHASHSEED": "0",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "BLIS_NUM_THREADS": "1",
+        "VECLIB_MAXIMUM_THREADS": "1",
+        "TMPDIR": "/tmp",
+    }
+    try:
+        completed = run_isolated_command(
+            (
+                sys.executable,
+                "-m",
+                "market_research.application.sandbox_job",
+                "--request",
+                str(request_path),
+                "--result",
+                str(result_path),
+            ),
+            cwd=sandbox_root,
+            env=child_env,
+            readable_roots=tuple(sorted(readable_roots, key=str)),
+            writable_roots=(sandbox_root,),
+            policy=IsolatedProcessPolicy(
+                wall_timeout_seconds=float(_job_execution_timeout_seconds()),
+                memory_limit_mb=float(_job_child_memory_limit_mb()),
+                output_limit_bytes=_job_child_output_limit_bytes(),
+                process_limit=_job_child_process_limit(),
+                file_descriptor_limit=1024,
+                network_access=False,
+            ),
+            output_path=log_path,
+            cancellation_requested=cancellation_requested,
+        )
+    except IsolatedProcessError as exc:
+        raise SandboxUnavailableError("research_job_sandbox_unavailable") from exc
+    if completed.status == "sandbox_unavailable":
+        raise SandboxUnavailableError("research_job_sandbox_unavailable")
+    if completed.status == "cancelled":
+        raise JobCancellationRequested("research_job_cancellation_requested")
+    if completed.status == "timed_out":
+        raise TimeoutError("isolated_research_job_execution_timeout")
+    if completed.status == "resource_exhausted":
+        raise MemoryError("isolated_research_job_resource_exhausted")
+    if completed.status != "succeeded":
+        raise IsolatedJobProcessError("isolated_research_job_child_failed")
+    try:
+        if result_path.stat().st_size > 16 * 1024 * 1024:
+            raise IsolatedJobProcessError("isolated_research_job_result_too_large")
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IsolatedJobProcessError("isolated_research_job_result_invalid") from exc
+    progress({"stage": "validating_output"})
+    return dispatcher.accept_sandbox_result(
+        job,
+        payload,
+        sandbox_root=sandbox_root,
+    )
+
+
+def _job_execution_timeout_seconds() -> int:
+    raw = os.environ.get("RESEARCH_OPS_JOB_EXECUTION_TIMEOUT_SECONDS", "21600")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("research_job_execution_timeout_invalid") from exc
+    if not 30 <= value <= 86400:
+        raise RuntimeError("research_job_execution_timeout_invalid")
+    return value
+
+
+def _job_child_memory_limit_mb() -> int:
+    raw = os.environ.get("RESEARCH_OPS_JOB_CHILD_MEMORY_LIMIT_MB", "2048")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("research_job_child_memory_limit_invalid") from exc
+    if not 256 <= value <= 32768:
+        raise RuntimeError("research_job_child_memory_limit_invalid")
+    return value
+
+
+def _job_child_output_limit_bytes() -> int:
+    raw = os.environ.get("RESEARCH_OPS_JOB_CHILD_OUTPUT_LIMIT_BYTES", "67108864")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("research_job_child_output_limit_invalid") from exc
+    if not 1_048_576 <= value <= 1_073_741_824:
+        raise RuntimeError("research_job_child_output_limit_invalid")
+    return value
+
+
+def _job_child_process_limit() -> int:
+    raw = os.environ.get("RESEARCH_OPS_JOB_CHILD_PROCESS_LIMIT", "128")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("research_job_child_process_limit_invalid") from exc
+    if not 16 <= value <= 1024:
+        raise RuntimeError("research_job_child_process_limit_invalid")
+    return value
 
 
 def _claim_research_job(*, worker_id: str) -> Any | None:
@@ -680,6 +913,9 @@ __all__ = [
     "FencedJobProgressReporter",
     "ResearchJobWorker",
     "ResearchJobWorkerSettings",
+    "IsolatedJobProcessError",
+    "SandboxUnavailableError",
+    "classify_research_job_runtime_error",
     "configure_django",
     "main",
 ]

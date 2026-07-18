@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.immutable_contract import canonical_mutable, deep_freeze
@@ -110,6 +110,8 @@ class ExecutionRequest:
     signal_reference_price: float | None = None
     signal_reference_source: str | None = None
     quote_ts: int | None = None
+    quote_available_at_ts: int | None = None
+    quote_availability_basis: str | None = None
     quote_age_ms: int | None = None
     quote_source: str | None = None
     best_bid: float | None = None
@@ -124,6 +126,8 @@ class ExecutionRequest:
     orderbook_depth_snapshot: Any | None = None
     orderbook_depth_ref: str | None = None
     depth_snapshot_ts: int | None = None
+    depth_snapshot_available_at_ts: int | None = None
+    depth_snapshot_availability_basis: str | None = None
     depth_snapshot_age_ms: int | None = None
     depth_levels_consumed: int | None = None
     depth_available: bool = False
@@ -141,6 +145,13 @@ class ExecutionRequest:
     latency_applied_to_submit_ts: bool | None = None
     latency_applied_to_fill_reference: bool | None = None
     latency_reference_policy_warning: str | None = None
+    execution_reference_target_ts: int | None = None
+    execution_reference_deadline_ts: int | None = None
+    execution_reference_resolution_ts: int | None = None
+    execution_resolution_ts: int | None = None
+    depth_reference_target_ts: int | None = None
+    depth_reference_deadline_ts: int | None = None
+    depth_resolution_ts: int | None = None
     feature_snapshot: dict[str, Any] | None = None
     regime_snapshot: dict[str, Any] | None = None
     entry_signal_source: str | None = None
@@ -170,11 +181,12 @@ class ExecutionRequest:
 
     def as_dict(self) -> dict[str, Any]:
         """Canonical evidence representation; excludes no authoritative field."""
-        payload = canonical_mutable(self.__dict__)
+        payload = cast(dict[str, Any], canonical_mutable(self.__dict__))
         depth = self.orderbook_depth_snapshot
         if depth is not None:
             payload["orderbook_depth_snapshot"] = {
                 "ts": int(depth.ts),
+                "available_at_ts": int(depth.available_at_ms()),
                 "pair": str(depth.pair),
                 "source": str(depth.source),
                 "observed_at_epoch_sec": depth.observed_at_epoch_sec,
@@ -220,6 +232,8 @@ class ExecutionFill:
     signal_reference_price: float | None = None
     signal_reference_source: str | None = None
     quote_ts: int | None = None
+    quote_available_at_ts: int | None = None
+    quote_availability_basis: str | None = None
     quote_age_ms: int | None = None
     quote_source: str | None = None
     requested_qty: float = 0.0
@@ -240,6 +254,8 @@ class ExecutionFill:
     requested_notional: float | None = None
     filled_notional: float | None = None
     depth_snapshot_ts: int | None = None
+    depth_snapshot_available_at_ts: int | None = None
+    depth_snapshot_availability_basis: str | None = None
     depth_snapshot_age_ms: int | None = None
     depth_levels_consumed: int | None = None
     depth_available: bool = False
@@ -263,6 +279,13 @@ class ExecutionFill:
     latency_applied_to_submit_ts: bool | None = None
     latency_applied_to_fill_reference: bool | None = None
     latency_reference_policy_warning: str | None = None
+    execution_reference_target_ts: int | None = None
+    execution_reference_deadline_ts: int | None = None
+    execution_reference_resolution_ts: int | None = None
+    execution_resolution_ts: int | None = None
+    depth_reference_target_ts: int | None = None
+    depth_reference_deadline_ts: int | None = None
+    depth_resolution_ts: int | None = None
     feature_snapshot: dict[str, Any] | None = None
     regime_snapshot: dict[str, Any] | None = None
     entry_signal_source: str | None = None
@@ -324,6 +347,8 @@ class ExecutionFill:
             "signal_reference_price": self.signal_reference_price,
             "signal_reference_source": self.signal_reference_source,
             "quote_ts": self.quote_ts,
+            "quote_available_at_ts": self.quote_available_at_ts,
+            "quote_availability_basis": self.quote_availability_basis,
             "quote_age_ms": self.quote_age_ms,
             "quote_source": self.quote_source,
             "requested_qty": self.requested_qty,
@@ -344,6 +369,8 @@ class ExecutionFill:
             "requested_notional": self.requested_notional,
             "filled_notional": self.filled_notional,
             "depth_snapshot_ts": self.depth_snapshot_ts,
+            "depth_snapshot_available_at_ts": self.depth_snapshot_available_at_ts,
+            "depth_snapshot_availability_basis": self.depth_snapshot_availability_basis,
             "depth_snapshot_age_ms": self.depth_snapshot_age_ms,
             "depth_levels_consumed": self.depth_levels_consumed,
             "depth_available": self.depth_available,
@@ -363,6 +390,13 @@ class ExecutionFill:
             "latency_applied_to_submit_ts": self.latency_applied_to_submit_ts,
             "latency_applied_to_fill_reference": self.latency_applied_to_fill_reference,
             "latency_reference_policy_warning": self.latency_reference_policy_warning,
+            "execution_reference_target_ts": self.execution_reference_target_ts,
+            "execution_reference_deadline_ts": self.execution_reference_deadline_ts,
+            "execution_reference_resolution_ts": self.execution_reference_resolution_ts,
+            "execution_resolution_ts": self.execution_resolution_ts,
+            "depth_reference_target_ts": self.depth_reference_target_ts,
+            "depth_reference_deadline_ts": self.depth_reference_deadline_ts,
+            "depth_resolution_ts": self.depth_resolution_ts,
             "feature_snapshot": canonical_mutable(self.feature_snapshot),
             "regime_snapshot": canonical_mutable(self.regime_snapshot),
             "entry_signal_source": self.entry_signal_source,

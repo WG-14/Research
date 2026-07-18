@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 import math
-from typing import Any
+from typing import Any, TypedDict, cast
 
-from .backtest_common import execution_event_summary
+from market_research.orderbook_depth_store import OrderbookDepthSnapshot
+
+from .backtest_common import execution_event_summary, resolve_depth_request_fields
 from .backtest_types import (
     BacktestRun,
     BacktestRunContext,
@@ -27,6 +29,12 @@ from .execution_model import (
     model_params_hash,
 )
 from .execution_timing import build_signal_event, resolve_execution_reference
+from .execution_invariants import (
+    CAUSAL_TIMELINE_VALIDATOR,
+    MARKET_KNOWLEDGE_TIME_POLICY,
+    decision_timeline_violations,
+    fill_timeline_violations,
+)
 from .experiment_manifest import (
     ExecutionTimingPolicy,
     PortfolioPolicy,
@@ -42,7 +50,12 @@ from .metrics_contract import (
     build_metrics_v2,
 )
 from .portfolio_ledger import LedgerEntry, PortfolioLedger
-from .risk_contract import ResearchRiskPolicy, evaluate_research_risk
+from .risk_contract import (
+    ResearchRiskPolicy,
+    ResearchRiskRuntimeState,
+    compile_research_risk_policy,
+    evaluate_research_risk,
+)
 from .position_model import ResearchPosition
 from .strategy_contract import CompiledStrategyContract, ResearchStrategyPlugin
 from .strategy_compiler import StrategyCompiler, validate_compiled_strategy_contract
@@ -63,6 +76,58 @@ import inspect
 
 class ExecutionTimelineError(ValueError):
     pass
+
+
+class _OrderPolicyDecision(TypedDict):
+    allowed: bool
+    reason_code: str
+    requested_notional: float | None
+    requested_qty: float | None
+    evidence: dict[str, object]
+    evidence_hash: str
+
+
+class _ReferenceRequestFields(TypedDict):
+    submit_ts_assumption: int
+    fill_reference_ts: int | None
+    fill_reference_price: float | None
+    fill_reference_source: str | None
+    quote_ts: int | None
+    quote_available_at_ts: int | None
+    quote_availability_basis: str | None
+    execution_reference_target_ts: int | None
+    execution_reference_deadline_ts: int | None
+    execution_reference_resolution_ts: int | None
+    execution_resolution_ts: int | None
+    quote_age_ms: int | None
+    quote_source: str | None
+    best_bid: float | None
+    best_ask: float | None
+    spread_bps: float | None
+    execution_reality_level: str
+    intra_candle_policy: str
+    top_of_book_is_full_depth: bool
+    execution_reference_failure_reason: str | None
+    latency_applied_to_reference: bool
+    latency_applied_to_submit_ts: bool
+    latency_applied_to_fill_reference: bool
+    latency_reference_policy_warning: str | None
+
+
+class _DepthRequestFields(TypedDict, total=False):
+    orderbook_depth_snapshot: OrderbookDepthSnapshot | None
+    orderbook_depth_ref: str | None
+    depth_snapshot_ts: int
+    depth_snapshot_available_at_ts: int
+    depth_snapshot_availability_basis: str
+    depth_snapshot_age_ms: int
+    depth_available: bool
+    depth_sufficient: bool
+    depth_reference_target_ts: int
+    depth_reference_deadline_ts: int
+    depth_resolution_ts: int
+    execution_liquidity_evidence_type: str
+    execution_realism_limitations: tuple[str, ...]
 
 
 def _validate_runtime_intent(
@@ -113,6 +178,105 @@ def _stream_hash(values: tuple[object, ...]) -> str:
     )
 
 
+def _compile_effective_position_sizing_policy(
+    policy: PortfolioPolicy,
+) -> dict[str, object]:
+    """Fail closed before the run if a declared sizing semantic is unsupported."""
+
+    sizing = policy.position_sizing
+    if sizing.rounding_policy != "engine_float_no_exchange_lot_rounding":
+        raise ValueError("unsupported_position_sizing_rounding_policy")
+    for name, value in (
+        ("min_order_krw", sizing.min_order_krw),
+        ("max_order_krw", sizing.max_order_krw),
+    ):
+        if value is not None and (not math.isfinite(float(value)) or float(value) < 0):
+            raise ValueError(f"invalid_position_sizing_bound:{name}")
+    if (
+        sizing.min_order_krw is not None
+        and sizing.max_order_krw is not None
+        and float(sizing.min_order_krw) > float(sizing.max_order_krw)
+    ):
+        raise ValueError("position_sizing_min_order_exceeds_max_order")
+    return {
+        **sizing.effective_policy(),
+        "portfolio_policy_hash": policy.policy_hash(),
+        "execution_authority": "common_simulation_engine",
+        "readiness_status": "PASS",
+    }
+
+
+def _evaluate_order_policy(
+    *,
+    policy: PortfolioPolicy,
+    side: str,
+    cash: float,
+    asset_qty: float,
+    decision_price: float,
+    decision_ts: int,
+    decision_id: str,
+    intent_id: str,
+) -> _OrderPolicyDecision:
+    """Resolve bounds and identity rounding before creating an order request."""
+
+    normalized_side = str(side).upper()
+    if normalized_side == "BUY":
+        raw_notional = float(cash) * float(policy.position_sizing.buy_fraction)
+        requested_notional: float | None = float(raw_notional)
+        requested_qty: float | None = None
+        notional_source = "available_cash_times_buy_fraction"
+    elif normalized_side == "SELL":
+        raw_notional = float(asset_qty) * float(decision_price)
+        requested_notional = None
+        requested_qty = float(asset_qty)
+        notional_source = "sellable_quantity_times_decision_candle_close"
+    else:
+        raise ValueError(f"unsupported_order_policy_side:{side}")
+
+    # The sole supported rounding policy is deliberately an identity
+    # operation.  Keeping it explicit in evidence prevents a declarative field
+    # from appearing to be silently ignored.
+    effective_notional = float(raw_notional)
+    minimum = policy.position_sizing.min_order_krw
+    maximum = policy.position_sizing.max_order_krw
+    reason = "none"
+    allowed = True
+    if minimum is not None and effective_notional < float(minimum):
+        allowed, reason = False, "min_order_notional_not_met"
+    elif maximum is not None and effective_notional > float(maximum):
+        allowed, reason = False, "max_order_notional_exceeded"
+    evidence = {
+        "schema_version": 1,
+        "decision_id": decision_id,
+        "intent_id": intent_id,
+        "decision_ts": int(decision_ts),
+        "side": normalized_side,
+        "allowed": allowed,
+        "reason_code": reason,
+        "raw_notional_krw": float(raw_notional),
+        "effective_notional_krw": effective_notional,
+        "notional_source": notional_source,
+        "min_order_krw": float(minimum) if minimum is not None else None,
+        "max_order_krw": float(maximum) if maximum is not None else None,
+        "min_boundary": "inclusive",
+        "max_boundary": "inclusive",
+        "rounding_policy": policy.position_sizing.rounding_policy,
+        "rounding_operation": "identity_float_no_exchange_lot_rounding",
+        "out_of_bounds_action": "reject_before_execution_request",
+        "requested_notional": requested_notional,
+        "requested_qty": requested_qty,
+        "portfolio_policy_hash": policy.policy_hash(),
+    }
+    return {
+        "allowed": allowed,
+        "reason_code": reason,
+        "requested_notional": requested_notional,
+        "requested_qty": requested_qty,
+        "evidence": evidence,
+        "evidence_hash": sha256_prefixed(evidence),
+    }
+
+
 def _failed_fill(
     *, request: ExecutionRequest, model: ExecutionModel, reason: str
 ) -> ExecutionFill:
@@ -128,52 +292,71 @@ def _failed_fill(
         fill_reference_source=request.fill_reference_source,
         signal_candle_start_ts=request.signal_candle_start_ts,
         signal_candle_close_ts=request.signal_candle_close_ts,
+        signal_reference_price=request.signal_reference_price,
+        signal_reference_source=request.signal_reference_source,
+        quote_ts=request.quote_ts,
+        quote_available_at_ts=request.quote_available_at_ts,
+        quote_availability_basis=request.quote_availability_basis,
+        quote_age_ms=request.quote_age_ms,
+        quote_source=request.quote_source,
         requested_qty=float(request.requested_qty or 0.0),
+        requested_notional=request.requested_notional,
         remaining_qty=float(request.requested_qty or 0.0),
+        filled_notional=0.0,
         fill_status="failed",
         model_name=model.name,
         model_version=model.version,
         model_params_hash=model_params_hash(model.params_payload()),
+        depth_snapshot_ts=request.depth_snapshot_ts,
+        depth_snapshot_available_at_ts=request.depth_snapshot_available_at_ts,
+        depth_snapshot_availability_basis=request.depth_snapshot_availability_basis,
+        depth_snapshot_age_ms=request.depth_snapshot_age_ms,
+        depth_levels_consumed=0,
+        depth_available=request.depth_available,
+        depth_sufficient=False,
+        orderbook_depth_ref=request.orderbook_depth_ref,
+        best_bid=request.best_bid,
+        best_ask=request.best_ask,
+        spread_bps=request.spread_bps,
+        queue_position_mode=request.queue_position_mode,
+        market_impact_mode=request.market_impact_mode,
+        execution_liquidity_evidence_type=request.execution_liquidity_evidence_type,
+        execution_realism_limitations=request.execution_realism_limitations,
+        execution_reality_level=request.execution_reality_level,
+        allow_same_candle_close_fill=request.allow_same_candle_close_fill,
+        quote_selection=request.quote_selection,
+        fill_reference_policy=request.fill_reference_policy,
+        top_of_book_source=request.top_of_book_source or request.quote_source,
+        top_of_book_is_full_depth=request.top_of_book_is_full_depth,
         execution_reference_failure_reason=reason,
+        latency_applied_to_reference=request.latency_applied_to_reference,
+        latency_applied_to_submit_ts=request.latency_applied_to_submit_ts,
+        latency_applied_to_fill_reference=request.latency_applied_to_fill_reference,
+        latency_reference_policy_warning=request.latency_reference_policy_warning,
+        execution_reference_target_ts=request.execution_reference_target_ts,
+        execution_reference_deadline_ts=request.execution_reference_deadline_ts,
+        execution_reference_resolution_ts=request.execution_reference_resolution_ts,
+        execution_resolution_ts=request.execution_resolution_ts,
+        depth_reference_target_ts=request.depth_reference_target_ts,
+        depth_reference_deadline_ts=request.depth_reference_deadline_ts,
+        depth_resolution_ts=request.depth_resolution_ts,
+        feature_snapshot=request.feature_snapshot,
+        regime_snapshot=request.regime_snapshot,
+        entry_signal_source=request.entry_signal_source,
+        entry_sizing_source=request.entry_sizing_source,
+        intra_candle_policy=request.intra_candle_policy,
         request_id=request.request_id,
-        portfolio_effective_ts=request.fill_reference_ts,
+        portfolio_effective_ts=request.execution_resolution_ts,
+        order_intent_ts=request.order_intent_ts,
+        decision_id=request.decision_id,
+        intent_id=request.intent_id,
     )
 
 
 def _validate_fill_timeline(fill: ExecutionFill) -> None:
-    if fill.fill_status not in {"filled", "partial"} or float(fill.filled_qty) <= 0.0:
-        return
-    if fill.fill_reference_ts is None:
-        raise ExecutionTimelineError("filled_fill_reference_ts_missing")
-    effective = int(
-        fill.portfolio_effective_ts
-        if fill.portfolio_effective_ts is not None
-        else fill.fill_reference_ts
-    )
-    if not (
-        int(fill.decision_ts)
-        <= int(fill.order_intent_ts)
-        <= int(fill.submit_ts_assumption)
-        <= int(fill.fill_reference_ts)
-        <= effective
-    ):
-        raise ExecutionTimelineError("execution_timeline_causality_violation")
-    if (
-        fill.fill_reference_policy == "next_candle_open"
-        and fill.fill_reference_source != "next_candle_open"
-    ):
-        raise ExecutionTimelineError("next_open_fill_source_invalid")
-    if fill.fill_reference_policy in {
-        "first_orderbook_after_decision",
-        "latency_adjusted_orderbook",
-    }:
-        target = (
-            fill.submit_ts_assumption
-            if fill.fill_reference_policy == "latency_adjusted_orderbook"
-            else fill.decision_ts
-        )
-        if fill.quote_ts is None or int(fill.quote_ts) < int(target):
-            raise ExecutionTimelineError("orderbook_quote_precedes_target")
+    violations = fill_timeline_violations(fill)
+    if violations:
+        raise ExecutionTimelineError(violations[0])
 
 
 def _trade_from_fill(
@@ -231,6 +414,12 @@ def _run_common_simulation_backtest(
     """Run a plugin event stream through the one execution and ledger path."""
     timing = execution_timing_policy or ExecutionTimingPolicy()
     policy = portfolio_policy or legacy_research_portfolio_policy()
+    active_risk_policy = risk_policy or ResearchRiskPolicy(
+        policy_status="disabled_explicit",
+        source="common_engine_default",
+    )
+    effective_risk_policy = compile_research_risk_policy(active_risk_policy)
+    effective_position_sizing_policy = _compile_effective_position_sizing_policy(policy)
     model = execution_model or FixedBpsExecutionModel(
         fee_rate=float(fee_rate), slippage_bps=float(slippage_bps)
     )
@@ -277,6 +466,9 @@ def _run_common_simulation_backtest(
     pending: list[ExecutionFill] = []
     pending_status: list[ExecutionFill] = []
     pending_buy = False
+    risk_runtime_state = ResearchRiskRuntimeState()
+    risk_decision_evidence: list[dict[str, object]] = []
+    order_policy_decision_evidence: list[dict[str, object]] = []
     # entry ts/price/qty plus round-trip fee, slippage and realized P&L accumulators.
     open_entry: tuple[int, float, float, float, float, float] | None = None
     model_invocations = 0
@@ -403,6 +595,10 @@ def _run_common_simulation_backtest(
             pending.remove(fill)
             entry = ledger.apply(fill)
             if entry is not None:
+                risk_runtime_state.record_portfolio_applied_fill(
+                    effective_ts=int(entry.effective_ts),
+                    realized_pnl=entry.realized_pnl,
+                )
                 trace_lineage_event(
                     context, stream="ledger_entry", payload=entry.as_dict()
                 )
@@ -576,6 +772,25 @@ def _run_common_simulation_backtest(
                 complete_candle_lifecycle(index, candle, mark_ts)
                 continue
             event = current_events[0]
+            expected_signal = build_signal_event(
+                candle=candle,
+                interval=dataset.interval,
+                side=event.final_signal,
+                policy=timing,
+                feature_snapshot=event.feature_snapshot,
+                regime_snapshot={},
+            )
+            decision_violations = decision_timeline_violations(
+                event,
+                current_candle_ts=int(candle.ts),
+                candle_available_at_ts=candle.available_at_ms(
+                    interval=dataset.interval
+                ),
+                strategy_view_boundary_ts=int(causal.decision_boundary_ts),
+                expected_decision_ts=int(expected_signal.decision_ts),
+            )
+            if decision_violations:
+                raise ExecutionTimelineError(decision_violations[0])
             decision_id = event.decision_id()
             decisions.append(event)
             all_decisions.append(event)
@@ -585,6 +800,15 @@ def _run_common_simulation_backtest(
                     **event.as_dict(),
                     "input_candle": {
                         "ts": int(candle.ts),
+                        "event_time_ts": int(candle.ts),
+                        "event_time_role": "ohlcv_interval_start",
+                        "available_at_ts": candle.available_at_ms(
+                            interval=dataset.interval
+                        ),
+                        "available_at_role": "complete_ohlcv_interval_close",
+                        "strategy_view_boundary_ts": int(causal.decision_boundary_ts),
+                        "decision_ts": int(event.decision_ts),
+                        "knowledge_time_policy": "available_at_lte_strategy_view_boundary_lte_decision",
                         "row_hash": sha256_prefixed(candle.as_tuple()),
                     },
                 },
@@ -660,6 +884,8 @@ def _run_common_simulation_backtest(
                     )
             if intent is not None and intent.decision_id != decision_id:
                 raise ValueError("intent_decision_lineage_mismatch")
+            requested_notional: float | None = None
+            requested_qty: float | None = None
             if intent is not None:
                 _validate_runtime_intent(
                     intent=intent,
@@ -688,20 +914,55 @@ def _run_common_simulation_backtest(
                     sellable_qty=view.asset_qty,
                 )
                 risk = evaluate_research_risk(
-                    policy=risk_policy
-                    or ResearchRiskPolicy(
-                        policy_status="disabled_explicit",
-                        source="common_engine_default",
-                    ),
+                    policy=active_risk_policy,
                     requested_signal=intent.side,
                     position=position,
                     market_price=float(candle.close),
                     baseline_equity=float(policy.starting_cash_krw),
                     current_equity=view.cash + view.asset_qty * float(candle.close),
                     peak_equity=peak,
+                    risk_context=risk_runtime_state.context_at(
+                        int(intent.order_intent_ts)
+                    ),
+                )
+                risk_record = {
+                    "decision_id": decision_id,
+                    "intent_id": intent.intent_id,
+                    **risk.evidence,
+                }
+                risk_record["evidence_hash"] = sha256_prefixed(risk_record)
+                risk_decision_evidence.append(risk_record)
+                trace_lineage_event(
+                    context, stream="risk_decision", payload=risk_record
                 )
                 if getattr(risk, "allowed", True) is False:
                     intent = None
+            if intent is not None:
+                order_policy_decision = _evaluate_order_policy(
+                    policy=policy,
+                    side=intent.side,
+                    cash=view.cash,
+                    asset_qty=view.asset_qty,
+                    decision_price=float(candle.close),
+                    decision_ts=int(intent.order_intent_ts),
+                    decision_id=decision_id,
+                    intent_id=intent.intent_id,
+                )
+                order_policy_record = {
+                    **dict(order_policy_decision["evidence"]),
+                    "evidence_hash": order_policy_decision["evidence_hash"],
+                }
+                order_policy_decision_evidence.append(order_policy_record)
+                trace_lineage_event(
+                    context,
+                    stream="order_policy_decision",
+                    payload=order_policy_record,
+                )
+                if order_policy_decision["allowed"] is False:
+                    intent = None
+                else:
+                    requested_notional = order_policy_decision["requested_notional"]
+                    requested_qty = order_policy_decision["requested_qty"]
             if intent is not None:
                 intents.append(intent)
                 trace_lineage_event(
@@ -722,21 +983,39 @@ def _run_common_simulation_backtest(
                     policy=timing,
                     model_latency_ms=int(getattr(model, "latency_ms", 0) or 0),
                 )
-                snapshot = ledger.snapshot()
-                requested_notional = (
-                    snapshot.cash * float(policy.position_sizing.buy_fraction)
-                    if intent.side == "BUY"
-                    else None
+                if (
+                    intent.side == "SELL"
+                    and intent.sizing is not IntentSizing.FULL_POSITION
+                ):
+                    requested_qty = intent.requested_qty
+                depth_fields = cast(
+                    _DepthRequestFields,
+                    (
+                        resolve_depth_request_fields(
+                            dataset=dataset,
+                            reference=reference,
+                            model=model,
+                            timing_policy=timing,
+                        )
+                        if reference.failure_reason is None
+                        else {}
+                    ),
                 )
-                requested_qty = (
-                    snapshot.asset_qty
-                    if intent.side == "SELL"
-                    and intent.sizing is IntentSizing.FULL_POSITION
-                    else intent.requested_qty
+                reference_fields = cast(
+                    _ReferenceRequestFields, reference.request_fields()
                 )
-                depth = dataset.first_depth_snapshot_after_or_equal(
-                    target_ts=int(reference.fill_reference_ts or signal.decision_ts),
-                    max_wait_ms=int(timing.max_quote_wait_ms),
+                resolution_candidates = [
+                    value
+                    for value in (
+                        reference_fields.get("execution_resolution_ts"),
+                        depth_fields.get("depth_resolution_ts"),
+                    )
+                    if value is not None
+                ]
+                reference_fields["execution_resolution_ts"] = (
+                    max(resolution_candidates)
+                    if resolution_candidates
+                    else int(signal.decision_ts)
                 )
                 request = ExecutionRequest(
                     signal_ts=signal.signal_candle_start_ts,
@@ -752,7 +1031,7 @@ def _run_common_simulation_backtest(
                     run_id=run_id,
                     decision_id=decision_id,
                     intent_id=intent.intent_id,
-                    **reference.request_fields(),
+                    **reference_fields,
                     signal_candle_start_ts=signal.signal_candle_start_ts,
                     signal_candle_close_ts=signal.signal_candle_close_ts,
                     signal_reference_price=signal.signal_reference_price,
@@ -762,18 +1041,12 @@ def _run_common_simulation_backtest(
                     feature_snapshot=event.feature_snapshot,
                     entry_signal_source=event.entry_signal,
                     entry_sizing_source=intent.sizing.value,
-                    orderbook_depth_snapshot=depth,
-                    orderbook_depth_ref=depth.depth_ref() if depth else None,
-                    depth_snapshot_ts=int(depth.ts) if depth else None,
-                    depth_snapshot_age_ms=(
-                        int(depth.ts)
-                        - int(reference.fill_reference_ts or signal.decision_ts)
-                    )
-                    if depth
-                    else None,
-                    depth_available=bool(depth and depth.has_depth),
+                    **depth_fields,
                 )
                 requests.append(request)
+                risk_runtime_state.record_execution_request(
+                    order_intent_ts=int(intent.order_intent_ts)
+                )
                 trace_lineage_event(
                     context, stream="execution_request", payload=request.as_dict()
                 )
@@ -788,11 +1061,16 @@ def _run_common_simulation_backtest(
                     if reference.failure_reason
                     else model.simulate(request)
                 )
+                portfolio_effective_ts = max(
+                    int(fill.fill_reference_ts or signal.decision_ts),
+                    int(fill.execution_resolution_ts or signal.decision_ts),
+                    int(fill.depth_resolution_ts or signal.decision_ts),
+                )
                 fill = replace(
                     fill,
                     request_id=request.request_id,
                     fill_id="",
-                    portfolio_effective_ts=fill.fill_reference_ts,
+                    portfolio_effective_ts=portfolio_effective_ts,
                     order_intent_ts=int(intent.order_intent_ts),
                     decision_id=decision_id,
                     intent_id=intent.intent_id,
@@ -892,7 +1170,7 @@ def _run_common_simulation_backtest(
         profit_factor=q.profit_factor,
         profit_factor_unbounded=q.profit_factor_unbounded,
         trade_count=q.closed_trade_count,
-        win_rate=q.win_rate,
+        win_rate=q.win_rate if q.win_rate is not None else 0.0,
         avg_win=q.avg_win,
         avg_loss=q.avg_loss,
         fee_total=final.fee_total,
@@ -949,9 +1227,41 @@ def _run_common_simulation_backtest(
         if len(invoked_model_hashes) == 1
         else (declared_model_hash if not invoked_model_hashes else "MISMATCH")
     )
+    market_knowledge_time_basis_counts = {
+        "quote_observed_at": sum(
+            1
+            for request in requests
+            if request.quote_ts is not None
+            and request.quote_availability_basis == "observed_at_epoch_sec"
+        ),
+        "quote_event_time_assumption": sum(
+            1
+            for request in requests
+            if request.quote_ts is not None
+            and request.quote_availability_basis
+            == "event_time_as_knowledge_time_assumption"
+        ),
+        "depth_observed_at": sum(
+            1
+            for request in requests
+            if request.depth_snapshot_ts is not None
+            and request.depth_snapshot_availability_basis == "observed_at_epoch_sec"
+        ),
+        "depth_event_time_assumption": sum(
+            1
+            for request in requests
+            if request.depth_snapshot_ts is not None
+            and request.depth_snapshot_availability_basis
+            == "event_time_as_knowledge_time_assumption"
+        ),
+    }
+    market_knowledge_time_assumption_count = (
+        market_knowledge_time_basis_counts["quote_event_time_assumption"]
+        + market_knowledge_time_basis_counts["depth_event_time_assumption"]
+    )
     summary.update(
         {
-            "execution_evidence_schema_version": 2,
+            "execution_evidence_schema_version": 3,
             "execution_attempt_count": len(requests),
             "execution_reference_failure_count": reference_failures,
             "model_eligible_request_count": model_eligible,
@@ -972,10 +1282,29 @@ def _run_common_simulation_backtest(
             "strategy_plugin_contract_hash": compiled.strategy_plugin_contract_hash,
             "capability_contract_hash": compiled.capability_contract_hash,
             "exit_decision_evidence": exit_decision_evidence,
+            "declared_risk_policy_hash": active_risk_policy.policy_hash(),
+            "executed_risk_policy_hash": active_risk_policy.policy_hash(),
+            "effective_risk_policy": effective_risk_policy,
+            "risk_decision_evidence": risk_decision_evidence,
+            "risk_decision_stream_hash": _stream_hash(tuple(risk_decision_evidence)),
+            "risk_runtime_state": risk_runtime_state.as_dict(),
+            "risk_runtime_state_hash": risk_runtime_state.state_hash(),
+            "effective_position_sizing_policy": (effective_position_sizing_policy),
+            "order_policy_decision_evidence": order_policy_decision_evidence,
+            "order_policy_decision_stream_hash": _stream_hash(
+                tuple(order_policy_decision_evidence)
+            ),
             "execution_request_stream_hash": _stream_hash(tuple(requests)),
             "execution_fill_stream_hash": _stream_hash(tuple(fills)),
             "ledger_stream_hash": _stream_hash(ledger_entries),
             "timing_invariant_status": timing_status,
+            "decision_timeline_invariant_status": "PASS",
+            "causal_timeline_validator": CAUSAL_TIMELINE_VALIDATOR,
+            "market_knowledge_time_policy": MARKET_KNOWLEDGE_TIME_POLICY,
+            "market_knowledge_time_basis_counts": market_knowledge_time_basis_counts,
+            "market_knowledge_time_assumption_count": (
+                market_knowledge_time_assumption_count
+            ),
             # Schema-v1 aliases retained for readers while their former mixed-domain semantics are retired.
             "declared_execution_timing_hash": policy_hash,
             "executed_execution_timing_hash": policy_hash,
@@ -1035,6 +1364,11 @@ def _run_common_simulation_backtest(
             "common_execution_authority": "common_simulation_engine",
             "executed_portfolio_policy": policy.as_dict(),
             "executed_portfolio_policy_hash": policy.policy_hash(),
+            "effective_position_sizing_policy": effective_position_sizing_policy,
+            "executed_risk_policy": effective_risk_policy,
+            "executed_risk_policy_hash": active_risk_policy.policy_hash(),
+            "risk_runtime_state": risk_runtime_state.as_dict(),
+            "risk_runtime_state_hash": risk_runtime_state.state_hash(),
             "execution_evidence": summary,
             "decision_stream_perturbation_evidence": summary[
                 "decision_stream_perturbation_evidence"

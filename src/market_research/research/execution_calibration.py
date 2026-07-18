@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, SupportsIndex, SupportsInt, cast
 
 from market_research.paths import ResearchPathError, ResearchPathManager
 from market_research.storage_io import write_json_atomic
@@ -23,7 +23,7 @@ def build_calibration_artifact(
     interval: str,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    sample_count = int(summary.get("sample_count") or 0)
+    sample_count = _int_or_zero(summary.get("sample_count"))
     payload: dict[str, Any] = {
         "schema_version": 1,
         "artifact_type": "execution_cost_calibration",
@@ -50,8 +50,8 @@ def build_calibration_artifact(
         "execution_reality_level": summary.get("execution_reality_level"),
         "execution_reality_contract": summary.get("execution_reality_contract"),
         "execution_contract_hash": summary.get("execution_contract_hash"),
-        "execution_contract_hashes": list(
-            summary.get("execution_contract_hashes") or []
+        "execution_contract_hashes": _list_or_empty(
+            summary.get("execution_contract_hashes")
         ),
         "execution_contract_hash_present": bool(
             summary.get("execution_contract_hash_present")
@@ -59,11 +59,11 @@ def build_calibration_artifact(
         "mixed_execution_contract_hashes": bool(
             summary.get("mixed_execution_contract_hashes")
         ),
-        "execution_contract_mismatch_count": int(
-            summary.get("execution_contract_mismatch_count") or 0
+        "execution_contract_mismatch_count": _int_or_zero(
+            summary.get("execution_contract_mismatch_count")
         ),
-        "execution_contract_missing_count": int(
-            summary.get("execution_contract_missing_count") or 0
+        "execution_contract_missing_count": _int_or_zero(
+            summary.get("execution_contract_missing_count")
         ),
         "insufficient_evidence": sample_count <= 0
         or summary.get("quality_gate_status") == "INSUFFICIENT_EVIDENCE",
@@ -73,6 +73,22 @@ def build_calibration_artifact(
         {key: value for key, value in payload.items() if key != "content_hash"}
     )
     return payload
+
+
+def _int_or_zero(value: object) -> int:
+    if value is None:
+        return 0
+    numeric = cast(str | bytes | bytearray | SupportsInt | SupportsIndex, value)
+    try:
+        return int(numeric)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _list_or_empty(value: object) -> list[object]:
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return list(value)
+    return []
 
 
 def write_calibration_artifact(

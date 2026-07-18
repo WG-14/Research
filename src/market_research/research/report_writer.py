@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,7 @@ class ResearchReportWriteResult:
     report_payload: dict[str, Any] | None = None
     substage_timings: list[dict[str, Any]] | None = None
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[ResearchReportPaths | str]:
         yield self.paths
         yield self.content_hash
 
@@ -1839,8 +1840,9 @@ def _compact_metrics_payload(metrics: Any) -> Any:
     ):
         if key in metrics:
             compact[key] = metrics[key]
-    if "limitation_reasons" in metrics:
-        compact["limitation_reasons"] = metrics["limitation_reasons"]
+    for key in ("limitation_reasons", "metric_availability"):
+        if key in metrics:
+            compact[key] = metrics[key]
     for section, keys in {
         "return_risk": (
             "total_return_pct",
@@ -1848,12 +1850,40 @@ def _compact_metrics_payload(metrics: Any) -> Any:
             "max_drawdown_pct",
             "cagr_pct",
             "open_position_at_end",
+            "annualized_volatility_pct",
+            "annualized_downside_deviation_pct",
+            "max_drawdown_duration_ms",
+            "recovery_duration_ms",
+            "value_at_risk_95_pct",
+            "conditional_value_at_risk_95_pct",
+            "beta",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "calmar_ratio",
         ),
         "trade_quality": (
             "closed_trade_count",
+            "trade_count",
             "execution_count",
             "profit_factor",
             "win_rate",
+            "avg_win",
+            "avg_loss",
+            "payoff_ratio",
+            "expectancy_per_trade_krw",
+            "expectancy_per_trade_pct",
+            "median_trade_return_pct",
+            "max_trade_return_pct",
+            "min_trade_return_pct",
+            "avg_holding_time_ms",
+            "avg_mfe",
+            "avg_mae",
+            "avg_mfe_pct",
+            "avg_mae_pct",
+            "slippage_total",
+            "slippage_per_closed_trade",
+            "net_expectancy_per_hour_krw",
+            "net_expectancy_per_capital_hour_pct",
             "single_trade_dependency_score",
         ),
         "time_exposure": (
@@ -1868,6 +1898,33 @@ def _compact_metrics_payload(metrics: Any) -> Any:
             "filled_execution_count",
             "failed_execution_count",
             "skipped_execution_count",
+        ),
+        "portfolio": (
+            "cumulative_return_pct",
+            "annualized_return_pct",
+            "max_drawdown_pct",
+            "max_drawdown_duration_ms",
+            "max_drawdown_duration_basis",
+            "annualized_volatility_pct",
+            "annualized_downside_deviation_pct",
+            "recovery_duration_ms",
+            "recovery_duration_basis",
+            "market_exposure_pct",
+            "turnover_ratio",
+            "turnover_basis",
+            "average_cash_usage_pct",
+            "peak_cash_usage_pct",
+            "max_concurrent_positions",
+            "max_position_concentration_pct",
+            "concentration_basis",
+            "beta",
+            "value_at_risk_95_pct",
+            "conditional_value_at_risk_95_pct",
+            "tail_risk",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "calmar_ratio",
+            "risk_adjusted_performance",
         ),
     }.items():
         value = metrics.get(section)

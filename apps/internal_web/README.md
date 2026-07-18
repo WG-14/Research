@@ -4,6 +4,9 @@ This is an isolated, server-rendered Django adapter over the offline
 `market-research` application services. It is a development and integration
 deliverable, not an approved production deployment.
 
+The versioned JSON endpoints and generated OpenAPI/persisted-schema contracts
+are documented in [the internal Web API contract](../../docs/internal-web-api.md).
+
 The adapter never submits orders, accesses accounts, collects network market
 data, or accepts an arbitrary server path from a browser. Authoritative research
 artifacts remain under repository-external roots managed by
@@ -35,8 +38,11 @@ experiment-scoped core output. Job and manifest ORM changes commit with an
 immutable database audit intent; the external JSONL projection is checked
 separately and a failed projection remains visible as pending evidence. A
 single-event public projection primitive is event-ID idempotent and can safely
-adopt the append-before-marker crash window, but this project contains no
-persistent scanner, retry scheduler, lease, backoff, or dead-letter worker.
+adopt the append-before-marker crash window. The Web distribution does not own
+service supervision or durable coordination; the separately packaged
+`research-operations` trust domain in this monorepo provides the official
+PostgreSQL-backed outbox and research-job workers, leases, fencing, retry,
+health, and systemd supervision.
 
 ## Development setup (WSL/Linux only)
 
@@ -70,11 +76,13 @@ enabled. Assign ordinary accounts to one of the migrated groups:
 `research_viewer`, `research_runner`, `research_reviewer`,
 `research_approver`, or `research_admin`.
 
-The repository intentionally provides no persistent worker service or worker
-management command. Integration tests exercise `portal.worker.run_worker_once`
-directly. A submitted development job will remain queued unless a developer
-invokes that function in a controlled test. An expired running job is never
-automatically repaired or retried.
+The Web package intentionally provides no standalone persistent-worker
+management command. `portal.worker.run_worker_once` remains a bounded
+development/test adapter. Operated jobs must use the admitted
+`research-job-worker` from `services/research_operations`; its PostgreSQL
+lease, monotonic fence, release receipt, retry, cancellation, and stale-result
+guards are the authority. A loopback SQLite development job remains queued
+unless a developer invokes the bounded adapter explicitly.
 
 The web adapter rejects a raw manifest before core parsing when it exceeds the
 default admission limits of 4,096 parameter candidates, 32 execution scenarios,
@@ -134,19 +142,21 @@ TMPDIR=/tmp TEMP=/tmp TMP=/tmp INTERNAL_WEB_REQUIRE_BROWSER_E2E=1 \
 
 ## Windows access and operational boundary
 
-There is no supported internal-network URL in this repository. After a
-separately authorized operational project supplies a supported database,
-worker supervisor, TLS/reverse proxy, identity lifecycle, monitoring,
-backup/restore, rollback, and incident procedures, Windows users can open that
-HTTPS URL in Edge and install it as an app/shortcut. Until those gates exist,
-this adapter must not be described or used as a long-term operated service.
+There is no pre-created internal-network URL in this repository. The bundled
+Operations distribution and official native deployment profile provide the
+reviewed PostgreSQL, worker, TLS/reverse-proxy, monitoring, backup/recovery,
+rollback, and incident-response source contracts. A site must still satisfy
+the external ownership, PKI, secret, alert-routing, off-site, restore-drill,
+and release-acceptance gates before Windows users open its HTTPS URL in Edge or
+install it as an app/shortcut.
 
-SQLite multi-user/multi-worker behavior, automatic audit projection scheduling,
-shared-filesystem qualification, and safe reproduction remain explicitly
-unproven. The report catalog does not scan arbitrary paths or infer authority
-from unindexed legacy CLI artifacts. Common CLI/web identity binding currently
-covers `research-validate`; standalone backtest/walk-forward and legacy output
-namespaces remain outside it.
+SQLite remains loopback development-only and is not evidence of multi-user or
+multi-worker safety. PostgreSQL concurrency, automatic audit projection,
+shared-filesystem qualification, and recovery are owned by Operations and its
+release/site acceptance gates. The report catalog does not scan arbitrary
+paths or infer authority from unindexed legacy CLI artifacts. Common CLI/web
+identity binding currently covers `research-validate`; standalone
+backtest/walk-forward and legacy output namespaces remain outside it.
 
 See `docs/internal-web-architecture.md` and
 `docs/internal-web-iterations.md` for the decision record, verified scope, and

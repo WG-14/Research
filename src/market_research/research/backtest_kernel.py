@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from .backtest_types import BacktestRun
+from .strategy_registry import StrategyRegistry
+
 
 def run_decision_event_backtest(
-    *, strategy_name: str, strategy_registry: Any, **kwargs: Any
-) -> Any:
+    *, strategy_name: str, strategy_registry: StrategyRegistry, **kwargs: Any
+) -> BacktestRun:
     from .strategy_catalog import resolve_research_strategy
 
     plugin = resolve_research_strategy(strategy_name, registry=strategy_registry)

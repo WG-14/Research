@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import random
 import threading
 import uuid
@@ -18,6 +19,7 @@ from market_research.application import (
 
 import research_operations.execution_capability as execution_capability_module
 import research_operations.health as health_module
+import research_operations.research_job_worker as research_job_worker_module
 from research_operations.admission import ACTIVE, AdmissionDecision
 from research_operations.cli import build_parser
 from research_operations.database import database_url
@@ -32,8 +34,11 @@ from research_operations.execution_capability import (
 )
 from research_operations.outbox import OutboxStore, bounded_retry_delay, sanitize_error
 from research_operations.research_job_worker import (
+    IsolatedJobProcessError,
     ResearchJobWorker,
     ResearchJobWorkerSettings,
+    SandboxUnavailableError,
+    classify_research_job_runtime_error,
 )
 from research_operations.worker import (
     OutboxWorker,
@@ -83,6 +88,14 @@ def test_error_sanitization_redacts_and_bounds() -> None:
     [
         (ValueError("bad payload"), ("permanent_contract", True)),
         (OSError("disk busy"), ("transient_dependency", False)),
+        (TimeoutError("dependency slow"), ("transient_timeout", False)),
+        (MemoryError("worker memory exhausted"), ("resource_exhausted", True)),
+        (
+            OSError(errno.ENOSPC, "filesystem full"),
+            ("resource_exhausted", True),
+        ),
+        (PermissionError("projection denied"), ("permanent_permission", True)),
+        (FileNotFoundError("projection root missing"), ("permanent_storage", True)),
         (RuntimeError("unknown"), ("transient_unexpected", False)),
     ],
 )
@@ -91,6 +104,28 @@ def test_projection_error_classification(
     expected: tuple[str, bool],
 ) -> None:
     assert classify_projection_error(exc) == expected
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (MemoryError(), "RESOURCE_EXHAUSTED"),
+        (TimeoutError(), "EXECUTION_TIMEOUT"),
+        (PermissionError(), "STORAGE_PERMISSION_DENIED"),
+        (FileNotFoundError(), "RESEARCH_INPUT_UNAVAILABLE"),
+        (OSError(errno.EDQUOT, "quota"), "STORAGE_EXHAUSTED"),
+        (OSError(errno.ENOSPC, "full"), "STORAGE_EXHAUSTED"),
+        (OSError("dependency unavailable"), "RESEARCH_INPUT_UNAVAILABLE"),
+        (SandboxUnavailableError(), "SANDBOX_UNAVAILABLE"),
+        (IsolatedJobProcessError(), "WORKER_CRASH"),
+        (RuntimeError(), None),
+    ],
+)
+def test_research_job_runtime_error_classification(
+    exc: BaseException,
+    expected: str | None,
+) -> None:
+    assert classify_research_job_runtime_error(exc) == expected
 
 
 def test_worker_settings_fail_closed() -> None:
@@ -372,6 +407,51 @@ def test_research_job_worker_dispatches_under_operations_capability(
     assert worker._execute_dispatcher(job, progress, decision) == (job, progress)
 
 
+def test_production_research_dispatch_uses_supervised_child(monkeypatch) -> None:
+    observed = {}
+    worker = object.__new__(ResearchJobWorker)
+    worker.isolate_dispatcher = True
+    worker.dispatcher = SimpleNamespace(
+        execute=lambda *_args, **_kwargs: pytest.fail("parent dispatch forbidden")
+    )
+    job = SimpleNamespace(pk=uuid.uuid4())
+    decision = SimpleNamespace(request_id="request")
+    progress = object()
+
+    def supervise(**kwargs):
+        observed.update(kwargs)
+        return "isolated-result"
+
+    monkeypatch.setattr(
+        research_job_worker_module, "_run_isolated_dispatcher_child", supervise
+    )
+
+    assert worker._execute_dispatcher(job, progress, decision) == "isolated-result"
+    assert observed == {
+        "job_id": job.pk,
+        "decision": decision,
+        "progress": progress,
+    }
+
+
+def test_research_job_child_limits_are_bounded(monkeypatch) -> None:
+    monkeypatch.setenv("RESEARCH_OPS_JOB_EXECUTION_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("RESEARCH_OPS_JOB_CHILD_MEMORY_LIMIT_MB", "256")
+    monkeypatch.setenv("RESEARCH_OPS_JOB_CHILD_OUTPUT_LIMIT_BYTES", "1048576")
+    monkeypatch.setenv("RESEARCH_OPS_JOB_CHILD_PROCESS_LIMIT", "16")
+    assert research_job_worker_module._job_execution_timeout_seconds() == 30
+    assert research_job_worker_module._job_child_memory_limit_mb() == 256
+    assert research_job_worker_module._job_child_output_limit_bytes() == 1048576
+    assert research_job_worker_module._job_child_process_limit() == 16
+
+    monkeypatch.setenv("RESEARCH_OPS_JOB_EXECUTION_TIMEOUT_SECONDS", "0")
+    with pytest.raises(RuntimeError, match="execution_timeout_invalid"):
+        research_job_worker_module._job_execution_timeout_seconds()
+    monkeypatch.setenv("RESEARCH_OPS_JOB_CHILD_MEMORY_LIMIT_MB", "128")
+    with pytest.raises(RuntimeError, match="memory_limit_invalid"):
+        research_job_worker_module._job_child_memory_limit_mb()
+
+
 def test_cli_contract_contains_core_commands() -> None:
     parser = build_parser()
     action = next(
@@ -387,6 +467,11 @@ def test_cli_contract_contains_core_commands() -> None:
         "admission-status",
         "research-job-worker",
         "admitted-run",
+        "alert-raise",
+        "alert-deliver-once",
+        "alert-acknowledge",
+        "alert-escalate-once",
+        "alert-resolve",
     } <= set(action.choices)
     assert not {
         "admission-acquire",

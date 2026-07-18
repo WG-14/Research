@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "strategy_id": "buy_and_hold_baseline",
+  "display_name": "Buy and Hold Baseline",
+  "strategy_version": "buy_and_hold_baseline.research_contract.v1",
+  "contract_version": "research-strategy-plugin.v6",
+  "status": "ACTIVE",
+  "owner": {
+    "team": "research-platform",
+    "responsibility": "baseline-contract-maintenance"
+  },
+  "supported_assets": ["manifest_declared_single_asset"],
+  "supported_markets": ["manifest_declared_offline_market"],
+  "required_data": [
+    {
+      "name": "candles",
+      "required": true,
+      "fields": ["ts", "open", "high", "low", "close", "volume"],
+      "timeframe": "manifest_declared",
+      "timezone": "manifest_declared",
+      "min_rows": 2
+    }
+  ],
+  "entrypoint": "market_research.builtin_strategies.buy_and_hold_baseline:build_buy_and_hold_baseline_plugin",
+  "parameter_schema_source": "strategy_spec",
+  "output_schema": {
+    "decision_stream": "research-decision-event.v1",
+    "common_result": "research-common-result.v1"
+  },
+  "resource_limits": {
+    "max_runtime_seconds": 3600,
+    "max_memory_mb": 1400,
+    "max_cpu_cores": 1,
+    "max_output_bytes": 268435456,
+    "max_parallel_runs": 1
+  },
+  "permissions": {
+    "network": "denied",
+    "database_write": false,
+    "filesystem_reads": ["immutable_dataset_snapshot"],
+    "filesystem_writes": ["platform_managed_temporary_output"]
+  },
+  "supported_platform_contract_versions": [6],
+  "aliases": [],
+  "hypothesis": {
+    "observed_phenomenon": "A passive fully invested position provides a market-return reference.",
+    "economic_rationale": "Active research must be compared with the opportunity cost of passive exposure.",
+    "expected_mechanism": "One deterministic entry captures subsequent asset returns without timing selection.",
+    "applicable_conditions": ["Immutable ordered candles", "Long-only single-asset experiment"],
+    "failure_conditions": ["Dataset cannot support the declared entry index", "Passive exposure is not a valid comparison target"],
+    "entry_conditions": ["Enter once at BUY_HOLD_BUY_INDEX"],
+    "exit_conditions": ["No strategy-owned exit before experiment end"],
+    "invalidation_conditions": ["Output differs between identical inputs", "Costs are not applied by the common engine"],
+    "time_limit": "Bounded by experiment end and declared runtime limit.",
+    "data_leakage_risks": ["Future candle access", "Mutable dataset selection"],
+    "known_limitations": ["Not an alpha hypothesis", "Single-asset long-only baseline"],
+    "retirement_criteria": ["A reviewed common baseline contract supersedes this version"]
+  }
+}

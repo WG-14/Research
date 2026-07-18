@@ -358,8 +358,10 @@ def test_release_manifest_binds_every_distribution_and_migration(
             "version": "0.1.0",
         },
     }
-    assert manifest["migrations"]["web"]["latest"].startswith("0008_")
-    assert manifest["migrations"]["operations"]["latest"].startswith("0004_")
+    assert manifest["migrations"]["web"]["latest"].startswith("0009_")
+    assert manifest["migrations"]["web"]["count"] == 9
+    assert manifest["migrations"]["operations"]["latest"].startswith("0006_")
+    assert manifest["migrations"]["operations"]["count"] == 6
     assert set(manifest["artifacts"]) == {
         "core-wheel",
         "core-sdist",

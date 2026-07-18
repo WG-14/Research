@@ -63,15 +63,28 @@ Policy:
 - Artifact manifest schema `2` is read-only legacy and is rejected by the
   normal loader. Recreate it from the original source and a reviewed
   provenance manifest; do not translate or relabel its old hash domains.
-- Receipt schema `8` is the current schema. It binds the source report kind so
-  reproduction selects the same backtest or walk-forward execution path.
-  Earlier receipt schemas, including schemas 1, 2, and 7, are
-  rejected; they cannot be silently reinterpreted because their dataset hashes
-  or execution-path evidence do not establish the current contract.
+- Receipt schema `9` is the current schema. It binds the source report kind so
+  reproduction selects the same backtest or walk-forward execution path, and
+  binds source/lock or installed-package provenance plus result-affecting
+  runtime semantics. Resolved packages bind normalized RECORD and actual
+  installed-file hashes, not name and version alone. Their sorted name,
+  version, content hash, and file count rows are retained so the aggregate can
+  be independently recomputed and drift can be attributed. Eligibility requires a
+  fixed integer `PYTHONHASHSEED` present when Python starts and explicit
+  single-thread (`1`) OpenMP, OpenBLAS, MKL, NumExpr, BLIS, and Accelerate
+  limits; missing, random, or multithreaded values fail closed. Earlier receipt
+  schemas, including schemas 1, 2, 7, and 8, are rejected; they cannot be
+  silently reinterpreted because their dataset hashes or execution-path
+  evidence do not establish the current contract.
+- A Git-backed checkout must be clean to emit an authoritative receipt. Dirty
+  `research_only` execution is explicitly `INELIGIBLE_DIRTY_SOURCE`; it may be
+  inspected as exploratory evidence but cannot create a receipt. Other
+  classifications reject dirty checkout receipt admission. A status/diff hash
+  is diagnostic only and is not treated as preserved changed source content.
 - Unknown manifest or receipt versions fail closed. There is no automatic
   hash-domain migration: a new immutable artifact must be frozen from the
   original input, leaving that input untouched. Identical inputs deterministically
-produce the same content-addressed artifact identity.
+  produce the same content-addressed artifact identity.
 
 Selected related policies:
 

@@ -75,20 +75,7 @@ class ResearchJobDispatcher:
         job: ResearchJob,
         progress: JobProgressReporter,
     ) -> JobExecutionResult:
-        require_operated_execution_capability(
-            RESEARCH_JOB_DISPATCH_SCOPE,
-            admission_request_id=f"web-job:{job.pk}",
-            admission_request_hash=job.request_hash,
-        )
-        try:
-            validate_web_job_capability_contract(job.capability_id)
-        except ValidationError as exc:
-            raise PublicJobError("CAPABILITY_CONTRACT_INVALID") from exc
-        if job.capability_id == ResearchJob.Capability.VALIDATE:
-            try:
-                validate_validation_job_gate(job)
-            except (ValidationError, ResearchJob.DoesNotExist) as exc:
-                raise PublicJobError("PREFLIGHT_GATE_INVALID") from exc
+        self._authorize_job(job)
         manifest_path = self._verified_manifest_path(job)
         actor = ActorContext(
             actor_id=job.actor_id,
@@ -121,15 +108,15 @@ class ResearchJobDispatcher:
                 execution_calibration_path=None,
             )
             try:
-                result = service.preflight(
+                preflight_result = service.preflight(
                     request,
                     progress_callback=report_progress,
                     cancellation_check=cancellation_requested,
                 )
             except ApplicationAuthorizationError as exc:
                 raise PublicJobError("APPLICATION_PERMISSION_DENIED") from exc
-            readiness = result.readiness
-            workload = result.workload
+            readiness = preflight_result.readiness
+            workload = preflight_result.workload
             if cancellation_requested():
                 raise JobCancellationRequested("research_job_cancellation_requested")
             errors = tuple(readiness.errors) + tuple(workload.errors)
@@ -173,34 +160,183 @@ class ResearchJobDispatcher:
                 mode="strict",
             )
             try:
-                result = service.validate(
+                validation_result = service.validate(
                     request,
                     progress_callback=report_progress,
                     cancellation_check=cancellation_requested,
                 )
             except ApplicationAuthorizationError as exc:
                 raise PublicJobError("APPLICATION_PERMISSION_DENIED") from exc
-            if cancellation_requested() or result.status.value == "CANCELLED":
+            if (
+                cancellation_requested()
+                or validation_result.status.value == "CANCELLED"
+            ):
                 raise JobCancellationRequested("research_job_cancellation_requested")
-            if result.report is None:
+            if validation_result.report is None:
                 code = (
-                    result.errors[0].code
-                    if result.errors
+                    validation_result.errors[0].code
+                    if validation_result.errors
                     else "application_execution_failed"
                 )
                 raise PublicJobError(_public_error_code(code))
             # The research engine, not this adapter, writes and hashes this result.
             reference = make_artifact_ref("report", output_path)
-            if not result.content_hash:
+            if not validation_result.content_hash:
                 raise PublicJobError("RESULT_HASH_MISSING")
             return JobExecutionResult(
                 result_ref=reference,
-                result_hash=result.content_hash,
-                run_id=result.run_id or "",
-                research_outcome=result.research_outcome or "",
+                result_hash=validation_result.content_hash,
+                run_id=validation_result.run_id or "",
+                research_outcome=validation_result.research_outcome or "",
             )
 
         raise PublicJobError("CAPABILITY_NOT_AVAILABLE_IN_WEB")
+
+    def build_sandbox_request(
+        self,
+        job: ResearchJob,
+        *,
+        sandbox_root: Path,
+    ) -> dict[str, object]:
+        """Serialize only the database-free inputs admitted to a sandbox."""
+
+        self._authorize_job(job)
+        manifest_path = self._verified_manifest_path(job)
+        root = sandbox_root.expanduser().resolve()
+        if not settings.RESEARCH_PATHS.is_within(
+            root, settings.RESEARCH_PATHS.artifact_root
+        ):
+            raise PublicJobError("SANDBOX_ROOT_INVALID")
+        child_artifacts = root / "artifacts"
+        child_reports = root / "reports"
+        child_cache = root / "cache"
+        child_registry = root / "control" / "experiment_identity.jsonl"
+        base = settings.RESEARCH_PATHS.settings
+        return {
+            "schema_version": 1,
+            "job_id": str(job.pk),
+            "capability_id": str(job.capability_id),
+            "request_hash": str(job.request_hash),
+            "manifest_hash": str(job.manifest.manifest_hash),
+            "manifest_content_hash": str(job.manifest.content_hash),
+            "manifest_path": str(manifest_path),
+            "runtime_project_root": str(settings.RESEARCH_PATHS.project_root),
+            "sandbox_root": str(root),
+            "settings": {
+                "data_root": str(base.data_root),
+                "artifact_root": str(child_artifacts),
+                "report_root": str(child_reports),
+                "cache_root": str(child_cache),
+                "db_path": str(base.db_path) if base.db_path is not None else None,
+                "max_workers": int(base.max_workers),
+                "random_seed": int(base.random_seed),
+                "experiment_identity_registry_path": str(child_registry),
+            },
+            "actor": {
+                "actor_id": str(job.actor_id),
+                "roles": list(job.actor_roles),
+                "permissions": list(job.actor_permissions),
+                "source": "worker",
+            },
+        }
+
+    def accept_sandbox_result(
+        self,
+        job: ResearchJob,
+        payload: object,
+        *,
+        sandbox_root: Path,
+    ) -> JobExecutionResult:
+        """Validate and adapt a bounded sandbox control result in the parent."""
+
+        fields = {
+            "schema_version",
+            "job_id",
+            "capability_id",
+            "status",
+            "exit_code",
+            "content_hash",
+            "run_id",
+            "research_outcome",
+            "result_path",
+            "readiness",
+            "workload",
+            "errors",
+        }
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != fields
+            or payload.get("schema_version") != 1
+            or payload.get("job_id") != str(job.pk)
+            or payload.get("capability_id") != str(job.capability_id)
+        ):
+            raise PublicJobError("SANDBOX_RESULT_CONTRACT_INVALID")
+        status = str(payload.get("status") or "")
+        if status == "CANCELLED":
+            raise JobCancellationRequested("research_job_cancellation_requested")
+        if status != "SUCCEEDED":
+            errors = payload.get("errors")
+            code = str(errors[0]) if isinstance(errors, list) and errors else ""
+            raise PublicJobError(_public_error_code(code))
+        if job.capability_id == ResearchJob.Capability.PREFLIGHT:
+            readiness = payload.get("readiness")
+            workload = payload.get("workload")
+            if not isinstance(readiness, dict) or not isinstance(workload, dict):
+                raise PublicJobError("SANDBOX_RESULT_CONTRACT_INVALID")
+            readiness_report = readiness.get("report")
+            workload_estimate = workload.get("estimate")
+            result: dict[str, Any] = {
+                "schema_version": 1,
+                "report_kind": "internal_web_preflight",
+                "capability_id": "research-preflight",
+                "request_hash": job.request_hash,
+                "manifest_hash": job.manifest.manifest_hash,
+                "manifest_content_hash": job.manifest.content_hash,
+                "status": (
+                    "PASS"
+                    if isinstance(readiness_report, dict)
+                    and readiness_report.get("status") == "PASS"
+                    and isinstance(workload_estimate, dict)
+                    else "FAIL"
+                ),
+                "readiness": _safe_application_result_projection(readiness),
+                "workload": _safe_application_result_projection(workload),
+            }
+            return self._publish_web_result(job, result)
+        if job.capability_id == ResearchJob.Capability.VALIDATE:
+            result_path = payload.get("result_path")
+            result_hash = payload.get("content_hash")
+            if not isinstance(result_path, str) or not isinstance(result_hash, str):
+                raise PublicJobError("SANDBOX_RESULT_CONTRACT_INVALID")
+            resolved = Path(result_path).resolve()
+            if not settings.RESEARCH_PATHS.is_within(
+                resolved, sandbox_root.resolve()
+            ):
+                raise PublicJobError("SANDBOX_RESULT_PATH_INVALID")
+            return JobExecutionResult(
+                result_ref=make_artifact_ref("artifact", resolved),
+                result_hash=result_hash,
+                run_id=str(payload.get("run_id") or ""),
+                research_outcome=str(payload.get("research_outcome") or ""),
+            )
+        raise PublicJobError("CAPABILITY_NOT_AVAILABLE_IN_WEB")
+
+    @staticmethod
+    def _authorize_job(job: ResearchJob) -> None:
+        require_operated_execution_capability(
+            RESEARCH_JOB_DISPATCH_SCOPE,
+            admission_request_id=f"web-job:{job.pk}",
+            admission_request_hash=job.request_hash,
+        )
+        try:
+            validate_web_job_capability_contract(job.capability_id)
+        except ValidationError as exc:
+            raise PublicJobError("CAPABILITY_CONTRACT_INVALID") from exc
+        if job.capability_id == ResearchJob.Capability.VALIDATE:
+            try:
+                validate_validation_job_gate(job)
+            except (ValidationError, ResearchJob.DoesNotExist) as exc:
+                raise PublicJobError("PREFLIGHT_GATE_INVALID") from exc
 
     @staticmethod
     def _verified_manifest_path(job: ResearchJob) -> Path:

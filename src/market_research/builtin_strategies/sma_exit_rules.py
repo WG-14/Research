@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, SupportsFloat, SupportsIndex, cast
 
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.position_model import ResearchPosition
@@ -85,7 +86,10 @@ def materialize_sma_exit_policy(
         "exit_policy_contract_hash": sha256_prefixed(
             {"schema_version": 1, "strategy_name": strategy_name, "rules": list(names)}
         ),
-        "exit_policy_source": "research.exit_rules.materialize_sma_exit_policy",
+        "exit_policy_source": (
+            "market_research.builtin_strategies.sma_exit_rules."
+            "materialize_sma_exit_policy"
+        ),
         "exit_policy_materialization_mode": "research_only",
     }
 
@@ -103,41 +107,48 @@ def evaluate_sma_exit_policy(
         return ResearchExitDecision(False, None, "no open position for exit policy", ())
     evaluations: list[dict[str, object]] = []
     pnl_ratio = position.unrealized_pnl_ratio(market_price)
-    for name in policy.get("rules") or ():
+    raw_rules = policy.get("rules")
+    rules: Iterable[object] = (
+        raw_rules
+        if isinstance(raw_rules, Iterable)
+        and not isinstance(raw_rules, (str, bytes, Mapping))
+        else ()
+    )
+    for name in rules:
         rule = str(name)
         if rule == "stop_loss":
-            threshold = float(
-                dict(policy.get("stop_loss") or {}).get("stop_loss_ratio") or 0.0
+            threshold = _float_or_zero(
+                _mapping(policy.get("stop_loss")).get("stop_loss_ratio")
             )
             triggered = threshold > 0.0 and pnl_ratio <= -threshold
             reason = "exit by stop loss" if triggered else "stop loss not triggered"
             context = {"threshold_ratio": threshold, "unrealized_pnl_ratio": pnl_ratio}
         elif rule == "take_profit":
-            threshold = float(
-                dict(policy.get("take_profit") or {}).get("take_profit_ratio") or 0.0
+            threshold = _float_or_zero(
+                _mapping(policy.get("take_profit")).get("take_profit_ratio")
             )
             triggered = threshold > 0.0 and pnl_ratio >= threshold
             reason = "exit by take profit" if triggered else "take profit not triggered"
             context = {"threshold_ratio": threshold, "unrealized_pnl_ratio": pnl_ratio}
         elif rule == "edge_invalidation":
-            threshold = float(
-                dict(policy.get("edge_invalidation") or {}).get("min_edge_ratio") or 0.0
+            threshold = _float_or_zero(
+                _mapping(policy.get("edge_invalidation")).get("min_edge_ratio")
             )
-            gap = float((feature_state or {}).get("gap_ratio") or 0.0)
+            gap = _float_or_zero((feature_state or {}).get("gap_ratio"))
             triggered = threshold > 0.0 and gap < threshold
             reason = "exit by edge invalidation" if triggered else "edge remains valid"
             context = {"minimum_edge_ratio": threshold, "current_edge_ratio": gap}
         elif rule in {"opposite_cross", "crossover"}:
-            values = dict(policy.get("opposite_cross") or {})
+            values = _mapping(policy.get("opposite_cross"))
             configured_floor = max(
-                0.0, float(values.get("min_take_profit_ratio") or 0.0)
+                0.0, _float_or_zero(values.get("min_take_profit_ratio"))
             )
             roundtrip_fee = 2.0 * max(
-                0.0, float(values.get("live_fee_rate_estimate") or 0.0)
+                0.0, _float_or_zero(values.get("live_fee_rate_estimate"))
             )
             floor = max(configured_floor, roundtrip_fee)
             small_loss = max(
-                0.0, float(values.get("small_loss_tolerance_ratio") or 0.0)
+                0.0, _float_or_zero(values.get("small_loss_tolerance_ratio"))
             )
             opposite = str(exit_signal or "HOLD").upper() == "SELL"
             noise_band = (-small_loss) <= pnl_ratio < floor
@@ -161,9 +172,8 @@ def evaluate_sma_exit_policy(
             }
         elif rule in {"max_holding_time", "time_exit"}:
             threshold = (
-                float(
-                    dict(policy.get("max_holding_time") or {}).get("max_holding_min")
-                    or 0.0
+                _float_or_zero(
+                    _mapping(policy.get("max_holding_time")).get("max_holding_min")
                 )
                 * 60.0
             )
@@ -189,3 +199,17 @@ def evaluate_sma_exit_policy(
     return ResearchExitDecision(
         False, None, "no exit rule triggered", tuple(evaluations)
     )
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _float_or_zero(value: object) -> float:
+    if value is None:
+        return 0.0
+    numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+    try:
+        return float(numeric)
+    except (TypeError, ValueError):
+        return 0.0

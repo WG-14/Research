@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "strategy_id": "sma_with_filter",
+  "display_name": "SMA with Filter",
+  "strategy_version": "sma_with_filter.research_runtime_contract.v2",
+  "contract_version": "research-strategy-plugin.v6",
+  "status": "ACTIVE",
+  "owner": {
+    "team": "research-platform",
+    "responsibility": "reviewed-sma-research-contract"
+  },
+  "supported_assets": ["manifest_declared_single_asset"],
+  "supported_markets": ["manifest_declared_offline_market"],
+  "required_data": [
+    {
+      "name": "candles",
+      "required": true,
+      "fields": ["ts", "open", "high", "low", "close", "volume"],
+      "timeframe": "manifest_declared",
+      "timezone": "manifest_declared",
+      "min_rows": 3
+    }
+  ],
+  "entrypoint": "market_research.builtin_strategies.sma_with_filter:build_sma_with_filter_plugin",
+  "parameter_schema_source": "strategy_spec",
+  "output_schema": {
+    "decision_stream": "research-decision-event.v1",
+    "common_result": "research-common-result.v1"
+  },
+  "resource_limits": {
+    "max_runtime_seconds": 3600,
+    "max_memory_mb": 1400,
+    "max_cpu_cores": 1,
+    "max_output_bytes": 268435456,
+    "max_parallel_runs": 1
+  },
+  "permissions": {
+    "network": "denied",
+    "database_write": false,
+    "filesystem_reads": ["immutable_dataset_snapshot"],
+    "filesystem_writes": ["platform_managed_temporary_output"]
+  },
+  "supported_platform_contract_versions": [6],
+  "aliases": [],
+  "hypothesis": {
+    "observed_phenomenon": "Short and long moving-average crossings can identify persistent price regimes.",
+    "economic_rationale": "Trend persistence may compensate for false crossings when liquidity, volatility, and cost filters are preregistered.",
+    "expected_mechanism": "A causal golden cross emits long intent and typed exit rules terminate exposure.",
+    "applicable_conditions": ["Sufficient completed-candle history", "Declared liquidity and volatility evidence"],
+    "failure_conditions": ["Range-bound whipsaw", "Execution costs exceed the filtered edge", "Structural regime change"],
+    "entry_conditions": ["Causal short-SMA cross above long SMA", "All enabled filters pass"],
+    "exit_conditions": ["Configured stop loss", "Opposite cross", "Maximum holding time", "Optional typed exits"],
+    "invalidation_conditions": ["Final holdout gate fails", "Stress evidence fails", "Causal suffix invariance fails"],
+    "time_limit": "Holding time and run time are bounded by manifest-declared policies.",
+    "data_leakage_risks": ["Future candle inclusion", "Same-bar execution", "Post-selection threshold tuning"],
+    "known_limitations": ["Long-only single-asset capability", "Historical execution assumptions are approximations"],
+    "retirement_criteria": ["Repeated preregistered validations reject the hypothesis", "A reviewed successor contract supersedes this version"]
+  }
+}

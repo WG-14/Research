@@ -11,7 +11,7 @@ from typing import Any, Iterable
 from ..hashing import sha256_prefixed
 
 
-SOURCE_PROVENANCE_SCHEMA_VERSION = 1
+SOURCE_PROVENANCE_SCHEMA_VERSION = 2
 _TOP_LEVEL_FIELDS = frozenset(
     {
         "schema_version",
@@ -28,7 +28,15 @@ _SOURCE_FIELDS = frozenset(
         "provider_id",
         "dataset_id",
         "release_id",
-        "acquired_at",
+        "source_kind",
+        "request_parameters",
+        "requested_at",
+        "received_at",
+        "response_version",
+        "acquisition_code_version",
+        "retry_count",
+        "acquisition_status",
+        "error_code",
         "coverage_start_ts",
         "coverage_end_ts",
         "content_hash",
@@ -64,6 +72,18 @@ _REQUIRED_SEMANTICS = {
     "corporate_actions": "not_applicable",
     "universe": "not_applicable",
 }
+_SOURCE_KINDS = frozenset(
+    {"external_api", "file_export", "object_snapshot", "vendor_archive"}
+)
+_ACQUISITION_STATUSES = frozenset({"complete", "partial", "failed"})
+_SENSITIVE_PARAMETER_TOKENS = (
+    "api_key",
+    "authorization",
+    "password",
+    "secret",
+    "signature",
+    "token",
+)
 
 
 class SourceProvenanceError(ValueError):
@@ -75,7 +95,15 @@ class SourceRecord:
     provider_id: str
     dataset_id: str
     release_id: str
-    acquired_at: str
+    source_kind: str
+    request_parameters: tuple[tuple[str, str], ...]
+    requested_at: str
+    received_at: str
+    response_version: str
+    acquisition_code_version: str
+    retry_count: int
+    acquisition_status: str
+    error_code: str
     coverage_start_ts: int
     coverage_end_ts: int
     content_hash: str
@@ -85,7 +113,15 @@ class SourceRecord:
             "provider_id": self.provider_id,
             "dataset_id": self.dataset_id,
             "release_id": self.release_id,
-            "acquired_at": self.acquired_at,
+            "source_kind": self.source_kind,
+            "request_parameters": dict(self.request_parameters),
+            "requested_at": self.requested_at,
+            "received_at": self.received_at,
+            "response_version": self.response_version,
+            "acquisition_code_version": self.acquisition_code_version,
+            "retry_count": self.retry_count,
+            "acquisition_status": self.acquisition_status,
+            "error_code": self.error_code,
             "coverage_start_ts": self.coverage_start_ts,
             "coverage_end_ts": self.coverage_end_ts,
             "content_hash": self.content_hash,
@@ -144,7 +180,7 @@ def source_provenance_hash(payload: dict[str, Any]) -> str:
         if key != "provenance_manifest_hash"
     }
     return sha256_prefixed(
-        {"hash_domain": "dataset_source_provenance_v1", "provenance": material},
+        {"hash_domain": "dataset_source_provenance_v2", "provenance": material},
         label="dataset_source_provenance_hash",
     )
 
@@ -243,6 +279,8 @@ def validate_source_coverage(
     provenance: DatasetSourceProvenance, *, start_ts: int, end_ts: int
 ) -> None:
     for source in provenance.sources:
+        if source.acquisition_status != "complete":
+            raise SourceProvenanceError("source_provenance_source_not_complete")
         if (
             int(start_ts) < source.coverage_start_ts
             or int(end_ts) > source.coverage_end_ts
@@ -260,20 +298,48 @@ def _parse_source(value: Any) -> SourceRecord:
     end_ts = _strict_int(value.get("coverage_end_ts"), "source.coverage_end_ts")
     if start_ts > end_ts:
         raise SourceProvenanceError("source_provenance_source_coverage_inverted")
-    acquired_at = _text(value.get("acquired_at"), "source.acquired_at")
-    try:
-        parsed_time = datetime.fromisoformat(acquired_at.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise SourceProvenanceError("source_provenance_acquired_at_invalid") from exc
-    if parsed_time.tzinfo is None or parsed_time.utcoffset() != timezone.utc.utcoffset(
-        parsed_time
-    ):
-        raise SourceProvenanceError("source_provenance_acquired_at_must_be_utc")
+    source_kind = _text(value.get("source_kind"), "source.source_kind")
+    if source_kind not in _SOURCE_KINDS:
+        raise SourceProvenanceError("source_provenance_source_kind_invalid")
+    parameters = _request_parameters(value.get("request_parameters"))
+    requested_at = _utc_datetime(value.get("requested_at"), "source.requested_at")
+    received_at = _utc_datetime(value.get("received_at"), "source.received_at")
+    if received_at < requested_at:
+        raise SourceProvenanceError("source_provenance_received_before_requested")
+    retry_count = _strict_int(value.get("retry_count"), "source.retry_count")
+    if retry_count < 0:
+        raise SourceProvenanceError("source_provenance_retry_count_negative")
+    status = _text(value.get("acquisition_status"), "source.acquisition_status")
+    if status not in _ACQUISITION_STATUSES:
+        raise SourceProvenanceError("source_provenance_acquisition_status_invalid")
+    raw_error = value.get("error_code")
+    if not isinstance(raw_error, str):
+        raise SourceProvenanceError("source_provenance_error_code_invalid")
+    error_code = raw_error.strip()
+    if status == "complete" and error_code:
+        raise SourceProvenanceError("source_provenance_complete_source_has_error")
+    if status != "complete" and not error_code:
+        raise SourceProvenanceError(
+            "source_provenance_incomplete_source_requires_error"
+        )
     return SourceRecord(
         provider_id=_text(value.get("provider_id"), "source.provider_id"),
         dataset_id=_text(value.get("dataset_id"), "source.dataset_id"),
         release_id=_text(value.get("release_id"), "source.release_id"),
-        acquired_at=acquired_at,
+        source_kind=source_kind,
+        request_parameters=parameters,
+        requested_at=requested_at.isoformat().replace("+00:00", "Z"),
+        received_at=received_at.isoformat().replace("+00:00", "Z"),
+        response_version=_text(
+            value.get("response_version"), "source.response_version"
+        ),
+        acquisition_code_version=_text(
+            value.get("acquisition_code_version"),
+            "source.acquisition_code_version",
+        ),
+        retry_count=retry_count,
+        acquisition_status=status,
+        error_code=error_code,
         coverage_start_ts=start_ts,
         coverage_end_ts=end_ts,
         content_hash=_hash(value.get("content_hash")),
@@ -328,3 +394,32 @@ def _strict_int(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise SourceProvenanceError(f"source_provenance_{label}_invalid")
     return int(value)
+
+
+def _utc_datetime(value: Any, label: str) -> datetime:
+    text = _text(value, label)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SourceProvenanceError(f"source_provenance_{label}_invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise SourceProvenanceError(f"source_provenance_{label}_must_be_utc")
+    return parsed
+
+
+def _request_parameters(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, dict) or not value:
+        raise SourceProvenanceError("source_provenance_request_parameters_invalid")
+    normalized: list[tuple[str, str]] = []
+    for raw_key, raw_value in value.items():
+        key = _text(raw_key, "source.request_parameter_key")
+        lowered = key.lower()
+        if any(token in lowered for token in _SENSITIVE_PARAMETER_TOKENS):
+            raise SourceProvenanceError(
+                "source_provenance_request_parameters_sensitive"
+            )
+        normalized.append((key, _text(raw_value, f"source.request_parameters.{key}")))
+    keys = [key for key, _value in normalized]
+    if len(keys) != len(set(keys)):
+        raise SourceProvenanceError("source_provenance_request_parameters_duplicate")
+    return tuple(sorted(normalized))

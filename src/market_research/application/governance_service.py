@@ -90,6 +90,7 @@ class ResearchGovernanceApplicationService:
                 change.model_dump() for change in request.requested_changes
             ),
             resolved_requirement_ids=request.resolved_requirement_ids,
+            review_request_id=request.idempotency_key or request.request_id,
         )
         row_hash = str(row["row_hash"])
         return HumanReviewResult(
@@ -210,7 +211,10 @@ class ResearchGovernanceApplicationService:
             raise GovernanceError(
                 "strategy_approval_expected_source_report_hash_mismatch"
             )
-        result_reasons = validate_validated_research_result(report)
+        result_reasons = validate_validated_research_result(
+            report,
+            manager=self.paths,
+        )
         if result_reasons:
             raise GovernanceError(
                 "strategy_approval_validated_result_invalid:" + ",".join(result_reasons)
@@ -232,11 +236,11 @@ class ResearchGovernanceApplicationService:
             raise GovernanceError("strategy_approval_selected_candidate_missing")
 
         confirmation = report.get("final_holdout_confirmation")
-        confirmation_hash = (
-            str(confirmation.get("content_hash") or "")
-            if isinstance(confirmation, dict)
-            else ""
-        )
+        if not isinstance(confirmation, dict):
+            raise GovernanceError(
+                "strategy_approval_final_holdout_confirmation_missing"
+            )
+        confirmation_hash = str(confirmation.get("content_hash") or "")
         if not confirmation_hash:
             raise GovernanceError(
                 "strategy_approval_final_holdout_confirmation_missing"

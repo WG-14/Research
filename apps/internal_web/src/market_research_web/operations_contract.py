@@ -28,6 +28,7 @@ from portal.models import (
 from portal.report_imports import validate_managed_import_record
 from portal.security import reject_paths_in_job_payload
 from portal.storage import (
+    SafeArtifactRef,
     read_verified_manifest_bytes,
     resolve_artifact_ref,
     verify_result_artifact,
@@ -44,6 +45,7 @@ __all__ = [
     "PublicJobError",
     "ResearchJob",
     "ResearchJobDispatcher",
+    "SafeArtifactRef",
     "complete_job_success",
     "fail_job",
     "finalize_cancelled",

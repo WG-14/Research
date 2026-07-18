@@ -4,7 +4,15 @@ import time
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    SupportsFloat,
+    SupportsIndex,
+    TypeVar,
+    cast,
+)
 from .decision_event import OrderIntent, ResearchDecisionEvent
 from .execution_model.base import ExecutionFill, ExecutionRequest
 from .portfolio_ledger import LedgerEntry
@@ -25,6 +33,30 @@ from .metrics_contract import (
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 MemorySampler = Callable[[], "MemorySample"]
+_StreamItem = TypeVar("_StreamItem")
+
+
+def _stream_index(
+    name: str,
+    values: tuple[_StreamItem, ...],
+    getter: Callable[[_StreamItem], object],
+) -> dict[str, _StreamItem]:
+    ids = [str(getter(value)) for value in values]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"duplicate_{name}_id")
+    if any(not value for value in ids):
+        raise ValueError(f"missing_{name}_id")
+    return dict(zip(ids, values))
+
+
+def _float_or_zero(value: object) -> float:
+    if value is None:
+        return 0.0
+    numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+    try:
+        return float(numeric)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @dataclass(frozen=True)
@@ -321,70 +353,83 @@ class BacktestRun:
 
     def validate_execution_lineage(self) -> None:
         """Fail closed on duplicate, orphaned, or inconsistent execution lineage."""
-        streams = (
-            ("decision", self.decisions, lambda x: x.decision_id()),
-            ("intent", self.order_intents, lambda x: x.intent_id),
-            ("request", self.execution_requests, lambda x: x.request_id),
-            ("fill", self.fills, lambda x: x.fill_id),
-            ("ledger_entry", self.ledger_entries, lambda x: x.ledger_entry_id),
+        from .execution_invariants import (
+            fill_request_binding_violations,
+            fill_timeline_violations,
         )
-        indexes: dict[str, dict[str, object]] = {}
-        for name, values, getter in streams:
-            ids = [str(getter(value)) for value in values]
-            if len(ids) != len(set(ids)):
-                raise ValueError(f"duplicate_{name}_id")
-            if any(not value for value in ids):
-                raise ValueError(f"missing_{name}_id")
-            indexes[name] = dict(zip(ids, values))
+
+        decision_index = _stream_index(
+            "decision", self.decisions, lambda value: value.decision_id()
+        )
+        intent_index = _stream_index(
+            "intent", self.order_intents, lambda value: value.intent_id
+        )
+        request_index = _stream_index(
+            "request", self.execution_requests, lambda value: value.request_id
+        )
+        fill_index = _stream_index("fill", self.fills, lambda value: value.fill_id)
+        ledger_index = _stream_index(
+            "ledger_entry", self.ledger_entries, lambda value: value.ledger_entry_id
+        )
+        decision_ids = set(decision_index)
         if self.authoritative_decision_ids:
             authoritative_ids = tuple(
                 str(value) for value in self.authoritative_decision_ids
             )
             if len(authoritative_ids) != len(set(authoritative_ids)):
                 raise ValueError("duplicate_authoritative_decision_id")
-            indexes["decision"] = {
-                value: indexes["decision"].get(value) for value in authoritative_ids
-            }
+            decision_ids = set(authoritative_ids)
         for intent in self.order_intents:
-            if intent.decision_id not in indexes["decision"]:
+            if intent.decision_id not in decision_ids:
                 raise ValueError("orphan_intent")
         for request in self.execution_requests:
             if (
-                request.intent_id not in indexes["intent"]
-                or request.decision_id not in indexes["decision"]
+                request.intent_id not in intent_index
+                or request.decision_id not in decision_ids
             ):
                 raise ValueError("orphan_request")
-            if indexes["intent"][request.intent_id].decision_id != request.decision_id:
+            if intent_index[request.intent_id].decision_id != request.decision_id:
                 raise ValueError("request_intent_decision_mismatch")
         for fill in self.fills:
-            if fill.request_id not in indexes["request"]:
+            if fill.request_id not in request_index:
                 raise ValueError("orphan_fill")
-            request = indexes["request"][fill.request_id]
+            request = request_index[fill.request_id]
             if (
                 fill.decision_id != request.decision_id
                 or fill.intent_id != request.intent_id
             ):
                 raise ValueError("fill_request_lineage_mismatch")
+            binding_violations = fill_request_binding_violations(request, fill)
+            if binding_violations:
+                raise ValueError(binding_violations[0])
+            violations = fill_timeline_violations(fill)
+            if violations:
+                raise ValueError(violations[0])
+        fill_request_ids = [fill.request_id for fill in self.fills]
+        if len(fill_request_ids) != len(set(fill_request_ids)):
+            raise ValueError("multiple_fills_for_execution_request")
         for entry in self.ledger_entries:
-            fill = indexes["fill"].get(entry.fill_id)
-            if fill is None:
+            ledger_fill = fill_index.get(entry.fill_id)
+            if ledger_fill is None:
                 raise ValueError("orphan_ledger_entry")
             if (
-                fill.fill_status not in {"filled", "partial"}
-                or float(fill.filled_qty) <= 0
+                ledger_fill.fill_status not in {"filled", "partial"}
+                or float(ledger_fill.filled_qty) <= 0
             ):
                 raise ValueError("invalid_ledger_fill")
             if (
-                entry.side != fill.side
-                or abs(float(entry.qty) - float(fill.filled_qty)) > 1e-8
-                or abs(float(entry.fee) - float(fill.fee)) > 1e-8
-                or entry.effective_ts != fill.portfolio_effective_ts
+                entry.side != ledger_fill.side
+                or abs(float(entry.qty) - float(ledger_fill.filled_qty)) > 1e-8
+                or abs(float(entry.fee) - float(ledger_fill.fee)) > 1e-8
+                or entry.effective_ts != ledger_fill.portfolio_effective_ts
             ):
                 raise ValueError("ledger_fill_value_mismatch")
         if len({entry.fill_id for entry in self.ledger_entries}) != len(
             self.ledger_entries
         ):
             raise ValueError("multiple_mutating_ledger_entries_for_fill")
+        if set(fill_request_ids) != set(request_index):
+            raise ValueError("execution_request_fill_bijection_mismatch")
         mutating_fills = {
             fill.fill_id
             for fill in self.fills
@@ -406,13 +451,17 @@ class BacktestRun:
         for trade in self.trades:
             if not trade.get("ledger_entry_id"):
                 continue
-            fill = indexes["fill"].get(str(trade.get("fill_id")))
-            entry = indexes["ledger_entry"].get(str(trade.get("ledger_entry_id")))
-            if fill is None or entry is None or entry.fill_id != fill.fill_id:
+            projected_fill = fill_index.get(str(trade.get("fill_id")))
+            projected_entry = ledger_index.get(str(trade.get("ledger_entry_id")))
+            if (
+                projected_fill is None
+                or projected_entry is None
+                or projected_entry.fill_id != projected_fill.fill_id
+            ):
                 raise ValueError("trade_projection_lineage_mismatch")
             if (
-                trade.get("side") != fill.side
-                or float(trade.get("qty") or 0) != float(fill.filled_qty)
-                or trade.get("price") != fill.avg_fill_price
+                trade.get("side") != projected_fill.side
+                or _float_or_zero(trade.get("qty")) != float(projected_fill.filled_qty)
+                or trade.get("price") != projected_fill.avg_fill_price
             ):
                 raise ValueError("trade_projection_value_mismatch")

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, SupportsFloat, SupportsIndex, cast
+
+if TYPE_CHECKING:
+    from .strategy_registry import StrategyRegistry
 
 from .research_classification import requires_candidate_validation
 from .hashing import sha256_prefixed
@@ -175,6 +178,11 @@ class StrategyParameterSchema:
     behavior_affecting: bool = True
     deprecated_keys: tuple[str, ...] = ()
     migration_rule: str = ""
+    description: str = ""
+    default_value: object | None = None
+    optimization_allowed: bool = True
+    runtime_mutable: bool = False
+    since_version: str = "1"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +197,11 @@ class StrategyParameterSchema:
             "behavior_affecting": bool(self.behavior_affecting),
             "deprecated_keys": list(self.deprecated_keys),
             "migration_rule": self.migration_rule,
+            "description": self.description,
+            "default": canonical_mutable(self.default_value),
+            "optimization_allowed": bool(self.optimization_allowed),
+            "runtime_mutable": bool(self.runtime_mutable),
+            "since_version": self.since_version,
         }
 
     def validate(self, value: object) -> None:
@@ -199,7 +212,10 @@ class StrategyParameterSchema:
             comparable: float | str | bool = float(numeric)
         elif self.value_type == "float":
             try:
-                numeric_float = float(value)
+                float_input = cast(
+                    str | bytes | bytearray | SupportsFloat | SupportsIndex, value
+                )
+                numeric_float = float(float_input)
             except (TypeError, ValueError) as exc:
                 raise StrategySpecError(f"{self.name} must be float") from exc
             if not math.isfinite(numeric_float):
@@ -307,10 +323,13 @@ class StrategySpec:
 
     def validate_parameters(self, parameter_values: dict[str, Any]) -> None:
         schemas = {item.name: item for item in self.parameter_schema}
-        for schema in schemas.values():
-            if schema.required and schema.name not in parameter_values:
+        for parameter_schema in schemas.values():
+            if (
+                parameter_schema.required
+                and parameter_schema.name not in parameter_values
+            ):
                 raise StrategySpecError(
-                    f"missing required strategy parameter(s): {schema.name}"
+                    f"missing required strategy parameter(s): {parameter_schema.name}"
                 )
         if schemas:
             unknown = sorted(set(parameter_values) - set(self.accepted_parameter_names))
@@ -319,16 +338,16 @@ class StrategySpec:
                     f"unknown strategy parameter(s): {','.join(unknown)}"
                 )
         for name, value in parameter_values.items():
-            schema = schemas.get(name)
-            if schema is not None:
-                schema.validate(value)
+            active_schema = schemas.get(name)
+            if active_schema is not None:
+                active_schema.validate(value)
 
     def spec_hash(self) -> str:
         return sha256_prefixed(self.as_dict())
 
 
 def strategy_spec_for_name(
-    strategy_name: str, *, registry: Any | None = None
+    strategy_name: str, *, registry: "StrategyRegistry | None" = None
 ) -> StrategySpec:
     """Resolve only through an explicitly supplied composition authority."""
     if registry is None:
@@ -512,6 +531,8 @@ def exit_policy_materialization_from_parameters(
 ) -> Any:
     from .strategy_contract import normalize_exit_policy_materialization
 
+    if registry is None:
+        raise StrategySpecError("explicit strategy registry required")
     spec = strategy_spec_for_name(strategy_name, registry=registry)
     plugin = registry.resolve(strategy_name)
     materializer = getattr(plugin, "exit_policy_materializer", None)
@@ -780,7 +801,8 @@ def _validate_ratio_rule_pair(
 
 def _non_negative_float(name: str, value: object) -> float:
     try:
-        resolved = float(value)
+        numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+        resolved = float(numeric)
     except (TypeError, ValueError) as exc:
         raise StrategySpecError(
             f"{name} must be a finite value >= 0, got {value!r}"

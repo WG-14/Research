@@ -25,7 +25,13 @@ from research_operations.research_job_worker import (
 )
 
 
-pytestmark = pytest.mark.django_db(transaction=True, serialized_rollback=True)
+pytestmark = [
+    pytest.mark.django_db(transaction=True, serialized_rollback=True),
+    pytest.mark.skipif(
+        connections["default"].vendor != "postgresql",
+        reason="browser E2E requires the live PostgreSQL test profile",
+    ),
+]
 
 
 def _operations_dsn() -> str:
@@ -179,6 +185,7 @@ def test_browser_research_workflow_from_login_to_verified_download(
         expect(
             page.get_by_role("heading", name="연구 검증이 완료되었습니다")
         ).to_be_visible()
+        page.get_by_text("고급 근거 보기 · 실행 ID와 hash").click()
         expect(page.get_by_text(validation.result_hash, exact=True)).to_be_visible()
         with page.expect_download() as download_info:
             page.get_by_role("link", name="검증 가능한 안전 사본").click()

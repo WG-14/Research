@@ -6,7 +6,11 @@ from typing import Any
 
 from market_research.paths import ResearchPathManager
 
-from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2
+from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2, REQUIRED_FIELDS_V3
+from .execution_invariants import (
+    CAUSAL_TIMELINE_VALIDATOR,
+    MARKET_KNOWLEDGE_TIME_POLICY,
+)
 from .experiment_registry import (
     experiment_registry_path,
     validate_experiment_registry_binding,
@@ -17,6 +21,10 @@ from .final_selection import (
     validate_selection_artifact_binding,
 )
 from .hashing import report_content_hash_payload, sha256_prefixed
+from .hypothesis_contract import (
+    HYPOTHESIS_LINEAGE_SCHEMA_VERSION,
+    parse_hypothesis_spec,
+)
 from .governance import governance_registry_path, validate_strategy_approval
 from .strategy_compiler import (
     StrategyCompilationError,
@@ -66,8 +74,18 @@ def _complete_semantic_contract(
     hypothesis = report.get("hypothesis_spec")
     if not isinstance(hypothesis, dict):
         raise StrategyPackageError("strategy_package_hypothesis_spec_missing")
-    if sha256_prefixed(hypothesis) != report.get("hypothesis_contract_hash"):
+    try:
+        parsed_hypothesis = parse_hypothesis_spec(hypothesis)
+    except ValueError as exc:
+        raise StrategyPackageError(
+            "strategy_package_hypothesis_lineage_invalid"
+        ) from exc
+    if parsed_hypothesis.schema_version != HYPOTHESIS_LINEAGE_SCHEMA_VERSION:
+        raise StrategyPackageError("strategy_package_hypothesis_lineage_required")
+    if parsed_hypothesis.contract_hash() != report.get("hypothesis_contract_hash"):
         raise StrategyPackageError("strategy_package_hypothesis_contract_hash_mismatch")
+    if parsed_hypothesis.lineage_hash() != report.get("hypothesis_lineage_hash"):
+        raise StrategyPackageError("strategy_package_hypothesis_lineage_hash_mismatch")
     strategy_spec = merged.get("strategy_spec")
     if not isinstance(strategy_spec, dict):
         raise StrategyPackageError("strategy_package_strategy_spec_missing")
@@ -92,6 +110,39 @@ def _complete_semantic_contract(
     interval = str(report.get("interval") or "").strip()
     if not market or not interval:
         raise StrategyPackageError("strategy_package_target_asset_missing")
+    target_asset: dict[str, object] = {"market": market, "interval": interval}
+    instrument_evidence = report.get("instrument_evidence")
+    if instrument_evidence is not None:
+        if not isinstance(instrument_evidence, dict):
+            raise StrategyPackageError("strategy_package_instrument_evidence_invalid")
+        required_instrument_fields = {
+            "instrument_id",
+            "instrument_version_id",
+            "instrument_contract_hash",
+            "trading_currency",
+            "price_tick",
+            "quantity_step",
+            "trading_unit",
+            "corporate_action_set_hash",
+            "corporate_action_policy_hash",
+        }
+        if any(
+            not str(instrument_evidence.get(field) or "").strip()
+            for field in required_instrument_fields
+        ):
+            raise StrategyPackageError(
+                "strategy_package_instrument_evidence_incomplete"
+            )
+        for field in (
+            "instrument_contract_hash",
+            "corporate_action_set_hash",
+            "corporate_action_policy_hash",
+        ):
+            if not str(instrument_evidence[field]).startswith("sha256:"):
+                raise StrategyPackageError(
+                    "strategy_package_instrument_evidence_hash_invalid"
+                )
+        target_asset["instrument_evidence"] = dict(instrument_evidence)
     expected_performance = _expected_performance_range(
         primary=primary,
         confirmation=confirmation,
@@ -99,7 +150,15 @@ def _complete_semantic_contract(
     )
     return {
         "hypothesis": hypothesis,
-        "target_asset": {"market": market, "interval": interval},
+        "hypothesis_contract_hash": parsed_hypothesis.contract_hash(),
+        "hypothesis_lineage_hash": parsed_hypothesis.lineage_hash(),
+        "research_question_ref": parsed_hypothesis.research_question_ref.as_dict()
+        if parsed_hypothesis.research_question_ref is not None
+        else None,
+        "observation_refs": [
+            item.as_dict() for item in parsed_hypothesis.observation_refs
+        ],
+        "target_asset": target_asset,
         "strategy_spec": strategy_spec,
         "feature_definitions": features,
         "compiled_strategy_contract": compiled_payload,
@@ -304,7 +363,7 @@ def build_strategy_research_package(
 ) -> dict[str, Any]:
     """Build only from an internally valid authoritative final-selection report."""
     if manager is not None:
-        result_reasons = validate_validated_research_result(report)
+        result_reasons = validate_validated_research_result(report, manager=manager)
         if result_reasons:
             raise StrategyPackageError(
                 "strategy_package_validated_result_invalid:" + ",".join(result_reasons)
@@ -380,7 +439,7 @@ def build_strategy_research_package(
         if primary_id
         else None
     )
-    evidence_sources = []
+    evidence_sources: list[object] = []
     if isinstance(primary, dict):
         evidence_sources.extend(
             (
@@ -402,11 +461,23 @@ def build_strategy_research_package(
     evidence = dict(
         next((item for item in evidence_sources if isinstance(item, dict) and item), {})
     )
-    required = (
-        REQUIRED_FIELDS_V2
-        if int(evidence.get("execution_evidence_schema_version") or 1) >= 2
-        else REQUIRED_FIELDS
+    evidence_schema_version = int(
+        evidence.get("execution_evidence_schema_version") or 1
     )
+    if evidence_schema_version not in {1, 2, 3}:
+        raise StrategyPackageError(
+            "strategy_package_execution_evidence_schema_unsupported:"
+            + str(evidence_schema_version)
+        )
+    if evidence_schema_version != 3:
+        raise StrategyPackageError(
+            "strategy_package_execution_evidence_requires_schema_version:3"
+        )
+    required = {
+        1: REQUIRED_FIELDS,
+        2: REQUIRED_FIELDS_V2,
+        3: REQUIRED_FIELDS_V3,
+    }[evidence_schema_version]
     missing = sorted(required - set(evidence))
     if missing:
         raise StrategyPackageError(
@@ -414,6 +485,18 @@ def build_strategy_research_package(
         )
     if evidence.get("timing_invariant_status") != "PASS":
         raise StrategyPackageError("strategy_package_timing_invariant_failure")
+    if evidence.get("decision_timeline_invariant_status") != "PASS":
+        raise StrategyPackageError(
+            "strategy_package_decision_timeline_invariant_failure"
+        )
+    if evidence.get("causal_timeline_validator") != CAUSAL_TIMELINE_VALIDATOR:
+        raise StrategyPackageError("strategy_package_causal_validator_mismatch")
+    if evidence.get("market_knowledge_time_policy") != MARKET_KNOWLEDGE_TIME_POLICY:
+        raise StrategyPackageError("strategy_package_knowledge_time_policy_mismatch")
+    if int(evidence.get("market_knowledge_time_assumption_count") or 0) != 0:
+        raise StrategyPackageError(
+            "strategy_package_knowledge_time_assumption_not_allowed"
+        )
     if evidence.get("declared_execution_model_hash") != evidence.get(
         "executed_execution_model_hash"
     ):
@@ -637,6 +720,19 @@ def build_strategy_research_package(
         "source_report_content_hash": recorded_report_hash,
         "selected_candidate_evidence_hash": candidate_evidence_hash,
     }
+    if report.get("validation_admission_binding_schema_version") == 1:
+        package.update(
+            {
+                "validation_admission_binding_schema_version": 1,
+                "knowledge_registry_path": report.get("knowledge_registry_path"),
+                "validation_admission_record_hash": report.get(
+                    "validation_admission_record_hash"
+                ),
+                "validation_admission_row_hash": report.get(
+                    "validation_admission_row_hash"
+                ),
+            }
+        )
     forbidden = {
         "account",
         "credential",
@@ -676,6 +772,7 @@ def build_strategy_research_package(
         expected_registry_path=(
             governance_registry_path(manager) if manager is not None else None
         ),
+        manager=manager,
     )
     if approval_reasons:
         raise StrategyPackageError(

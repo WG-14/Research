@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "strategy_id": "threshold_research_only",
+  "display_name": "Threshold Research Only",
+  "strategy_version": "threshold_research_only.research_contract.v1",
+  "contract_version": "research-strategy-plugin.v6",
+  "status": "ACTIVE",
+  "owner": {
+    "team": "research-platform",
+    "responsibility": "extension-contract-reference"
+  },
+  "supported_assets": ["manifest_declared_single_asset"],
+  "supported_markets": ["manifest_declared_offline_market"],
+  "required_data": [
+    {
+      "name": "candles",
+      "required": true,
+      "fields": ["ts", "open", "high", "low", "close", "volume"],
+      "timeframe": "manifest_declared",
+      "timezone": "manifest_declared",
+      "min_rows": 2
+    }
+  ],
+  "entrypoint": "market_research.builtin_strategies.threshold_research_only:build_threshold_research_only_plugin",
+  "parameter_schema_source": "strategy_spec",
+  "output_schema": {
+    "decision_stream": "research-decision-event.v1",
+    "common_result": "research-common-result.v1"
+  },
+  "resource_limits": {
+    "max_runtime_seconds": 3600,
+    "max_memory_mb": 1400,
+    "max_cpu_cores": 1,
+    "max_output_bytes": 268435456,
+    "max_parallel_runs": 1
+  },
+  "permissions": {
+    "network": "denied",
+    "database_write": false,
+    "filesystem_reads": ["immutable_dataset_snapshot"],
+    "filesystem_writes": ["platform_managed_temporary_output"]
+  },
+  "supported_platform_contract_versions": [6],
+  "aliases": [],
+  "hypothesis": {
+    "observed_phenomenon": "A completed close above a preregistered level can mark a conditional regime.",
+    "economic_rationale": "The fixed level is a minimal extension canary, not a production trading claim.",
+    "expected_mechanism": "The current completed close triggers one long entry through the common engine.",
+    "applicable_conditions": ["Positive price scale", "Immutable completed candles"],
+    "failure_conditions": ["Threshold has no stable economic interpretation", "Costs dominate the conditional return"],
+    "entry_conditions": ["Completed close is strictly above THRESHOLD_CLOSE_ABOVE"],
+    "exit_conditions": ["No strategy-owned exit in this reference contract"],
+    "invalidation_conditions": ["Future data affects an earlier signal", "Output is non-deterministic"],
+    "time_limit": "Bounded by experiment end and declared runtime limit.",
+    "data_leakage_risks": ["Threshold selected with final holdout knowledge", "Same-bar close execution"],
+    "known_limitations": ["Reference-only hypothesis", "No explicit exit policy"],
+    "retirement_criteria": ["The extension contract canary is replaced by a reviewed equivalent"]
+  }
+}

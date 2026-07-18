@@ -462,14 +462,14 @@ def test_dataset_quality_policy_is_strict_and_hash_equivalent_when_omitted() -> 
     assert explicit.manifest_hash() == omitted.manifest_hash()
 
 
-def test_default_strict_manifest_hash_is_preserved() -> None:
+def test_schema_two_example_manifest_hash_is_reviewed() -> None:
     manifest_path = (
         Path(__file__).resolve().parents[1]
         / "examples/research/sma_filter_manifest.example.json"
     )
 
     assert load_manifest(manifest_path).manifest_hash() == (
-        "sha256:4c151853a65af373c94032c4c1d1a16533e4f5e9eb83585c59b8f6e13b5d6377"
+        "sha256:f9ef8de600fe6a8bd50ddb3f02f6090db537a441101baa2dbab7dd5b9bc3852c"
     )
 
 

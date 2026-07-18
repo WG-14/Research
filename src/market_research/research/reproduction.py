@@ -16,7 +16,18 @@ import re
 
 from market_research.storage_io import write_json_atomic
 
+from .code_provenance import (
+    CODE_PROVENANCE_SCHEMA_VERSION,
+    INSTALLED_DEPENDENCY_CONTRACT_BASIS,
+    REPOSITORY_DEPENDENCY_CONTRACT_BASIS,
+    RESOLVED_DEPENDENCY_CONTENT_IDENTITY_BASIS,
+    combined_dependency_contract_hash,
+)
 from .experiment_manifest import ExperimentManifest
+from .execution_plan import (
+    DETERMINISTIC_SINGLE_THREAD_ENVIRONMENT_VARIABLES,
+    RESULT_AFFECTING_ENVIRONMENT_VARIABLES,
+)
 from .hashing import content_hash_payload, sha256_prefixed
 from .strategy_compiler import (
     StrategyCompilationError,
@@ -24,10 +35,22 @@ from .strategy_compiler import (
 )
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 8
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 8
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 9
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 9
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_PYTHON_HASH_SEED_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,9})\Z")
+_RUNTIME_SEMANTICS_FIELDS = frozenset(
+    {
+        "schema_version",
+        "python_implementation",
+        "byte_order",
+        "timezone_names",
+        "locale",
+        "result_affecting_environment",
+    }
+)
+_RESULT_AFFECTING_ENVIRONMENT_FIELDS = frozenset(RESULT_AFFECTING_ENVIRONMENT_VARIABLES)
 
 
 class ReproductionContractError(ValueError):
@@ -44,6 +67,8 @@ class ResearchReproductionFingerprint:
     dataset_split_hashes: tuple[dict[str, object], ...]
     strategy_contract_hashes: tuple[str, ...]
     execution_assumption_hashes: tuple[dict[str, str], ...]
+    strict_environment: dict[str, object]
+    strict_environment_hash: str
     candidate_fingerprints: tuple[dict[str, object], ...]
     final_selection: dict[str, object]
     stable_fingerprint_hash: str
@@ -60,6 +85,8 @@ class ResearchReproductionFingerprint:
             "execution_assumption_hashes": [
                 dict(item) for item in self.execution_assumption_hashes
             ],
+            "strict_environment": dict(self.strict_environment),
+            "strict_environment_hash": self.strict_environment_hash,
             "candidate_fingerprints": [
                 dict(item) for item in self.candidate_fingerprints
             ],
@@ -150,6 +177,11 @@ def build_reproduction_fingerprint(
         {"name": "simulation_policy", "hash": manifest.simulation_policy_hash()},
     )
     _assert_report_execution_bindings(report, execution_assumptions)
+    strict_environment = _strict_environment_fingerprint(report)
+    strict_environment_hash = sha256_prefixed(
+        strict_environment,
+        label="reproduction_strict_environment",
+    )
     final_selection = {
         "best_candidate_id": report.get("best_candidate_id"),
         "selected_candidate_id": report.get("selected_candidate_id"),
@@ -172,11 +204,24 @@ def build_reproduction_fingerprint(
         "dataset_split_hashes": list(dataset_split_hashes),
         "strategy_contract_hashes": list(strategy_contract_hashes),
         "execution_assumption_hashes": list(execution_assumptions),
+        "strict_environment": strict_environment,
+        "strict_environment_hash": strict_environment_hash,
         "candidate_fingerprints": list(candidates),
         "final_selection": final_selection,
     }
     return ResearchReproductionFingerprint(
-        **material,
+        schema_version=REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
+        report_kind=report_kind,
+        manifest_hash=manifest_hash,
+        research_classification=research_classification,
+        dataset_fingerprint=dataset_fingerprint,
+        dataset_split_hashes=dataset_split_hashes,
+        strategy_contract_hashes=strategy_contract_hashes,
+        execution_assumption_hashes=execution_assumptions,
+        strict_environment=strict_environment,
+        strict_environment_hash=strict_environment_hash,
+        candidate_fingerprints=candidates,
+        final_selection=final_selection,
         stable_fingerprint_hash=sha256_prefixed(
             material, label="reproduction_stable_fingerprint"
         ),
@@ -651,6 +696,284 @@ def _assert_report_execution_bindings(
         )
 
 
+def _strict_environment_fingerprint(
+    report: Mapping[str, Any],
+) -> dict[str, object]:
+    """Return the deterministic code and runtime identity of this execution.
+
+    Research result hashes intentionally ignore operational observations such
+    as absolute paths, process IDs, CPU counts, and timing.  Strict
+    reproduction is a different promise: it must reject an execution made by
+    different engine source, dependency resolution, Python, OS, or machine
+    architecture even when the resulting trades happen to be identical.
+    """
+
+    environment = _required_mapping(report, "run_environment", "report")
+    execution_plan = _required_mapping(report, "execution_plan", "report")
+    plan_environment = _required_mapping(
+        execution_plan,
+        "run_environment",
+        "report.execution_plan",
+    )
+    if plan_environment != environment:
+        raise ReproductionContractError(
+            "report.run_environment does not match execution_plan"
+        )
+    recorded_plan_environment_hash = _required_sha256(
+        execution_plan,
+        "run_environment_hash",
+        "report.execution_plan",
+    )
+    if recorded_plan_environment_hash != sha256_prefixed(plan_environment):
+        raise ReproductionContractError(
+            "report.execution_plan.run_environment_hash does not match run_environment"
+        )
+
+    provenance = _required_mapping(
+        environment,
+        "code_provenance",
+        "report.run_environment",
+    )
+    if provenance.get("schema_version") != CODE_PROVENANCE_SCHEMA_VERSION:
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.schema_version is unsupported"
+        )
+    source_layout = _required_string(
+        provenance,
+        "source_layout",
+        "report.run_environment.code_provenance",
+    )
+    if source_layout not in {"repository_src", "installed_distribution"}:
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.source_layout is unsupported"
+        )
+    dependency_contract_basis = _required_string(
+        provenance,
+        "dependency_contract_basis",
+        "report.run_environment.code_provenance",
+    )
+    if dependency_contract_basis not in {
+        REPOSITORY_DEPENDENCY_CONTRACT_BASIS,
+        INSTALLED_DEPENDENCY_CONTRACT_BASIS,
+    }:
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.dependency_contract_basis "
+            "is unsupported"
+        )
+    recorded_provenance_hash = _required_sha256(
+        environment,
+        "code_provenance_hash",
+        "report.run_environment",
+    )
+    embedded_provenance_hash = _required_sha256(
+        provenance,
+        "code_provenance_hash",
+        "report.run_environment.code_provenance",
+    )
+    provenance_material = {
+        key: value for key, value in provenance.items() if key != "code_provenance_hash"
+    }
+    actual_provenance_hash = sha256_prefixed(
+        provenance_material,
+        label="code_provenance",
+    )
+    if recorded_provenance_hash != embedded_provenance_hash:
+        raise ReproductionContractError(
+            "report.run_environment code provenance binding mismatch"
+        )
+    if embedded_provenance_hash != actual_provenance_hash:
+        raise ReproductionContractError(
+            "report.run_environment code provenance hash mismatch"
+        )
+
+    declared_dependency_contract_hash = _optional_sha256(
+        provenance,
+        "declared_dependency_contract_hash",
+        "report.run_environment.code_provenance",
+    )
+    resolved_dependency_contract_hash = _required_sha256(
+        provenance,
+        "resolved_dependency_contract_hash",
+        "report.run_environment.code_provenance",
+    )
+    resolved_dependency_distribution_identities = _resolved_dependency_identity_rows(
+        provenance,
+        context="report.run_environment.code_provenance",
+    )
+    if resolved_dependency_contract_hash != sha256_prefixed(
+        resolved_dependency_distribution_identities,
+        label="resolved_dependency_contract",
+    ):
+        raise ReproductionContractError(
+            "report.run_environment resolved_dependency_contract_hash does not "
+            "match identities"
+        )
+    dependency_contract_hash = _required_sha256(
+        provenance,
+        "dependency_contract_hash",
+        "report.run_environment.code_provenance",
+    )
+    resolved_content_identity_basis = _required_string(
+        provenance,
+        "resolved_dependency_content_identity_basis",
+        "report.run_environment.code_provenance",
+    )
+    if resolved_content_identity_basis != RESOLVED_DEPENDENCY_CONTENT_IDENTITY_BASIS:
+        raise ReproductionContractError(
+            "report.run_environment resolved dependency content identity basis "
+            "is unsupported"
+        )
+    if (
+        dependency_contract_basis == REPOSITORY_DEPENDENCY_CONTRACT_BASIS
+        and declared_dependency_contract_hash is None
+    ):
+        raise ReproductionContractError(
+            "report.run_environment repository dependency contract hash is required"
+        )
+    if (
+        dependency_contract_basis == INSTALLED_DEPENDENCY_CONTRACT_BASIS
+        and declared_dependency_contract_hash is not None
+    ):
+        raise ReproductionContractError(
+            "report.run_environment installed dependency contract must not declare "
+            "repository files"
+        )
+    if dependency_contract_hash != combined_dependency_contract_hash(
+        basis=dependency_contract_basis,
+        declared_dependency_contract_hash=declared_dependency_contract_hash,
+        resolved_dependency_contract_hash=resolved_dependency_contract_hash,
+    ):
+        raise ReproductionContractError(
+            "report.run_environment combined dependency contract hash mismatch"
+        )
+
+    git_available = provenance.get("git_available")
+    git_dirty = provenance.get("git_dirty")
+    if not isinstance(git_available, bool):
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.git_available is required"
+        )
+    if git_dirty is not None and not isinstance(git_dirty, bool):
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.git_dirty is invalid"
+        )
+    source_file_count = provenance.get("source_file_count")
+    if isinstance(source_file_count, bool) or not isinstance(source_file_count, int):
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.source_file_count is required"
+        )
+    if source_file_count < 1:
+        raise ReproductionContractError(
+            "report.run_environment.code_provenance.source_file_count is invalid"
+        )
+    source_archive_identity = _source_archive_identity(
+        environment, context="report.run_environment"
+    )
+    runtime_semantics = _required_mapping(
+        environment,
+        "runtime_semantics",
+        "report.run_environment",
+    )
+    _validate_runtime_semantics(
+        runtime_semantics,
+        context="report.run_environment.runtime_semantics",
+    )
+    recorded_runtime_hash = _required_sha256(
+        environment,
+        "runtime_semantics_hash",
+        "report.run_environment",
+    )
+    actual_runtime_hash = sha256_prefixed(
+        runtime_semantics,
+        label="research_runtime_semantics",
+    )
+    if recorded_runtime_hash != actual_runtime_hash:
+        raise ReproductionContractError(
+            "report.run_environment runtime semantics hash mismatch"
+        )
+
+    git_commit = _required_string(
+        provenance,
+        "git_commit",
+        "report.run_environment.code_provenance",
+    )
+    git_status_hash = _optional_sha256(
+        provenance,
+        "git_status_hash",
+        "report.run_environment.code_provenance",
+    )
+    git_diff_hash = _optional_sha256(
+        provenance,
+        "git_diff_hash",
+        "report.run_environment.code_provenance",
+    )
+    _validate_git_source_identity(
+        source_layout=source_layout,
+        dependency_contract_basis=dependency_contract_basis,
+        git_available=git_available,
+        git_commit=git_commit,
+        git_dirty=git_dirty,
+        git_status_hash=git_status_hash,
+        git_diff_hash=git_diff_hash,
+        context="report.run_environment.code_provenance",
+    )
+
+    strict = {
+        "schema_version": 1,
+        "repository_version": _required_string(
+            environment,
+            "repository_version",
+            "report.run_environment",
+        ),
+        "python_version": _required_string(
+            environment,
+            "python_version",
+            "report.run_environment",
+        ),
+        "platform": _required_string(
+            environment,
+            "platform",
+            "report.run_environment",
+        ),
+        "system": _required_string(
+            environment,
+            "system",
+            "report.run_environment",
+        ),
+        "machine": _required_string(
+            environment,
+            "machine",
+            "report.run_environment",
+        ),
+        "runtime_semantics": runtime_semantics,
+        "runtime_semantics_hash": recorded_runtime_hash,
+        "code_provenance_schema_version": CODE_PROVENANCE_SCHEMA_VERSION,
+        "source_layout": source_layout,
+        "dependency_contract_basis": dependency_contract_basis,
+        "git_available": git_available,
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
+        "git_status_hash": git_status_hash,
+        "git_diff_hash": git_diff_hash,
+        "source_tree_hash": _required_sha256(
+            provenance,
+            "source_tree_hash",
+            "report.run_environment.code_provenance",
+        ),
+        "source_file_count": source_file_count,
+        "declared_dependency_contract_hash": declared_dependency_contract_hash,
+        "resolved_dependency_contract_hash": resolved_dependency_contract_hash,
+        "resolved_dependency_distribution_identities": (
+            resolved_dependency_distribution_identities
+        ),
+        "resolved_dependency_content_identity_basis": (resolved_content_identity_basis),
+        "dependency_contract_hash": dependency_contract_hash,
+        "code_provenance_hash": embedded_provenance_hash,
+        "source_archive_identity": source_archive_identity,
+    }
+    return strict
+
+
 def _fingerprint_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(value)
     if not isinstance(payload.get("candidate_fingerprints"), list):
@@ -658,6 +981,50 @@ def _fingerprint_payload(value: Mapping[str, Any]) -> dict[str, Any]:
             "fingerprint.candidate_fingerprints is required"
         )
     return payload
+
+
+def _source_archive_identity(
+    environment: Mapping[str, Any], *, context: str
+) -> dict[str, object] | None:
+    value = environment.get("source_archive")
+    if value is None:
+        # Compatibility for schema-v9 receipts created before source archives
+        # became mandatory for newly executed repository runs.
+        return None
+    if not isinstance(value, dict):
+        raise ReproductionContractError(f"{context}.source_archive must be an object")
+    _validate_source_archive_identity(value, context=f"{context}.source_archive")
+    return {
+        "schema_version": value["schema_version"],
+        "format": value["format"],
+        "digest": value["digest"],
+        "size_bytes": value["size_bytes"],
+        "file_count": value["file_count"],
+        "strategy_name": value["strategy_name"],
+        "strategy_plugin_contract_hash": value["strategy_plugin_contract_hash"],
+        "sidecar_manifest_digest": value.get("sidecar_manifest_digest"),
+        "strategy_package_digest": value["strategy_package_digest"],
+    }
+
+
+def _validate_source_archive_identity(
+    value: Mapping[str, Any], *, context: str
+) -> None:
+    if value.get("schema_version") != 1 or value.get("format") != "deterministic_zip_v1":
+        raise ReproductionContractError(f"{context} schema or format is unsupported")
+    for key in (
+        "digest",
+        "strategy_plugin_contract_hash",
+        "strategy_package_digest",
+    ):
+        _required_sha256(value, key, context)
+    sidecar = value.get("sidecar_manifest_digest")
+    if sidecar is not None:
+        _required_sha256(value, "sidecar_manifest_digest", context)
+    _required_string(value, "strategy_name", context)
+    for key in ("size_bytes", "file_count"):
+        if _required_int(value, key, context) < 1:
+            raise ReproductionContractError(f"{context}.{key} is invalid")
 
 
 def _validate_fingerprint_payload(payload: Mapping[str, Any], *, context: str) -> None:
@@ -736,11 +1103,264 @@ def _validate_fingerprint_payload(payload: Mapping[str, Any], *, context: str) -
         _required_sha256(
             item, "hash", f"{context}.execution_assumption_hashes[{index}]"
         )
+    strict_environment = _required_mapping(
+        payload,
+        "strict_environment",
+        context,
+    )
+    strict_environment_hash = _required_sha256(
+        payload,
+        "strict_environment_hash",
+        context,
+    )
+    if strict_environment.get("schema_version") != 1:
+        raise ReproductionContractError(
+            f"{context}.strict_environment.schema_version is unsupported"
+        )
+    for key in (
+        "repository_version",
+        "python_version",
+        "platform",
+        "system",
+        "machine",
+        "source_layout",
+        "dependency_contract_basis",
+        "resolved_dependency_content_identity_basis",
+        "git_commit",
+    ):
+        _required_string(
+            strict_environment,
+            key,
+            f"{context}.strict_environment",
+        )
+    resolved_dependency_distribution_identities = _resolved_dependency_identity_rows(
+        strict_environment,
+        context=f"{context}.strict_environment",
+    )
+    recorded_resolved_dependency_contract_hash = _required_sha256(
+        strict_environment,
+        "resolved_dependency_contract_hash",
+        f"{context}.strict_environment",
+    )
+    if recorded_resolved_dependency_contract_hash != sha256_prefixed(
+        resolved_dependency_distribution_identities,
+        label="resolved_dependency_contract",
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.resolved_dependency_contract_hash "
+            "does not match identities"
+        )
+    if (
+        strict_environment.get("code_provenance_schema_version")
+        != CODE_PROVENANCE_SCHEMA_VERSION
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.code_provenance_schema_version "
+            "is unsupported"
+        )
+    if strict_environment.get("source_layout") not in {
+        "repository_src",
+        "installed_distribution",
+    }:
+        raise ReproductionContractError(
+            f"{context}.strict_environment.source_layout is unsupported"
+        )
+    dependency_contract_basis = strict_environment.get("dependency_contract_basis")
+    if dependency_contract_basis not in {
+        REPOSITORY_DEPENDENCY_CONTRACT_BASIS,
+        INSTALLED_DEPENDENCY_CONTRACT_BASIS,
+    }:
+        raise ReproductionContractError(
+            f"{context}.strict_environment.dependency_contract_basis is unsupported"
+        )
+    if (
+        strict_environment.get("resolved_dependency_content_identity_basis")
+        != RESOLVED_DEPENDENCY_CONTENT_IDENTITY_BASIS
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment."
+            "resolved_dependency_content_identity_basis is unsupported"
+        )
+    for key in (
+        "source_tree_hash",
+        "resolved_dependency_contract_hash",
+        "dependency_contract_hash",
+        "code_provenance_hash",
+        "runtime_semantics_hash",
+    ):
+        _required_sha256(
+            strict_environment,
+            key,
+            f"{context}.strict_environment",
+        )
+    declared_dependency_contract_hash = _optional_sha256(
+        strict_environment,
+        "declared_dependency_contract_hash",
+        f"{context}.strict_environment",
+    )
+    if (
+        dependency_contract_basis == REPOSITORY_DEPENDENCY_CONTRACT_BASIS
+        and declared_dependency_contract_hash is None
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.declared_dependency_contract_hash "
+            "is required"
+        )
+    if (
+        dependency_contract_basis == INSTALLED_DEPENDENCY_CONTRACT_BASIS
+        and declared_dependency_contract_hash is not None
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.declared_dependency_contract_hash "
+            "must be absent"
+        )
+    if strict_environment["dependency_contract_hash"] != (
+        combined_dependency_contract_hash(
+            basis=str(dependency_contract_basis),
+            declared_dependency_contract_hash=declared_dependency_contract_hash,
+            resolved_dependency_contract_hash=strict_environment[
+                "resolved_dependency_contract_hash"
+            ],
+        )
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.dependency_contract_hash does not match"
+        )
+    runtime_semantics = _required_mapping(
+        strict_environment,
+        "runtime_semantics",
+        f"{context}.strict_environment",
+    )
+    _validate_runtime_semantics(
+        runtime_semantics,
+        context=f"{context}.strict_environment.runtime_semantics",
+    )
+    if strict_environment["runtime_semantics_hash"] != sha256_prefixed(
+        runtime_semantics,
+        label="research_runtime_semantics",
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.runtime_semantics_hash does not match"
+        )
+    for key in ("git_status_hash", "git_diff_hash"):
+        _optional_sha256(
+            strict_environment,
+            key,
+            f"{context}.strict_environment",
+        )
+    if not isinstance(strict_environment.get("git_available"), bool):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.git_available is required"
+        )
+    if strict_environment.get("git_dirty") is not None and not isinstance(
+        strict_environment.get("git_dirty"), bool
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.git_dirty is invalid"
+        )
+    _validate_git_source_identity(
+        source_layout=str(strict_environment["source_layout"]),
+        dependency_contract_basis=str(dependency_contract_basis),
+        git_available=bool(strict_environment["git_available"]),
+        git_commit=str(strict_environment["git_commit"]),
+        git_dirty=strict_environment.get("git_dirty"),
+        git_status_hash=strict_environment.get("git_status_hash"),
+        git_diff_hash=strict_environment.get("git_diff_hash"),
+        context=f"{context}.strict_environment",
+    )
+    source_file_count = strict_environment.get("source_file_count")
+    if (
+        isinstance(source_file_count, bool)
+        or not isinstance(source_file_count, int)
+        or source_file_count < 1
+    ):
+        raise ReproductionContractError(
+            f"{context}.strict_environment.source_file_count is invalid"
+        )
+    archive_identity = strict_environment.get("source_archive_identity")
+    if archive_identity is not None:
+        if not isinstance(archive_identity, dict):
+            raise ReproductionContractError(
+                f"{context}.strict_environment.source_archive_identity must be an object"
+            )
+        _validate_source_archive_identity(
+            archive_identity,
+            context=f"{context}.strict_environment.source_archive_identity",
+        )
+    actual_environment_hash = sha256_prefixed(
+        strict_environment,
+        label="reproduction_strict_environment",
+    )
+    if strict_environment_hash != actual_environment_hash:
+        raise ReproductionContractError(
+            f"{context}.strict_environment_hash does not match environment"
+        )
     candidates = payload.get("candidate_fingerprints")
     if not isinstance(candidates, list) or not candidates:
         raise ReproductionContractError(f"{context}.candidate_fingerprints is required")
     for candidate in candidates:
         _validate_candidate_fingerprint(candidate, context=context)
+
+
+def _validate_git_source_identity(
+    *,
+    source_layout: str,
+    dependency_contract_basis: str,
+    git_available: bool,
+    git_commit: str,
+    git_dirty: object,
+    git_status_hash: object,
+    git_diff_hash: object,
+    context: str,
+) -> None:
+    if source_layout == "repository_src":
+        if dependency_contract_basis != REPOSITORY_DEPENDENCY_CONTRACT_BASIS:
+            raise ReproductionContractError(
+                f"{context}.repository_src requires repository dependency contract"
+            )
+        if not git_available:
+            raise ReproductionContractError(
+                f"{context}.repository_src requires available Git provenance"
+            )
+    elif dependency_contract_basis != INSTALLED_DEPENDENCY_CONTRACT_BASIS:
+        raise ReproductionContractError(
+            f"{context}.installed_distribution requires installed dependency contract"
+        )
+
+    if git_available:
+        if (
+            len(git_commit) != 40
+            or git_commit.lower() != git_commit
+            or any(char not in "0123456789abcdef" for char in git_commit)
+        ):
+            raise ReproductionContractError(
+                f"{context}.git_commit must be a full lowercase Git object id"
+            )
+        if git_dirty is not False:
+            reason = (
+                "dirty Git checkout is not eligible"
+                if git_dirty is True
+                else "clean Git status is required"
+            )
+            raise ReproductionContractError(f"{context} {reason}")
+        if git_status_hash is None or git_diff_hash is None:
+            raise ReproductionContractError(
+                f"{context}.Git provenance hashes are required"
+            )
+        return
+
+    if git_commit != "unknown":
+        raise ReproductionContractError(
+            f"{context}.git_commit must be unknown when Git is unavailable"
+        )
+    if (
+        git_dirty is not None
+        or git_status_hash is not None
+        or git_diff_hash is not None
+    ):
+        raise ReproductionContractError(
+            f"{context}.unavailable Git provenance fields must be null"
+        )
 
 
 def _validate_candidate_fingerprint(candidate: Any, *, context: str) -> None:
@@ -858,7 +1478,7 @@ def _candidate_sort_key(value: Mapping[str, object]) -> str:
 
 
 def _scenario_sort_key(value: Mapping[str, object]) -> tuple[int, str]:
-    return int(value["scenario_index"]), str(value["scenario_id"])
+    return _required_int(value, "scenario_index", "scenario"), str(value["scenario_id"])
 
 
 def _required_string(payload: Mapping[str, Any], key: str, context: str) -> str:
@@ -866,6 +1486,114 @@ def _required_string(payload: Mapping[str, Any], key: str, context: str) -> str:
     if not isinstance(value, str) or not value:
         raise ReproductionContractError(f"{context}.{key} is required")
     return value
+
+
+def _resolved_dependency_identity_rows(
+    payload: Mapping[str, Any],
+    *,
+    context: str,
+) -> list[dict[str, object]]:
+    value = payload.get("resolved_dependency_distribution_identities")
+    if not isinstance(value, list) or not value:
+        raise ReproductionContractError(
+            f"{context}.resolved_dependency_distribution_identities is required"
+        )
+    rows: list[dict[str, object]] = []
+    expected_fields = {"name", "version", "content_hash", "file_count"}
+    for index, raw_row in enumerate(value):
+        row_context = f"{context}.resolved_dependency_distribution_identities[{index}]"
+        if not isinstance(raw_row, dict) or set(raw_row) != expected_fields:
+            raise ReproductionContractError(f"{row_context} fields do not match schema")
+        name = _required_string(raw_row, "name", row_context)
+        if name != name.strip().lower().replace("_", "-"):
+            raise ReproductionContractError(f"{row_context}.name is not normalized")
+        version = _required_string(raw_row, "version", row_context)
+        content_hash = _required_sha256(raw_row, "content_hash", row_context)
+        file_count = raw_row.get("file_count")
+        if isinstance(file_count, bool) or not isinstance(file_count, int):
+            raise ReproductionContractError(f"{row_context}.file_count is required")
+        if file_count < 1:
+            raise ReproductionContractError(f"{row_context}.file_count is invalid")
+        rows.append(
+            {
+                "name": name,
+                "version": version,
+                "content_hash": content_hash,
+                "file_count": file_count,
+            }
+        )
+    expected_order = sorted(
+        rows,
+        key=lambda row: (
+            str(row["name"]),
+            str(row["version"]),
+            str(row["content_hash"]),
+        ),
+    )
+    if rows != expected_order or len(
+        {
+            (
+                str(row["name"]),
+                str(row["version"]),
+                str(row["content_hash"]),
+                _required_int(row, "file_count", context),
+            )
+            for row in rows
+        }
+    ) != len(rows):
+        raise ReproductionContractError(
+            f"{context}.resolved_dependency_distribution_identities must be "
+            "sorted and unique"
+        )
+    return rows
+
+
+def _validate_runtime_semantics(
+    runtime_semantics: Mapping[str, Any],
+    *,
+    context: str,
+) -> None:
+    if runtime_semantics.get("schema_version") != 2:
+        raise ReproductionContractError(f"{context}.schema_version is unsupported")
+    if set(runtime_semantics) != _RUNTIME_SEMANTICS_FIELDS:
+        raise ReproductionContractError(f"{context} fields do not match schema")
+    for key in ("python_implementation", "byte_order", "locale"):
+        _required_string(runtime_semantics, key, context)
+    timezone_names = runtime_semantics.get("timezone_names")
+    if (
+        not isinstance(timezone_names, list)
+        or not timezone_names
+        or not all(isinstance(value, str) and value for value in timezone_names)
+    ):
+        raise ReproductionContractError(f"{context}.timezone_names is required")
+    affecting_environment = runtime_semantics.get("result_affecting_environment")
+    if (
+        not isinstance(affecting_environment, dict)
+        or set(affecting_environment) != _RESULT_AFFECTING_ENVIRONMENT_FIELDS
+        or any(
+            value is not None and not isinstance(value, str)
+            for value in affecting_environment.values()
+        )
+    ):
+        raise ReproductionContractError(
+            f"{context}.result_affecting_environment is invalid"
+        )
+    python_hash_seed = affecting_environment["PYTHONHASHSEED"]
+    if (
+        not isinstance(python_hash_seed, str)
+        or _PYTHON_HASH_SEED_PATTERN.fullmatch(python_hash_seed) is None
+        or int(python_hash_seed) > 4_294_967_295
+    ):
+        raise ReproductionContractError(
+            f"{context}.result_affecting_environment.PYTHONHASHSEED must be an "
+            "explicit fixed integer from 0 through 4294967295"
+        )
+    for name in DETERMINISTIC_SINGLE_THREAD_ENVIRONMENT_VARIABLES:
+        if affecting_environment[name] != "1":
+            raise ReproductionContractError(
+                f"{context}.result_affecting_environment.{name} must equal 1 for "
+                "strict reproduction"
+            )
 
 
 def _required_mapping(
@@ -881,6 +1609,15 @@ def _required_sha256(payload: Mapping[str, Any], key: str, context: str) -> str:
     value = payload.get(key)
     if value is None:
         raise ReproductionContractError(f"{context}.{key} is required")
+    if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+        raise ReproductionContractError(f"{context}.{key} must be a sha256 hash")
+    return value
+
+
+def _optional_sha256(payload: Mapping[str, Any], key: str, context: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
     if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
         raise ReproductionContractError(f"{context}.{key} must be a sha256 hash")
     return value

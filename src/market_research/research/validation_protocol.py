@@ -9,7 +9,7 @@ from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 from market_research.execution_reality_contract import (
     build_execution_reality_contract,
@@ -74,15 +74,19 @@ from .research_classification import (
 from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import (
     DepthWalkExecutionModel,
+    ExecutionModel,
     FixedBpsExecutionModel,
     StressExecutionModel,
     model_params_hash,
 )
 from .execution_timing import execution_reality_gate, signal_quote_coverage_summary
 from .experiment_manifest import (
+    AcceptanceGate,
     DateRange,
     ExecutionScenario,
+    ExecutionTimingPolicy,
     ExperimentManifest,
+    ResearchResourceLimits,
     required_execution_scenarios,
 )
 from .execution_plan import (
@@ -93,6 +97,7 @@ from .execution_plan import (
     parallel_efficiency_payload,
     parallel_work_task_count,
     precompute_dataset_hashes,
+    require_authoritative_source_eligibility,
     _estimated_artifact_bytes,
 )
 from .executor import (
@@ -112,6 +117,7 @@ from .final_selection import (
 )
 from .hashing import content_hash_payload, observe_hashing, sha256_prefixed
 from .hash_chain import append_hash_chained_jsonl
+from .result_concentration import analyze_trade_concentration
 from .family_registry import (
     append_family_trial_registry_row,
     family_trial_registry_path,
@@ -522,7 +528,10 @@ def _evaluate_candidate_scenario_task(
 def _load_worker_task_snapshots(
     *, task: dict[str, Any], manifest: ExperimentManifest
 ) -> dict[str, DatasetSnapshot]:
-    db_path = task.get("db_path")
+    raw_db_path = task.get("db_path")
+    if raw_db_path is not None and not isinstance(raw_db_path, (str, Path)):
+        raise ResearchValidationError("parallel_worker_db_path_invalid")
+    db_path: str | Path | None = raw_db_path
     adapter = default_dataset_adapter_registry().resolve(manifest.dataset.source)
     if db_path is None and bool(getattr(adapter, "requires_runtime_db", False)):
         raise ResearchValidationError(
@@ -531,10 +540,9 @@ def _load_worker_task_snapshots(
     split_names = tuple(
         str(name) for name in task.get("split_names") or ("train", "validation")
     )
-    data_plane_policy = (
-        task.get("data_plane_policy")
-        if isinstance(task.get("data_plane_policy"), dict)
-        else {}
+    raw_data_plane_policy = task.get("data_plane_policy")
+    data_plane_policy: dict[str, Any] = (
+        dict(raw_data_plane_policy) if isinstance(raw_data_plane_policy, dict) else {}
     )
     requested_policy = str(
         data_plane_policy.get("worker_snapshot_load_policy") or "db_reload"
@@ -586,7 +594,7 @@ def _load_worker_task_snapshots(
 def _worker_local_snapshot_cache_key(
     *,
     data_plane_policy: dict[str, Any],
-    db_path: object,
+    db_path: str | Path | None,
     split_names: tuple[str, ...],
     manifest: ExperimentManifest,
 ) -> str:
@@ -632,7 +640,7 @@ def _worker_local_snapshot_cache_key(
 
 def _load_worker_task_snapshots_from_db(
     *,
-    db_path: object,
+    db_path: str | Path | None,
     manifest: ExperimentManifest,
     split_names: tuple[str, ...],
 ) -> dict[str, DatasetSnapshot]:
@@ -749,8 +757,9 @@ def _apply_execution_plan_resource_policy(
     execution_plan: ResearchExecutionPlan,
 ) -> ExperimentManifest:
     plan = execution_plan.payload
-    resource_plan = (
-        plan.get("resource_plan") if isinstance(plan.get("resource_plan"), dict) else {}
+    raw_resource_plan = plan.get("resource_plan")
+    resource_plan: dict[str, Any] = (
+        dict(raw_resource_plan) if isinstance(raw_resource_plan, dict) else {}
     )
     effective_mode = str(
         resource_plan.get("effective_execution_mode")
@@ -914,10 +923,16 @@ def _parameter_grid_size(manifest: ExperimentManifest) -> int:
 def _optional_int(value: object) -> int | None:
     if value is None:
         return None
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return None
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _validation_registry_required(manifest: ExperimentManifest) -> bool:
@@ -1041,6 +1056,7 @@ def _reserve_experiment_attempt(
         if holdout_snapshot is not None and "final_holdout" in quality_reports
         else {}
     )
+    holdout_hashes: dict[str, Any]
     if final_holdout_loaded:
         holdout_hashes = final_holdout_hashes_from_manifest(
             manifest=manifest,
@@ -1109,6 +1125,11 @@ def _reserve_experiment_attempt(
         "hypothesis_version": identity["hypothesis_version"],
         "hypothesis_contract_hash": identity["hypothesis_contract_hash"],
         "hypothesis_semantic_fingerprint": identity["hypothesis_semantic_fingerprint"],
+        "hypothesis_lineage_hash": identity["hypothesis_lineage_hash"],
+        "research_question_id": identity["research_question_id"],
+        "research_question_version": identity["research_question_version"],
+        "research_question_hash": identity["research_question_hash"],
+        "observation_hashes": identity["observation_hashes"],
         "hypothesis_status": hypothesis_status,
         "hypothesis_identity_source": identity["hypothesis_identity_source"],
         "experiment_family_identity_source": identity[
@@ -1127,6 +1148,9 @@ def _reserve_experiment_attempt(
                 "hypothesis_semantic_fingerprint": identity[
                     "hypothesis_semantic_fingerprint"
                 ],
+                "hypothesis_lineage_hash": identity["hypothesis_lineage_hash"],
+                "research_question_hash": identity["research_question_hash"],
+                "observation_hashes": identity["observation_hashes"],
                 "hypothesis_status": hypothesis_status,
                 "attempt_index": manifest.raw.get("attempt_index"),
                 "holdout_reuse_count": manifest.raw.get("holdout_reuse_count"),
@@ -1391,7 +1415,7 @@ def _backtest_context(
     )
 
 
-def _artifact_budget_from_limits(limits) -> ArtifactBudget:
+def _artifact_budget_from_limits(limits: ResearchResourceLimits) -> ArtifactBudget:
     return ArtifactBudget(
         max_artifact_bytes=limits.max_artifact_bytes,
         max_audit_stream_rows=limits.max_audit_stream_rows,
@@ -1682,6 +1706,8 @@ def _observed_worker_pid_set(
             worker_pid = item.get("worker_pid")
         if isinstance(worker_pid, bool) or worker_pid in (None, ""):
             continue
+        if not isinstance(worker_pid, (str, int, float)):
+            continue
         try:
             pids.add(int(worker_pid))
         except (TypeError, ValueError):
@@ -1820,7 +1846,7 @@ def build_research_work_tasks_stage(
     manifest: ExperimentManifest,
     snapshots: dict[str, DatasetSnapshot],
     raw_candidates: list[dict[str, Any]],
-    execution_scenarios: list[tuple[int, ExecutionScenario]],
+    execution_scenarios: Sequence[tuple[int, ExecutionScenario]],
     dataset_hashes: dict[str, str],
     manifest_hash: str,
     simulation_seed_scope_hash: str,
@@ -1986,6 +2012,10 @@ def run_research_backtest(
     strategy_registry: StrategyRegistry,
     governance_authority_manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
+    try:
+        require_authoritative_source_eligibility(manifest)
+    except RuntimeError as exc:
+        raise ResearchValidationError(str(exc)) from exc
     if not strategy_registry.accepts_execution_hash(
         manifest.strategy_name, str(manifest.validated_strategy_registry_hash or "")
     ):
@@ -2072,6 +2102,7 @@ def run_research_backtest(
         created_at=generated_at,
         include_walk_forward=False,
         strategy_registry=strategy_registry,
+        manager=manager,
     )
     manifest = _apply_execution_plan_resource_policy(
         manifest=manifest, execution_plan=execution_plan
@@ -2100,6 +2131,7 @@ def run_research_backtest(
             created_at=generated_at,
             include_walk_forward=False,
             strategy_registry=strategy_registry,
+            manager=manager,
         )
         manifest = _apply_execution_plan_resource_policy(
             manifest=manifest, execution_plan=execution_plan
@@ -2151,7 +2183,7 @@ def run_research_backtest(
     execution_observability["candidate_profile_hash_observability"] = dict(
         evaluation.candidate_profile_hash_observability
     )
-    report = _report_payload(
+    report_payload = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
         quality_reports=tuple(quality_reports.values()),
@@ -2170,7 +2202,7 @@ def run_research_backtest(
         artifact_context=artifact_context,
         governance_authority_manager=governance_authority_manager,
     )
-    report.setdefault("artifact_observability", {})["candidate_results"] = dict(
+    report_payload.setdefault("artifact_observability", {})["candidate_results"] = dict(
         evaluation.candidate_artifact_observability
     )
     _emit_progress(
@@ -2184,7 +2216,7 @@ def run_research_backtest(
         manager=manager,
         experiment_id=manifest.experiment_id,
         report_name="backtest",
-        payload=report,
+        payload=report_payload,
         artifact_context=artifact_context,
     )
     paths = write_result.paths
@@ -2208,13 +2240,13 @@ def run_research_backtest(
             report_bytes=write_result.artifact_write_summary["report_bytes"],
         )
     )
-    full_candidates = report.get("candidates")
-    report.clear()
-    report.update(write_result.report_payload or {})
+    full_candidates = report_payload.get("candidates")
+    report_payload.clear()
+    report_payload.update(write_result.report_payload or {})
     if manifest.research_run.report_detail in {"index", "summary", "standard"}:
-        report["candidates"] = full_candidates
+        report_payload["candidates"] = full_candidates
     _attach_authoritative_reproduction_receipt(
-        report=report,
+        report=report_payload,
         full_candidates=full_candidates or [],
         manifest=manifest,
         report_path=paths.report_path,
@@ -2226,7 +2258,7 @@ def run_research_backtest(
         candidate_count=len(candidates),
         elapsed_s=round(time.perf_counter() - started, 3),
     )
-    return report
+    return report_payload
 
 
 def run_research_walk_forward(
@@ -2243,6 +2275,10 @@ def run_research_walk_forward(
     strategy_registry: StrategyRegistry,
     governance_authority_manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
+    try:
+        require_authoritative_source_eligibility(manifest)
+    except RuntimeError as exc:
+        raise ResearchValidationError(str(exc)) from exc
     if not strategy_registry.accepts_execution_hash(
         manifest.strategy_name, str(manifest.validated_strategy_registry_hash or "")
     ):
@@ -2328,6 +2364,7 @@ def run_research_walk_forward(
         created_at=generated_at,
         include_walk_forward=True,
         strategy_registry=strategy_registry,
+        manager=manager,
     )
     manifest = _apply_execution_plan_resource_policy(
         manifest=manifest, execution_plan=execution_plan
@@ -2356,6 +2393,7 @@ def run_research_walk_forward(
             created_at=generated_at,
             include_walk_forward=True,
             strategy_registry=strategy_registry,
+            manager=manager,
         )
         manifest = _apply_execution_plan_resource_policy(
             manifest=manifest, execution_plan=execution_plan
@@ -2407,7 +2445,7 @@ def run_research_walk_forward(
     execution_observability["candidate_profile_hash_observability"] = dict(
         evaluation.candidate_profile_hash_observability
     )
-    report = _report_payload(
+    report_payload = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
         quality_reports=tuple(quality_reports.values()),
@@ -2426,7 +2464,7 @@ def run_research_walk_forward(
         artifact_context=artifact_context,
         governance_authority_manager=governance_authority_manager,
     )
-    report.setdefault("artifact_observability", {})["candidate_results"] = dict(
+    report_payload.setdefault("artifact_observability", {})["candidate_results"] = dict(
         evaluation.candidate_artifact_observability
     )
     _emit_progress(
@@ -2440,7 +2478,7 @@ def run_research_walk_forward(
         manager=manager,
         experiment_id=manifest.experiment_id,
         report_name="walk_forward",
-        payload=report,
+        payload=report_payload,
         artifact_context=artifact_context,
     )
     paths = write_result.paths
@@ -2464,13 +2502,13 @@ def run_research_walk_forward(
             report_bytes=write_result.artifact_write_summary["report_bytes"],
         )
     )
-    full_candidates = report.get("candidates")
-    report.clear()
-    report.update(write_result.report_payload or {})
+    full_candidates = report_payload.get("candidates")
+    report_payload.clear()
+    report_payload.update(write_result.report_payload or {})
     if manifest.research_run.report_detail in {"index", "summary", "standard"}:
-        report["candidates"] = full_candidates
+        report_payload["candidates"] = full_candidates
     _attach_authoritative_reproduction_receipt(
-        report=report,
+        report=report_payload,
         full_candidates=full_candidates or [],
         manifest=manifest,
         report_path=paths.report_path,
@@ -2482,7 +2520,7 @@ def run_research_walk_forward(
         candidate_count=len(candidates),
         elapsed_s=round(time.perf_counter() - started, 3),
     )
-    return report
+    return report_payload
 
 
 def run_final_holdout_confirmation(
@@ -2645,6 +2683,8 @@ def run_final_holdout_confirmation(
     )
     metrics = run.metrics.as_dict()
     metrics_v2 = _metrics_v2_payload(run)
+    if metrics_v2 is None:
+        raise ResearchValidationError("final_holdout_metrics_v2_missing")
     gate_result, gate_reasons = _final_holdout_gate_result(
         manifest=manifest,
         metrics=metrics,
@@ -2807,6 +2847,11 @@ def _reserve_final_holdout_authorization(
         "hypothesis_version": identity["hypothesis_version"],
         "hypothesis_contract_hash": identity["hypothesis_contract_hash"],
         "hypothesis_semantic_fingerprint": identity["hypothesis_semantic_fingerprint"],
+        "hypothesis_lineage_hash": identity["hypothesis_lineage_hash"],
+        "research_question_id": identity["research_question_id"],
+        "research_question_version": identity["research_question_version"],
+        "research_question_hash": identity["research_question_hash"],
+        "observation_hashes": identity["observation_hashes"],
         "hypothesis_status": identity["hypothesis_status"],
         "manifest_hash": manifest.manifest_hash(),
         "research_classification": manifest.research_classification,
@@ -2919,6 +2964,26 @@ def _attach_authoritative_reproduction_receipt(
                 "dataset_verification_not_immutable_artifact",
                 "authoritative_reproduction_receipt_unavailable_mutable_source",
             }
+        )
+        return
+    run_environment = report.get("run_environment")
+    code_provenance = (
+        run_environment.get("code_provenance")
+        if isinstance(run_environment, dict)
+        else None
+    )
+    if isinstance(code_provenance, dict) and code_provenance.get("git_dirty") is True:
+        if manifest.research_classification != "research_only":
+            raise ResearchValidationError(
+                "authoritative_receipt_requires_clean_git_checkout"
+            )
+        report["reproduction_receipt_status"] = "INELIGIBLE_DIRTY_SOURCE"
+        report["reproduction_receipt_reason"] = (
+            "dirty_git_checkout_changed_contents_not_preserved"
+        )
+        report["warnings"] = sorted(
+            set(report.get("warnings") or ())
+            | {"authoritative_reproduction_receipt_ineligible_dirty_source"}
         )
         return
     receipt_path = report_path.with_name("reproduction_receipt.json")
@@ -3083,11 +3148,16 @@ def _evaluate_candidates(
                 selection.get("effective_work_unit_type")
                 or manifest.research_run.execution.work_unit
             )
-            expected_plan_tasks = int(
+            raw_expected_plan_tasks = (
                 selection.get("candidate_scenario_split_task_count")
                 if effective_work_unit == "candidate_scenario_split"
                 else selection.get("candidate_scenario_task_count")
-                or parallel_work_task_count(
+            )
+            parsed_expected_plan_tasks = _optional_int(raw_expected_plan_tasks)
+            expected_plan_tasks = (
+                parsed_expected_plan_tasks
+                if parsed_expected_plan_tasks is not None
+                else parallel_work_task_count(
                     candidate_count=candidate_count,
                     scenario_count=scenario_count,
                     split_count=len(split_work_unit_names),
@@ -3447,7 +3517,7 @@ def _evaluate_candidates(
                     candidate=result.base_result,
                     artifact_context=artifact_context,
                 )
-            event = {
+            event: dict[str, Any] = {
                 "stage": "candidate_failure",
                 "candidate_id": result.candidate_id,
                 "scenario_id": result.scenario_id,
@@ -5731,7 +5801,7 @@ def _pre_stress_gate_summaries(
     *,
     manifest: ExperimentManifest,
     base_results: list[dict[str, Any]],
-    stability: dict[int, dict[str, Any]],
+    stability: list[dict[str, Any]],
     include_walk_forward: bool,
     calibration_gate: dict[str, Any],
     dataset_quality_status: str,
@@ -5975,9 +6045,9 @@ def _signal_omission_stress_runs(
                 "return_pct": run.metrics.return_pct,
                 "metrics_hash": run.metrics_hash,
                 "decision_stream_hash": run.decision_stream_hash,
-                "decision_stream_perturbation_evidence": run.execution_event_summary.get(
-                    "decision_stream_perturbation_evidence"
-                ),
+                "decision_stream_perturbation_evidence": _dict_or_empty(
+                    run.execution_event_summary
+                ).get("decision_stream_perturbation_evidence"),
             }
         )
     return tuple(rows)
@@ -6304,19 +6374,22 @@ def _scenario_is_diagnostic_only(scenario: dict[str, Any]) -> bool:
 
 def _cost_authority_resolution(manifest: ExperimentManifest) -> dict[str, Any]:
     execution_model = manifest.execution_model.as_dict()
-    scenarios = (
-        execution_model.get("scenarios")
-        if isinstance(execution_model.get("scenarios"), list)
+    raw_scenarios = execution_model.get("scenarios")
+    scenarios: list[dict[str, Any]] = (
+        [_dict_or_empty(item) for item in raw_scenarios if isinstance(item, dict)]
+        if isinstance(raw_scenarios, list)
         else []
     )
     explicit_scenarios = manifest.execution_model.source != "legacy_cost_model"
-    base_assumptions = [
-        scenario.get("cost_assumption")
+    base_assumptions: list[dict[str, Any]] = [
+        _dict_or_empty(scenario.get("cost_assumption"))
         for scenario in scenarios
-        if isinstance(scenario, dict)
-        and scenario.get("scenario_role") == "base"
+        if scenario.get("scenario_role") == "base"
         and isinstance(scenario.get("cost_assumption"), dict)
-        and scenario["cost_assumption"].get("validation_eligible_as_base") is True
+        and _dict_or_empty(scenario.get("cost_assumption")).get(
+            "validation_eligible_as_base"
+        )
+        is True
     ]
     runtime_base = dict(base_assumptions[0]) if base_assumptions else None
     source = "execution_model.scenarios" if explicit_scenarios else "legacy_cost_model"
@@ -6480,41 +6553,13 @@ def _cost_sensitivity_role(scenario: dict[str, Any]) -> str:
 
 
 def _scenario_cost_metrics(scenario: dict[str, Any]) -> dict[str, Any]:
-    metrics = (
-        scenario.get("validation_metrics_v2")
-        if isinstance(scenario.get("validation_metrics_v2"), dict)
-        else {}
-    )
-    legacy = (
-        scenario.get("validation_metrics")
-        if isinstance(scenario.get("validation_metrics"), dict)
-        else {}
-    )
-    return_risk = (
-        metrics.get("return_risk")
-        if isinstance(metrics.get("return_risk"), dict)
-        else {}
-    )
-    trade_quality = (
-        metrics.get("trade_quality")
-        if isinstance(metrics.get("trade_quality"), dict)
-        else {}
-    )
-    cost_execution = (
-        metrics.get("cost_execution")
-        if isinstance(metrics.get("cost_execution"), dict)
-        else {}
-    )
-    cost_model = (
-        scenario.get("cost_model")
-        if isinstance(scenario.get("cost_model"), dict)
-        else {}
-    )
-    cost_assumption = (
-        scenario.get("cost_assumption")
-        if isinstance(scenario.get("cost_assumption"), dict)
-        else {}
-    )
+    metrics = _dict_or_empty(scenario.get("validation_metrics_v2"))
+    legacy = _dict_or_empty(scenario.get("validation_metrics"))
+    return_risk = _dict_or_empty(metrics.get("return_risk"))
+    trade_quality = _dict_or_empty(metrics.get("trade_quality"))
+    cost_execution = _dict_or_empty(metrics.get("cost_execution"))
+    cost_model = _dict_or_empty(scenario.get("cost_model"))
+    cost_assumption = _dict_or_empty(scenario.get("cost_assumption"))
     diagnostic_zero_cost = cost_assumption.get("role") == "diagnostic_zero_cost"
     return {
         "validation_return_pct": return_risk.get(
@@ -6572,9 +6617,7 @@ def _raw_edge_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     diagnostics = candidate.get("validation_strategy_diagnostics")
     metrics = candidate.get("validation_metrics_v2")
     return_risk = (
-        metrics.get("return_risk")
-        if isinstance(metrics, dict) and isinstance(metrics.get("return_risk"), dict)
-        else {}
+        _dict_or_empty(metrics.get("return_risk")) if isinstance(metrics, dict) else {}
     )
     return {
         "validation_return_pct": return_risk.get("total_return_pct"),
@@ -6735,8 +6778,8 @@ def _closed_trade_return_pct(
 def _combined_calibration_gate(
     scenario_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    gates = [
-        item.get("execution_calibration_gate")
+    gates: list[dict[str, Any]] = [
+        _dict_or_empty(item.get("execution_calibration_gate"))
         for item in scenario_results
         if isinstance(item.get("execution_calibration_gate"), dict)
     ]
@@ -6846,7 +6889,7 @@ def _gate_result(
 
 
 def _metrics_v2_gate_reasons(
-    *, gate, metrics_v2: dict[str, Any] | None, prefix: str
+    *, gate: AcceptanceGate, metrics_v2: dict[str, Any] | None, prefix: str
 ) -> list[str]:
     has_v2_gate = (
         any(
@@ -6886,26 +6929,10 @@ def _metrics_v2_gate_reasons(
         return [
             f"{prefix}metrics_v2_unavailable" if prefix else "metrics_v2_unavailable"
         ]
-    return_risk = (
-        metrics_v2.get("return_risk")
-        if isinstance(metrics_v2.get("return_risk"), dict)
-        else {}
-    )
-    trade_quality = (
-        metrics_v2.get("trade_quality")
-        if isinstance(metrics_v2.get("trade_quality"), dict)
-        else {}
-    )
-    time_exposure = (
-        metrics_v2.get("time_exposure")
-        if isinstance(metrics_v2.get("time_exposure"), dict)
-        else {}
-    )
-    cost_execution = (
-        metrics_v2.get("cost_execution")
-        if isinstance(metrics_v2.get("cost_execution"), dict)
-        else {}
-    )
+    return_risk = _dict_or_empty(metrics_v2.get("return_risk"))
+    trade_quality = _dict_or_empty(metrics_v2.get("trade_quality"))
+    time_exposure = _dict_or_empty(metrics_v2.get("time_exposure"))
+    cost_execution = _dict_or_empty(metrics_v2.get("cost_execution"))
     reasons: list[str] = []
     _append_min_reason(
         reasons,
@@ -6935,9 +6962,9 @@ def _metrics_v2_gate_reasons(
         missing_code=f"{prefix}metrics_v2_required_field_missing",
         failed_code=f"{prefix}max_exposure_time_failed",
     )
-    avg_holding_ms = time_exposure.get("avg_holding_time_ms")
+    avg_holding_ms = _safe_metric_float(time_exposure.get("avg_holding_time_ms"))
     avg_holding_minutes = (
-        (float(avg_holding_ms) / 60_000.0) if avg_holding_ms is not None else None
+        (avg_holding_ms / 60_000.0) if avg_holding_ms is not None else None
     )
     _append_max_reason(
         reasons,
@@ -6971,11 +6998,7 @@ def _metrics_v2_gate_reasons(
         return_risk.get("open_position_at_end")
     ):
         reasons.append(f"{prefix}open_position_at_end_failed")
-    participation = (
-        metrics_v2.get("participation")
-        if isinstance(metrics_v2.get("participation"), dict)
-        else {}
-    )
+    participation = _dict_or_empty(metrics_v2.get("participation"))
     if any(
         value is not None
         for value in (
@@ -7281,7 +7304,7 @@ def _walk_forward_metrics(
             pass_reasons.append("test_metrics_gate_incompatible")
         if (
             manifest.acceptance_gate.oos_return_must_be_positive
-            and float(test_metrics.get("return_pct") or 0.0) <= 0.0
+            and (_safe_metric_float(test_metrics.get("return_pct")) or 0.0) <= 0.0
         ):
             pass_reasons.append("test_return_not_positive")
         windows.append(
@@ -7496,7 +7519,7 @@ def _report_payload(
         quality_reports=quality_reports,
     )
     dataset_adapter_provenance_hash = sha256_prefixed(dataset_adapter_provenance)
-    dataset_artifact = {
+    dataset_artifact: dict[str, Any] = {
         "artifact_ids": sorted(
             {
                 snapshot.artifact_id
@@ -7612,10 +7635,9 @@ def _report_payload(
     experiment_family_id = str(identity["experiment_family_id"])
     hypothesis_id = str(identity["hypothesis_id"])
     hypothesis_status = str(identity["hypothesis_status"])
-    registry_row = (
-        experiment_registry_reservation.get("row")
+    registry_row: dict[str, Any] = (
+        _dict_or_empty(experiment_registry_reservation.get("row"))
         if isinstance(experiment_registry_reservation, dict)
-        and isinstance(experiment_registry_reservation.get("row"), dict)
         else {}
     )
     experiment_registry_fields: dict[str, Any] = {}
@@ -8333,13 +8355,13 @@ def _report_payload(
         and candidates
     ):
         stress_summary_candidate = candidates[0]
-    warnings = {
+    warning_codes = {
         warning for candidate in candidates for warning in candidate.get("warnings", [])
     }
-    warnings.update(manifest.portfolio_policy.warning_codes())
-    warnings.update(_resource_budget_warnings(manifest))
+    warning_codes.update(manifest.portfolio_policy.warning_codes())
+    warning_codes.update(_resource_budget_warnings(manifest))
     if experiment_registry_fields.get("registry_gate_result") == "WARN":
-        warnings.update(
+        warning_codes.update(
             str(item)
             for item in experiment_registry_fields.get("registry_gate_fail_reasons")
             or []
@@ -8348,8 +8370,8 @@ def _report_payload(
         "official_statistical_evidence_wrc_generation_available",
         False,
     ):
-        warnings.add(STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING)
-    warnings = sorted(warnings)
+        warning_codes.add(STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING)
+    warnings = sorted(warning_codes)
     signal_depth_summary = _report_signal_depth_summary(candidates)
     strategy_plugin = strategy_registry.resolve(manifest.strategy_name)
     strategy_spec = strategy_plugin.spec
@@ -8406,6 +8428,7 @@ def _report_payload(
             for report in quality_reports
         },
         "market": manifest.market,
+        "instrument_evidence": manifest.instrument_evidence(),
         "interval": manifest.interval,
         "dataset_splits": {
             snapshot.split_name: {
@@ -8814,6 +8837,11 @@ def _report_payload(
         if manifest.hypothesis_spec is not None
         else None,
         "hypothesis_contract_hash": identity.get("hypothesis_contract_hash"),
+        "hypothesis_lineage_hash": identity.get("hypothesis_lineage_hash"),
+        "research_question_id": identity.get("research_question_id"),
+        "research_question_version": identity.get("research_question_version"),
+        "research_question_hash": identity.get("research_question_hash"),
+        "observation_hashes": identity.get("observation_hashes"),
         "hypothesis_semantic_fingerprint": identity.get(
             "hypothesis_semantic_fingerprint"
         ),
@@ -9412,6 +9440,14 @@ def _closed_trade_diagnostics_summary(candidate: dict[str, Any]) -> dict[str, An
     )[:5]
     return {
         "closed_trade_count": len(trades),
+        "concentration_analysis": analyze_trade_concentration(
+            trades,
+            default_instrument=str(
+                candidate.get("instrument_id")
+                or candidate.get("market")
+                or "single_instrument_scope"
+            ),
+        ),
         "top_losing_trades": top_losing,
         "exit_rule_distribution": exit_rule_distribution,
         "avg_holding_minutes_by_exit_rule": {
@@ -9439,6 +9475,8 @@ def _closed_trade_diagnostics_summary(candidate: dict[str, Any]) -> dict[str, An
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -9447,7 +9485,7 @@ def _optional_float(value: object) -> float | None:
 
 def _execution_model_from_scenario(
     scenario: ExecutionScenario, *, seed_context: dict[str, Any] | None = None
-):
+) -> ExecutionModel:
     if scenario.type == "fixed_bps":
         return FixedBpsExecutionModel(
             fee_rate=scenario.fee_rate, slippage_bps=scenario.slippage_bps
@@ -9496,7 +9534,7 @@ def _seed_context(
     scenario_hash = model_params_hash(
         _execution_model_from_scenario(scenario).params_payload()
     )
-    material = {
+    material: dict[str, Any] = {
         "simulation_seed_scope_hash": simulation_seed_scope_hash,
         "scenario_id": scenario_id,
         "scenario_hash": scenario_hash,
@@ -9538,7 +9576,7 @@ def _execution_metadata(trades: Any) -> list[dict[str, Any]]:
 
 def _execution_reality_summary(
     *,
-    policy,
+    policy: ExecutionTimingPolicy,
     execution_metadata: list[dict[str, Any]],
     execution_event_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -9559,7 +9597,9 @@ def _execution_reality_summary(
         policy=policy,
         observed_levels=observed_levels,
         fill_reference_sources=sources,
-        quote_coverage_pct=coverage.get("quote_after_decision_coverage_pct"),
+        quote_coverage_pct=_optional_float(
+            coverage.get("quote_after_decision_coverage_pct")
+        ),
         latency_reference_warnings=[
             str(item.get("latency_reference_policy_warning"))
             for item in execution_metadata
@@ -10144,8 +10184,14 @@ def _execution_reality_contract(
         latency_model=latency_model,
         partial_fill_model=partial_fill_model,
         order_failure_model=order_failure_model,
-        fee_source=cost.get("fee_source"),
-        slippage_source=cost.get("slippage_source"),
+        fee_source=(
+            str(cost["fee_source"]) if isinstance(cost.get("fee_source"), str) else None
+        ),
+        slippage_source=(
+            str(cost["slippage_source"])
+            if isinstance(cost.get("slippage_source"), str)
+            else None
+        ),
         calibration_required=manifest.execution_model.calibration_required,
         calibration_artifact_hash=(
             str(calibration_hash)
@@ -10422,26 +10468,10 @@ def _candidate_rank_key(
 ) -> tuple[int, int, float, float, int, float, float, float, float, float]:
     passed = 0 if candidate.get("acceptance_gate_result") == "PASS" else 1
     validation = candidate.get("validation_metrics") or {}
-    metrics_v2 = (
-        candidate.get("validation_metrics_v2")
-        if isinstance(candidate.get("validation_metrics_v2"), dict)
-        else {}
-    )
-    return_risk = (
-        metrics_v2.get("return_risk")
-        if isinstance(metrics_v2.get("return_risk"), dict)
-        else {}
-    )
-    trade_quality = (
-        metrics_v2.get("trade_quality")
-        if isinstance(metrics_v2.get("trade_quality"), dict)
-        else {}
-    )
-    cost_execution = (
-        metrics_v2.get("cost_execution")
-        if isinstance(metrics_v2.get("cost_execution"), dict)
-        else {}
-    )
+    metrics_v2 = _dict_or_empty(candidate.get("validation_metrics_v2"))
+    return_risk = _dict_or_empty(metrics_v2.get("return_risk"))
+    trade_quality = _dict_or_empty(metrics_v2.get("trade_quality"))
+    cost_execution = _dict_or_empty(metrics_v2.get("cost_execution"))
     open_position_rank = 1 if bool(return_risk.get("open_position_at_end")) else 0
     expectancy = trade_quality.get("expectancy_per_trade_krw")
     fee_drag = cost_execution.get("fee_drag_ratio")
@@ -10450,9 +10480,8 @@ def _candidate_rank_key(
     dependency = trade_quality.get("single_trade_dependency_score")
     stress_score = candidate.get("validation_stress_suite")
     risk_adjusted = (
-        stress_score.get("risk_adjusted_score")
+        _dict_or_empty(stress_score.get("risk_adjusted_score"))
         if isinstance(stress_score, dict)
-        and isinstance(stress_score.get("risk_adjusted_score"), dict)
         else {}
     )
     calmar = risk_adjusted.get("calmar_ratio")
@@ -11024,9 +11053,10 @@ def _top_of_book_quality_summary(
     )
     join_tolerances = sorted(
         {
-            int(payload.get("top_of_book_join_tolerance_ms"))
+            value
             for _, payload in requested_reports
-            if payload.get("top_of_book_join_tolerance_ms") is not None
+            if (value := _optional_int(payload.get("top_of_book_join_tolerance_ms")))
+            is not None
         }
     )
     sources = sorted(

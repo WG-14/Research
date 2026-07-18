@@ -236,12 +236,26 @@ def verify_installed_release(manifest_path: Path) -> dict[str, object]:
 
     if len(platform_digests) != 1:
         raise InstalledReleaseError("installed_platform_source_mismatch")
+    # Import only after all wheel/package-boundary checks.  Strict research
+    # reproduction must fingerprint the installed package and resolved
+    # environment rather than silently hashing a nonexistent checkout/src.
+    from market_research.research.code_provenance import collect_code_provenance
+
+    research_provenance = collect_code_provenance(Path.cwd())
+    if (
+        research_provenance.get("source_layout") != "installed_distribution"
+        or int(research_provenance.get("source_file_count") or 0) < 1
+        or research_provenance.get("dependency_contract_basis")
+        != "resolved_installed_distributions"
+    ):
+        raise InstalledReleaseError("installed_research_provenance_invalid")
     return {
         "status": "VERIFIED",
         "git_sha": git_sha,
         "release_id": manifest.get("release_id"),
         "build_digest": manifest.get("build_digest"),
         "platform_source_digest": next(iter(platform_digests)),
+        "research_code_provenance_hash": research_provenance["code_provenance_hash"],
         "python": os.path.realpath(sys.executable),
     }
 

@@ -13,7 +13,34 @@ from .backtest_types import (
     MemorySample,
 )
 from .execution_model import ExecutionFill
+from .metrics import ResearchMetrics
+from .metrics_contract import (
+    ClosedTradeRecord,
+    ExecutionRecord,
+    MetricContractV2,
+    PositionInterval,
+)
 from .streaming_evidence import StreamingEvidenceDigest
+
+
+def _coerce_int(value: object, *, context: str) -> int:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise ValueError(f"{context}_must_be_integer_compatible")
+    return int(value)
+
+
+def _coerce_float(value: object, *, context: str) -> float:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        raise ValueError(f"{context}_must_be_numeric")
+    return float(value)
+
+
+def _float_list(value: object, *, context: str) -> list[float]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{context}_must_be_sequence")
+    return [_coerce_float(item, context=f"{context}_item") for item in value]
 
 
 @dataclass
@@ -419,9 +446,15 @@ class BacktestAccumulator:
             payload[key] = int(self.strategy_diagnostic_counts[key])
         _expand_diagnostic_distributions(payload)
         if "entry_count" not in payload:
-            payload["entry_count"] = int(payload.get("entry_signal_count") or 0)
+            payload["entry_count"] = _coerce_int(
+                payload.get("entry_signal_count") or 0,
+                context="strategy_diagnostics_entry_signal_count",
+            )
         if "exit_count" not in payload:
-            payload["exit_count"] = int(payload.get("exit_signal_count") or 0)
+            payload["exit_count"] = _coerce_int(
+                payload.get("exit_signal_count") or 0,
+                context="strategy_diagnostics_exit_signal_count",
+            )
         payload.setdefault("raw_signal_count", 0)
         payload.setdefault("final_signal_count", 0)
         payload.setdefault("entry_signal_count", 0)
@@ -430,7 +463,13 @@ class BacktestAccumulator:
         payload.setdefault("exit_reason_distribution", {})
         payload.setdefault(
             "p95_mfe_pct",
-            _percentile(list(payload.get("mfe_pct_by_trade") or []), 0.95),
+            _percentile(
+                _float_list(
+                    payload.get("mfe_pct_by_trade"),
+                    context="strategy_diagnostics_mfe_pct_by_trade",
+                ),
+                0.95,
+            ),
         )
         strategy_specific = dict(payload)
         payload["strategy_specific_diagnostics"] = {
@@ -544,12 +583,29 @@ class ResearchPositionContext:
     unrealized_pnl_ratio: float = 0.0
 
 
+@dataclass
+class _ReturnDiagnosticGroup:
+    count: int = 0
+    return_pct: list[float] = field(default_factory=list)
+    pnl: list[float] = field(default_factory=list)
+
+
+@dataclass
+class _ExcursionDiagnosticGroup:
+    count: int = 0
+    mae_pct: list[float] = field(default_factory=list)
+    mfe_pct: list[float] = field(default_factory=list)
+
+
 def _diagnostic_count_defaults(payload: dict[str, object]) -> dict[str, int]:
     defaults = payload.get("strategy_diagnostic_count_defaults")
     if not isinstance(defaults, dict):
         return {}
     return {
-        str(key): int(value)
+        str(key): _coerce_int(
+            value,
+            context=f"strategy_diagnostic_default_{key}",
+        )
         for key, value in defaults.items()
         if _diagnostic_key_is_public(str(key))
     }
@@ -564,7 +620,10 @@ def _diagnostic_count_increments(payload: dict[str, object]) -> dict[str, int]:
         normalized = str(key)
         if not _diagnostic_key_is_public(normalized):
             continue
-        increments[normalized] = increments.get(normalized, 0) + int(value)
+        increments[normalized] = increments.get(normalized, 0) + _coerce_int(
+            value,
+            context=f"strategy_diagnostic_increment_{normalized}",
+        )
     return increments
 
 
@@ -588,12 +647,18 @@ def _expand_diagnostic_distributions(payload: dict[str, object]) -> None:
         if not label:
             continue
         bucket = distributions.setdefault(prefix, {})
-        bucket[label] = bucket.get(label, 0) + int(value)
+        bucket[label] = bucket.get(label, 0) + _coerce_int(
+            value,
+            context=f"strategy_diagnostic_distribution_{prefix}_{label}",
+        )
     for prefix, values in distributions.items():
         existing = payload.get(prefix)
         merged = dict(existing) if isinstance(existing, dict) else {}
         for label, count in values.items():
-            merged[label] = int(merged.get(label, 0)) + int(count)
+            merged[label] = _coerce_int(
+                merged.get(label, 0),
+                context=f"strategy_diagnostic_existing_{prefix}_{label}",
+            ) + int(count)
         payload[prefix] = dict(sorted(merged.items()))
 
 
@@ -611,9 +676,9 @@ def _generic_strategy_diagnostics_from_trades(
     ]
     exit_reason_distribution: dict[str, int] = {}
     exit_rule_distribution: dict[str, int] = {}
-    return_groups: dict[str, dict[str, list[float] | int]] = {}
+    return_groups: dict[str, _ReturnDiagnosticGroup] = {}
     holding_minutes_by_reason: dict[str, list[float]] = {}
-    excursion_groups: dict[str, dict[str, list[float] | int]] = {}
+    excursion_groups: dict[str, _ExcursionDiagnosticGroup] = {}
     mae_pct_by_trade: list[float] = []
     mfe_pct_by_trade: list[float] = []
     loss_holding_minutes: list[float] = []
@@ -623,42 +688,58 @@ def _generic_strategy_diagnostics_from_trades(
         exit_rule_distribution[reason] = exit_rule_distribution.get(reason, 0) + 1
         return_group = return_groups.setdefault(
             reason,
-            {"count": 0, "return_pct": [], "pnl": []},
+            _ReturnDiagnosticGroup(),
         )
-        return_group["count"] = int(return_group["count"]) + 1
-        if trade.get("return_pct") is not None:
-            return_group["return_pct"].append(float(trade.get("return_pct") or 0.0))  # type: ignore[union-attr]
+        return_group.count += 1
+        return_pct = trade.get("return_pct")
+        if return_pct is not None:
+            return_group.return_pct.append(
+                _coerce_float(
+                    return_pct or 0.0,
+                    context="closed_trade_return_pct",
+                )
+            )
         pnl = (
             trade.get("net_pnl")
             if trade.get("net_pnl") is not None
             else trade.get("closed_trade_pnl")
         )
-        if pnl is not None:
-            return_group["pnl"].append(float(pnl))  # type: ignore[union-attr]
-        if trade.get("holding_minutes") is not None:
+        pnl_value = (
+            _coerce_float(pnl, context="closed_trade_pnl") if pnl is not None else None
+        )
+        if pnl_value is not None:
+            return_group.pnl.append(pnl_value)
+        holding_minutes = trade.get("holding_minutes")
+        if holding_minutes is not None:
             holding_minutes_by_reason.setdefault(reason, []).append(
-                float(trade.get("holding_minutes") or 0.0)
+                _coerce_float(
+                    holding_minutes or 0.0,
+                    context="closed_trade_holding_minutes",
+                )
             )
         excursion_group = excursion_groups.setdefault(
             reason,
-            {"count": 0, "mae_pct": [], "mfe_pct": []},
+            _ExcursionDiagnosticGroup(),
         )
         if trade.get("mae_pct") is not None or trade.get("mfe_pct") is not None:
-            excursion_group["count"] = int(excursion_group["count"]) + 1
-        if trade.get("mae_pct") is not None:
-            mae_pct = float(trade.get("mae_pct") or 0.0)
+            excursion_group.count += 1
+        mae = trade.get("mae_pct")
+        if mae is not None:
+            mae_pct = _coerce_float(mae or 0.0, context="closed_trade_mae_pct")
             mae_pct_by_trade.append(mae_pct)
-            excursion_group["mae_pct"].append(mae_pct)  # type: ignore[union-attr]
-        if trade.get("mfe_pct") is not None:
-            mfe_pct = float(trade.get("mfe_pct") or 0.0)
+            excursion_group.mae_pct.append(mae_pct)
+        mfe = trade.get("mfe_pct")
+        if mfe is not None:
+            mfe_pct = _coerce_float(mfe or 0.0, context="closed_trade_mfe_pct")
             mfe_pct_by_trade.append(mfe_pct)
-            excursion_group["mfe_pct"].append(mfe_pct)  # type: ignore[union-attr]
-        if (
-            pnl is not None
-            and float(pnl) < 0.0
-            and trade.get("holding_minutes") is not None
-        ):
-            loss_holding_minutes.append(float(trade.get("holding_minutes") or 0.0))
+            excursion_group.mfe_pct.append(mfe_pct)
+        if pnl_value is not None and pnl_value < 0.0 and holding_minutes is not None:
+            loss_holding_minutes.append(
+                _coerce_float(
+                    holding_minutes or 0.0,
+                    context="closed_loss_holding_minutes",
+                )
+            )
     payload = {
         "schema_version": 1,
         "strategy_diagnostics_namespace": str(namespace),
@@ -691,14 +772,14 @@ def _generic_strategy_diagnostics_from_trades(
 
 
 def _return_summary_by_exit_reason(
-    groups: dict[str, dict[str, list[float] | int]],
+    groups: dict[str, _ReturnDiagnosticGroup],
 ) -> dict[str, dict[str, float | int | None]]:
     summary: dict[str, dict[str, float | int | None]] = {}
     for reason, group in sorted(groups.items()):
-        return_values = list(group.get("return_pct") or [])
-        pnl_values = list(group.get("pnl") or [])
+        return_values = list(group.return_pct)
+        pnl_values = list(group.pnl)
         summary[reason] = {
-            "count": int(group.get("count") or 0),
+            "count": int(group.count),
             "avg_return_pct": _average(return_values) if return_values else None,
             "total_return_pct": sum(return_values) if return_values else None,
             "avg_pnl": _average(pnl_values) if pnl_values else None,
@@ -708,16 +789,16 @@ def _return_summary_by_exit_reason(
 
 
 def _mae_mfe_summary_by_exit_reason(
-    groups: dict[str, dict[str, list[float] | int]],
+    groups: dict[str, _ExcursionDiagnosticGroup],
 ) -> dict[str, dict[str, float | int | None]]:
     summary: dict[str, dict[str, float | int | None]] = {}
     for reason, group in sorted(groups.items()):
-        mae_values = list(group.get("mae_pct") or [])
-        mfe_values = list(group.get("mfe_pct") or [])
+        mae_values = list(group.mae_pct)
+        mfe_values = list(group.mfe_pct)
         if not mae_values and not mfe_values:
             continue
         summary[reason] = {
-            "count": int(group.get("count") or 0),
+            "count": int(group.count),
             "avg_mae_pct": _average(mae_values) if mae_values else None,
             "min_mae_pct": min(mae_values) if mae_values else None,
             "avg_mfe_pct": _average(mfe_values) if mfe_values else None,
@@ -794,14 +875,26 @@ def _behavior_hashes(
         "composite_behavior_hash": composite_hash,
         "composite_behavior_hash_v2": composite_hash_v2,
         "behavior_hash": composite_hash,
-        "behavior_hash_material_count": int(decision_final["count"]),
-        "common_behavior_hash_material_count": int(common_final["count"]),
-        "strategy_behavior_hash_material_count": int(strategy_final["count"]),
+        "behavior_hash_material_count": _coerce_int(
+            decision_final["count"],
+            context="behavior_hash_material_count",
+        ),
+        "common_behavior_hash_material_count": _coerce_int(
+            common_final["count"],
+            context="common_behavior_hash_material_count",
+        ),
+        "strategy_behavior_hash_material_count": _coerce_int(
+            strategy_final["count"],
+            context="strategy_behavior_hash_material_count",
+        ),
         "behavior_hash_material_retention_policy": str(
             decision_final["retention_policy"]
         ),
         "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
-        "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
+        "behavior_hash_material_sample_count": _coerce_int(
+            decision_final["sample_count"],
+            context="behavior_hash_material_sample_count",
+        ),
     }
 
 
@@ -832,17 +925,20 @@ def _trade_is_effective(trade: dict[str, object]) -> bool:
     execution = trade.get("execution")
     if isinstance(execution, dict):
         status = str(execution.get("fill_status") or "")
-        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {
+        return _coerce_float(
+            execution.get("filled_qty") or 0.0,
+            context="effective_trade_filled_qty",
+        ) > 0.0 and status in {
             "filled",
             "partial",
         }
-    return float(trade.get("qty") or 0.0) > 0.0
-
-
-def create_exit_rules(**kwargs: Any):
-    from .backtest_common import create_exit_rules as impl
-
-    return impl(**kwargs)
+    return (
+        _coerce_float(
+            trade.get("qty") or 0.0,
+            context="effective_trade_qty",
+        )
+        > 0.0
+    )
 
 
 def retained_detail_summary(*args: Any, **kwargs: Any) -> dict[str, object]:
@@ -881,7 +977,7 @@ def complete_audit_trace(*args: Any, **kwargs: Any) -> dict[str, object] | None:
     return impl(*args, **kwargs)
 
 
-def record_equity_mark(*args: Any, **kwargs: Any):
+def record_equity_mark(*args: Any, **kwargs: Any) -> tuple[float, float]:
     from .backtest_common import record_equity_mark as impl
 
     return impl(*args, **kwargs)
@@ -923,7 +1019,7 @@ def model_latency_ms(*args: Any, **kwargs: Any) -> int:
     return impl(*args, **kwargs)
 
 
-def failed_fill(*args: Any, **kwargs: Any):
+def failed_fill(*args: Any, **kwargs: Any) -> ExecutionFill:
     from .backtest_common import failed_fill as impl
 
     return impl(*args, **kwargs)
@@ -965,37 +1061,45 @@ def empty_execution_event_summary() -> dict[str, object]:
     return impl()
 
 
-def empty_metrics_v2(*args: Any, **kwargs: Any):
+def empty_metrics_v2(*args: Any, **kwargs: Any) -> MetricContractV2:
     from .backtest_common import empty_metrics_v2 as impl
 
     return impl(*args, **kwargs)
 
 
-def metrics_v2_ledgers_from_trades(*args: Any, **kwargs: Any):
+def metrics_v2_ledgers_from_trades(
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[
+    tuple[PositionInterval, ...],
+    tuple[ClosedTradeRecord, ...],
+    tuple[ExecutionRecord, ...],
+    float,
+]:
     from .backtest_common import metrics_v2_ledgers_from_trades as impl
 
     return impl(*args, **kwargs)
 
 
-def closed_trade_diagnostics(*args: Any, **kwargs: Any):
+def closed_trade_diagnostics(*args: Any, **kwargs: Any) -> dict[str, object]:
     from .backtest_common import closed_trade_diagnostics as impl
 
     return impl(*args, **kwargs)
 
 
-def execution_reference_warnings(*args: Any, **kwargs: Any):
+def execution_reference_warnings(*args: Any, **kwargs: Any) -> list[str]:
     from .backtest_common import execution_reference_warnings as impl
 
     return impl(*args, **kwargs)
 
 
-def empty_metrics(*args: Any, **kwargs: Any):
+def empty_metrics(*args: Any, **kwargs: Any) -> ResearchMetrics:
     from .backtest_common import empty_metrics as impl
 
     return impl(*args, **kwargs)
 
 
-def metrics(*args: Any, **kwargs: Any):
+def metrics(*args: Any, **kwargs: Any) -> ResearchMetrics:
     from .backtest_common import metrics as impl
 
     return impl(*args, **kwargs)

@@ -48,25 +48,38 @@ scripts/platform test-all
 scripts/platform test-browser
 scripts/platform test-integration
 scripts/platform lint
+scripts/platform typecheck
 scripts/platform compile
+scripts/platform docs-check
+scripts/platform verify-complete --help
 scripts/platform audit
 scripts/platform build
 scripts/platform install-release --help
 scripts/platform verify-deployment
 scripts/platform backup-restore-drill --help
+scripts/platform research --help
 ```
 
 `bootstrap` performs a frozen install of every package and dependency group
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
+`verify-complete` evaluates the strict 153-criterion receipt manifest. Its
+opt-in `--run-evidence` mode writes only to a new absolute repository-external
+root; see
+[`docs/platform-completeness-evidence-runner.md`](docs/platform-completeness-evidence-runner.md).
+
 ## Research CLI
 
-For a researcher-controlled offline workstation, the canonical command is:
+For a researcher-controlled offline workstation, the canonical command is the
+deterministic workspace wrapper:
 
 ```sh
-uv run --package market-research market-research <command>
+scripts/platform research <command>
 ```
+
+It fixes Python hash seeding and all six supported numerical backend thread
+counts before Python starts; strict receipts independently verify those values.
 
 The supported strategy set is exactly:
 
@@ -75,24 +88,47 @@ The supported strategy set is exactly:
 - `noop_baseline`
 - `threshold_research_only`
 
+Each strategy is a hash-bound package with a strict sidecar manifest, complete
+parameter and hypothesis metadata, automatic failure-isolated discovery, and a
+common decision/result contract. See
+[`docs/strategy-development.md`](docs/strategy-development.md) for the
+add/validate/approve/retire workflow. Multi-manifest jobs use a network-denied,
+read-only Linux process sandbox; operated jobs execute in supervised child
+processes so a strategy timeout or memory failure does not take down the
+control plane.
+
 The CLI consumes externally prepared immutable datasets. A typical local
 workflow is:
 
 ```sh
-uv run --package market-research market-research research-freeze-dataset \
+scripts/platform research research-freeze-dataset \
   --db /abs/candles.sqlite \
   --market KRW-BTC --interval 1m --start 2025-01-01 --end 2025-03-31 \
   --provenance-manifest /abs/dataset-source-provenance.json \
   --out /abs/datasets
-uv run --package market-research market-research research-readiness \
+scripts/platform research research-readiness \
   --manifest /abs/experiment.json --json
-uv run --package market-research market-research research-backtest \
+scripts/platform research research-backtest \
   --manifest /abs/experiment.json
-uv run --package market-research market-research research-walk-forward \
+scripts/platform research research-walk-forward \
   --manifest /abs/experiment.json
-uv run --package market-research market-research research-validate \
+scripts/platform research research-validate \
   --manifest /abs/experiment.json
 ```
+
+Replay an authoritative receipt with the same deterministic launcher:
+
+```sh
+scripts/platform research research-reproduce-run \
+  --manifest /abs/experiment.json \
+  --receipt /abs/reports/experiment-id/reproduction-receipt.json \
+  --out /abs/reports/reproduction-result.json
+```
+
+The command exits zero only for `status=PASS`; drift and invalid baselines exit
+nonzero. The comparison document is written to `--out` (or beneath the
+configured external report root when omitted), and records the isolated
+reproduced report and receipt paths plus exact drift rows.
 
 The freeze command prints the generated schema-3 `artifact_manifest_uri` and
 `artifact_manifest_hash`. Bind both exact values into the experiment manifest
@@ -191,6 +227,8 @@ checklist and site runbook have evidence for the actual host and release.
 - [`docs/monorepo-architecture.md`](docs/monorepo-architecture.md): trust domains, authorities, and dependency rules
 - [`docs/internal-web-architecture.md`](docs/internal-web-architecture.md): web capabilities and security contract
 - [`docs/internal-web-operations-handoff.md`](docs/internal-web-operations-handoff.md): operator ownership and runbook handoff
+- [`docs/research-data-dictionary.md`](docs/research-data-dictionary.md): generated canonical dataset field semantics and ownership
+- [`docs/strategy-development.md`](docs/strategy-development.md): strategy package authoring, validation, isolation, and retirement
 - [`docs/monorepo-iterations.md`](docs/monorepo-iterations.md): consolidation record and remaining gates
 - [`docs/release-checklist.md`](docs/release-checklist.md): release and promotion evidence checklist
 - [`services/research_operations/deploy/native/README.md`](services/research_operations/deploy/native/README.md): official deployment procedure

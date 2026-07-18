@@ -11,11 +11,11 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from psycopg import sql
+from psycopg import errors, sql
 
 from .database import RUNTIME_CONTROL_ADVISORY_LOCK_ID, connection
 from .health import (
@@ -41,10 +41,19 @@ _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REQUIRED_BACKUP_ROLES = frozenset(
     {"postgresql", "data", "manifest", "artifact", "report", "identity_registry"}
 )
+_RECOVERY_ACTIVATION_REASON = "signed_recovery_activation"
+_RECOVERY_ACTIVATION_ID_PREFIX = "research-operations-recovery-activation-v1:"
+_RECOVERY_ACTIVATION_HASH_PREFIX = b"research-operations-recovery-activation-v1\0"
 
 
 class BackupContractError(RuntimeError):
     """A stable fail-closed backup or recovery contract failure."""
+
+
+def _recovery_iso_utc(value: datetime) -> str:
+    return (
+        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,12 +185,16 @@ class RecoveryVerification:
         return max(0.0, (self.finished_at - self.started_at).total_seconds())
 
     def document(self) -> dict[str, Any]:
+        # Recovery duration is evidence, so preserve the timestamp precision
+        # used to derive it. The general health timestamp intentionally uses
+        # second precision, but that would make a signed sub-second duration
+        # disagree with the value reconstructed from the receipt.
         payload: dict[str, Any] = {
             "schema_version": RECOVERY_RECEIPT_SCHEMA_VERSION if self.git_sha else 1,
             "status": self.status,
             "backup_manifest_hash": self.backup_manifest_hash,
-            "started_at": iso_utc(self.started_at),
-            "finished_at": iso_utc(self.finished_at),
+            "started_at": _recovery_iso_utc(self.started_at),
+            "finished_at": _recovery_iso_utc(self.finished_at),
             "duration_seconds": round(self.duration_seconds, 6),
             "checks": list(self.checks),
         }
@@ -193,6 +206,46 @@ class RecoveryVerification:
                 "release_bundle_digest": self.release_bundle_digest,
             }
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryActivationEvent:
+    activation_id: uuid.UUID
+    backup_id: uuid.UUID
+    backup_manifest_hash: str
+    recovery_receipt_hash: str
+    release_bundle_digest: str
+    requested_by: str
+    reason: str
+    activated_at: datetime
+    prior_state: str
+    new_state: str
+    prior_generation: int
+    new_generation: int
+    prior_fence_token_hash: str
+
+    def material(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "activation_id": str(self.activation_id),
+            "backup_id": str(self.backup_id),
+            "backup_manifest_hash": self.backup_manifest_hash,
+            "recovery_receipt_hash": self.recovery_receipt_hash,
+            "release_bundle_digest": self.release_bundle_digest,
+            "requested_by": self.requested_by,
+            "reason": self.reason,
+            "activated_at": _recovery_activation_timestamp(self.activated_at),
+            "prior_state": self.prior_state,
+            "new_state": self.new_state,
+            "prior_generation": self.prior_generation,
+            "new_generation": self.new_generation,
+            "prior_fence_token_hash": self.prior_fence_token_hash,
+        }
+
+    @property
+    def content_hash(self) -> str:
+        payload = _RECOVERY_ACTIVATION_HASH_PREFIX + _canonical_json(self.material())
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 class BackupFenceStore:
@@ -1440,8 +1493,8 @@ def verify_signed_recovery_receipt(
         or not isinstance(document.get("checks"), list)
     ):
         raise BackupContractError("recovery_receipt_contract_invalid")
-    started_at = _parse_utc(document["started_at"], "recovery_started_at")
-    finished_at = _parse_utc(document["finished_at"], "recovery_finished_at")
+    started_at = _parse_recovery_utc(document["started_at"], "recovery_started_at")
+    finished_at = _parse_recovery_utc(document["finished_at"], "recovery_finished_at")
     raw_duration = document["duration_seconds"]
     if (
         isinstance(raw_duration, bool)
@@ -1603,6 +1656,130 @@ def record_restore_drill(
     return identifier
 
 
+def _recovery_activation_identifier(
+    verified_backup: VerifiedBackup,
+    receipt_hash: str,
+) -> uuid.UUID:
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        _RECOVERY_ACTIVATION_ID_PREFIX
+        + ":".join(
+            (
+                str(verified_backup.backup_id),
+                verified_backup.manifest_hash,
+                receipt_hash,
+                verified_backup.release_bundle_digest,
+            )
+        ),
+    )
+
+
+def _recovery_activation_timestamp(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("recovery_activation_timestamp_invalid")
+    return (
+        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
+
+
+def _load_recovery_activation_event(
+    conn: Any,
+    activation_id: uuid.UUID,
+) -> _RecoveryActivationEvent | None:
+    row = conn.execute(
+        """
+        SELECT activation_id, backup_id, backup_manifest_hash,
+               recovery_receipt_hash, release_bundle_digest, requested_by,
+               reason, activated_at, prior_state, new_state,
+               prior_generation, new_generation, prior_fence_token_hash,
+               content_hash
+        FROM research_ops.recovery_activation_event
+        WHERE activation_id = %s
+        """,
+        (activation_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        event = _RecoveryActivationEvent(
+            activation_id=_uuid(row[0], "recovery_activation_id"),
+            backup_id=_uuid(row[1], "recovery_activation_backup_id"),
+            backup_manifest_hash=_sha256(row[2], "recovery_activation_manifest_hash"),
+            recovery_receipt_hash=_sha256(row[3], "recovery_activation_receipt_hash"),
+            release_bundle_digest=_sha256(row[4], "recovery_activation_bundle_digest"),
+            requested_by=str(row[5]),
+            reason=str(row[6]),
+            activated_at=row[7],
+            prior_state=str(row[8]),
+            new_state=str(row[9]),
+            prior_generation=int(row[10]),
+            new_generation=int(row[11]),
+            prior_fence_token_hash=_sha256(row[12], "recovery_activation_fence_hash"),
+        )
+        stored_content_hash = _sha256(row[13], "recovery_activation_content_hash")
+        if not isinstance(event.activated_at, datetime):
+            raise ValueError("recovery_activation_timestamp_invalid")
+        if stored_content_hash != event.content_hash:
+            raise ValueError("recovery_activation_content_hash_mismatch")
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise BackupContractError(
+            "recovery_activation_event_integrity_invalid"
+        ) from exc
+    return event
+
+
+def _validate_recovery_activation_retry(
+    *,
+    event: _RecoveryActivationEvent,
+    verified_backup: VerifiedBackup,
+    receipt_hash: str,
+    operator: str,
+    control_generation: int,
+    control_requested_by: object,
+    control_reason: object,
+    control_reopened_at: object,
+) -> None:
+    expected_id = _recovery_activation_identifier(verified_backup, receipt_hash)
+    expected_binding = (
+        expected_id,
+        verified_backup.backup_id,
+        verified_backup.manifest_hash,
+        receipt_hash,
+        verified_backup.release_bundle_digest,
+        operator,
+        _RECOVERY_ACTIVATION_REASON,
+        "SEALED",
+        "OPEN",
+        verified_backup.fence_generation,
+        control_generation,
+        verified_backup.fence_token_hash,
+    )
+    actual_binding = (
+        event.activation_id,
+        event.backup_id,
+        event.backup_manifest_hash,
+        event.recovery_receipt_hash,
+        event.release_bundle_digest,
+        event.requested_by,
+        event.reason,
+        event.prior_state,
+        event.new_state,
+        event.prior_generation,
+        event.new_generation,
+        event.prior_fence_token_hash,
+    )
+    if actual_binding != expected_binding or event.new_generation != (
+        event.prior_generation + 1
+    ):
+        raise BackupContractError("recovery_activation_binding_conflict")
+    if (
+        str(control_requested_by) != operator
+        or str(control_reason) != _RECOVERY_ACTIVATION_REASON
+        or control_reopened_at != event.activated_at
+    ):
+        raise BackupContractError("recovery_activation_control_conflict")
+
+
 def activate_verified_recovery(
     *,
     verified_backup: VerifiedBackup,
@@ -1626,9 +1803,16 @@ def activate_verified_recovery(
         != (verified_backup.build_digest if verified_backup.git_sha else "")
         or verification.release_bundle_digest
         != (verified_backup.release_bundle_digest if verified_backup.git_sha else "")
+        or not _HASH_RE.fullmatch(verified_backup.release_bundle_digest)
     ):
         raise BackupContractError("recovery_activation_verification_invalid")
     observed_at = now or utcnow()
+    _recovery_activation_timestamp(observed_at)
+    observed_at = observed_at.astimezone(UTC)
+    activation_id = _recovery_activation_identifier(
+        verified_backup,
+        normalized_receipt,
+    )
 
     # Database-level read-only is lifted first. A crash here remains safe:
     # runtime admission is still SEALED and every mutation/claim takes its gate.
@@ -1637,7 +1821,10 @@ def activate_verified_recovery(
         autocommit=True,
         session_read_only=False,
     ) as conn:
-        database_name = str(conn.execute("SELECT current_database()").fetchone()[0])
+        database_row = conn.execute("SELECT current_database()").fetchone()
+        if database_row is None:
+            raise BackupContractError("recovery_activation_database_identity_missing")
+        database_name = str(database_row[0])
         conn.execute(
             sql.SQL("ALTER DATABASE {} SET default_transaction_read_only = off").format(
                 sql.Identifier(database_name)
@@ -1653,7 +1840,8 @@ def activate_verified_recovery(
             """
             SELECT mutation_admission_open, claim_admission_open,
                    integrity_quarantine, generation, fence_token,
-                   last_verified_manifest_hash
+                   last_verified_manifest_hash, requested_by, reason,
+                   reopened_at
             FROM research_ops.runtime_control
             WHERE singleton_id = 1
             FOR UPDATE
@@ -1664,6 +1852,32 @@ def activate_verified_recovery(
         if bool(control[0]) and bool(control[1]) and control[4] is None:
             if str(control[5]) != verified_backup.manifest_hash:
                 raise BackupContractError("recovery_activation_manifest_conflict")
+            event = _load_recovery_activation_event(conn, activation_id)
+            if event is None:
+                same_manifest = conn.execute(
+                    """
+                    SELECT 1
+                    FROM research_ops.recovery_activation_event
+                    WHERE backup_manifest_hash = %s
+                    """,
+                    (verified_backup.manifest_hash,),
+                ).fetchone()
+                reason = (
+                    "recovery_activation_binding_conflict"
+                    if same_manifest is not None
+                    else "recovery_activation_event_missing"
+                )
+                raise BackupContractError(reason)
+            _validate_recovery_activation_retry(
+                event=event,
+                verified_backup=verified_backup,
+                receipt_hash=normalized_receipt,
+                operator=operator,
+                control_generation=int(control[3]),
+                control_requested_by=control[6],
+                control_reason=control[7],
+                control_reopened_at=control[8],
+            )
             return {
                 "schema_version": 1,
                 "status": "OPEN",
@@ -1671,6 +1885,8 @@ def activate_verified_recovery(
                 "generation": int(control[3]),
                 "backup_manifest_hash": verified_backup.manifest_hash,
                 "receipt_hash": normalized_receipt,
+                "activation_event_id": str(event.activation_id),
+                "activation_content_hash": event.content_hash,
             }
         if (
             bool(control[0])
@@ -1696,7 +1912,45 @@ def activate_verified_recovery(
         ).fetchone()
         if counts is None or any(int(value) != 0 for value in counts):
             raise BackupContractError("recovery_activation_writer_state_invalid")
-        conn.execute(
+        prior_generation = int(control[3])
+        generation = prior_generation + 1
+        event = _RecoveryActivationEvent(
+            activation_id=activation_id,
+            backup_id=verified_backup.backup_id,
+            backup_manifest_hash=verified_backup.manifest_hash,
+            recovery_receipt_hash=normalized_receipt,
+            release_bundle_digest=verified_backup.release_bundle_digest,
+            requested_by=operator,
+            reason=_RECOVERY_ACTIVATION_REASON,
+            activated_at=observed_at,
+            prior_state="SEALED",
+            new_state="OPEN",
+            prior_generation=prior_generation,
+            new_generation=generation,
+            prior_fence_token_hash=verified_backup.fence_token_hash,
+        )
+        conflict = conn.execute(
+            """
+            SELECT 1
+            FROM research_ops.recovery_activation_event
+            WHERE activation_id = %s
+               OR backup_manifest_hash = %s
+               OR recovery_receipt_hash = %s
+               OR new_generation = %s
+            LIMIT 1
+            """,
+            (
+                event.activation_id,
+                event.backup_manifest_hash,
+                event.recovery_receipt_hash,
+                event.new_generation,
+            ),
+        ).fetchone()
+        if conflict is not None:
+            raise BackupContractError("recovery_activation_event_state_conflict")
+        # The mutable singleton transition and its immutable evidence are one
+        # transaction. The connection boundary rolls both back on any failure.
+        transitioned = conn.execute(
             """
             UPDATE research_ops.runtime_control
             SET mutation_admission_open = true,
@@ -1704,21 +1958,59 @@ def activate_verified_recovery(
                 generation = generation + 1,
                 fence_token = NULL,
                 requested_by = %s,
-                reason = 'signed_recovery_activation',
+                reason = %s,
                 closed_at = NULL,
                 reopened_at = %s,
                 changed_at = %s,
                 last_verified_manifest_hash = %s
             WHERE singleton_id = 1
+            RETURNING generation
             """,
             (
                 operator,
+                _RECOVERY_ACTIVATION_REASON,
                 observed_at,
                 observed_at,
                 verified_backup.manifest_hash,
             ),
-        )
-        generation = int(control[3]) + 1
+        ).fetchone()
+        if transitioned is None or int(transitioned[0]) != generation:
+            raise BackupContractError("recovery_activation_transition_failed")
+        try:
+            conn.execute(
+                """
+                INSERT INTO research_ops.recovery_activation_event (
+                    activation_id, backup_id, backup_manifest_hash,
+                    recovery_receipt_hash, release_bundle_digest,
+                    requested_by, reason, activated_at, prior_state, new_state,
+                    prior_generation, new_generation, prior_fence_token_hash,
+                    content_hash
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    event.activation_id,
+                    event.backup_id,
+                    event.backup_manifest_hash,
+                    event.recovery_receipt_hash,
+                    event.release_bundle_digest,
+                    event.requested_by,
+                    event.reason,
+                    event.activated_at,
+                    event.prior_state,
+                    event.new_state,
+                    event.prior_generation,
+                    event.new_generation,
+                    event.prior_fence_token_hash,
+                    event.content_hash,
+                ),
+            )
+        except errors.IntegrityError as exc:
+            raise BackupContractError(
+                "recovery_activation_event_write_conflict"
+            ) from exc
     return {
         "schema_version": 1,
         "status": "OPEN",
@@ -1726,6 +2018,8 @@ def activate_verified_recovery(
         "generation": generation,
         "backup_manifest_hash": verified_backup.manifest_hash,
         "receipt_hash": normalized_receipt,
+        "activation_event_id": str(event.activation_id),
+        "activation_content_hash": event.content_hash,
     }
 
 
@@ -1798,6 +2092,14 @@ def _restored_database_checks(verified: VerifiedBackup) -> list[dict[str, Any]]:
         return [
             _recovery_check("restored_database", False, "restored_database_unavailable")
         ]
+    if writers is None or len(writers) != 6:
+        return [
+            _recovery_check(
+                "restored_writer_state",
+                False,
+                "restored_writer_state_unavailable",
+            )
+        ]
     expected_database = os.environ.get("RESEARCH_OPS_RECOVERY_DATABASE_NAME", "")
     database_ok = (
         bool(expected_database)
@@ -1866,7 +2168,13 @@ def _restored_database_checks(verified: VerifiedBackup) -> list[dict[str, Any]]:
             server_major,
         )
     )
-    active_count = sum(int(value) for value in writers[:5])
+    active_count = (
+        int(writers[0])
+        + int(writers[1])
+        + int(writers[2])
+        + int(writers[3])
+        + int(writers[4])
+    )
     checks.append(
         _recovery_check(
             "restored_writer_state",
@@ -2205,22 +2513,34 @@ def _canonical_documents_equivalent(
     ):
         return False
     try:
-        for field in ignored_fields & {"created_at", "started_at", "finished_at"}:
-            _parse_utc(existing_document[field], f"resume_{field}")
-        if "duration_seconds" in ignored_fields:
-            duration = existing_document["duration_seconds"]
-            started = _parse_utc(existing_document["started_at"], "resume_started_at")
-            finished = _parse_utc(
-                existing_document["finished_at"], "resume_finished_at"
-            )
-            if (
-                isinstance(duration, bool)
-                or not isinstance(duration, (int, float))
-                or duration < 0
-                or abs(float(duration) - max(0.0, (finished - started).total_seconds()))
-                > 1.000001
-            ):
-                return False
+        for document in (existing_document, requested_document):
+            for field in ignored_fields & {
+                "created_at",
+                "started_at",
+                "finished_at",
+            }:
+                parser = _parse_utc if field == "created_at" else _parse_recovery_utc
+                parser(document[field], f"resume_{field}")
+            if "duration_seconds" in ignored_fields:
+                duration = document["duration_seconds"]
+                started = _parse_recovery_utc(
+                    document["started_at"],
+                    "resume_started_at",
+                )
+                finished = _parse_recovery_utc(
+                    document["finished_at"],
+                    "resume_finished_at",
+                )
+                if (
+                    isinstance(duration, bool)
+                    or not isinstance(duration, (int, float))
+                    or duration < 0
+                    or abs(
+                        float(duration) - max(0.0, (finished - started).total_seconds())
+                    )
+                    > 1.000001
+                ):
+                    return False
     except (BackupContractError, TypeError, ValueError):
         return False
     return {
@@ -2566,6 +2886,29 @@ def _parse_utc(value: object, field: str) -> datetime:
     return parsed
 
 
+def _parse_recovery_utc(value: object, field: str) -> datetime:
+    """Parse canonical microsecond receipts while accepting legacy seconds."""
+
+    raw = str(value or "")
+    if not raw.endswith("Z"):
+        raise BackupContractError(f"backup_{field}_invalid")
+    try:
+        parsed = datetime.fromisoformat(raw[:-1] + "+00:00")
+    except ValueError as exc:
+        raise BackupContractError(f"backup_{field}_invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise BackupContractError(f"backup_{field}_invalid")
+    if raw not in {iso_utc(parsed), _recovery_iso_utc(parsed)}:
+        raise BackupContractError(f"backup_{field}_invalid")
+    return parsed
+
+
+def parse_recovery_started_at(value: object) -> datetime:
+    """Validate the start of an end-to-end restore rehearsal."""
+
+    return _parse_recovery_utc(value, "recovery_started_at")
+
+
 def _audit_terminal_hash(row_count: int, value: object) -> str:
     raw = str(value or "")
     if row_count == 0:
@@ -2631,6 +2974,7 @@ __all__ = [
     "create_signed_backup_manifest",
     "create_signed_recovery_receipt",
     "finalize_private_fence_receipt",
+    "parse_recovery_started_at",
     "read_private_fence_receipt",
     "record_restore_drill",
     "verify_backup_set",

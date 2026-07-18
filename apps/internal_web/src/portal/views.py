@@ -14,7 +14,6 @@ from django.core.paginator import Paginator
 from django.db.models import Count, Q
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
@@ -26,6 +25,11 @@ from market_research.application import (
 from market_research.application.adapter_contracts import GovernanceError
 from market_research.research_composition import builtin_strategy_registry
 
+from .auth_audit import (
+    AuthenticationAuditUnavailable,
+    terminate_session_without_signal,
+)
+from .authorization import can_access_manifest, jobs_visible_to, manifests_visible_to
 from .audit import append_web_audit_event
 from .forms import (
     CandidateApprovalForm,
@@ -39,14 +43,14 @@ from .jobs import (
     ActiveJobConflict,
     IdempotencyConflict,
     enqueue_research_job,
-    jobs_visible_to,
     request_job_cancellation,
 )
 from .login_throttle import ThrottledAuthenticationForm
-from .models import ManifestUpload, ResearchJob
+from .models import ManifestUpload, ResearchJob, ResourceAccessGrant
 from .presenters import (
     build_safe_download_payload,
     load_safe_result,
+    safe_error_action,
     safe_error_message,
 )
 from .reports import compare_visible_reports, list_visible_reports
@@ -54,7 +58,7 @@ from .security import actor_snapshot
 from .storage import read_verified_manifest_bytes
 
 
-STATUS_LABELS = {
+STATUS_LABELS: dict[str, str] = {
     ResearchJob.Status.QUEUED: "대기 중",
     ResearchJob.Status.RUNNING: "실행 중",
     ResearchJob.Status.SUCCEEDED: "완료",
@@ -79,9 +83,42 @@ class PortalLoginView(LoginView):
     redirect_authenticated_user = True
     authentication_form = ThrottledAuthenticationForm
 
+    def post(
+        self, request: HttpRequest, *args: object, **kwargs: object
+    ) -> HttpResponse:
+        try:
+            return super().post(request, *args, **kwargs)
+        except AuthenticationAuditUnavailable:
+            terminate_session_without_signal(request)
+            response = HttpResponse(
+                "인증 감사 기록을 사용할 수 없어 요청을 완료할 수 없습니다.",
+                status=503,
+                content_type="text/plain; charset=utf-8",
+            )
+            response["Retry-After"] = "60"
+            return response
+
 
 class PortalLogoutView(LogoutView):
-    next_page = reverse_lazy("portal:login")
+    next_page = "portal:login"
+
+    def post(
+        self, request: HttpRequest, *args: object, **kwargs: object
+    ) -> HttpResponse:
+        try:
+            return super().post(request, *args, **kwargs)
+        except AuthenticationAuditUnavailable:
+            # The signal handler already terminates the session; repeat the
+            # idempotent security action at the HTTP boundary for defense in
+            # depth and return a fixed, credential-free error.
+            terminate_session_without_signal(request)
+            response = HttpResponse(
+                "로그아웃은 완료되었지만 감사 기록을 사용할 수 없습니다.",
+                status=503,
+                content_type="text/plain; charset=utf-8",
+            )
+            response["Retry-After"] = "60"
+            return response
 
 
 def _base_context(request: HttpRequest, *, active_nav: str) -> dict[str, Any]:
@@ -101,13 +138,6 @@ def _base_context(request: HttpRequest, *, active_nav: str) -> dict[str, Any]:
 
 def _correlation_id(request: HttpRequest) -> str:
     return str(getattr(request, "correlation_id", uuid.uuid4()))
-
-
-def _manifests_visible_to(user: Any):
-    queryset = ManifestUpload.objects.select_related("owner")
-    if user.has_perm("portal.view_all_research_manifests"):
-        return queryset
-    return queryset.filter(owner=user)
 
 
 def _manifest_summary(record: ManifestUpload) -> ManifestUpload:
@@ -131,7 +161,16 @@ def _decorate_job(job: ResearchJob) -> ResearchJob:
         job.capability_id,
     )
     job.progress_message = _progress_message(job)  # type: ignore[attr-defined]
+    job.progress_stage_label = STAGE_LABELS.get(  # type: ignore[attr-defined]
+        job.progress_stage,
+        (
+            "대기 중"
+            if job.status == ResearchJob.Status.QUEUED
+            else STATUS_LABELS.get(job.status, job.status)
+        ),
+    )
     job.safe_error_message = safe_error_message(job)  # type: ignore[attr-defined]
+    job.safe_error_action = safe_error_action(job)  # type: ignore[attr-defined]
     job.can_cancel = (  # type: ignore[attr-defined]
         job.status in {ResearchJob.Status.QUEUED, ResearchJob.Status.RUNNING}
         and (
@@ -140,6 +179,16 @@ def _decorate_job(job: ResearchJob) -> ResearchJob:
                 and getattr(job, "_viewer_can_cancel", False)
             )
             or getattr(job, "_viewer_can_manage", False)
+        )
+    )
+    job.can_retry = (  # type: ignore[attr-defined]
+        job.status in {ResearchJob.Status.FAILED, ResearchJob.Status.CANCELLED}
+        and job.capability_id == ResearchJob.Capability.PREFLIGHT
+        and getattr(job, "_viewer_can_submit", False)
+        and can_access_manifest(
+            getattr(job, "_viewer", None),
+            job.manifest,
+            access=ResourceAccessGrant.Access.SUBMIT,
         )
     )
     return job
@@ -184,6 +233,13 @@ def dashboard(request: HttpRequest) -> HttpResponse:
             "id",
             filter=Q(
                 status=ResearchJob.Status.SUCCEEDED,
+                finished_at__gte=now - timedelta(days=7),
+            ),
+        ),
+        failed=Count(
+            "id",
+            filter=Q(
+                status=ResearchJob.Status.FAILED,
                 finished_at__gte=now - timedelta(days=7),
             ),
         ),
@@ -241,7 +297,7 @@ def manifest_upload(request: HttpRequest) -> HttpResponse:
 @permission_required("portal.view_manifestupload", raise_exception=True)
 @require_GET
 def manifest_detail(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
-    record = get_object_or_404(_manifests_visible_to(request.user), pk=pk)
+    record = get_object_or_404(manifests_visible_to(request.user), pk=pk)
     record = _manifest_summary(record)
     return render(
         request,
@@ -250,6 +306,14 @@ def manifest_detail(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
             **_base_context(request, active_nav="new"),
             "manifest": record,
             "idempotency_key": uuid.uuid4(),
+            "can_submit_manifest": (
+                request.user.has_perm("portal.submit_research_job")
+                and can_access_manifest(
+                    request.user,
+                    record,
+                    access=ResourceAccessGrant.Access.SUBMIT,
+                )
+            ),
         },
     )
 
@@ -258,7 +322,13 @@ def manifest_detail(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
 @permission_required("portal.submit_research_job", raise_exception=True)
 @require_POST
 def manifest_preflight(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
-    record = get_object_or_404(_manifests_visible_to(request.user), pk=pk)
+    record = get_object_or_404(
+        manifests_visible_to(
+            request.user,
+            access=ResourceAccessGrant.Access.SUBMIT,
+        ),
+        pk=pk,
+    )
     return _enqueue_and_redirect(
         request,
         manifest=record,
@@ -283,7 +353,7 @@ def _enqueue_and_redirect(
         return redirect("portal:manifest-detail", pk=manifest.pk)
 
     active = ResearchJob.objects.filter(
-        owner=request.user,
+        owner_id=request.user.pk,
         status__in=(
             ResearchJob.Status.QUEUED,
             ResearchJob.Status.RUNNING,
@@ -332,6 +402,17 @@ def job_list(request: HttpRequest) -> HttpResponse:
         if current_status not in ResearchJob.Status.values:
             raise Http404("unknown job status")
         queryset = queryset.filter(status=current_status)
+    sort = str(request.GET.get("sort") or "-created_at")
+    sort_choices = {
+        "-created_at": "최근 요청 먼저",
+        "created_at": "오래된 요청 먼저",
+        "-updated_at": "최근 변경 먼저",
+        "updated_at": "오래된 변경 먼저",
+    }
+    if sort not in sort_choices:
+        raise Http404("unknown job sort")
+    tie_breaker = "-pk" if sort.startswith("-") else "pk"
+    queryset = queryset.order_by(sort, tie_breaker)
     page = Paginator(queryset, 25).get_page(request.GET.get("page"))
     page.object_list = [_decorate_job(job) for job in page.object_list]
     return render(
@@ -344,6 +425,8 @@ def job_list(request: HttpRequest) -> HttpResponse:
                 (value, STATUS_LABELS[value]) for value in ResearchJob.Status.values
             ],
             "current_status": current_status,
+            "sort_choices": tuple(sort_choices.items()),
+            "current_sort": sort,
         },
     )
 
@@ -351,6 +434,10 @@ def job_list(request: HttpRequest) -> HttpResponse:
 def _job_for_request(request: HttpRequest, pk: uuid.UUID) -> ResearchJob:
     job = get_object_or_404(jobs_visible_to(request.user), pk=pk)
     job._viewer_id = request.user.pk  # type: ignore[attr-defined]
+    job._viewer = request.user  # type: ignore[attr-defined]
+    job._viewer_can_submit = request.user.has_perm(  # type: ignore[attr-defined]
+        "portal.submit_research_job"
+    )
     job._viewer_can_cancel = request.user.has_perm(  # type: ignore[attr-defined]
         "portal.cancel_own_research_job"
     )
@@ -398,8 +485,10 @@ def job_status(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
             "stage": STAGE_LABELS.get(
                 job.progress_stage, job.progress_stage or "대기 중"
             ),
-            "message": job.progress_message,
-            "updated_at": timezone.localtime(job.updated_at).strftime("%H:%M:%S"),
+            "message": _progress_message(job),
+            "updated_at": timezone.localtime(job.updated_at).strftime(
+                "%Y-%m-%d %H:%M:%S %Z"
+            ),
             "terminal": job.is_terminal,
             "version": job.version,
         }
@@ -643,7 +732,10 @@ def _can_approve_candidate(user: Any) -> bool:
 @require_GET
 def review_queue(request: HttpRequest) -> HttpResponse:
     _require_review_or_approval_permission(request)
-    jobs = jobs_visible_to(request.user).filter(
+    jobs = jobs_visible_to(
+        request.user,
+        access=ResourceAccessGrant.Access.REVIEW,
+    ).filter(
         capability_id=ResearchJob.Capability.VALIDATE,
         status=ResearchJob.Status.SUCCEEDED,
         research_outcome=ResearchJob.ResearchOutcome.PASS,

@@ -27,7 +27,37 @@ from .strategy_spec import (
 )
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
 from .datasets.contracts import DatasetArtifactRef
-from .hypothesis_contract import HypothesisSpec, parse_hypothesis_spec
+from .hypothesis_contract import (
+    HYPOTHESIS_LINEAGE_SCHEMA_VERSION,
+    HypothesisSpec,
+    parse_hypothesis_spec,
+    validate_hypothesis_lineage_target,
+)
+from .instrument_contract import (
+    InstrumentContractError,
+    InstrumentMaster,
+    derive_legacy_instrument_master,
+    parse_instrument_master,
+)
+from .corporate_action_contract import (
+    AdjustmentPolicy,
+    CorporateActionContractError,
+    CorporateActionSet,
+    empty_action_set,
+    parse_adjustment_policy,
+    parse_corporate_action_set,
+    raw_adjustment_policy,
+)
+from .market_calendar_contract import (
+    MarketCalendarAuthority,
+    MarketCalendarContractError,
+    parse_market_calendar_authority,
+)
+from .universe_contract import (
+    PointInTimeUniverse,
+    UniverseContractError,
+    parse_point_in_time_universe,
+)
 
 if TYPE_CHECKING:
     from .strategy_registry import StrategyRegistry
@@ -207,6 +237,22 @@ class PositionSizingPolicy:
             "min_order_krw": self.min_order_krw,
             "max_order_krw": self.max_order_krw,
             "rounding_policy": self.rounding_policy,
+        }
+
+    def effective_policy(self) -> dict[str, object]:
+        """Describe the exact common-engine interpretation of sizing fields."""
+
+        return {
+            "schema_version": 1,
+            "declared_policy": self.as_dict(),
+            "buy_notional_source": "available_cash_times_buy_fraction",
+            "sell_quantity_source": "full_sellable_position_quantity",
+            "notional_bounds_scope": "buy_and_sell_order_intents",
+            "sell_notional_estimate_price_source": "decision_candle_close",
+            "min_order_krw_boundary": "inclusive",
+            "max_order_krw_boundary": "inclusive",
+            "out_of_bounds_action": "reject_before_execution_request",
+            "rounding_operation": "identity_float_no_exchange_lot_rounding",
         }
 
 
@@ -872,6 +918,11 @@ class ExperimentManifest:
     strategy_name: str
     strategy_version: str | None
     market: str
+    instrument: InstrumentMaster
+    corporate_action_set: CorporateActionSet
+    corporate_action_policy: AdjustmentPolicy
+    universe: PointInTimeUniverse | None
+    market_calendar: MarketCalendarAuthority | None
     interval: str
     dataset: DatasetSpec
     parameter_space: dict[str, tuple[object, ...]]
@@ -942,13 +993,21 @@ class ExperimentManifest:
             payload["benchmark_suite"] = self.benchmark_suite.as_dict()
         if self.strategy_version is not None:
             payload["strategy_version"] = self.strategy_version
+        if self.instrument.source == "manifest":
+            payload["instrument"] = self.instrument.as_dict()
+            payload["corporate_action_set"] = self.corporate_action_set.as_dict()
+            payload["corporate_action_policy"] = self.corporate_action_policy.as_dict()
+        if self.universe is not None:
+            payload["universe"] = self.universe.as_dict()
+        if self.market_calendar is not None:
+            payload["market_calendar"] = self.market_calendar.as_dict()
         return payload
 
     def manifest_hash(self) -> str:
         return sha256_prefixed(self.canonical_payload())
 
     def simulation_seed_scope_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "strategy_name": self.strategy_name,
             "market": self.market,
             "interval": self.interval,
@@ -966,6 +1025,15 @@ class ExperimentManifest:
             if self.walk_forward is not None
             else None,
         }
+        if self.instrument.source == "manifest":
+            payload["instrument"] = self.instrument.as_dict()
+            payload["corporate_action_set"] = self.corporate_action_set.as_dict()
+            payload["corporate_action_policy"] = self.corporate_action_policy.as_dict()
+        if self.universe is not None:
+            payload["universe"] = self.universe.as_dict()
+        if self.market_calendar is not None:
+            payload["market_calendar"] = self.market_calendar.as_dict()
+        return payload
 
     def simulation_seed_scope_hash(self) -> str:
         return sha256_prefixed(self.simulation_seed_scope_payload())
@@ -975,6 +1043,38 @@ class ExperimentManifest:
 
     def risk_policy_hash(self) -> str:
         return self.risk_policy.policy_hash()
+
+    def instrument_evidence(self) -> dict[str, object]:
+        evidence: dict[str, object] = {
+            "instrument_id": self.instrument.instrument_id,
+            "instrument_version_id": self.instrument.instrument_version_id,
+            "instrument_contract_hash": self.instrument.contract_hash(),
+            "asset_type": self.instrument.asset_type,
+            "exchange_mic": self.instrument.exchange_mic,
+            "trading_currency": self.instrument.trading_currency,
+            "price_tick": str(self.instrument.price_tick),
+            "quantity_step": str(self.instrument.quantity_step),
+            "trading_unit": str(self.instrument.trading_unit),
+            "identity_source": self.instrument.source,
+            "corporate_action_set_id": self.corporate_action_set.action_set_id,
+            "corporate_action_set_hash": self.corporate_action_set.contract_hash(),
+            "corporate_action_policy_id": self.corporate_action_policy.policy_id,
+            "corporate_action_policy_hash": self.corporate_action_policy.contract_hash(),
+            "price_series": self.corporate_action_policy.price_series,
+            "price_adjustment": self.corporate_action_policy.price_adjustment,
+            "volume_adjustment": self.corporate_action_policy.volume_adjustment,
+            "corporate_action_event_version_count": len(
+                self.corporate_action_set.events
+            ),
+            "corporate_action_knowledge_time_policy": (
+                "latest_event_version_effective_and_observed_at_as_of"
+            ),
+        }
+        if self.universe is not None:
+            evidence["point_in_time_universe"] = self.universe.evidence()
+        if self.market_calendar is not None:
+            evidence["market_calendar"] = self.market_calendar.evidence()
+        return evidence
 
     def simulation_policy_hash(self) -> str:
         return sha256_prefixed(
@@ -1035,6 +1135,11 @@ def parse_manifest(
         "strategy_name",
         "strategy_version",
         "market",
+        "instrument",
+        "corporate_action_set",
+        "corporate_action_policy",
+        "universe",
+        "market_calendar",
         "interval",
         "dataset",
         "parameter_space",
@@ -1074,6 +1179,33 @@ def parse_manifest(
         payload.get("strategy_version"), "strategy_version"
     )
     market = _required_str(payload, "market")
+    try:
+        instrument, corporate_action_set, corporate_action_policy = (
+            _parse_instrument_and_event_contracts(payload, market=market)
+        )
+        universe = (
+            parse_point_in_time_universe(payload["universe"])
+            if payload.get("universe") is not None
+            else None
+        )
+        market_calendar = (
+            parse_market_calendar_authority(payload["market_calendar"])
+            if payload.get("market_calendar") is not None
+            else None
+        )
+    except (
+        InstrumentContractError,
+        CorporateActionContractError,
+        UniverseContractError,
+        MarketCalendarContractError,
+    ) as exc:
+        raise ManifestValidationError(str(exc)) from exc
+    if universe is not None and instrument.instrument_id not in {
+        item.instrument_id for item in universe.memberships
+    }:
+        raise ManifestValidationError(
+            "manifest_instrument_missing_from_point_in_time_universe_history"
+        )
     interval = _required_str(payload, "interval")
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
@@ -1089,6 +1221,31 @@ def parse_manifest(
             "hypothesis_spec is required for validation-bound manifests"
         )
     if hypothesis_spec is not None:
+        if hypothesis_spec.schema_version == 1 and (
+            research_classification != "research_only"
+            or hypothesis_spec.registration_status == "pre_registered"
+        ):
+            raise ManifestValidationError(
+                "hypothesis_spec schema_version 2 observation-question lineage "
+                "is required outside legacy research_only manifests and for "
+                "pre_registered hypotheses"
+            )
+        if (
+            requires_candidate_validation(research_classification)
+            and hypothesis_spec.schema_version != HYPOTHESIS_LINEAGE_SCHEMA_VERSION
+        ):
+            raise ManifestValidationError(
+                "validation-bound manifests require hypothesis_spec schema_version 2 "
+                "observation-question lineage"
+            )
+        try:
+            validate_hypothesis_lineage_target(
+                hypothesis_spec,
+                market=market,
+                interval=interval,
+            )
+        except ValueError as exc:
+            raise ManifestValidationError(str(exc)) from exc
         missing_explicit_contracts = [
             field
             for field in (
@@ -1148,6 +1305,13 @@ def parse_manifest(
     portfolio_policy = _parse_portfolio_policy(
         payload.get("portfolio_policy"), research_classification=research_classification
     )
+    if (
+        instrument.source == "manifest"
+        and portfolio_policy.quote_currency != instrument.trading_currency
+    ):
+        raise ManifestValidationError(
+            "portfolio_policy.quote_currency_must_match_instrument_trading_currency"
+        )
     risk_policy = _parse_risk_policy(
         payload.get("risk_policy"), research_classification=research_classification
     )
@@ -1230,6 +1394,11 @@ def parse_manifest(
         strategy_name=strategy_name,
         strategy_version=strategy_version,
         market=market,
+        instrument=instrument,
+        corporate_action_set=corporate_action_set,
+        corporate_action_policy=corporate_action_policy,
+        universe=universe,
+        market_calendar=market_calendar,
         interval=interval,
         dataset=dataset,
         parameter_space=parameter_space,
@@ -1250,6 +1419,39 @@ def parse_manifest(
         manifest_input_provenance=manifest_input_provenance,
         validated_strategy_registry_hash=registry.execution_scope_hash(strategy_name),
     )
+
+
+def _parse_instrument_and_event_contracts(
+    payload: dict[str, Any], *, market: str
+) -> tuple[InstrumentMaster, CorporateActionSet, AdjustmentPolicy]:
+    instrument_value = payload.get("instrument")
+    action_set_value = payload.get("corporate_action_set")
+    policy_value = payload.get("corporate_action_policy")
+    if instrument_value is None:
+        if action_set_value is not None or policy_value is not None:
+            raise ManifestValidationError(
+                "instrument_required_with_corporate_action_contract"
+            )
+        instrument = derive_legacy_instrument_master(market)
+        action_set = empty_action_set(instrument.instrument_id)
+        return instrument, action_set, raw_adjustment_policy(action_set)
+    if action_set_value is None or policy_value is None:
+        raise ManifestValidationError(
+            "instrument_requires_corporate_action_set_and_policy"
+        )
+    instrument = parse_instrument_master(instrument_value)
+    if instrument.source != "manifest":
+        raise ManifestValidationError("explicit_instrument_source_must_be_manifest")
+    instrument.require_market_mapping(market)
+    if instrument.asset_type in {"future", "option"}:
+        raise ManifestValidationError(
+            f"instrument_asset_type_not_supported_by_research_engine:{instrument.asset_type}"
+        )
+    action_set = parse_corporate_action_set(
+        action_set_value, expected_instrument_id=instrument.instrument_id
+    )
+    policy = parse_adjustment_policy(policy_value, action_set=action_set)
+    return instrument, action_set, policy
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:
@@ -1732,6 +1934,13 @@ def _parse_risk_policy(
         raise ManifestValidationError(
             "risk_policy.missing_policy currently supports only fail_closed_for_validation"
         )
+    max_open_positions = _positive_int(
+        value.get("max_open_positions", 1), "risk_policy.max_open_positions"
+    )
+    if max_open_positions != 1:
+        raise ManifestValidationError(
+            "risk_policy.max_open_positions currently supports exactly 1"
+        )
     return ResearchRiskPolicy(
         schema_version=schema_version,
         max_daily_loss_krw=_finite_non_negative_float(
@@ -1758,9 +1967,7 @@ def _parse_risk_policy(
             value.get("cooldown_after_loss_min", 0),
             "risk_policy.cooldown_after_loss_min",
         ),
-        max_open_positions=_positive_int(
-            value.get("max_open_positions", 1), "risk_policy.max_open_positions"
-        ),
+        max_open_positions=max_open_positions,
         unresolved_order_policy=unresolved_policy,
         policy_status=policy_status,
         missing_policy=missing_policy,
@@ -1834,14 +2041,6 @@ def _parse_position_sizing_policy(value: dict[str, Any]) -> PositionSizingPolicy
         raise ManifestValidationError(
             "portfolio_policy.position_sizing.min_order_krw must be <= max_order_krw"
         )
-    if min_order is not None:
-        raise ManifestValidationError(
-            "portfolio_policy.position_sizing.min_order_krw is not supported yet"
-        )
-    if max_order is not None:
-        raise ManifestValidationError(
-            "portfolio_policy.position_sizing.max_order_krw is not supported yet"
-        )
     return PositionSizingPolicy(
         type=sizing_type,
         buy_fraction=buy_fraction,
@@ -1855,7 +2054,7 @@ def _parse_position_sizing_policy(value: dict[str, Any]) -> PositionSizingPolicy
 
 def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelConfig:
     if value is None:
-        scenarios = tuple(
+        legacy_scenarios = tuple(
             ExecutionScenario(
                 type="fixed_bps",
                 fee_rate=cost_model.fee_rate,
@@ -1879,7 +2078,7 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
             for slippage in cost_model.slippage_bps
         )
         return ExecutionModelConfig(
-            scenarios=scenarios,
+            scenarios=legacy_scenarios,
             source="legacy_cost_model",
             scenario_policy="legacy_cost_model_single_pass",
         )
@@ -1926,6 +2125,7 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
             "execution_model.calibration_strictness must be fail or warn"
         )
     explicit_scenarios = value.get("scenarios")
+    scenarios: list[ExecutionScenario]
     if explicit_scenarios is not None:
         if not isinstance(explicit_scenarios, list) or not explicit_scenarios:
             raise ManifestValidationError(
@@ -2030,12 +2230,12 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
         scenario_policy=scenario_policy,
         scenarios=tuple(scenarios),
     )
-    scenarios = _with_diagnostic_zero_cost_scenario(
+    final_scenarios = _with_diagnostic_zero_cost_scenario(
         scenarios=tuple(scenarios),
         scenario_policy=scenario_policy,
     )
     return ExecutionModelConfig(
-        scenarios=tuple(scenarios),
+        scenarios=tuple(final_scenarios),
         source="execution_model",
         scenario_policy=scenario_policy,
         calibration_required=bool(value.get("calibration_required", False)),
@@ -2115,9 +2315,10 @@ def _parse_explicit_execution_scenario(
             ),
             "execution_model.scenarios.market_order_extra_cost_bps",
         ),
-        seed=None
-        if raw.get("seed", parent.get("seed")) is None
-        else int(raw.get("seed", parent.get("seed"))),
+        seed=_optional_int_value(
+            raw.get("seed", parent.get("seed")),
+            "execution_model.scenarios.seed",
+        ),
         source="execution_model",
         scenario_policy=scenario_policy,
         scenario_role=role,
@@ -3341,6 +3542,10 @@ def _parse_stress_parameter_perturbation(
         parsed = _optional_finite_float(
             item, "stress_suite.parameter_perturbation.relative_pct"
         )
+        if parsed is None:
+            raise ManifestValidationError(
+                "stress_suite.parameter_perturbation.relative_pct values must be numbers"
+            )
         if parsed == 0.0:
             raise ManifestValidationError(
                 "stress_suite.parameter_perturbation.relative_pct values must be non-zero"
@@ -3423,10 +3628,8 @@ def _parse_stress_signal_omission(value: Any) -> StressSignalOmissionContract | 
         )
     rates = tuple(
         sorted(
-            float(
-                _optional_finite_float(
-                    item, "stress_suite.signal_omission.omission_rates_pct"
-                )
+            _required_finite_float(
+                item, "stress_suite.signal_omission.omission_rates_pct"
             )
             for item in raw_rates
         )
@@ -3960,6 +4163,13 @@ def _optional_finite_float(value: Any, field: str) -> float | None:
     return parsed
 
 
+def _required_finite_float(value: Any, field: str) -> float:
+    parsed = _optional_finite_float(value, field)
+    if parsed is None:
+        raise ManifestValidationError(f"{field} must be a number")
+    return parsed
+
+
 def _optional_finite_non_negative_float(value: Any, field: str) -> float | None:
     if value is None:
         return None
@@ -4018,6 +4228,16 @@ def _positive_int(value: Any, field: str) -> int:
         raise ManifestValidationError(f"{field} must be an integer") from exc
     if parsed <= 0:
         raise ManifestValidationError(f"{field} must be > 0")
+    return parsed
+
+
+def _optional_int_value(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ManifestValidationError(f"{field} must be an integer") from exc
     return parsed
 
 

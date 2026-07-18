@@ -237,7 +237,7 @@ def evaluate_regime_acceptance_gate(
     performance_rows: tuple[Any, ...],
 ) -> RegimeGateResult:
     if not gate.required:
-        evidence = {
+        optional_evidence = {
             _row_regime(row): {
                 "trade_count": int(_row_value(row, "trade_count", 0) or 0),
                 "profit_factor": _row_value(row, "profit_factor"),
@@ -251,7 +251,13 @@ def evaluate_regime_acceptance_gate(
             for row in performance_rows
             if _row_dimension(row) == "composite_regime"
         }
-        return RegimeGateResult(True, (), tuple(sorted(evidence)), (), evidence)
+        return RegimeGateResult(
+            True,
+            (),
+            tuple(sorted(optional_evidence)),
+            (),
+            optional_evidence,
+        )
 
     reasons: list[str] = []
     evidence: dict[str, dict[str, object]] = {}
@@ -277,16 +283,18 @@ def evaluate_regime_acceptance_gate(
                 f"regime_coverage_failed: {required} trade_count={trade_count} < min={gate.min_trade_count_per_required_regime}"
             )
 
-    for blocked in gate.blocked_regimes:
-        rows = [row for row in performance_rows if _matches(row, blocked)]
+    for blocked_regime in gate.blocked_regimes:
+        rows = [row for row in performance_rows if _matches(row, blocked_regime)]
         trade_count = sum(int(_row_value(row, "trade_count", 0) or 0) for row in rows)
         net_pnl = sum(float(_row_value(row, "net_pnl", 0.0) or 0.0) for row in rows)
         if trade_count > gate.blocked_regime_max_trade_count:
             reasons.append(
-                f"blocked_regime_leakage: {blocked} produced {trade_count} BUY decisions"
+                f"blocked_regime_leakage: {blocked_regime} produced {trade_count} BUY decisions"
             )
         if net_pnl < -abs(float(gate.blocked_regime_max_net_pnl_loss_krw)):
-            reasons.append(f"blocked_regime_loss: {blocked} net_pnl={net_pnl:.6f}")
+            reasons.append(
+                f"blocked_regime_loss: {blocked_regime} net_pnl={net_pnl:.6f}"
+            )
 
     for regime, min_pf in gate.min_profit_factor_by_regime.items():
         rows = [row for row in performance_rows if _matches(row, regime)]
@@ -351,7 +359,7 @@ def evaluate_regime_acceptance_gate(
         sorted(
             regime
             for regime, row in evidence.items()
-            if regime not in blocked and int(row.get("trade_count") or 0) > 0
+            if regime not in blocked and _has_trades(row)
         )
     )
     return RegimeGateResult(not reasons, tuple(reasons), allowed, blocked, evidence)
@@ -389,12 +397,8 @@ def evaluate_live_regime_policy(
         }
 
     candidate_version = str(normalized.get("candidate_regime_classifier_version") or "")
-    allowed_regimes = [
-        str(item) for item in normalized.get("candidate_allowed_regimes") or ()
-    ]
-    blocked_regimes = [
-        str(item) for item in normalized.get("candidate_blocked_regimes") or ()
-    ]
+    allowed_regimes = _string_items(normalized.get("candidate_allowed_regimes"))
+    blocked_regimes = _string_items(normalized.get("candidate_blocked_regimes"))
 
     if candidate_version != current_version:
         return {
@@ -423,3 +427,14 @@ def evaluate_live_regime_policy(
         "current_regime": current,
         "current_regime_classifier_version": current_version,
     }
+
+
+def _string_items(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    return [str(item) for item in value]
+
+
+def _has_trades(row: dict[str, object]) -> bool:
+    trade_count = row.get("trade_count")
+    return isinstance(trade_count, int) and trade_count > 0

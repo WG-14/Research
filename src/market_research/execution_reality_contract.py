@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, cast, overload
 
 
 EXECUTION_REALITY_CONTRACT_SCHEMA_VERSION = 1
@@ -671,7 +671,7 @@ def _canonical_contract_payload(contract: dict[str, Any]) -> dict[str, Any]:
         payload["execution_capability_contract"] = (
             _canonical_capability_contract_payload(capability)
         )
-    return _strip_runtime_only(payload)
+    return cast(dict[str, Any], _strip_runtime_only(payload))
 
 
 def _canonical_capability_contract_payload(contract: dict[str, Any]) -> dict[str, Any]:
@@ -690,7 +690,7 @@ def _canonical_capability_contract_payload(contract: dict[str, Any]) -> dict[str
             for item in unavailable
             if str(item) not in CAPABILITY_OBSERVED_AVAILABILITY_FIELDS
         ]
-    return _strip_runtime_only(payload)
+    return cast(dict[str, Any], _strip_runtime_only(payload))
 
 
 def _availability_capability_mismatches(
@@ -722,6 +722,22 @@ def _availability_capability_mismatches(
                 }
             )
     return mismatches
+
+
+@overload
+def _strip_runtime_only(value: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def _strip_runtime_only(value: list[Any]) -> list[Any]: ...
+
+
+@overload
+def _strip_runtime_only(value: tuple[Any, ...]) -> tuple[Any, ...]: ...
+
+
+@overload
+def _strip_runtime_only(value: Any) -> Any: ...
 
 
 def _strip_runtime_only(value: Any) -> Any:

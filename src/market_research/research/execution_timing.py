@@ -38,6 +38,7 @@ class ExecutionReferenceEvent:
     fill_reference_price: float | None
     fill_reference_source: str | None
     quote_ts: int | None
+    quote_available_at_ts: int | None
     quote_age_ms: int | None
     quote_source: str | None
     best_bid: float | None
@@ -51,6 +52,11 @@ class ExecutionReferenceEvent:
     latency_applied_to_submit_ts: bool = False
     latency_applied_to_fill_reference: bool = False
     latency_reference_policy_warning: str | None = None
+    quote_availability_basis: str | None = None
+    execution_reference_target_ts: int | None = None
+    execution_reference_deadline_ts: int | None = None
+    execution_reference_resolution_ts: int | None = None
+    execution_resolution_ts: int | None = None
 
     def request_fields(self) -> dict[str, object]:
         return {
@@ -59,6 +65,12 @@ class ExecutionReferenceEvent:
             "fill_reference_price": self.fill_reference_price,
             "fill_reference_source": self.fill_reference_source,
             "quote_ts": self.quote_ts,
+            "quote_available_at_ts": self.quote_available_at_ts,
+            "quote_availability_basis": self.quote_availability_basis,
+            "execution_reference_target_ts": self.execution_reference_target_ts,
+            "execution_reference_deadline_ts": self.execution_reference_deadline_ts,
+            "execution_reference_resolution_ts": self.execution_reference_resolution_ts,
+            "execution_resolution_ts": self.execution_resolution_ts,
             "quote_age_ms": self.quote_age_ms,
             "quote_source": self.quote_source,
             "best_bid": self.best_bid,
@@ -134,6 +146,8 @@ def resolve_execution_reference(
     )
     if policy.fill_reference_policy == "candle_close_legacy":
         quote = dataset.top_of_book_for_ts(signal.signal_candle_start_ts)
+        if quote is not None and quote.available_at_ms() > signal.decision_ts:
+            quote = None
         return ExecutionReferenceEvent(
             submit_ts_assumption=submit_ts,
             # Legacy pricing remains explicitly classified, but its timestamp
@@ -142,6 +156,12 @@ def resolve_execution_reference(
             fill_reference_price=float(signal.signal_reference_price),
             fill_reference_source="candle_close",
             quote_ts=int(quote.ts) if quote is not None else None,
+            quote_available_at_ts=(
+                quote.available_at_ms() if quote is not None else None
+            ),
+            quote_availability_basis=(
+                quote.availability_basis() if quote is not None else None
+            ),
             quote_age_ms=quote.age_ms if quote is not None else None,
             quote_source=quote.source if quote is not None else None,
             best_bid=float(quote.bid_price) if quote is not None else None,
@@ -153,6 +173,14 @@ def resolve_execution_reference(
             latency_applied_to_submit_ts=latency_applied_to_submit_ts,
             latency_applied_to_fill_reference=False,
             latency_reference_policy_warning=latency_warning,
+            execution_reference_target_ts=int(signal.decision_ts),
+            execution_reference_deadline_ts=max(
+                int(signal.decision_ts), int(submit_ts)
+            ),
+            execution_reference_resolution_ts=max(
+                int(signal.decision_ts), int(submit_ts)
+            ),
+            execution_resolution_ts=max(int(signal.decision_ts), int(submit_ts)),
         )
     if policy.fill_reference_policy == "next_candle_open":
         next_candle = next(
@@ -178,6 +206,8 @@ def resolve_execution_reference(
             fill_reference_price=float(next_candle.open),
             fill_reference_source="next_candle_open",
             quote_ts=None,
+            quote_available_at_ts=None,
+            quote_availability_basis=None,
             quote_age_ms=None,
             quote_source=None,
             best_bid=None,
@@ -189,6 +219,10 @@ def resolve_execution_reference(
             latency_applied_to_submit_ts=latency_applied_to_submit_ts,
             latency_applied_to_fill_reference=False,
             latency_reference_policy_warning=latency_warning,
+            execution_reference_target_ts=int(submit_ts),
+            execution_reference_deadline_ts=int(next_candle.ts),
+            execution_reference_resolution_ts=int(next_candle.ts),
+            execution_resolution_ts=int(next_candle.ts),
         )
     if policy.fill_reference_policy in {
         "first_orderbook_after_decision",
@@ -217,13 +251,16 @@ def resolve_execution_reference(
                 model_latency_ms=latency_ms,
             )
         price = quote.ask_price if signal.side == "BUY" else quote.bid_price
+        quote_available_at_ts = quote.available_at_ms()
         return ExecutionReferenceEvent(
             submit_ts_assumption=submit_ts,
-            fill_reference_ts=int(quote.ts),
+            fill_reference_ts=quote_available_at_ts,
             fill_reference_price=float(price),
             fill_reference_source=policy.fill_reference_policy,
             quote_ts=int(quote.ts),
-            quote_age_ms=int(quote.ts) - int(target_ts),
+            quote_available_at_ts=quote_available_at_ts,
+            quote_availability_basis=quote.availability_basis(),
+            quote_age_ms=quote_available_at_ts - int(target_ts),
             quote_source=str(quote.source),
             best_bid=float(quote.bid_price),
             best_ask=float(quote.ask_price),
@@ -234,6 +271,11 @@ def resolve_execution_reference(
             latency_applied_to_submit_ts=latency_applied_to_submit_ts,
             latency_applied_to_fill_reference=latency_applied_to_reference,
             latency_reference_policy_warning=latency_warning,
+            execution_reference_target_ts=int(target_ts),
+            execution_reference_deadline_ts=int(target_ts)
+            + int(policy.max_quote_wait_ms),
+            execution_reference_resolution_ts=int(quote_available_at_ts),
+            execution_resolution_ts=int(quote_available_at_ts),
         )
     raise ValueError(
         f"unsupported fill_reference_policy: {policy.fill_reference_policy}"
@@ -389,12 +431,25 @@ def _failed_reference(
         if int(model_latency_ms) > 0 and not latency_applied_to_reference
         else None
     )
+    target_ts = (
+        int(submit_ts)
+        if policy.fill_reference_policy
+        in {"latency_adjusted_orderbook", "next_candle_open"}
+        else int(signal.decision_ts)
+    )
+    deadline_ts = (
+        target_ts + int(policy.max_quote_wait_ms)
+        if policy.fill_reference_policy
+        in {"first_orderbook_after_decision", "latency_adjusted_orderbook"}
+        else max(target_ts, int(submit_ts))
+    )
     return ExecutionReferenceEvent(
         submit_ts_assumption=submit_ts,
         fill_reference_ts=None,
         fill_reference_price=None,
         fill_reference_source=policy.fill_reference_policy,
         quote_ts=None,
+        quote_available_at_ts=None,
         quote_age_ms=None,
         quote_source=None,
         best_bid=None,
@@ -407,6 +462,10 @@ def _failed_reference(
         latency_applied_to_submit_ts=latency_applied_to_submit_ts,
         latency_applied_to_fill_reference=latency_applied_to_reference,
         latency_reference_policy_warning=latency_warning,
+        execution_reference_target_ts=target_ts,
+        execution_reference_deadline_ts=deadline_ts,
+        execution_reference_resolution_ts=deadline_ts,
+        execution_resolution_ts=deadline_ts,
     )
 
 

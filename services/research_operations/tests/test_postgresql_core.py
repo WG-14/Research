@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import signal
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from queue import Empty
 
@@ -21,7 +22,9 @@ from research_operations.admission import (
 from research_operations.backup import (
     BackupContractError,
     BackupFenceStore,
+    RecoveryVerification,
     VerifiedBackup,
+    activate_verified_recovery,
     verify_live_backup_database_state,
 )
 from research_operations.errors import (
@@ -138,7 +141,11 @@ def _clean(dsn: str) -> None:
     with psycopg.connect(dsn) as conn:
         conn.execute(
             """
-            TRUNCATE research_ops.outbox_operator_action,
+            TRUNCATE research_ops.service_alert_event,
+                     research_ops.service_alert_delivery,
+                     research_ops.service_alert,
+                     research_ops.recovery_activation_event,
+                     research_ops.outbox_operator_action,
                      research_ops.backup_set,
                      research_ops.worker_heartbeat,
                      research_ops.outbox_delivery,
@@ -223,6 +230,51 @@ def test_migrations_are_idempotent_and_checksummed(live_dsn: str) -> None:
     assert "0002_runtime_control.sql" in result.already_applied
     assert "0003_research_job_receipt.sql" in result.already_applied
     assert "0004_worker_release_provenance.sql" in result.already_applied
+    assert "0005_recovery_activation_event.sql" in result.already_applied
+    assert "0006_service_alert_workflow.sql" in result.already_applied
+
+
+def test_failed_migration_preserves_root_error_and_releases_advisory_lock(
+    live_dsn: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import research_operations.migrate as migrate_module
+
+    migration_root = tmp_path / "failing-migrations"
+    migration_root.mkdir()
+    (migration_root / "9999_intentional_failure.sql").write_text(
+        "SELECT * FROM research_ops.intentional_missing_relation;\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        migrate_module.resources,
+        "files",
+        lambda _package: migration_root,
+    )
+
+    with pytest.raises(
+        psycopg.errors.UndefinedTable,
+        match="intentional_missing_relation",
+    ):
+        apply_migrations(live_dsn)
+
+    with psycopg.connect(live_dsn) as conn:
+        lock_acquired = conn.execute(
+            "SELECT pg_try_advisory_lock(%s)",
+            (migrate_module._MIGRATION_LOCK_ID,),
+        ).fetchone()
+        assert lock_acquired == (True,)
+        assert conn.execute(
+            "SELECT pg_advisory_unlock(%s)",
+            (migrate_module._MIGRATION_LOCK_ID,),
+        ).fetchone() == (True,)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM research_ops.migration_history
+            WHERE name = '9999_intentional_failure.sql'
+            """
+        ).fetchone() == (0,)
 
 
 def test_backup_source_state_binds_real_server_and_both_migration_sets(
@@ -312,6 +364,236 @@ def test_backup_registration_persists_release_bundle_digest(live_dsn: str) -> No
         TEST_RELEASE.build_digest,
         bundle_digest,
     )
+
+
+def test_recovery_activation_is_atomic_append_only_and_exactly_idempotent(
+    live_dsn: str,
+) -> None:
+    manifest_hash = "sha256:" + "6" * 64
+    receipt_hash = "sha256:" + "7" * 64
+    bundle_digest = "sha256:" + "3" * 64
+    fence_token = uuid.uuid4()
+    activated_at = datetime(2026, 7, 17, 1, 2, 3, 456789, tzinfo=UTC)
+    with psycopg.connect(live_dsn) as conn:
+        generation = int(
+            conn.execute(
+                """
+                UPDATE research_ops.runtime_control
+                SET mutation_admission_open = FALSE,
+                    claim_admission_open = FALSE,
+                    integrity_quarantine = FALSE,
+                    generation = generation + 1,
+                    fence_token = %s,
+                    requested_by = 'recovery-fixture',
+                    reason = 'isolated_restore',
+                    closed_at = %s,
+                    reopened_at = NULL,
+                    changed_at = %s,
+                    last_verified_manifest_hash = %s
+                WHERE singleton_id = 1
+                RETURNING generation
+                """,
+                (fence_token, activated_at, activated_at, manifest_hash),
+            ).fetchone()[0]
+        )
+    fence_token_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            b"research-operations-fence-token-v1\0" + fence_token.bytes
+        ).hexdigest()
+    )
+    verified = VerifiedBackup(
+        backup_id=uuid.uuid4(),
+        manifest_hash=manifest_hash,
+        git_sha=TEST_RELEASE.git_sha,
+        release_id=TEST_RELEASE.release_id,
+        build_digest=TEST_RELEASE.build_digest,
+        release_bundle_digest=bundle_digest,
+        migration_digest="sha256:" + "8" * 64,
+        postgresql_major=16,
+        fence_generation=generation,
+        fence_token_hash=fence_token_hash,
+        created_at=activated_at,
+        audit_row_count=0,
+        audit_terminal_hash="",
+        files=(),
+    )
+    verification = RecoveryVerification(
+        status="PASS",
+        backup_manifest_hash=manifest_hash,
+        started_at=activated_at - timedelta(seconds=10),
+        finished_at=activated_at - timedelta(seconds=1),
+        checks=({"id": "test", "status": "PASS", "reason_code": "verified"},),
+        git_sha=verified.git_sha,
+        release_id=verified.release_id,
+        build_digest=verified.build_digest,
+        release_bundle_digest=verified.release_bundle_digest,
+    )
+
+    with pytest.raises(
+        BackupContractError,
+        match="recovery_activation_verification_invalid",
+    ):
+        activate_verified_recovery(
+            verified_backup=verified,
+            verification=replace(verification, status="FAIL"),
+            receipt_hash=receipt_hash,
+            operator_id="recovery-operator",
+            dsn=live_dsn,
+            now=activated_at,
+        )
+    with pytest.raises(BackupContractError, match="recovery_activation_not_sealed"):
+        activate_verified_recovery(
+            verified_backup=replace(
+                verified,
+                fence_generation=verified.fence_generation + 1,
+            ),
+            verification=verification,
+            receipt_hash=receipt_hash,
+            operator_id="recovery-operator",
+            dsn=live_dsn,
+            now=activated_at,
+        )
+    with psycopg.connect(live_dsn) as conn:
+        assert (
+            int(
+                conn.execute(
+                    "SELECT count(*) FROM research_ops.recovery_activation_event"
+                ).fetchone()[0]
+            )
+            == 0
+        )
+        # A restored dump predates registration of the backup it represents.
+        assert (
+            int(
+                conn.execute("SELECT count(*) FROM research_ops.backup_set").fetchone()[
+                    0
+                ]
+            )
+            == 0
+        )
+
+    first = activate_verified_recovery(
+        verified_backup=verified,
+        verification=verification,
+        receipt_hash=receipt_hash,
+        operator_id="recovery-operator",
+        dsn=live_dsn,
+        now=activated_at,
+    )
+    retry = activate_verified_recovery(
+        verified_backup=verified,
+        verification=verification,
+        receipt_hash=receipt_hash,
+        operator_id="recovery-operator",
+        dsn=live_dsn,
+        now=activated_at + timedelta(minutes=1),
+    )
+    assert first["already_activated"] is False
+    assert retry["already_activated"] is True
+    assert retry["activation_event_id"] == first["activation_event_id"]
+    assert retry["activation_content_hash"] == first["activation_content_hash"]
+
+    with pytest.raises(
+        BackupContractError,
+        match="recovery_activation_binding_conflict",
+    ):
+        activate_verified_recovery(
+            verified_backup=verified,
+            verification=verification,
+            receipt_hash=receipt_hash,
+            operator_id="different-operator",
+            dsn=live_dsn,
+            now=activated_at + timedelta(minutes=2),
+        )
+    with pytest.raises(
+        BackupContractError,
+        match="recovery_activation_binding_conflict",
+    ):
+        activate_verified_recovery(
+            verified_backup=verified,
+            verification=verification,
+            receipt_hash="sha256:" + "9" * 64,
+            operator_id="recovery-operator",
+            dsn=live_dsn,
+            now=activated_at + timedelta(minutes=2),
+        )
+
+    with psycopg.connect(live_dsn) as conn:
+        event = conn.execute(
+            """
+            SELECT activation_id, backup_id, backup_manifest_hash,
+                   recovery_receipt_hash, release_bundle_digest, requested_by,
+                   reason, activated_at, prior_state, new_state,
+                   prior_generation, new_generation, prior_fence_token_hash,
+                   content_hash
+            FROM research_ops.recovery_activation_event
+            """
+        ).fetchone()
+        control = conn.execute(
+            """
+            SELECT mutation_admission_open, claim_admission_open, generation,
+                   requested_by, reason, reopened_at
+            FROM research_ops.runtime_control
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+    assert event is not None
+    assert str(event[0]) == first["activation_event_id"]
+    assert event[1] == verified.backup_id
+    assert tuple(event[2:7]) == (
+        manifest_hash,
+        receipt_hash,
+        bundle_digest,
+        "recovery-operator",
+        "signed_recovery_activation",
+    )
+    assert tuple(event[8:13]) == (
+        "SEALED",
+        "OPEN",
+        generation,
+        generation + 1,
+        fence_token_hash,
+    )
+    assert event[13] == first["activation_content_hash"]
+    assert control == (
+        True,
+        True,
+        generation + 1,
+        "recovery-operator",
+        "signed_recovery_activation",
+        activated_at,
+    )
+
+    with (
+        pytest.raises(
+            psycopg.errors.ObjectNotInPrerequisiteState,
+            match="recovery_activation_event_append_only",
+        ),
+        psycopg.connect(live_dsn) as conn,
+    ):
+        conn.execute(
+            """
+            UPDATE research_ops.recovery_activation_event
+            SET requested_by = requested_by
+            WHERE activation_id = %s
+            """,
+            (event[0],),
+        )
+    with (
+        pytest.raises(
+            psycopg.errors.ObjectNotInPrerequisiteState,
+            match="recovery_activation_event_append_only",
+        ),
+        psycopg.connect(live_dsn) as conn,
+    ):
+        conn.execute(
+            """
+            DELETE FROM research_ops.recovery_activation_event
+            WHERE activation_id = %s
+            """,
+            (event[0],),
+        )
 
 
 def test_live_health_snapshot_uses_bounded_worker_freshness(live_dsn: str) -> None:
@@ -552,6 +834,40 @@ def test_worker_classifies_transient_and_permanent_projection_errors(
             (permanent_id,),
         ).fetchone()
     assert permanent == (DEAD_LETTER, "permanent_contract")
+
+    timeout_id, _ = _audit_event(live_dsn)
+    timeout_worker = OutboxWorker(
+        store=OutboxStore(live_dsn),
+        projector=_FailingProjector(TimeoutError("projection timed out")),
+        settings=WorkerSettings(worker_id="timeout-worker", lease_seconds=6),
+    )
+    assert timeout_worker.run_one() is True
+    with psycopg.connect(live_dsn) as conn:
+        timeout = conn.execute(
+            """
+            SELECT status, last_error_category
+            FROM research_ops.outbox_delivery WHERE event_id = %s
+            """,
+            (timeout_id,),
+        ).fetchone()
+    assert timeout == (PENDING, "transient_timeout")
+
+    exhausted_id, _ = _audit_event(live_dsn)
+    exhausted_worker = OutboxWorker(
+        store=OutboxStore(live_dsn),
+        projector=_FailingProjector(MemoryError("projection memory exhausted")),
+        settings=WorkerSettings(worker_id="exhausted-worker", lease_seconds=6),
+    )
+    assert exhausted_worker.run_one() is True
+    with psycopg.connect(live_dsn) as conn:
+        exhausted = conn.execute(
+            """
+            SELECT status, last_error_category
+            FROM research_ops.outbox_delivery WHERE event_id = %s
+            """,
+            (exhausted_id,),
+        ).fetchone()
+    assert exhausted == (DEAD_LETTER, "resource_exhausted")
 
 
 def test_worker_sigterm_drains_current_event_then_stops(live_dsn: str) -> None:

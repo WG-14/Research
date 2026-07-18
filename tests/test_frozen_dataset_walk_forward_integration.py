@@ -12,9 +12,13 @@ from market_research.research.hashing import sha256_prefixed
 from market_research.research.reproduction import load_reproduction_receipt
 from market_research.research_composition import builtin_strategy_registry
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
+from tests.clean_provenance_fixture import install_committed_checkout_provenance
 
 
-def test_one_frozen_artifact_runs_two_walk_forward_windows_without_db(tmp_path) -> None:
+def test_one_frozen_artifact_runs_two_walk_forward_windows_without_db(
+    tmp_path, monkeypatch
+) -> None:
+    install_committed_checkout_provenance(monkeypatch)
     frozen, manifest, manager = frozen_manifest_and_manager(tmp_path, walk_forward=True)
     report = run_research_walk_forward(
         manifest=manifest,

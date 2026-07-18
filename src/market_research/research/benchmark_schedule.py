@@ -109,7 +109,7 @@ class _ScheduleRuntime:
                 "same_holding_period_exit" if side == "SELL" else "schedule_no_action"
             )
         )
-        features = {
+        features: dict[str, object] = {
             "candle_index": index,
             "scheduled_entry": index in self.entry_indices,
             "scheduled_exit": index in self.exit_indices,

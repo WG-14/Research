@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from django.apps.registry import Apps
 from django.db import migrations, models
+from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 from django.db.models import Count, Q
 
 
-def reject_duplicate_experiment_ids(apps, schema_editor):
+def reject_duplicate_experiment_ids(
+    apps: Apps,
+    schema_editor: BaseDatabaseSchemaEditor,
+) -> None:
     ManifestUpload = apps.get_model("portal", "ManifestUpload")
     database = schema_editor.connection.alias
     duplicates_exist = (

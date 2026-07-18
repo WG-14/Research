@@ -19,6 +19,7 @@ from market_research.application import (
     StrategyApprovalResult,
     get_capability,
 )
+from market_research.paths import ResearchPathManager
 from market_research.research import cli
 from market_research.research.experiment_registry import (
     FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
@@ -40,7 +41,7 @@ from market_research.research.hashing import (
     sha256_prefixed,
 )
 from tests.test_run_lifecycle import _context
-from tests.test_strategy_research_package import _result
+from tests.test_strategy_research_package import _bind_validation_admission, _result
 
 
 def _actor(
@@ -78,10 +79,46 @@ def _review_request(actor: ActorContext) -> HumanReviewRequest:
     )
 
 
+def _prepare_reviewable_candidate(manager: ResearchPathManager) -> None:
+    subject = GovernanceSubject(
+        GovernanceSubjectType.STRATEGY_CANDIDATE,
+        "candidate-1",
+        "1",
+    )
+    for source, target, evidence in (
+        (None, "DRAFT", {}),
+        (
+            "DRAFT",
+            "BACKTESTED",
+            {"backtest_report_hash": "sha256:" + "1" * 64},
+        ),
+        (
+            "BACKTESTED",
+            "ROBUSTNESS_PASSED",
+            {"stress_suite_hash": "sha256:" + "2" * 64},
+        ),
+        (
+            "ROBUSTNESS_PASSED",
+            "OUT_OF_SAMPLE_PASSED",
+            {"final_holdout_confirmation_hash": "sha256:" + "3" * 64},
+        ),
+    ):
+        append_lifecycle_transition(
+            manager=manager,
+            subject=subject,
+            from_state=source,
+            to_state=target,
+            actor_id="researcher-a",
+            reason=f"advance candidate to {target}",
+            evidence_hashes=evidence,
+        )
+
+
 def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]:
     context = _context(tmp_path)
     manager = context.paths
     report = _result()
+    _bind_validation_admission(report, manager)
     confirmation = report["final_holdout_confirmation"]
     selection_artifact = report["selection_artifact"]
     reservation = reserve_research_attempt(
@@ -273,12 +310,22 @@ def test_record_review_derives_actor_identity_and_rejects_self_action(
         permission="research.review.record",
     )
 
-    result = service.record_review(_review_request(actor))
+    request = _review_request(actor).model_copy(
+        update={"idempotency_key": "review-request-1"}
+    )
+    with pytest.raises(GovernanceError, match="subject_lifecycle_missing"):
+        service.record_review(request)
+
+    _prepare_reviewable_candidate(context.paths)
+    result = service.record_review(request)
+    replay = service.record_review(request)
 
     assert result.reviewer_id == "reviewer-a"
     assert result.reviewer_role == "research_reviewer"
     assert result.review["reviewer_id"] == actor.actor_id
     assert result.review["reviewer_role"] == actor.roles[0]
+    assert result.review["review_request_id"] == "review-request-1"
+    assert replay.row_hash == result.row_hash
 
     forged_payload = _review_request(actor).model_dump()
     forged_payload["reviewer_id"] = "forged-reviewer"

@@ -253,7 +253,10 @@ class OutboxStore:
             ).fetchone()
         if row is None:
             raise ClaimLost("outbox_claim_lost")
-        return row[0]
+        lease_expires_at = row[0]
+        if not isinstance(lease_expires_at, datetime):
+            raise RuntimeError("outbox_lease_expiry_invalid")
+        return lease_expires_at
 
     def mark_projected(
         self,
@@ -423,6 +426,8 @@ class OutboxStore:
                 """,
                 (observed_at,),
             ).fetchone()
+        if row is None:
+            raise RuntimeError("outbox_metrics_query_returned_no_row")
         return OutboxMetrics(int(row[0]), int(row[1]), int(row[2]), float(row[3]))
 
     def worker_heartbeat(

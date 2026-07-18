@@ -137,7 +137,10 @@ def test_release_build_and_native_install_are_provenance_bound_wheels() -> None:
     root_project = _toml(ROOT / "pyproject.toml")
     web_project = _toml(WEB / "pyproject.toml")
     assert root_project["tool"]["setuptools"]["package-data"] == {
-        "market_research": ["_build_provenance.json"]
+        "market_research": [
+            "_build_provenance.json",
+            "builtin_strategies/*.strategy.json",
+        ]
     }
     assert web_project["tool"]["setuptools"]["package-data"]["market_research_web"] == [
         "_build_provenance.json"
@@ -150,6 +153,18 @@ def test_release_build_and_native_install_are_provenance_bound_wheels() -> None:
     assert "tools/build_release_artifacts.py" in platform
     assert "tools/install_release.py" in platform
     assert "uv build --all-packages --out-dir dist/platform" not in platform
+    assert ': "${PYTHONHASHSEED:=0}"' in platform
+    assert "uv run --frozen --package market-research market-research" in platform
+    for thread_variable in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        assert f"{thread_variable}=1" in platform
+        assert f"${{{thread_variable}:=" not in platform
     installer = (ROOT / "tools" / "install_release.py").read_text(encoding="utf-8")
     assert '"--no-emit-workspace"' in installer
     assert '"--no-deps"' in installer
@@ -160,6 +175,7 @@ def test_release_build_and_native_install_are_provenance_bound_wheels() -> None:
     )
     assert "installed_distribution_not_direct_wheel" in verifier
     assert "installed_source_digest_mismatch" in verifier
+    assert "installed_research_provenance_invalid" in verifier
 
     native = (OPERATIONS / "deploy" / "native" / "README.md").read_text(
         encoding="utf-8"
@@ -168,3 +184,76 @@ def test_release_build_and_native_install_are_provenance_bound_wheels() -> None:
     assert "three exact manifest-bound wheels with `--no-deps`" in native
     assert "`pip install -e`" in native
     assert "`uv sync`" in native
+
+
+def test_platform_launcher_overrides_hostile_numeric_thread_environment(
+    tmp_path: Path,
+) -> None:
+    fake_uv = tmp_path / "uv"
+    environment_log = tmp_path / "environment.log"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$PYTHONHASHSEED,$OMP_NUM_THREADS,"
+        "$OPENBLAS_NUM_THREADS,$MKL_NUM_THREADS,$NUMEXPR_NUM_THREADS,"
+        '$BLIS_NUM_THREADS,$VECLIB_MAXIMUM_THREADS" > "$PLATFORM_ENV_LOG"\n',
+        encoding="utf-8",
+    )
+    fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IXUSR)
+    environment = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "PLATFORM_ENV_LOG": str(environment_log),
+        "PYTHONHASHSEED": "17",
+        "OMP_NUM_THREADS": "8",
+        "OPENBLAS_NUM_THREADS": "8",
+        "MKL_NUM_THREADS": "8",
+        "NUMEXPR_NUM_THREADS": "8",
+        "BLIS_NUM_THREADS": "8",
+        "VECLIB_MAXIMUM_THREADS": "8",
+    }
+
+    subprocess.run(
+        ["sh", str(ROOT / "scripts" / "platform"), "docs-check"],
+        env=environment,
+        check=True,
+    )
+
+    assert environment_log.read_text(encoding="utf-8").strip() == ("17,1,1,1,1,1,1")
+
+
+def test_platform_research_launcher_uses_frozen_workspace_and_forwards_args(
+    tmp_path: Path,
+) -> None:
+    fake_uv = tmp_path / "uv"
+    argv_log = tmp_path / "argv.log"
+    fake_uv.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$*" > "$PLATFORM_ARGV_LOG"\n',
+        encoding="utf-8",
+    )
+    fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IXUSR)
+    environment = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "PLATFORM_ARGV_LOG": str(argv_log),
+    }
+
+    subprocess.run(
+        [
+            "sh",
+            str(ROOT / "scripts" / "platform"),
+            "research",
+            "research-reproduce-run",
+            "--manifest",
+            "/abs/manifest.json",
+            "--receipt",
+            "/abs/receipt.json",
+        ],
+        env=environment,
+        check=True,
+    )
+
+    assert argv_log.read_text(encoding="utf-8").strip() == (
+        "run --frozen --package market-research market-research "
+        "research-reproduce-run --manifest /abs/manifest.json "
+        "--receipt /abs/receipt.json"
+    )

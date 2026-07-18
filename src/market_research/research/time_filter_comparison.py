@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, SupportsFloat, SupportsIndex, cast
 
 
 def build_time_filter_comparison_summary(
@@ -55,7 +56,7 @@ def _exit_rule_summary(closed_trades: list[Any], rule: str) -> dict[str, Any]:
         ):
             continue
         count += 1
-        total_pnl += float(_field(trade, "net_pnl", 0.0) or 0.0)
+        total_pnl += _optional_float(_field(trade, "net_pnl", 0.0)) or 0.0
     return {"count": count, "total_pnl": total_pnl}
 
 
@@ -89,7 +90,9 @@ def _sequence(value: object) -> list[Any]:
         return value
     if isinstance(value, tuple):
         return list(value)
-    return list(value) if not isinstance(value, (str, bytes, dict)) else []
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+        return list(value)
+    return []
 
 
 def _mapping(value: object) -> dict[str, Any] | None:
@@ -106,6 +109,7 @@ def _optional_float(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        numeric = cast(str | bytes | bytearray | SupportsFloat | SupportsIndex, value)
+        return float(numeric)
     except (TypeError, ValueError):
         return None

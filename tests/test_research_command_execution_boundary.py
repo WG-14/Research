@@ -108,7 +108,8 @@ for name in {forbidden!r}:
 
     assert result.returncode == 0, result.stderr
     assert (
-        "[RESEARCH-BACKTEST] error=dataset split train has no candles" in result.stdout
+        "[RESEARCH-BACKTEST] error=authoritative_execution_requires_clean_git_checkout"
+        in result.stdout
     )
 
 
