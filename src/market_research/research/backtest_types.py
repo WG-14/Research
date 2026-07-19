@@ -16,6 +16,7 @@ from typing import (
 from .decision_event import OrderIntent, ResearchDecisionEvent
 from .execution_model.base import ExecutionFill, ExecutionRequest
 from .portfolio_ledger import LedgerEntry
+from .hashing import sha256_prefixed
 
 if TYPE_CHECKING:
     from .strategy_contract import CompiledStrategyContract
@@ -348,6 +349,23 @@ class BacktestRun:
     strategy_registry_hash: str | None = None
     strategy_plugin_contract_hash: str | None = None
     decision_stream_hash: str | None = None
+    dataset_snapshot_id: str | None = None
+    dataset_source: str | None = None
+    dataset_market: str | None = None
+    dataset_interval: str | None = None
+    dataset_period_start: str | None = None
+    dataset_period_end: str | None = None
+    dataset_artifact_manifest_hash: str | None = None
+    dataset_snapshot_hash: str | None = None
+    dataset_data_hash: str | None = None
+    dataset_query_hash: str | None = None
+    dataset_split_name: str | None = None
+    execution_timing_hash: str | None = None
+    materialized_parameters_hash: str | None = None
+    parameter_source_map_hash: str | None = None
+    point_in_time_decision_evidence: tuple[dict[str, object], ...] = ()
+    point_in_time_decision_stream_hash: str | None = None
+    point_in_time_authority_binding_hash: str | None = None
     metrics_hash: str | None = None
     authoritative_decision_ids: tuple[str, ...] = ()
 
@@ -357,6 +375,60 @@ class BacktestRun:
             fill_request_binding_violations,
             fill_timeline_violations,
         )
+
+        if self.point_in_time_decision_evidence:
+            row_hashes: list[str] = []
+            for row in self.point_in_time_decision_evidence:
+                payload = dict(row)
+                recorded = payload.pop("row_hash", None)
+                calculated = sha256_prefixed(
+                    payload, label="point_in_time_decision_row"
+                )
+                if recorded != calculated:
+                    raise ValueError("point_in_time_decision_row_hash_mismatch")
+                row_hashes.append(calculated)
+            calculated_stream_hash = sha256_prefixed(
+                {"schema_version": 1, "row_hashes": row_hashes},
+                label="point_in_time_decision_stream",
+            )
+            if self.point_in_time_decision_stream_hash != calculated_stream_hash:
+                raise ValueError("point_in_time_decision_stream_hash_mismatch")
+            summary = self.execution_event_summary or {}
+            if summary.get("point_in_time_decision_stream_hash") != (
+                calculated_stream_hash
+            ):
+                raise ValueError("point_in_time_summary_stream_hash_mismatch")
+            if summary.get("point_in_time_authority_binding_hash") != (
+                self.point_in_time_authority_binding_hash
+            ):
+                raise ValueError("point_in_time_summary_authority_hash_mismatch")
+
+        if self.dataset_snapshot_hash is not None:
+            summary = self.execution_event_summary or {}
+            lineage = {
+                "dataset_snapshot_id": self.dataset_snapshot_id,
+                "dataset_source": self.dataset_source,
+                "dataset_market": self.dataset_market,
+                "dataset_interval": self.dataset_interval,
+                "dataset_period_start": self.dataset_period_start,
+                "dataset_period_end": self.dataset_period_end,
+                "dataset_snapshot_hash": self.dataset_snapshot_hash,
+                "dataset_data_hash": self.dataset_data_hash,
+                "dataset_query_hash": self.dataset_query_hash,
+                "dataset_split_name": self.dataset_split_name,
+                "execution_timing_hash": self.execution_timing_hash,
+                "materialized_parameters_hash": self.materialized_parameters_hash,
+                "parameter_source_map_hash": self.parameter_source_map_hash,
+            }
+            if any(
+                not isinstance(value, str) or not value for value in lineage.values()
+            ):
+                raise ValueError("backtest_authoritative_input_lineage_incomplete")
+            lineage["dataset_artifact_manifest_hash"] = (
+                self.dataset_artifact_manifest_hash
+            )
+            if any(summary.get(key) != value for key, value in lineage.items()):
+                raise ValueError("backtest_authoritative_input_lineage_mismatch")
 
         decision_index = _stream_index(
             "decision", self.decisions, lambda value: value.decision_id()

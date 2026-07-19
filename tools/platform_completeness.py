@@ -26,16 +26,18 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = PROJECT_ROOT / "docs" / "platform-completeness-criteria.json"
-DEFAULT_REPORT = PROJECT_ROOT / "docs" / "platform-completeness-status.generated.md"
+DEFAULT_MANIFEST = PROJECT_ROOT / "docs" / "research-platform-evaluation-matrix.json"
+DEFAULT_REPORT = (
+    PROJECT_ROOT / "docs" / "research-platform-completeness-status.generated.md"
+)
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _ID_RE = re.compile(r"^[A-Z]+-[0-9]{2}$")
 _EVIDENCE_RANK = {"E0": 0, "E1": 1, "E2": 2, "E3": 3, "E4": 4, "E5": 5}
 _FORBIDDEN_SELF_EVIDENCE = {
-    "docs/platform-completeness-review.md",
-    "docs/platform-completeness-criteria.json",
-    "docs/platform-completeness-status.generated.md",
+    "docs/research-platform-completeness-review.md",
+    "docs/research-platform-evaluation-matrix.json",
+    "docs/research-platform-completeness-status.generated.md",
 }
 _FORBIDDEN_COMMAND_TOKENS = {
     "--continue-on-collection-errors",
@@ -101,6 +103,8 @@ _SECRET_ENVIRONMENT_MARKERS = (
 )
 _DETERMINISTIC_ENVIRONMENT = {
     "BLIS_NUM_THREADS": "1",
+    "DJANGO_SETTINGS_MODULE": "market_research_web.settings_test",
+    "INTERNAL_WEB_SECRET_KEY": "test-only-not-for-production-0123456789abcdef",
     "MKL_NUM_THREADS": "1",
     "NUMEXPR_NUM_THREADS": "1",
     "OMP_NUM_THREADS": "1",
@@ -110,6 +114,7 @@ _DETERMINISTIC_ENVIRONMENT = {
     "VECLIB_MAXIMUM_THREADS": "1",
 }
 _EXTERNAL_ATTESTATION_SCOPE = "site_or_organization"
+_REPOSITORY_TRACKED_DELETION_SENTINEL = b"platform-completeness:tracked-file-deleted:v1"
 _PYTEST_PASS_RE = re.compile(r"\b[1-9][0-9]*\s+passed\b", re.IGNORECASE)
 _PYTEST_ZERO_RE = re.compile(
     r"\b(?:no tests ran|collected\s+0\s+items?)\b", re.IGNORECASE
@@ -757,6 +762,371 @@ def _evidence_findings(
     return findings, achieved_level
 
 
+def _evaluate_research_only_matrix(
+    *,
+    manifest: dict[str, Any],
+    manifest_hash: str,
+    repository_root: Path,
+    evidence_root: Path | None,
+) -> Evaluation:
+    """Evaluate the canonical 215-row research-only rubric matrix.
+
+    The matrix records assessment state, while completion credit still comes
+    only from hash-bound path and command receipts.  This prevents a reviewer
+    from turning a narrative ``FULL`` assertion into gate credit.
+    """
+
+    findings: list[Finding] = []
+    canonical = manifest.get("canonical_source")
+    if not isinstance(canonical, dict):
+        canonical = {}
+        findings.append(Finding("manifest", "canonical_source_missing", "required"))
+    expected_criteria = canonical.get("criterion_count")
+    expected_blockers = canonical.get("blocker_count")
+    expected_areas = canonical.get("area_count")
+    for label, actual, expected in (
+        ("criterion_count", expected_criteria, 215),
+        ("blocker_count", expected_blockers, 11),
+        ("area_count", expected_areas, 16),
+    ):
+        if actual != expected:
+            findings.append(
+                Finding(
+                    "manifest", f"{label}_invalid", f"expected {expected}, got {actual}"
+                )
+            )
+    rubric_hash = canonical.get("sha256")
+    if not isinstance(rubric_hash, str) or not _HASH_RE.fullmatch(rubric_hash):
+        findings.append(Finding("manifest", "rubric_hash_invalid", repr(rubric_hash)))
+        rubric_hash = ""
+
+    policy = manifest.get("decision_policy")
+    if not isinstance(policy, dict):
+        policy = {}
+        findings.append(Finding("manifest", "decision_policy_missing", "required"))
+    if policy.get("single_source_of_truth") is not True:
+        findings.append(
+            Finding("manifest", "single_source_policy_weakened", "must be true")
+        )
+    completion_text = str(policy.get("completion") or "")
+    if not all(token in completion_text for token in ("215", "11", "100")):
+        findings.append(
+            Finding(
+                "manifest",
+                "completion_policy_weakened",
+                "completion must require 215 criteria, 11 blockers, and score 100",
+            )
+        )
+
+    areas = manifest.get("areas")
+    if not isinstance(areas, list):
+        areas = []
+        findings.append(Finding("manifest", "areas_missing", "areas must be a list"))
+    if len(areas) != 16:
+        findings.append(
+            Finding("manifest", "area_count_mismatch", f"expected 16, got {len(areas)}")
+        )
+    area_map: dict[str, tuple[int, tuple[str, ...]]] = {}
+    for index, raw_area in enumerate(areas):
+        if not isinstance(raw_area, dict):
+            findings.append(Finding("manifest", "area_invalid", f"area[{index}]"))
+            continue
+        area_id = raw_area.get("id")
+        weight = raw_area.get("weight")
+        raw_ids = raw_area.get("criterion_ids")
+        if not isinstance(area_id, str) or not area_id:
+            findings.append(Finding("manifest", "area_id_invalid", f"area[{index}]"))
+            continue
+        if area_id in area_map:
+            findings.append(Finding(area_id, "area_duplicate", area_id))
+            continue
+        if not isinstance(weight, int) or weight <= 0:
+            findings.append(Finding(area_id, "area_weight_invalid", repr(weight)))
+            weight = 0
+        if (
+            not isinstance(raw_ids, list)
+            or not raw_ids
+            or not all(isinstance(item, str) for item in raw_ids)
+        ):
+            findings.append(Finding(area_id, "area_criteria_invalid", repr(raw_ids)))
+            raw_ids = []
+        area_map[area_id] = (weight, tuple(raw_ids))
+    if sum(item[0] for item in area_map.values()) != 100:
+        findings.append(
+            Finding(
+                "manifest",
+                "area_weights_invalid",
+                f"expected 100, got {sum(item[0] for item in area_map.values())}",
+            )
+        )
+
+    raw_criteria = manifest.get("criteria")
+    if not isinstance(raw_criteria, list):
+        raw_criteria = []
+        findings.append(
+            Finding("manifest", "criteria_missing", "criteria must be a list")
+        )
+    if len(raw_criteria) != 215:
+        findings.append(
+            Finding(
+                "manifest",
+                "criterion_count_mismatch",
+                f"expected 215, got {len(raw_criteria)}",
+            )
+        )
+    ids = [
+        item.get("id")
+        for item in raw_criteria
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    if len(ids) != len(set(ids)):
+        findings.append(
+            Finding("manifest", "criterion_ids_duplicate", "IDs must be unique")
+        )
+    declared_area_ids = [
+        item for _weight, values in area_map.values() for item in values
+    ]
+    if sorted(ids) != sorted(declared_area_ids):
+        findings.append(
+            Finding(
+                "manifest",
+                "area_criterion_membership_mismatch",
+                "area criterion IDs must cover every criterion exactly once",
+            )
+        )
+
+    area_scores: dict[str, list[int]] = {area_id: [] for area_id in area_map}
+    criterion_results: list[CriterionResult] = []
+    allowed_statuses = {"FULL", "PARTIAL", "GAP", "UNDETERMINED"}
+    for raw_criterion in raw_criteria:
+        if not isinstance(raw_criterion, dict):
+            findings.append(
+                Finding("manifest", "criterion_invalid", repr(raw_criterion))
+            )
+            continue
+        criterion_id = raw_criterion.get("id")
+        if not isinstance(criterion_id, str) or not _ID_RE.fullmatch(criterion_id):
+            criterion_id = repr(criterion_id)
+            findings.append(Finding(criterion_id, "criterion_id_invalid", criterion_id))
+        local: list[Finding] = []
+        area_id = raw_criterion.get("area")
+        if not isinstance(area_id, str) or area_id not in area_map:
+            local.append(Finding(criterion_id, "criterion_area_invalid", repr(area_id)))
+            area_id = "unknown"
+        elif criterion_id not in area_map[area_id][1]:
+            local.append(
+                Finding(criterion_id, "criterion_area_membership_invalid", area_id)
+            )
+        for field in (
+            "title",
+            "exact_meaning",
+            "ideal_state",
+            "objective_evidence",
+            "verification_method",
+            "completion_condition",
+        ):
+            if (
+                not isinstance(raw_criterion.get(field), str)
+                or not str(raw_criterion[field]).strip()
+            ):
+                local.append(Finding(criterion_id, f"{field}_missing", field))
+        score = raw_criterion.get("score")
+        if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 5:
+            local.append(Finding(criterion_id, "score_missing_or_invalid", repr(score)))
+            numeric_score: int | None = None
+        else:
+            numeric_score = score
+            if area_id in area_scores:
+                area_scores[area_id].append(score)
+        status = raw_criterion.get("current_status")
+        if status not in allowed_statuses:
+            local.append(
+                Finding(criterion_id, "criterion_status_invalid", repr(status))
+            )
+        elif status != "FULL":
+            local.append(Finding(criterion_id, "criterion_not_full", str(status)))
+        if status == "FULL" and numeric_score != 5:
+            local.append(
+                Finding(criterion_id, "full_status_score_mismatch", repr(numeric_score))
+            )
+        if status == "GAP" and numeric_score not in {0, None}:
+            local.append(
+                Finding(criterion_id, "gap_status_score_mismatch", repr(numeric_score))
+            )
+        declared_level = raw_criterion.get("evidence_level")
+        if declared_level not in _EVIDENCE_RANK:
+            local.append(
+                Finding(
+                    criterion_id,
+                    "declared_evidence_level_invalid",
+                    repr(declared_level),
+                )
+            )
+            declared_level = "E0"
+        required_level = (
+            "E5" if "E5" in str(raw_criterion.get("objective_evidence") or "") else "E4"
+        )
+        if _EVIDENCE_RANK[declared_level] < _EVIDENCE_RANK[required_level]:
+            local.append(
+                Finding(
+                    criterion_id,
+                    "declared_evidence_level_insufficient",
+                    f"required {required_level}, got {declared_level}",
+                )
+            )
+        history = raw_criterion.get("assessment_history")
+        if not isinstance(history, list) or not history:
+            local.append(
+                Finding(criterion_id, "assessment_history_missing", "required")
+            )
+        elif not isinstance(history[-1], dict) or any(
+            history[-1].get(field) != value
+            for field, value in (
+                ("status", status),
+                ("score", numeric_score),
+                ("evidence_level", declared_level),
+            )
+        ):
+            local.append(
+                Finding(
+                    criterion_id, "assessment_history_current_state_mismatch", "latest"
+                )
+            )
+        evidence_findings, achieved_level = _evidence_findings(
+            subject=criterion_id,
+            evidence=raw_criterion.get("evidence"),
+            rubric_sha256=rubric_hash,
+            repository_root=repository_root,
+            evidence_root=evidence_root,
+        )
+        if status == "FULL":
+            local.extend(evidence_findings)
+        projected = _criterion_report_bindings(raw_criterion.get("evidence"))
+        complete = not local and status == "FULL" and numeric_score == 5
+        criterion_results.append(
+            CriterionResult(
+                criterion_id=criterion_id,
+                area_id=area_id,
+                score=numeric_score,
+                evidence_level=achieved_level,
+                complete=complete,
+                finding_codes=tuple(sorted({item.code for item in local})),
+                required_evidence_level=required_level,
+                evidence_paths=projected[1],
+                verification_commands=projected[2],
+                receipt_bindings=projected[3],
+                local_findings=tuple(local),
+            )
+        )
+        findings.extend(local)
+
+    declared_score = 0.0
+    for area_id, (weight, criterion_ids) in area_map.items():
+        values = area_scores.get(area_id, [])
+        if len(values) != len(criterion_ids):
+            findings.append(
+                Finding(
+                    area_id,
+                    "area_score_incomplete",
+                    f"{len(values)}/{len(criterion_ids)}",
+                )
+            )
+            continue
+        declared_score += (sum(values) / len(values)) / 5.0 * weight
+
+    blockers = manifest.get("blockers")
+    if not isinstance(blockers, list):
+        blockers = []
+        findings.append(Finding("manifest", "blockers_missing", "must be a list"))
+    if len(blockers) != 11:
+        findings.append(
+            Finding(
+                "manifest",
+                "blocker_count_mismatch",
+                f"expected 11, got {len(blockers)}",
+            )
+        )
+    blocker_ids: list[str] = []
+    for raw_blocker in blockers:
+        if not isinstance(raw_blocker, dict):
+            findings.append(Finding("manifest", "blocker_invalid", repr(raw_blocker)))
+            continue
+        blocker_id = raw_blocker.get("id")
+        if not isinstance(blocker_id, str) or not re.fullmatch(
+            r"B-[0-9]{2}", blocker_id
+        ):
+            findings.append(Finding("manifest", "blocker_id_invalid", repr(blocker_id)))
+            continue
+        blocker_ids.append(blocker_id)
+        if raw_blocker.get("required_status") != "PASS":
+            findings.append(
+                Finding(blocker_id, "blocker_policy_weakened", "PASS required")
+            )
+        current_status = raw_blocker.get("current_status")
+        if current_status != "PASS":
+            findings.append(
+                Finding(
+                    blocker_id,
+                    "blocker_not_cleared",
+                    str(current_status),
+                )
+            )
+        declared_level = raw_blocker.get("evidence_level")
+        if declared_level not in _EVIDENCE_RANK:
+            findings.append(
+                Finding(
+                    blocker_id,
+                    "declared_evidence_level_invalid",
+                    repr(declared_level),
+                )
+            )
+            declared_level = "E0"
+        elif current_status == "PASS" and _EVIDENCE_RANK[declared_level] < 4:
+            findings.append(
+                Finding(
+                    blocker_id,
+                    "declared_evidence_level_insufficient",
+                    f"required E4, got {declared_level}",
+                )
+            )
+        history = raw_blocker.get("assessment_history")
+        if not isinstance(history, list) or not history:
+            findings.append(Finding(blocker_id, "blocker_history_missing", "required"))
+        elif not isinstance(history[-1], dict) or any(
+            history[-1].get(field) != value
+            for field, value in (
+                ("status", current_status),
+                ("evidence_level", declared_level),
+            )
+        ):
+            findings.append(
+                Finding(blocker_id, "blocker_history_current_state_mismatch", "latest")
+            )
+        if current_status == "PASS":
+            blocker_evidence_findings, _achieved_level = _evidence_findings(
+                subject=blocker_id,
+                evidence=raw_blocker.get("evidence"),
+                rubric_sha256=rubric_hash,
+                repository_root=repository_root,
+                evidence_root=evidence_root,
+            )
+            findings.extend(blocker_evidence_findings)
+    if len(blocker_ids) != len(set(blocker_ids)):
+        findings.append(
+            Finding("manifest", "blocker_ids_duplicate", "IDs must be unique")
+        )
+
+    return Evaluation(
+        manifest_sha256=manifest_hash,
+        rubric_sha256=rubric_hash,
+        expected_criteria=215,
+        declared_score=round(declared_score, 12),
+        verified_criteria=sum(item.complete for item in criterion_results),
+        criteria=tuple(criterion_results),
+        findings=tuple(findings),
+    )
+
+
 def evaluate_manifest(
     manifest_path: Path = DEFAULT_MANIFEST,
     *,
@@ -770,6 +1140,14 @@ def evaluate_manifest(
     )
     if not isinstance(manifest, dict):
         raise ValueError("manifest root must be an object")
+
+    if "canonical_source" in manifest and "decision_policy" in manifest:
+        return _evaluate_research_only_matrix(
+            manifest=manifest,
+            manifest_hash=manifest_hash,
+            repository_root=repository_root,
+            evidence_root=evidence_root,
+        )
 
     findings: list[Finding] = []
     if manifest.get("schema_version") != 1:
@@ -1187,7 +1565,8 @@ def render_report(evaluation: Evaluation) -> str:
         f"- Manifest SHA-256: `{evaluation.manifest_sha256}`",
         "",
         "A declared score never substitutes for hash-bound path and command-receipt "
-        "evidence. All 153 criteria remain in the denominator; unsupported and "
+        f"evidence. All {evaluation.expected_criteria} criteria remain in the "
+        "denominator; unsupported and "
         "not-applicable capabilities fail this completion gate.",
         "",
         "## Failure summary",
@@ -1374,16 +1753,27 @@ def _subject_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _rubric_hash_from_manifest(manifest: dict[str, Any]) -> str:
+    """Return the rubric identity for either supported manifest generation."""
+
+    if "canonical_source" in manifest and "decision_policy" in manifest:
+        source = manifest.get("canonical_source")
+        value = source.get("sha256") if isinstance(source, dict) else None
+    else:
+        source = manifest.get("rubric")
+        value = source.get("source_sha256") if isinstance(source, dict) else None
+    if not isinstance(value, str) or not _HASH_RE.fullmatch(value):
+        raise EvidenceRunError("manifest rubric SHA-256 is invalid")
+    return value
+
+
 def _prepare_evidence_commands(
     *,
     manifest: dict[str, Any],
     repository_root: Path,
     evidence_root: Path,
 ) -> tuple[EvidenceCommand, ...]:
-    rubric = manifest.get("rubric")
-    rubric_hash = rubric.get("source_sha256") if isinstance(rubric, dict) else None
-    if not isinstance(rubric_hash, str) or not _HASH_RE.fullmatch(rubric_hash):
-        raise EvidenceRunError("manifest rubric SHA-256 is invalid")
+    _rubric_hash_from_manifest(manifest)
     receipt_paths: set[str] = set()
     prepared: list[EvidenceCommand] = []
     for row in _subject_rows(manifest):
@@ -1513,6 +1903,16 @@ def _repository_provenance(repository_root: Path) -> RepositoryProvenance:
         "--exclude-standard",
         "-z",
     )
+    deleted_paths = set(
+        item
+        for item in _git_bytes(
+            repository_root,
+            "ls-files",
+            "--deleted",
+            "-z",
+        ).split(b"\0")
+        if item
+    )
     digest = hashlib.sha256()
     for raw_path in sorted(item for item in raw_paths.split(b"\0") if item):
         try:
@@ -1520,11 +1920,23 @@ def _repository_provenance(repository_root: Path) -> RepositoryProvenance:
         except UnicodeDecodeError as exc:
             raise EvidenceRunError("repository path is not UTF-8") from exc
         candidate = _safe_relative(repository_root, relative)
-        if candidate is None or not candidate.is_file():
+        if candidate is None:
             raise EvidenceRunError(f"repository evidence path is unsafe: {relative}")
         digest.update(raw_path)
         digest.update(b"\0")
-        digest.update(bytes.fromhex(sha256_path(candidate)))
+        if candidate.is_file():
+            digest.update(bytes.fromhex(sha256_path(candidate)))
+        else:
+            lexical_candidate = repository_root / relative
+            if (
+                raw_path not in deleted_paths
+                or lexical_candidate.exists()
+                or lexical_candidate.is_symlink()
+            ):
+                raise EvidenceRunError(
+                    f"repository evidence path is unsafe: {relative}"
+                )
+            digest.update(_REPOSITORY_TRACKED_DELETION_SENTINEL)
         digest.update(b"\0")
     return RepositoryProvenance(commit=commit, dirty_diff_sha256=digest.hexdigest())
 
@@ -1769,6 +2181,7 @@ def run_manifest_evidence(
     )
     manifest = load_json(manifest_path)
     source_manifest_hash = sha256_path(manifest_path)
+    rubric_hash = _rubric_hash_from_manifest(manifest)
     commands = _prepare_evidence_commands(
         manifest=manifest,
         repository_root=repository,
@@ -1832,7 +2245,7 @@ def run_manifest_evidence(
         receipt = {
             "schema_version": 1,
             "criterion_id": command.subject,
-            "rubric_sha256": manifest["rubric"]["source_sha256"],
+            "rubric_sha256": rubric_hash,
             "command_id": command.command_id,
             "argv": list(command.argv),
             "exit_code": execution.exit_code,

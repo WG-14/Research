@@ -1,7 +1,7 @@
 {
   "artifact_type": "research_data_dictionary",
-  "content_hash": "sha256:5c3de0b46f4c79a8711d22b0be009764c11f84bd9baa172c5b8bbb06f30dd696",
-  "dictionary_version": "2026-07-17.2",
+  "content_hash": "sha256:8a711c5198d02c1080bdb097388a1750829edc570853f5e0364c3ced67dc2a3e",
+  "dictionary_version": "2026-07-18.1",
   "fields": [
     {
       "available_at": "After known_at and after all referenced event observed_at values.",
@@ -227,6 +227,446 @@
       "available_at": "Before Research accepts or freezes the dataset.",
       "change_history": [
         {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Recorded by external data governance.",
+      "meaning": "Timezone-aware instant at which the catalog was approved.",
+      "name": "approved_at",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "RFC 3339 timestamp",
+      "unit": "approval instant",
+      "valid_range": "timezone-aware timestamp"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Recorded by external data governance.",
+      "meaning": "Identity of the authority that approved the catalog.",
+      "name": "approved_by",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "reviewer identity",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Computed canonically over every catalog field except this digest.",
+      "meaning": "Hash binding the complete catalog identity and every entry.",
+      "name": "catalog_hash",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "SHA-256 digest",
+      "valid_range": "sha256: followed by 64 lowercase hexadecimal characters"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Assigned by external data governance.",
+      "meaning": "Stable identity of the reviewed source authority.",
+      "name": "catalog_id",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "stable catalog identity",
+      "valid_range": "non-empty restricted identifier"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Fixed by the Research repository boundary.",
+      "meaning": "Requires all source credentials to remain outside Research.",
+      "name": "entries[].credential_boundary",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON constant string",
+      "unit": "credential trust boundary",
+      "valid_range": "credentials_external_to_research_distribution"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Data classes the provider is approved to prepare.",
+      "name": "entries[].data_kinds",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON array<string>",
+      "unit": "supported data classes",
+      "valid_range": "non-empty sorted unique strings"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Declared in the reviewed catalog.",
+      "meaning": "Reviewed display name for the external preparation provider.",
+      "name": "entries[].display_name",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "human-readable provider name",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Expected lag before externally prepared observations arrive.",
+      "name": "entries[].expected_delivery_lag_seconds",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON finite number",
+      "unit": "seconds",
+      "valid_range": "finite number >= 0"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Frequencies the provider is approved to prepare.",
+      "name": "entries[].frequencies",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON array<string>",
+      "unit": "supported observation frequencies",
+      "valid_range": "non-empty sorted unique strings"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Declared in the reviewed catalog without credentials.",
+      "meaning": "Reviewed license or entitlement governing research use.",
+      "name": "entries[].license_id",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "license identity",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Maximum permitted age of externally prepared observations.",
+      "name": "entries[].maximum_staleness_seconds",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON finite number",
+      "unit": "seconds",
+      "valid_range": "finite number > 0"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Declared in the reviewed catalog.",
+      "meaning": "Accountable owner of the external preparation source contract.",
+      "name": "entries[].owner",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "data owner identity",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Required event and knowledge-time evidence for prepared observations.",
+      "name": "entries[].point_in_time_policy",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON enum string",
+      "unit": "causal timestamp policy",
+      "valid_range": "event_and_available_times | event_available_received_processed_times"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Fixed by the Research repository boundary.",
+      "meaning": "Requires externally prepared offline immutable inputs only.",
+      "name": "entries[].preparation_boundary",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON constant string",
+      "unit": "data preparation trust boundary",
+      "valid_range": "externally_prepared_offline_immutable_input_only"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Assigned by external data governance.",
+      "meaning": "Provider identity matched exactly by each provenance source record.",
+      "name": "entries[].provider_id",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "provider identity",
+      "valid_range": "sorted unique restricted identifier"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Governance quality level assigned to the provider contract.",
+      "name": "entries[].quality_level",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON enum string",
+      "unit": "reviewed quality classification",
+      "valid_range": "PROVISIONAL | REVIEWED | VERIFIED"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Whether the externally prepared input may be redistributed.",
+      "name": "entries[].redistribution_allowed",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON boolean",
+      "unit": "redistribution permission",
+      "valid_range": "true | false"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Declared in the reviewed catalog.",
+      "meaning": "Human-readable reviewed limitations on offline research use.",
+      "name": "entries[].research_use_terms",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "research-use policy",
+      "valid_range": "non-empty"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance.",
+      "meaning": "Policy requiring new releases or correction versions to preserve prior data.",
+      "name": "entries[].revision_policy",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON enum string",
+      "unit": "immutable correction policy",
+      "valid_range": "append_new_release_preserve_prior | append_correction_version_preserve_prior"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Approved by external data governance and enforced by Research.",
+      "meaning": "Source kinds allowed for matching provenance records.",
+      "name": "entries[].source_kinds",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON array<enum string>",
+      "unit": "external transport classes",
+      "valid_range": "non-empty sorted subset of external_api, file_export, object_snapshot, vendor_archive"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Declared by the reviewed external source catalog.",
+      "meaning": "Exact source-catalog schema accepted by Research.",
+      "name": "schema_version",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON integer",
+      "unit": "contract version",
+      "valid_range": "1"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
+          "description": "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, revision, license, quality, ownership, staleness, external preparation, and credential-boundary policy with a complete catalog hash.",
+          "effective_date": "2026-07-18",
+          "version": "source_catalog/v1"
+        }
+      ],
+      "dataset": "dataset_source_provenance.source_catalog",
+      "generation_method": "Assigned for each reviewed catalog release.",
+      "meaning": "Immutable release identity for the complete catalog.",
+      "name": "version",
+      "nullable": false,
+      "owner_module": "market_research.research.datasets.source_catalog",
+      "provider": "Reviewed external data-governance authority; consumed offline by Research.",
+      "type": "JSON string",
+      "unit": "immutable catalog version",
+      "valid_range": "non-empty restricted identifier"
+    },
+    {
+      "available_at": "Before Research accepts or freezes the dataset.",
+      "change_history": [
+        {
           "description": "Initial provider, coverage, hash, semantics, and lineage evidence.",
           "effective_date": "2025-01-01",
           "version": "dataset_source_provenance/v1"
@@ -235,6 +675,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -260,6 +705,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -285,6 +735,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -310,6 +765,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -335,6 +795,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -360,6 +825,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -385,6 +855,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -410,6 +885,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -435,6 +915,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -460,6 +945,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -485,6 +975,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -510,6 +1005,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -535,6 +1035,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -560,6 +1065,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -585,6 +1095,11 @@
           "description": "Added acquisition request, timing, response, code-version, retry, partial-status, and error evidence; v1 is rejected rather than translated.",
           "effective_date": "2026-07-17",
           "version": "dataset_source_provenance/v2"
+        },
+        {
+          "description": "Requires the complete immutable source_catalog/v1 contract, binds its catalog hash into provenance, and rejects providers or source kinds not approved by that catalog; v2 is rejected rather than translated.",
+          "effective_date": "2026-07-18",
+          "version": "dataset_source_provenance/v3"
         }
       ],
       "dataset": "dataset_source_provenance.sources[]",
@@ -613,7 +1128,7 @@
       "name": "close",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite REAL / IEEE-754 binary64",
       "unit": "quote currency per base unit",
       "valid_range": "finite value > 0 and low <= close <= high"
@@ -633,7 +1148,7 @@
       "name": "high",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite REAL / IEEE-754 binary64",
       "unit": "quote currency per base unit",
       "valid_range": "finite value > 0 and high >= max(open, low, close)"
@@ -653,7 +1168,7 @@
       "name": "interval",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite TEXT / canonical interval string",
       "unit": "bar duration",
       "valid_range": "interval token accepted by interval_to_milliseconds"
@@ -673,7 +1188,7 @@
       "name": "low",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite REAL / IEEE-754 binary64",
       "unit": "quote currency per base unit",
       "valid_range": "finite value > 0 and low <= min(open, high, close)"
@@ -693,7 +1208,7 @@
       "name": "open",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite REAL / IEEE-754 binary64",
       "unit": "quote currency per base unit",
       "valid_range": "finite value > 0 and low <= open <= high"
@@ -713,7 +1228,7 @@
       "name": "pair",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite TEXT / UTF-8 string",
       "unit": "canonical instrument identifier",
       "valid_range": "non-empty canonical instrument identifier"
@@ -733,7 +1248,7 @@
       "name": "ts",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite INTEGER / signed 64-bit epoch timestamp",
       "unit": "milliseconds since Unix epoch UTC",
       "valid_range": "integer >= 0; unique with pair and interval"
@@ -753,7 +1268,7 @@
       "name": "volume",
       "nullable": false,
       "owner_module": "market_research.research.dataset_freeze",
-      "provider": "Externally prepared dataset, bound by source provenance v2.",
+      "provider": "Externally prepared dataset, bound by source provenance v3.",
       "type": "SQLite REAL / IEEE-754 binary64",
       "unit": "base-asset units",
       "valid_range": "finite value >= 0"

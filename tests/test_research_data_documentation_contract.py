@@ -17,7 +17,19 @@ def test_checked_in_provenance_example_is_a_valid_supported_contract() -> None:
     )
 
     assert provenance.source_priority == ("replace-with-provider-id",)
-    assert provenance.schema_version == 2
+    assert provenance.schema_version == 3
+    assert provenance.source_catalog.catalog_id == "research-source-catalog"
+    assert provenance.source_catalog.catalog_hash.startswith("sha256:")
+    catalog_entry = provenance.source_catalog.resolve("replace-with-provider-id")
+    assert catalog_entry.source_kinds == ("file_export",)
+    assert (
+        catalog_entry.preparation_boundary
+        == "externally_prepared_offline_immutable_input_only"
+    )
+    assert (
+        catalog_entry.credential_boundary
+        == "credentials_external_to_research_distribution"
+    )
     assert provenance.sources[0].source_kind == "file_export"
     assert dict(provenance.sources[0].request_parameters) == {
         "interval": "1m",

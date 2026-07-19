@@ -14,7 +14,16 @@ from .final_selection import (
     final_selection_candidate_input,
     selection_candidate_binding_summary,
 )
-from .hashing import observe_hashing, report_content_hash_payload, sha256_prefixed
+from .hashing import (
+    logical_evidence_hash_payload,
+    observe_hashing,
+    report_content_hash_payload,
+    sha256_prefixed,
+)
+from .reproduction import (
+    ReproductionContractError,
+    candidate_reproduction_fingerprint,
+)
 
 PARENT_SERIAL_REPORT_STAGES = {
     "pre_parallel_run_dataset_fingerprint",
@@ -730,6 +739,11 @@ def summarize_report_candidate(
         "not_a_fill_guarantee",
         "candidate_failed_before_complete_metrics",
         "gate_fail_reasons",
+        "strategy_spec_hash",
+        "strategy_plugin_contract_hash",
+        "strategy_registry_hash",
+        "compiled_strategy_contract_hash",
+        "effective_strategy_parameters_hash",
         "simulation_integrity_status",
         "simulation_integrity_fail_reasons",
         "resource_integrity_status",
@@ -748,6 +762,9 @@ def summarize_report_candidate(
         "candidate_profile_hash",
         "metrics_hash",
         "content_hash",
+        "candidate_result_artifact_ref",
+        "candidate_result_artifact_hash",
+        "candidate_result_artifact_detail_policy",
         "cost_sensitivity",
         "cost_model",
         "primary_scenario_id",
@@ -782,11 +799,19 @@ def summarize_report_candidate(
             final_selection_contract,
         )
     summary["selection_binding"] = selection_candidate_binding_summary(candidate)
+    try:
+        summary["reproduction_candidate_fingerprint"] = (
+            candidate_reproduction_fingerprint(candidate)
+        )
+    except ReproductionContractError:
+        # Failed or resource-aborted candidates may not contain a complete
+        # scenario evidence tree.  Their compact projection remains writable,
+        # but cannot become reproduction-receipt eligible.
+        pass
     _attach_participation_summary(summary, candidate)
     _copy_compact_diagnostics(summary, candidate)
     summary["train_equity_curve"] = []
     summary["validation_equity_curve"] = []
-    summary["final_holdout_equity_curve"] = []
     summary["candidate_payload_hash"] = sha256_prefixed(
         candidate_evidence_hash_inputs(candidate),
         label="candidate_evidence_hash",
@@ -1146,6 +1171,9 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
         "strategy_behavior_hash",
         "composite_behavior_hash_v2",
         "metrics_hash",
+        "candidate_result_artifact_ref",
+        "candidate_result_artifact_hash",
+        "candidate_result_artifact_detail_policy",
         "validation_metrics",
         "validation_metrics_v2",
         "final_holdout_metrics",
@@ -1271,37 +1299,47 @@ def _candidate_result_index_summary(candidate: dict[str, Any]) -> dict[str, Any]
 
 
 def candidate_evidence_hash_inputs(candidate: dict[str, Any]) -> dict[str, Any]:
-    scenario_hashes = [
-        scenario_evidence_hash_inputs(scenario)
-        for scenario in candidate.get("scenario_results") or []
-        if isinstance(scenario, dict)
-    ]
-    evidence = {
-        "candidate_id": candidate.get("candidate_id")
-        or candidate.get("parameter_candidate_id"),
-        "parameter_values_hash": _parameter_values_hash(candidate),
-        "scenario_evidence_hashes": [
-            sha256_prefixed(scenario, label="scenario_evidence_tree_hash")
-            for scenario in scenario_hashes
-        ],
+    """Return the complete logical candidate evidence consumed downstream.
+
+    The compact report keeps this single hash instead of the full candidate row.
+    It therefore has to bind metric bodies, execution evidence, PIT lineage, and
+    contracts themselves rather than only trusting their recorded hash aliases.
+    Physical paths/hashes and bounded stage-trace representations are excluded so
+    the value is identical before and after immutable artifact publication.
+    """
+
+    projected = logical_evidence_hash_payload(candidate)
+    return {
+        "schema_version": 2,
+        "candidate": _candidate_semantic_evidence(projected),
     }
-    for key in (
-        "behavior_hash",
-        "decision_behavior_hash",
-        "trade_ledger_hash",
-        "equity_curve_hash",
-        "composite_behavior_hash",
-        "common_decision_behavior_hash",
-        "strategy_behavior_hash",
-        "candidate_behavior_profile_hash",
-        "candidate_profile_hash",
-        "profile_hash",
-        "metrics_hash",
-        "content_hash",
-    ):
-        if candidate.get(key):
-            evidence[key] = candidate[key]
-    return evidence
+
+
+_CANDIDATE_SELF_BINDING_FIELDS = frozenset(
+    {
+        "candidate_payload_hash",
+        "selection_binding",
+        "reproduction_candidate_fingerprint",
+        "candidate_result_artifact_detail_policy",
+        "candidate_result_detail_policy",
+        "derived_detail_policy",
+        "stage_trace",
+        "stage_trace_count",
+        "stage_trace_hash",
+    }
+)
+
+
+def _candidate_semantic_evidence(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _candidate_semantic_evidence(item)
+            for key, item in sorted(value.items())
+            if key not in _CANDIDATE_SELF_BINDING_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_candidate_semantic_evidence(item) for item in value]
+    return value
 
 
 def scenario_evidence_hash_inputs(scenario: dict[str, Any]) -> dict[str, Any]:

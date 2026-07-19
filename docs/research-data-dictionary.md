@@ -9,9 +9,17 @@ hand.
 Every field records its name, type, unit, meaning, nullability, valid range,
 generation method, causal availability time, provider, versioned change
 history, and owning module. The dictionary covers the immutable canonical
-candle table, every per-source field in source provenance v2, point-in-time
-universe membership and attribute versions, market-calendar authority, and
-corporate-action raw-to-adjusted transformation evidence.
+candle table, every per-source field in source provenance v3, the complete
+embedded source catalog, point-in-time universe membership and attribute
+versions, market-calendar authority, and corporate-action raw-to-adjusted
+transformation evidence.
+
+Source provenance v3 embeds source-catalog schema 1 rather than accepting a
+detached provider name or hash reference. The catalog hash binds every reviewed
+provider policy, and each source record's provider and source kind are checked
+against its matching entry. Catalog entries must declare the exact
+external-preparation and no-credentials-in-Research boundaries; network
+collection, source probing, retry, and backfill remain outside this repository.
 
 Point-in-time universe queries always take both an economic effective date and
 a knowledge cutoff. Inactive and delisted members and all correction versions

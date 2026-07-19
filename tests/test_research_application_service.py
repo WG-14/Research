@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from market_research.research.application import ResearchApplicationService
 from market_research.research import (
     ResearchApplicationService as PublicResearchApplicationService,
@@ -51,6 +53,8 @@ def test_direct_validation_records_lifecycle_and_forwards_run_id(monkeypatch, tm
     result = service.validate(
         manifest=SimpleNamespace(
             experiment_id="service-experiment",
+            hypothesis_spec=SimpleNamespace(schema_version=2),
+            research_classification="research_only",
             manifest_hash=lambda: "sha256:" + "a" * 64,
         ),
         manifest_path="/external/manifest.json",
@@ -70,3 +74,68 @@ def test_direct_validation_records_lifecycle_and_forwards_run_id(monkeypatch, tm
         "exit_code": 0,
         "result_content_hash": "sha256:result",
     }
+
+
+def test_direct_validation_preserves_terminal_and_failed_hypothesis_outcomes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    context = _context(tmp_path)
+    calls: list[tuple[str, object]] = []
+
+    class Handle:
+        run_id = "RUN-outcome-policy"
+
+        def finish(self, **kwargs):
+            calls.append(("finish", kwargs))
+
+    monkeypatch.setattr(
+        "market_research.research.application.start_run", lambda **_: Handle()
+    )
+    monkeypatch.setattr(
+        "market_research.research.application.bind_research_validation_experiment",
+        lambda **_: None,
+    )
+    monkeypatch.setattr(
+        "market_research.research.application.preserve_validation_result",
+        lambda **kwargs: calls.append(("result", kwargs)),
+    )
+    monkeypatch.setattr(
+        "market_research.research.application.preserve_failed_validation",
+        lambda **kwargs: calls.append(("failure", kwargs)),
+    )
+    manifest = SimpleNamespace(
+        experiment_id="outcome-experiment",
+        hypothesis_spec=object(),
+        research_classification="validated_candidate",
+        manifest_hash=lambda: "sha256:" + "a" * 64,
+    )
+    service = ResearchApplicationService(context.paths, strategy_registry=object())
+    monkeypatch.setattr(
+        ResearchApplicationService,
+        "_run_validation",
+        lambda _self, **_: {
+            "end_to_end_validation_result": "FAIL",
+            "content_hash": "sha256:" + "b" * 64,
+        },
+    )
+
+    service.validate(
+        manifest=manifest,
+        manifest_path="/external/manifest.json",
+        db_path=None,
+    )
+    assert [name for name, _payload in calls] == ["result", "finish"]
+
+    calls.clear()
+
+    def fail(_self, **_kwargs):
+        raise ValueError("validation failed")
+
+    monkeypatch.setattr(ResearchApplicationService, "_run_validation", fail)
+    with pytest.raises(ValueError, match="validation failed"):
+        service.validate(
+            manifest=manifest,
+            manifest_path="/external/manifest.json",
+            db_path=None,
+        )
+    assert [name for name, _payload in calls] == ["failure", "finish"]

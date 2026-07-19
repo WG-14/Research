@@ -15,13 +15,14 @@ class DepthWalkExecutionModel:
     fee_rate: float
 
     name: str = "depth_walk"
-    version: str = "research_depth_walk_v1"
+    version: str = "research_depth_walk_v2"
 
     def params_payload(self) -> dict[str, Any]:
         return {
             "type": self.name,
             "version": self.version,
             "fee_rate": float(self.fee_rate),
+            "buy_requested_notional_semantics": "fee_inclusive_cash_budget",
             "depth_ref": "verified_per_request_depth_snapshot_only",
             "queue_position_mode": "unavailable",
             "market_impact_mode": "unavailable",
@@ -34,18 +35,19 @@ class DepthWalkExecutionModel:
             return _missing_depth_fill(request=request, model=self, side=side)
         if side == "BUY":
             requested_notional = float(request.requested_notional or 0.0)
+            trade_notional_budget = requested_notional / (1.0 + float(self.fee_rate))
             requested_qty = (
                 float(request.requested_qty)
                 if request.requested_qty is not None
                 else (
-                    requested_notional / float(request.reference_price)
+                    trade_notional_budget / float(request.reference_price)
                     if float(request.reference_price) > 0.0
                     else 0.0
                 )
             )
             filled_qty, filled_notional, levels_consumed = _walk_buy(
                 depth_snapshot.asks,
-                requested_notional=requested_notional,
+                requested_notional=trade_notional_budget,
                 requested_qty=requested_qty,
             )
         elif side == "SELL":
@@ -196,7 +198,11 @@ def _missing_depth_fill(
         and requested_notional is not None
         and float(request.reference_price) > 0.0
     ):
-        requested_qty = float(requested_notional) / float(request.reference_price)
+        requested_qty = (
+            float(requested_notional)
+            / (1.0 + float(model.fee_rate))
+            / float(request.reference_price)
+        )
     return ExecutionFill(
         signal_ts=int(request.signal_ts),
         decision_ts=int(request.decision_ts),

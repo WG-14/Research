@@ -114,6 +114,7 @@ def test_capability_registry_covers_every_cli_command_and_read_only_queries() ->
     }
     assert set(cli_specs) == set(command_registry())
     assert {
+        "research.explore",
         "jobs.list",
         "jobs.detail",
         "reports.list",
@@ -124,6 +125,12 @@ def test_capability_registry_covers_every_cli_command_and_read_only_queries() ->
         registry["research-preflight"].execution_mode is CapabilityExecutionMode.QUEUED
     )
     assert registry["research-preflight"].gui_policy is GuiPolicy.REQUIRED
+    assert registry["research.explore"].execution_mode is (
+        CapabilityExecutionMode.SYNCHRONOUS
+    )
+    assert registry["research.explore"].gui_policy is GuiPolicy.REQUIRED
+    assert registry["research.explore"].permission == "research.view"
+    assert registry["research.explore"].cli_command is None
     assert all(
         spec.permission and spec.service_id and spec.reason
         for spec in registry.values()
@@ -244,8 +251,18 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
         "market_research.application.service.load_manifest_with_registry",
         lambda *_args, **_kwargs: SimpleNamespace(
             experiment_id="application-service-experiment",
+            hypothesis_spec=SimpleNamespace(schema_version=2),
+            research_classification="research_only",
             manifest_hash=lambda: "sha256:" + "b" * 64,
         ),
+    )
+    monkeypatch.setattr(
+        "market_research.application.service.preserve_validation_result",
+        lambda **_: pytest.fail("research_only_result_must_not_be_promoted"),
+    )
+    monkeypatch.setattr(
+        "market_research.application.service.preserve_failed_validation",
+        lambda **_: pytest.fail("research_only_failure_must_not_be_promoted"),
     )
     monkeypatch.setattr(
         "market_research.application.service.bind_research_validation_experiment",

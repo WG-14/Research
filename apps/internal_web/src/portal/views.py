@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
@@ -23,6 +25,9 @@ from market_research.application import (
     ResearchApplicationService,
 )
 from market_research.application.adapter_contracts import GovernanceError
+from market_research.application.exploration import (
+    ResearchExplorationQueryError,
+)
 from market_research.research_composition import builtin_strategy_registry
 
 from .auth_audit import (
@@ -54,6 +59,11 @@ from .presenters import (
     safe_error_message,
 )
 from .reports import compare_visible_reports, list_visible_reports
+from .research_explorer import (
+    RESEARCH_EXPLORATION_PERMISSION,
+    ResearchExplorerService,
+    audit_research_exploration_read,
+)
 from .security import actor_snapshot
 from .storage import read_verified_manifest_bytes
 
@@ -75,6 +85,54 @@ STAGE_LABELS = {
     "complete": "결과와 해시를 확인했습니다",
     "failed": "작업을 안전하게 중단했습니다",
     "cancelled": "취소가 완료되었습니다",
+}
+
+_STABLE_RESEARCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
+_RESEARCH_SECTIONS = {
+    "observations": "관찰",
+    "questions": "연구 질문",
+    "hypotheses": "가설",
+    "datasets": "데이터/PIT",
+    "features": "Feature 정의",
+    "decisions": "검증 결정",
+    "prospective": "전향 검증",
+    "packages": "최종 패키지",
+}
+_RESEARCH_FILTERS = {
+    "observations": ("logical_id",),
+    "questions": ("logical_id",),
+    "hypotheses": ("logical_id",),
+    "datasets": (
+        "artifact_id",
+        "market",
+        "interval",
+        "provider_id",
+        "dataset_id",
+        "quality_status",
+        "start_ts",
+        "end_ts",
+        "as_of_ts",
+        "known_at",
+    ),
+    "features": ("feature_id", "strategy", "input_name"),
+    "decisions": (
+        "hypothesis_id",
+        "decision",
+        "failure_type",
+        "negative_only",
+    ),
+    "prospective": ("validation_id", "status"),
+    "packages": (
+        "market",
+        "instrument",
+        "hypothesis_type",
+        "status",
+        "researcher",
+        "dataset",
+        "period_start",
+        "period_end",
+        "prospective_status",
+    ),
 }
 
 
@@ -255,6 +313,229 @@ def dashboard(request: HttpRequest) -> HttpResponse:
             **_base_context(request, active_nav="dashboard"),
             "metrics": metrics,
             "jobs": jobs,
+        },
+    )
+
+
+def _research_explorer_service() -> ResearchExplorerService:
+    return ResearchExplorerService(settings.RESEARCH_PATHS)
+
+
+def _research_explorer_error(
+    request: HttpRequest,
+    exc: BaseException,
+) -> HttpResponse:
+    reason = str(exc)
+    if reason == "research_resource_not_found":
+        return error_response(
+            request,
+            status=404,
+            title="요청한 연구 증거를 찾을 수 없습니다",
+            message="stable ID와 version, 현재 registry 상태를 확인해 주세요.",
+        )
+    if any(
+        marker in reason
+        for marker in (
+            "filter_invalid",
+            "query_invalid",
+            "detail_level_invalid",
+            "record_type_invalid",
+            "section_invalid",
+            "identity_invalid",
+            "diff_invalid",
+        )
+    ):
+        return error_response(
+            request,
+            status=400,
+            title="연구 탐색 조건이 올바르지 않습니다",
+            message="허용된 필터와 API가 제공한 stable ID를 사용해 주세요.",
+        )
+    return error_response(
+        request,
+        status=503,
+        title="연구 증거 registry를 조회할 수 없습니다",
+        message="registry 무결성 상태와 문의 ID를 관리자에게 전달해 주세요.",
+    )
+
+
+def _research_explorer_audit_error(request: HttpRequest) -> HttpResponse:
+    return error_response(
+        request,
+        status=503,
+        title="조회 감사 기록을 저장할 수 없습니다",
+        message="감사 저장소 상태를 확인한 뒤 같은 조회를 다시 요청해 주세요.",
+    )
+
+
+@login_required
+@permission_required(RESEARCH_EXPLORATION_PERMISSION, raise_exception=True)
+@require_GET
+def research_explorer(request: HttpRequest) -> HttpResponse:
+    section = str(request.GET.get("section") or "packages")
+    if section not in _RESEARCH_SECTIONS:
+        return _research_explorer_error(
+            request,
+            ResearchExplorationQueryError("research_section_invalid"),
+        )
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in _RESEARCH_FILTERS[section]
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_explorer_service().list_records(
+            section=section,
+            filters=filters,
+            detail_level="summary",
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_explorer_error(request, exc)
+
+    paginator = Paginator(records, 25)
+    page_obj = paginator.get_page(request.GET.get("page", "1"))
+    try:
+        audit_research_exploration_read(
+            request,
+            object_type=f"research_{section}_screen",
+            object_id="collection",
+            filters={**filters, "page": page_obj.number},
+            detail_level="summary",
+        )
+    except PermissionDenied:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _research_explorer_audit_error(request)
+
+    diff_json = None
+    diff_values = {
+        key: str(request.GET.get(key) or "")
+        for key in (
+            "left_package_id",
+            "left_version",
+            "right_package_id",
+            "right_version",
+        )
+    }
+    requested_diff = any(diff_values.values())
+    if requested_diff:
+        if not all(
+            _STABLE_RESEARCH_ID.fullmatch(value) for value in diff_values.values()
+        ):
+            return _research_explorer_error(
+                request,
+                ResearchExplorationQueryError("research_package_diff_invalid"),
+            )
+        try:
+            diff = _research_explorer_service().package_diff(**diff_values)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return _research_explorer_error(request, exc)
+        try:
+            audit_research_exploration_read(
+                request,
+                object_type="research_package_diff_screen",
+                object_id=(
+                    f"{diff_values['left_package_id']}:{diff_values['left_version']}:"
+                    f"{diff_values['right_package_id']}:{diff_values['right_version']}"
+                ),
+                filters=diff_values,
+                detail_level="technical",
+            )
+        except PermissionDenied:
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _research_explorer_audit_error(request)
+        diff_json = json.dumps(
+            diff,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+
+    query = {"section": section, **filters}
+    return render(
+        request,
+        "portal/research_explorer.html",
+        {
+            **_base_context(request, active_nav="research-explorer"),
+            "section": section,
+            "section_label": _RESEARCH_SECTIONS[section],
+            "section_tabs": tuple(_RESEARCH_SECTIONS.items()),
+            "filters": filters,
+            "page_obj": page_obj,
+            "pagination_query": urlencode(query),
+            "diff_values": diff_values,
+            "diff_json": diff_json,
+        },
+    )
+
+
+@login_required
+@permission_required(RESEARCH_EXPLORATION_PERMISSION, raise_exception=True)
+@require_GET
+def research_explorer_detail(
+    request: HttpRequest,
+    section: str,
+    logical_id: str,
+    version: str,
+) -> HttpResponse:
+    if section not in _RESEARCH_SECTIONS or not all(
+        _STABLE_RESEARCH_ID.fullmatch(value) for value in (logical_id, version)
+    ):
+        return _research_explorer_error(
+            request,
+            ResearchExplorationQueryError("research_identity_invalid"),
+        )
+    try:
+        service = _research_explorer_service()
+        record = service.get_record(
+            section=section,
+            logical_id=logical_id,
+            version=version,
+            detail_level="technical",
+        )
+        lineage = (
+            service.package_lineage(package_id=logical_id, version=version)
+            if section == "packages"
+            else None
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_explorer_error(request, exc)
+    try:
+        audit_research_exploration_read(
+            request,
+            object_type=f"research_{section}_screen",
+            object_id=f"{logical_id}:{version}",
+            detail_level="technical",
+        )
+    except PermissionDenied:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _research_explorer_audit_error(request)
+    return render(
+        request,
+        "portal/research_explorer_detail.html",
+        {
+            **_base_context(request, active_nav="research-explorer"),
+            "section": section,
+            "section_label": _RESEARCH_SECTIONS[section],
+            "record": record,
+            "technical_json": json.dumps(
+                record.get("technical") or {},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            "lineage_json": (
+                json.dumps(
+                    lineage,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                if lineage is not None
+                else None
+            ),
         },
     )
 

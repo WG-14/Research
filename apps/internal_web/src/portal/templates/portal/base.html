@@ -35,6 +35,9 @@
         <a class="nav-item {% if active_nav == 'reports' %}is-active{% endif %}" href="{% url 'portal:report-list' %}"{% if active_nav == 'reports' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">≍</span><span>보고서 비교</span>
         </a>
+        <a class="nav-item {% if active_nav == 'research-explorer' %}is-active{% endif %}" href="{% url 'portal:research-explorer' %}"{% if active_nav == 'research-explorer' %} aria-current="page"{% endif %}>
+          <span aria-hidden="true">⌕</span><span>연구 증거 탐색</span>
+        </a>
         {% if perms.portal.record_research_review or perms.portal.approve_research_candidate %}
         <a class="nav-item {% if active_nav == 'review' %}is-active{% endif %}" href="{% url 'portal:review-queue' %}"{% if active_nav == 'review' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">✓</span><span>검토함</span>

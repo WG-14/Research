@@ -1,0 +1,139 @@
+{% extends "portal/base.html" %}
+{% block title %}연구 증거 탐색 · Research Console{% endblock %}
+{% block breadcrumbs %}연구 운영 / <strong>연구 증거 탐색</strong>{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">READ-ONLY RESEARCH EVIDENCE</p>
+    <h1>연구 증거 탐색</h1>
+    <p>검증된 외부 registry와 불변 데이터 artifact의 요약을 기본으로 표시합니다. 원시 값, holdout 관측값, 로컬 경로, 비밀정보는 제공하지 않습니다.</p>
+  </div>
+</div>
+
+<nav class="filter-bar" aria-label="연구 증거 종류">
+  {% for value, label in section_tabs %}
+    <a class="button {% if section == value %}button-primary{% else %}button-secondary{% endif %} button-small" href="?section={{ value }}"{% if section == value %} aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+
+<section class="panel table-panel">
+  <div class="panel-head">
+    <div><h2>{{ section_label }}</h2><p>stable ID와 version으로 세부 기술 증거를 다시 확인할 수 있습니다.</p></div>
+  </div>
+  <form method="get" class="filter-bar">
+    <input type="hidden" name="section" value="{{ section }}">
+    {% if section == "observations" or section == "questions" or section == "hypotheses" %}
+      <label>stable ID <input name="logical_id" value="{{ filters.logical_id|default:'' }}" maxlength="255"></label>
+    {% elif section == "datasets" %}
+      <label>artifact ID <input name="artifact_id" value="{{ filters.artifact_id|default:'' }}" maxlength="255"></label>
+      <label>시장 <input name="market" value="{{ filters.market|default:'' }}" maxlength="255"></label>
+      <label>주기 <input name="interval" value="{{ filters.interval|default:'' }}" maxlength="64"></label>
+      <label>provider <input name="provider_id" value="{{ filters.provider_id|default:'' }}" maxlength="255"></label>
+      <label>dataset <input name="dataset_id" value="{{ filters.dataset_id|default:'' }}" maxlength="255"></label>
+      <label>품질
+        <select name="quality_status">
+          <option value="">전체</option>
+          <option value="PASS" {% if filters.quality_status == "PASS" %}selected{% endif %}>PASS</option>
+          <option value="WARN" {% if filters.quality_status == "WARN" %}selected{% endif %}>WARN</option>
+          <option value="FAIL" {% if filters.quality_status == "FAIL" %}selected{% endif %}>FAIL</option>
+        </select>
+      </label>
+      <label>범위 시작 epoch ms <input name="start_ts" inputmode="numeric" value="{{ filters.start_ts|default:'' }}"></label>
+      <label>범위 종료 epoch ms <input name="end_ts" inputmode="numeric" value="{{ filters.end_ts|default:'' }}"></label>
+      <label>관측 시점 epoch ms <input name="as_of_ts" inputmode="numeric" value="{{ filters.as_of_ts|default:'' }}"></label>
+      <label>알려진 시각 <input name="known_at" value="{{ filters.known_at|default:'' }}" placeholder="ISO-8601 timezone required"></label>
+    {% elif section == "features" %}
+      <label>Feature ID <input name="feature_id" value="{{ filters.feature_id|default:'' }}" maxlength="255"></label>
+      <label>전략 <input name="strategy" value="{{ filters.strategy|default:'' }}" maxlength="255"></label>
+      <label>입력 <input name="input_name" value="{{ filters.input_name|default:'' }}" placeholder="candles.close" maxlength="255"></label>
+    {% elif section == "decisions" %}
+      <label>가설 ID <input name="hypothesis_id" value="{{ filters.hypothesis_id|default:'' }}" maxlength="255"></label>
+      <label>결정
+        <select name="decision">
+          <option value="">전체</option>
+          <option value="REJECTED" {% if filters.decision == "REJECTED" %}selected{% endif %}>REJECTED</option>
+          <option value="INCONCLUSIVE" {% if filters.decision == "INCONCLUSIVE" %}selected{% endif %}>INCONCLUSIVE</option>
+          <option value="VALIDATED" {% if filters.decision == "VALIDATED" %}selected{% endif %}>VALIDATED</option>
+        </select>
+      </label>
+      <label>실패 유형 <input name="failure_type" value="{{ filters.failure_type|default:'' }}" maxlength="255"></label>
+      <label><input type="checkbox" name="negative_only" value="true" {% if filters.negative_only == "true" %}checked{% endif %}> 실패·불확정만</label>
+    {% elif section == "prospective" %}
+      <label>검증 ID <input name="validation_id" value="{{ filters.validation_id|default:'' }}" maxlength="255"></label>
+      <label>상태
+        <select name="status">
+          <option value="">전체</option>
+          <option value="PENDING" {% if filters.status == "PENDING" %}selected{% endif %}>PENDING</option>
+          <option value="CONFIRMED" {% if filters.status == "CONFIRMED" %}selected{% endif %}>CONFIRMED</option>
+          <option value="DEGRADED" {% if filters.status == "DEGRADED" %}selected{% endif %}>DEGRADED</option>
+          <option value="INVALIDATED" {% if filters.status == "INVALIDATED" %}selected{% endif %}>INVALIDATED</option>
+          <option value="INCONCLUSIVE" {% if filters.status == "INCONCLUSIVE" %}selected{% endif %}>INCONCLUSIVE</option>
+        </select>
+      </label>
+    {% else %}
+      <label>시장 <input name="market" value="{{ filters.market|default:'' }}"></label>
+      <label>종목 <input name="instrument" value="{{ filters.instrument|default:'' }}"></label>
+      <label>가설 유형 <input name="hypothesis_type" value="{{ filters.hypothesis_type|default:'' }}"></label>
+      <label>상태 <input name="status" value="{{ filters.status|default:'' }}"></label>
+      <label>연구자 <input name="researcher" value="{{ filters.researcher|default:'' }}"></label>
+      <label>데이터셋 ID/hash <input name="dataset" value="{{ filters.dataset|default:'' }}"></label>
+      <label>기간 시작 <input name="period_start" value="{{ filters.period_start|default:'' }}" placeholder="ISO-8601"></label>
+      <label>기간 종료 <input name="period_end" value="{{ filters.period_end|default:'' }}" placeholder="ISO-8601"></label>
+      <label>전향 상태 <input name="prospective_status" value="{{ filters.prospective_status|default:'' }}"></label>
+    {% endif %}
+    <button class="button button-secondary button-small" type="submit">필터 적용</button>
+  </form>
+
+  <div class="responsive-table">
+    <table>
+      <caption class="sr-only">{{ section_label }} registry 조회 결과</caption>
+      <thead><tr><th scope="col">stable ID</th><th scope="col">상태</th><th scope="col">요약</th><th scope="col"><span class="sr-only">열기</span></th></tr></thead>
+      <tbody>
+      {% for item in page_obj %}
+        <tr>
+          <td><strong>{{ item.logical_id }}</strong><small>version {{ item.version }} · {{ item.kind }}</small></td>
+          <td><span class="badge">{{ item.status }}</span></td>
+          <td>
+            {% if item.kind == "observation" %}{{ item.summary.statement|default:"—" }}
+            {% elif item.kind == "research_question" %}{{ item.summary.question_text|default:"—" }}
+            {% elif item.kind == "hypothesis" %}{{ item.summary.phenomenon|default:item.summary.hypothesis_text|default:"—" }}
+            {% elif item.kind == "validation_decision" %}가설 {{ item.summary.hypothesis_id|default:"—" }} · 실패 유형 {{ item.summary.failure_type|default:"없음" }}
+            {% elif item.kind == "prospective_validation" %}누락 {{ item.summary.missing_count|default:0 }} · 지연 {{ item.summary.late_count|default:0 }} · 결론 {{ item.summary.conclusion_count|default:0 }}
+            {% elif item.kind == "dataset_artifact" %}{{ item.summary.market }} · {{ item.summary.interval }} · {{ item.summary.row_count }}행 · 결측 {{ item.summary.missing_count|default:0 }} · revision {{ item.summary.revision_count|default:0 }}
+            {% elif item.kind == "feature_definition" %}{{ item.summary.strategy }} · {{ item.summary.description }} · 입력 {{ item.summary.inputs|join:", " }}
+            {% elif item.kind == "research_package" %}{{ item.summary.market }} · {{ item.summary.instrument }} · {{ item.summary.dataset_id }}
+            {% endif %}
+          </td>
+          <td><a class="row-link" href="{{ item.links.web }}" aria-label="{{ item.logical_id }} 기술 증거 열기">›</a></td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="4"><div class="empty-state"><h3>조건에 맞는 검증된 증거가 없습니다</h3><p>registry 무결성 검증을 통과한 기록만 표시됩니다.</p></div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if page_obj.paginator.num_pages > 1 %}
+<nav class="pagination" aria-label="연구 증거 목록 페이지">
+  <span aria-current="page">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_previous %}<a href="?{{ pagination_query }}&page={{ page_obj.previous_page_number }}" rel="prev">이전</a>{% endif %}
+  {% if page_obj.has_next %}<a href="?{{ pagination_query }}&page={{ page_obj.next_page_number }}" rel="next">다음</a>{% endif %}
+</nav>
+{% endif %}
+
+{% if section == "packages" %}
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>최종 패키지 비교</h2><p>두 불변 package의 가설·규칙·데이터·결과·한계·가정을 비교합니다.</p></div></div>
+  <form method="get" class="filter-bar">
+    <input type="hidden" name="section" value="packages">
+    <label>왼쪽 package ID <input required name="left_package_id" value="{{ diff_values.left_package_id }}" maxlength="255"></label>
+    <label>version <input required name="left_version" value="{{ diff_values.left_version }}" maxlength="255"></label>
+    <label>오른쪽 package ID <input required name="right_package_id" value="{{ diff_values.right_package_id }}" maxlength="255"></label>
+    <label>version <input required name="right_version" value="{{ diff_values.right_version }}" maxlength="255"></label>
+    <button class="button button-secondary button-small" type="submit">차이 확인</button>
+  </form>
+  {% if diff_json %}<details><summary>비교 기술 증거</summary><pre><code>{{ diff_json }}</code></pre></details>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

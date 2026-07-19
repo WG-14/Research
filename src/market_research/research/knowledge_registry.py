@@ -37,6 +37,11 @@ from .knowledge_contract import (
     knowledge_ref_from_dict,
     validate_research_note_authority_refs,
 )
+from .point_in_time_selection import (
+    PointInTimeSelectionError,
+    require_point_in_time_scope,
+)
+from .research_classification import requires_candidate_validation
 
 
 KNOWLEDGE_REGISTRY_SCHEMA_VERSION = 1
@@ -354,6 +359,15 @@ def freeze_validation_admission(
     the current manifest a canonical, queryable registry record.
     """
 
+    if requires_candidate_validation(
+        getattr(manifest, "research_classification", None)
+    ):
+        try:
+            require_point_in_time_scope(manifest, verify_source_content=True)
+        except PointInTimeSelectionError as exc:
+            raise KnowledgeRegistryError(
+                f"validation_point_in_time_admission_failed:{exc}"
+            ) from exc
     hypothesis = getattr(manifest, "hypothesis_spec", None)
     if not isinstance(hypothesis, HypothesisSpec) or hypothesis.schema_version != 2:
         raise KnowledgeRegistryError("validation_admission_hypothesis_lineage_required")
@@ -415,6 +429,15 @@ def require_validation_admission(
 ) -> dict[str, Any]:
     """Return the exact canonical admission or fail on manifest/component drift."""
 
+    if requires_candidate_validation(
+        getattr(manifest, "research_classification", None)
+    ):
+        try:
+            require_point_in_time_scope(manifest, verify_source_content=True)
+        except PointInTimeSelectionError as exc:
+            raise KnowledgeRegistryError(
+                f"validation_point_in_time_admission_failed:{exc}"
+            ) from exc
     validation = validate_knowledge_registry(manager)
     if validation["status"] != "PASS":
         raise KnowledgeRegistryError("knowledge_registry_invalid")
@@ -1008,6 +1031,15 @@ def _manifest_component_hashes(manifest: Any) -> dict[str, str]:
             "instrument": canonical.get("instrument"),
             "corporate_action_set": canonical.get("corporate_action_set"),
             "corporate_action_policy": canonical.get("corporate_action_policy"),
+        }
+    if canonical.get("universe") is not None or canonical.get("market_calendar") is not None:
+        component_material["point_in_time_scope"] = {
+            "universe": canonical.get("universe"),
+            "market_calendar": canonical.get("market_calendar"),
+            "selection_policy": (
+                "membership_effective_and_observed_calendar_known_at_decision_"
+                "latest_corporate_action_effective_and_observed_fail_closed_v1"
+            ),
         }
     hashes = {
         name: sha256_prefixed(value) for name, value in component_material.items()

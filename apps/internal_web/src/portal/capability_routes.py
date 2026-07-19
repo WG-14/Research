@@ -27,4 +27,5 @@ WEB_CAPABILITY_WORKFLOWS: dict[str, tuple[str, str]] = {
     "reports.list": ("report-list", "portal.view_researchjob"),
     "reports.detail": ("job-detail", "portal.view_researchjob"),
     "reports.download": ("job-download", "portal.view_researchjob"),
+    "research.explore": ("research-explorer", "portal.view_researchjob"),
 }

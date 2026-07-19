@@ -5,6 +5,7 @@ from market_research.research.causal_market_view import (
     FutureMarketAccessError,
 )
 from market_research.research.exit_decision import ExitDecision
+from market_research.research.feature_definition import FeatureDefinition
 from market_research.research.portfolio_view import ReadOnlyPortfolioView
 from market_research.research.strategy_compiler import (
     StrategyCompilationError,
@@ -25,6 +26,7 @@ __all__ = [
     "CausalMarketView",
     "CompiledStrategyContract",
     "ExitDecision",
+    "FeatureDefinition",
     "FutureMarketAccessError",
     "ReadOnlyPortfolioView",
     "ResearchStrategyPlugin",

@@ -67,7 +67,8 @@ def test_partial_sell_realized_and_unrealized_pnl_reconcile_to_total_pnl():
         fill_status="partial",
         fee=buy.fee / 2,
     )
-    ledger.apply(sell)
+    buy_entry, sell_entry = ledger.entries[0], ledger.apply(sell)
+    assert sell_entry is not None
     snapshot = ledger.snapshot()
     mark_price = float(sell.avg_fill_price)
     metrics = build_metrics_v2(
@@ -83,12 +84,29 @@ def test_partial_sell_realized_and_unrealized_pnl_reconcile_to_total_pnl():
         execution_records=(),
     )
     total_pnl = snapshot.cash + snapshot.asset_qty * mark_price - 1_000_000
+    expected_remaining_basis = buy_entry.basis_allocation / 2
+    expected_cash = 1_000_000 + buy_entry.cash_delta + sell_entry.cash_delta
+    expected_realized = sell_entry.cash_delta - buy_entry.basis_allocation / 2
+    expected_unrealized = snapshot.asset_qty * mark_price - snapshot.cost_basis
+
+    assert snapshot.cash == pytest.approx(expected_cash)
+    assert snapshot.asset_qty == pytest.approx(buy.filled_qty / 2)
+    assert snapshot.cost_basis == pytest.approx(expected_remaining_basis)
+    assert snapshot.realized_pnl == pytest.approx(expected_realized)
+    assert metrics.return_risk.unrealized_pnl_end == pytest.approx(expected_unrealized)
     assert metrics.return_risk.realized_return_pct == pytest.approx(
         snapshot.realized_pnl / 1_000_000 * 100
     )
     assert (
         snapshot.realized_pnl + metrics.return_risk.unrealized_pnl_end
         == pytest.approx(total_pnl)
+    )
+    assert snapshot.cash + snapshot.asset_qty * mark_price == pytest.approx(
+        1_000_000 + snapshot.realized_pnl + expected_unrealized
+    )
+    assert (
+        PortfolioLedger.replay(starting_cash=1_000_000, entries=ledger.entries)
+        == ledger.snapshot()
     )
 
 
@@ -133,6 +151,7 @@ def test_higher_common_execution_costs_do_not_increase_net_return():
         (float("nan"), 0.0, "ledger_starting_cash_invalid"),
         (1.0, -1.0, "ledger_initial_position_qty_invalid"),
         (1.0, float("inf"), "ledger_initial_position_qty_invalid"),
+        (1.0, 1.0, "ledger_initial_position_cost_basis_required"),
     ),
 )
 def test_ledger_rejects_invalid_initial_state(starting_cash, initial_qty, reason):
@@ -140,6 +159,15 @@ def test_ledger_rejects_invalid_initial_state(starting_cash, initial_qty, reason
         PortfolioLedger(
             starting_cash=starting_cash,
             initial_position_qty=initial_qty,
+        )
+
+
+def test_ledger_replay_rejects_an_unfunded_initial_position():
+    with pytest.raises(ValueError, match="ledger_initial_position_cost_basis_required"):
+        PortfolioLedger.replay(
+            starting_cash=1_000_000,
+            initial_position_qty=1.0,
+            entries=(),
         )
 
 

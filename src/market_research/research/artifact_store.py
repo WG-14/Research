@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import append_jsonl, write_json_atomic
+from market_research.storage_io import (
+    append_jsonl,
+    write_json_atomic,
+    write_json_atomic_create_or_verify,
+)
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,26 @@ class ArtifactStore:
             overwrite_existing_path=overwrite_existing_path,
         )
         write_json_atomic(path, payload)
+        return ArtifactWriteEvent(path=str(path.resolve()), bytes=len(encoded))
+
+    def write_json_atomic_create_or_verify(
+        self, path: Path, payload: dict[str, Any]
+    ) -> ArtifactWriteEvent:
+        overwrite_existing_path = path.resolve() in self._known_files
+        self._reserve_file(path)
+        encoded = (
+            json.dumps(
+                payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False
+            ).encode("utf-8")
+            + b"\n"
+        )
+        self._observe_bytes(
+            path=path,
+            byte_count=len(encoded),
+            audit_stream=False,
+            overwrite_existing_path=overwrite_existing_path,
+        )
+        write_json_atomic_create_or_verify(path, payload)
         return ArtifactWriteEvent(path=str(path.resolve()), bytes=len(encoded))
 
     def append_jsonl(
@@ -292,6 +316,12 @@ class ResearchArtifactContext:
         self._ensure_in_research_run(path)
         self.claim_path(path)
         return self.store.write_json_atomic(path, payload)
+
+    def write_json_atomic_create_or_verify(
+        self, path: Path, payload: dict[str, Any]
+    ) -> ArtifactWriteEvent:
+        self._ensure_in_research_run(path)
+        return self.store.write_json_atomic_create_or_verify(path, payload)
 
     def append_jsonl(
         self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False

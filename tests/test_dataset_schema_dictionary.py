@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields as dataclass_fields
 import sqlite3
 from pathlib import Path
 
@@ -7,6 +8,10 @@ from market_research.research.dataset_freeze import CANONICAL_CANDLES_TABLE_DDL
 from market_research.research.datasets.schema_dictionary import (
     canonical_data_fields,
     data_dictionary_payload,
+)
+from market_research.research.datasets.source_catalog import (
+    SourceCatalog,
+    SourceCatalogEntry,
 )
 from tools.check_dataset_dictionary import dictionary_is_current
 
@@ -72,3 +77,21 @@ def test_published_data_dictionary_is_generated_from_code() -> None:
     assert dictionary_is_current(
         REPOSITORY_ROOT / "docs/generated/research-data-dictionary.json"
     )
+
+
+def test_dictionary_covers_the_complete_embedded_source_catalog() -> None:
+    names = {
+        field.name
+        for field in canonical_data_fields()
+        if field.dataset == "dataset_source_provenance.source_catalog"
+    }
+    expected_top_level = {
+        field.name
+        for field in dataclass_fields(SourceCatalog)
+        if field.name != "entries"
+    }
+    expected_entries = {
+        f"entries[].{field.name}" for field in dataclass_fields(SourceCatalogEntry)
+    }
+
+    assert expected_top_level | expected_entries == names

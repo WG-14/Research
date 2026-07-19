@@ -204,6 +204,7 @@ def test_fingerprint_ignores_nondeterministic_fields_and_collection_order(
 
     second = copy.deepcopy(report["candidates"][0])
     second["parameter_candidate_id"] = "candidate_z"
+    second["reproduction_candidate_fingerprint"]["candidate_id"] = "candidate_z"
     first_order = copy.deepcopy(report)
     first_order["candidates"] = [report["candidates"][0], second]
     reversed_order = copy.deepcopy(first_order)
@@ -490,6 +491,8 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
                 "effective_strategy_parameters_hash": digest("params"),
                 "strategy_spec_hash": digest("spec"),
                 "strategy_plugin_contract_hash": digest("plugin"),
+                "strategy_registry_hash": digest("registry"),
+                "compiled_strategy_contract_hash": digest("compiled"),
                 "acceptance_gate_status": "PASS",
                 "gate_fail_reasons": [],
                 "primary_scenario_id": "base",
@@ -498,6 +501,7 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
                         "scenario_index": 0,
                         "scenario_id": "base",
                         "scenario_role": "base",
+                        "compiled_strategy_contract_hash": digest("compiled"),
                         "behavior_hash": digest("behavior"),
                         "strategy_behavior_hash": digest("strategy-behavior"),
                         "trade_ledger_hash": digest("ledger"),
@@ -685,23 +689,41 @@ def test_fingerprint_rejects_classification_mismatch_and_invalid_hashes(
     ):
         build_reproduction_fingerprint(changed, manifest=manifest)
 
+    changed_candidate = changed["candidates"][0]
+    changed_fingerprint = changed_candidate["reproduction_candidate_fingerprint"]
     mutations = (
         (changed, "manifest_hash"),
         (changed, "dataset_content_hash"),
-        (changed["candidates"][0], "strategy_plugin_contract_hash"),
-        (changed["candidates"][0]["scenario_results"][0], "trade_ledger_hash"),
-        (changed["candidates"][0]["scenario_results"][0], "metrics_hash"),
+        (changed_candidate, "strategy_plugin_contract_hash"),
+        (changed_fingerprint["scenarios"][0], "trade_ledger_hash"),
+        (changed_fingerprint["scenarios"][0], "metrics_hash"),
     )
     for target, key in mutations:
         invalid = copy.deepcopy(report)
         if target is changed:
             invalid[key] = "sha256:UPPERCASE"
-        elif target is changed["candidates"][0]:
+        elif target is changed_candidate:
             invalid["candidates"][0][key] = "sha256:UPPERCASE"
+            invalid["candidates"][0]["reproduction_candidate_fingerprint"][key] = (
+                "sha256:UPPERCASE"
+            )
         else:
-            invalid["candidates"][0]["scenario_results"][0][key] = "sha256:UPPERCASE"
+            invalid["candidates"][0]["reproduction_candidate_fingerprint"]["scenarios"][
+                0
+            ][key] = "sha256:UPPERCASE"
         with pytest.raises(ReproductionContractError, match="must be a sha256 hash"):
             build_reproduction_fingerprint(invalid, manifest=manifest)
+
+    alias_mismatch = copy.deepcopy(report)
+    compact_candidate = alias_mismatch["candidates"][0]
+    compact_candidate["acceptance_gate_result"] = (
+        "PASS" if compact_candidate["acceptance_gate_result"] != "PASS" else "FAIL"
+    )
+    with pytest.raises(
+        ReproductionContractError,
+        match="acceptance_gate_result compact fingerprint mismatch",
+    ):
+        build_reproduction_fingerprint(alias_mismatch, manifest=manifest)
 
 
 @pytest.mark.parametrize(
@@ -721,10 +743,12 @@ def test_fingerprint_requires_recorded_candidate_and_result_hashes(
 ) -> None:
     _, manifest_path, _, report = _run_report(tmp_path)
     changed = copy.deepcopy(report)
+    fingerprint = changed["candidates"][0]["reproduction_candidate_fingerprint"]
     if key == "strategy_plugin_contract_hash":
         changed["candidates"][0].pop(key)
+        fingerprint.pop(key)
     else:
-        changed["candidates"][0]["scenario_results"][0].pop(key)
+        fingerprint["scenarios"][0].pop(key)
 
     with pytest.raises(ReproductionContractError, match=rf"{key} is required"):
         build_reproduction_fingerprint(changed, manifest=load_manifest(manifest_path))

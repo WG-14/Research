@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from bisect import bisect_left, bisect_right
 from pathlib import Path
 from typing import Any, cast
@@ -33,6 +33,7 @@ from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidati
 from .hashing import sha256_prefixed
 from .immutable_contract import deep_freeze
 from .research_classification import requires_candidate_validation
+from .point_in_time_selection import build_point_in_time_decision_evidence
 from .dataset_freeze import sqlite_candles_schema_hash
 from .datasets.hashing_contract import artifact_content_hash, canonical_candle_rows
 from .datasets.hashing_contract import (
@@ -168,6 +169,7 @@ class DatasetSnapshot:
     orderbook_depth_source_content_hash: str | None = None
     orderbook_depth_source_schema_hash: str | None = None
     orderbook_depth_adapter_provenance: dict[str, Any] | None = None
+    point_in_time_decision_evidence: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Detach and recursively freeze all metadata exposed to strategies."""
@@ -177,13 +179,14 @@ class DatasetSnapshot:
             "adapter_provenance",
             "top_of_book_adapter_provenance",
             "orderbook_depth_adapter_provenance",
+            "point_in_time_decision_evidence",
         ):
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(self, field_name, deep_freeze(value))
 
     def _execution_evidence_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "top_of_book": [
                 quote.as_tuple() if quote is not None else None
                 for quote in self.top_of_book_quotes
@@ -196,6 +199,11 @@ class DatasetSnapshot:
                 for snapshot in self.orderbook_depth_snapshots
             ],
         }
+        if self.point_in_time_decision_evidence is not None:
+            payload["point_in_time_decision_evidence"] = (
+                self.point_in_time_decision_evidence
+            )
+        return payload
 
     def snapshot_data_hash(self) -> str:
         cached = getattr(self, "_snapshot_data_hash_cache", None)
@@ -603,6 +611,13 @@ def load_dataset_range(
         or snapshot.verification.overall_status is VerificationStatus.MISMATCH
     ):
         raise ValueError("dataset_verification_mismatch_before_strategy_execution")
+    point_in_time_evidence = build_point_in_time_decision_evidence(
+        manifest=manifest, snapshot=snapshot
+    )
+    if point_in_time_evidence is not None:
+        snapshot = replace(
+            snapshot, point_in_time_decision_evidence=point_in_time_evidence
+        )
     return snapshot
 
 
@@ -1064,6 +1079,34 @@ def _build_source_agnostic_dataset_quality_report(
         "signal_level_depth_coverage_status": "not_computed_depth_walk_not_wired_to_research_backtest",
         "depth_liquidity_sufficiency_status": "not_computed_depth_walk_not_wired_to_research_backtest",
     }
+    if snapshot.point_in_time_decision_evidence is not None:
+        payload.update(
+            {
+                "point_in_time_decision_stream_hash": (
+                    snapshot.point_in_time_decision_evidence.get(
+                        "decision_stream_hash"
+                    )
+                ),
+                "point_in_time_authority_binding_hash": (
+                    snapshot.point_in_time_decision_evidence.get(
+                        "authority_binding_hash"
+                    )
+                ),
+                "point_in_time_evidence_content_hash": (
+                    snapshot.point_in_time_decision_evidence.get("content_hash")
+                ),
+                "point_in_time_selected_candle_count": (
+                    snapshot.point_in_time_decision_evidence.get(
+                        "selected_candle_count"
+                    )
+                ),
+                "point_in_time_excluded_candle_count": (
+                    snapshot.point_in_time_decision_evidence.get(
+                        "excluded_candle_count"
+                    )
+                ),
+            }
+        )
     if snapshot.top_of_book_requested:
         _add_top_of_book_quality_fields(payload=payload, snapshot=snapshot)
     payload["content_hash"] = sha256_prefixed(payload)

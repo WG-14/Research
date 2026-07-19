@@ -62,6 +62,8 @@ from .strategy_compiler import StrategyCompiler, validate_compiled_strategy_cont
 from .strategy_registry import StrategyRegistry
 from .causal_market_view import CausalMarketView
 from .portfolio_view import ReadOnlyPortfolioView
+from .point_in_time_selection import point_in_time_execution_snapshot
+from .immutable_contract import deep_freeze
 from .exit_policy import GenericExitPolicyEvaluator
 from .backtest_common import (
     complete_audit_trace,
@@ -413,6 +415,56 @@ def _run_common_simulation_backtest(
 ) -> BacktestRun:
     """Run a plugin event stream through the one execution and ledger path."""
     timing = execution_timing_policy or ExecutionTimingPolicy()
+    source_dataset_fingerprint_hash = dataset.snapshot_fingerprint_hash()
+    source_dataset_data_hash = dataset.snapshot_data_hash()
+    source_dataset_query_hash = dataset.snapshot_query_hash()
+    source_dataset_split_name = str(dataset.split_name)
+    source_dataset_snapshot_id = str(dataset.snapshot_id)
+    source_dataset_source = str(dataset.source)
+    source_dataset_market = str(dataset.market)
+    source_dataset_interval = str(dataset.interval)
+    source_dataset_period_start = str(dataset.date_range.start)
+    source_dataset_period_end = str(dataset.date_range.end)
+    source_dataset_artifact_manifest_hash = dataset.artifact_manifest_hash
+    dataset, point_in_time_evidence = point_in_time_execution_snapshot(
+        snapshot=dataset,
+        expected_decision_guard_ms=int(timing.decision_guard_ms),
+    )
+    raw_point_in_time_rows = (
+        point_in_time_evidence.get("rows") if point_in_time_evidence is not None else []
+    )
+    if not isinstance(raw_point_in_time_rows, list):
+        raise ValueError("point_in_time_decision_rows_invalid")
+    point_in_time_rows = tuple(
+        cast(dict[str, object], deep_freeze(item))
+        for item in raw_point_in_time_rows
+        if isinstance(item, dict)
+    )
+    point_in_time_summary: dict[str, object] = {}
+    if point_in_time_evidence is not None:
+        point_in_time_summary = {
+            "point_in_time_decision_evidence": [
+                dict(item) for item in point_in_time_rows
+            ],
+            "point_in_time_decision_stream_hash": point_in_time_evidence.get(
+                "decision_stream_hash"
+            ),
+            "point_in_time_authority_binding_hash": point_in_time_evidence.get(
+                "authority_binding_hash"
+            ),
+            "point_in_time_evidence_content_hash": point_in_time_evidence.get(
+                "content_hash"
+            ),
+            "point_in_time_selected_candle_count": point_in_time_evidence.get(
+                "selected_candle_count"
+            ),
+            "point_in_time_excluded_candle_count": point_in_time_evidence.get(
+                "excluded_candle_count"
+            ),
+            "point_in_time_source_dataset_fingerprint_hash": (
+                source_dataset_fingerprint_hash
+            ),
+        }
     policy = portfolio_policy or legacy_research_portfolio_policy()
     active_risk_policy = risk_policy or ResearchRiskPolicy(
         policy_status="disabled_explicit",
@@ -482,7 +534,7 @@ def _run_common_simulation_backtest(
             "scenario_id": context.scenario_id,
             "split": context.split_name,
             "strategy": plugin.name,
-            "dataset": dataset.snapshot_fingerprint_hash(),
+            "dataset": source_dataset_fingerprint_hash,
         }
     )
     baseline_memory = context.memory_sampler()
@@ -1274,6 +1326,21 @@ def _run_common_simulation_backtest(
             "declared_execution_model_hash": declared_model_hash,
             "executed_execution_model_hash": executed_model_hash,
             "decision_stream_hash": _stream_hash(tuple(all_decisions)),
+            **point_in_time_summary,
+            "dataset_snapshot_id": source_dataset_snapshot_id,
+            "dataset_source": source_dataset_source,
+            "dataset_market": source_dataset_market,
+            "dataset_interval": source_dataset_interval,
+            "dataset_period_start": source_dataset_period_start,
+            "dataset_period_end": source_dataset_period_end,
+            "dataset_artifact_manifest_hash": (source_dataset_artifact_manifest_hash),
+            "dataset_snapshot_hash": source_dataset_fingerprint_hash,
+            "dataset_data_hash": source_dataset_data_hash,
+            "dataset_query_hash": source_dataset_query_hash,
+            "dataset_split_name": source_dataset_split_name,
+            "execution_timing_hash": policy_hash,
+            "materialized_parameters_hash": compiled.materialized_parameters_hash,
+            "parameter_source_map_hash": sha256_prefixed(compiled.parameter_source_map),
             "metrics_hash": sha256_prefixed(
                 metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2
             ),
@@ -1370,6 +1437,21 @@ def _run_common_simulation_backtest(
             "risk_runtime_state": risk_runtime_state.as_dict(),
             "risk_runtime_state_hash": risk_runtime_state.state_hash(),
             "execution_evidence": summary,
+            **(
+                {
+                    "point_in_time_decision_stream_hash": summary[
+                        "point_in_time_decision_stream_hash"
+                    ],
+                    "point_in_time_authority_binding_hash": summary[
+                        "point_in_time_authority_binding_hash"
+                    ],
+                    "point_in_time_evidence_content_hash": summary[
+                        "point_in_time_evidence_content_hash"
+                    ],
+                }
+                if point_in_time_evidence is not None
+                else {}
+            ),
             "decision_stream_perturbation_evidence": summary[
                 "decision_stream_perturbation_evidence"
             ],
@@ -1408,6 +1490,27 @@ def _run_common_simulation_backtest(
         strategy_registry_hash=compiled.strategy_registry_hash,
         strategy_plugin_contract_hash=compiled.strategy_plugin_contract_hash,
         decision_stream_hash=_stream_hash(tuple(all_decisions)),
+        dataset_snapshot_id=source_dataset_snapshot_id,
+        dataset_source=source_dataset_source,
+        dataset_market=source_dataset_market,
+        dataset_interval=source_dataset_interval,
+        dataset_period_start=source_dataset_period_start,
+        dataset_period_end=source_dataset_period_end,
+        dataset_artifact_manifest_hash=source_dataset_artifact_manifest_hash,
+        dataset_snapshot_hash=source_dataset_fingerprint_hash,
+        dataset_data_hash=source_dataset_data_hash,
+        dataset_query_hash=source_dataset_query_hash,
+        dataset_split_name=source_dataset_split_name,
+        execution_timing_hash=policy_hash,
+        materialized_parameters_hash=compiled.materialized_parameters_hash,
+        parameter_source_map_hash=sha256_prefixed(compiled.parameter_source_map),
+        point_in_time_decision_evidence=point_in_time_rows,
+        point_in_time_decision_stream_hash=cast(
+            str | None, summary.get("point_in_time_decision_stream_hash")
+        ),
+        point_in_time_authority_binding_hash=cast(
+            str | None, summary.get("point_in_time_authority_binding_hash")
+        ),
         metrics_hash=sha256_prefixed(
             metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2
         ),

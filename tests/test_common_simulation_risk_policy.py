@@ -100,7 +100,6 @@ def _dataset(
 def _portfolio_policy(
     *,
     starting_cash: float = 1_000.0,
-    initial_position_qty: float = 0.0,
     min_order_krw: float | None = None,
     max_order_krw: float | None = None,
     rounding_policy: str = "engine_float_no_exchange_lot_rounding",
@@ -117,7 +116,6 @@ def _portfolio_policy(
     return replace(
         base,
         starting_cash_krw=starting_cash,
-        initial_position_qty=initial_position_qty,
         position_sizing=sizing,
         source="risk_policy_fixture",
     )
@@ -255,20 +253,20 @@ def test_buy_notional_bounds_are_inclusive_and_reject_before_request(
 
 def test_sell_notional_bound_is_checked_without_changing_full_exit_quantity():
     run = _run(
-        volumes=(2.0, 0.0),
-        portfolio_policy=_portfolio_policy(
-            initial_position_qty=10.0,
-            max_order_krw=999.0,
-        ),
+        volumes=(1.0, 0.0, 2.0, 0.0),
+        prices=(100.0, 100.0, 200.0, 200.0),
+        portfolio_policy=_portfolio_policy(max_order_krw=999.0),
     )
 
-    evidence = run.execution_event_summary["order_policy_decision_evidence"][0]
+    evidence = run.execution_event_summary["order_policy_decision_evidence"][-1]
     assert evidence["notional_source"] == (
         "sellable_quantity_times_decision_candle_close"
     )
     assert evidence["effective_notional_krw"] == 1_000.0
     assert evidence["reason_code"] == "max_order_notional_exceeded"
-    assert not run.execution_requests
+    assert len(run.execution_requests) == 1
+    assert run.ledger_entries[0].side == "BUY"
+    assert run.resource_usage["final_asset_qty"] == 5.0
 
 
 def test_unsupported_rounding_and_open_position_semantics_fail_before_events():

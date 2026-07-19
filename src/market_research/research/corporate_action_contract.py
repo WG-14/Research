@@ -284,16 +284,20 @@ class CorporateActionSet:
         is never applied twice and a future correction cannot leak backward.
         """
 
-        latest: dict[str, CorporateActionEvent] = {}
+        latest_known: dict[str, CorporateActionEvent] = {}
         for item in self.events:
-            if not item.is_known_at(as_of) or not item.is_effective_at(as_of):
+            if not item.is_known_at(as_of):
                 continue
-            current = latest.get(item.event_id)
+            current = latest_known.get(item.event_id)
             if current is None or item.version > current.version:
-                latest[item.event_id] = item
+                latest_known[item.event_id] = item
         return tuple(
             sorted(
-                latest.values(),
+                (
+                    item
+                    for item in latest_known.values()
+                    if item.is_effective_at(as_of)
+                ),
                 key=lambda item: (item.effective_at, item.event_id, item.version),
             )
         )

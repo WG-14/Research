@@ -24,9 +24,86 @@ urlpatterns = [
         api_views.job_cancel,
         name="api-job-cancel",
     ),
+    path(
+        "api/v1/research/lineage/",
+        api_views.research_lineage_list,
+        name="api-research-lineage-list",
+    ),
+    path(
+        "api/v1/research/lineage/<str:record_type>/<str:logical_id>/<str:version>/",
+        api_views.research_lineage_detail,
+        name="api-research-lineage-detail",
+    ),
+    path(
+        "api/v1/research/validation-decisions/",
+        api_views.validation_decision_list,
+        name="api-validation-decision-list",
+    ),
+    path(
+        "api/v1/research/validation-decisions/<str:logical_id>/<str:version>/",
+        api_views.validation_decision_detail,
+        name="api-validation-decision-detail",
+    ),
+    path(
+        "api/v1/research/prospective/",
+        api_views.prospective_validation_list,
+        name="api-prospective-validation-list",
+    ),
+    path(
+        "api/v1/research/prospective/<str:logical_id>/<str:version>/",
+        api_views.prospective_validation_detail,
+        name="api-prospective-validation-detail",
+    ),
+    path(
+        "api/v1/research/datasets/",
+        api_views.dataset_artifact_list,
+        name="api-dataset-artifact-list",
+    ),
+    path(
+        "api/v1/research/datasets/<str:logical_id>/<str:version>/",
+        api_views.dataset_artifact_detail,
+        name="api-dataset-artifact-detail",
+    ),
+    path(
+        "api/v1/research/features/",
+        api_views.feature_definition_list,
+        name="api-feature-definition-list",
+    ),
+    path(
+        "api/v1/research/features/<str:logical_id>/<str:version>/",
+        api_views.feature_definition_detail,
+        name="api-feature-definition-detail",
+    ),
+    # Keep the fixed diff route before the dynamic package identity routes.
+    path(
+        "api/v1/research/packages/diff/",
+        api_views.research_package_diff_view,
+        name="api-research-package-diff",
+    ),
+    path(
+        "api/v1/research/packages/",
+        api_views.research_package_list,
+        name="api-research-package-list",
+    ),
+    path(
+        "api/v1/research/packages/<str:logical_id>/<str:version>/lineage/",
+        api_views.research_package_lineage_view,
+        name="api-research-package-lineage",
+    ),
+    path(
+        "api/v1/research/packages/<str:logical_id>/<str:version>/",
+        api_views.research_package_detail,
+        name="api-research-package-detail",
+    ),
     path("login/", views.PortalLoginView.as_view(), name="login"),
     path("logout/", views.PortalLogoutView.as_view(), name="logout"),
     path("", views.dashboard, name="dashboard"),
+    path("research/", views.research_explorer, name="research-explorer"),
+    path(
+        "research/<str:section>/<str:logical_id>/<str:version>/",
+        views.research_explorer_detail,
+        name="research-explorer-detail",
+    ),
     path("research/new/", views.manifest_upload, name="manifest-upload"),
     path("manifests/<uuid:pk>/", views.manifest_detail, name="manifest-detail"),
     path(

@@ -1,6 +1,40 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "artifact_type": "dataset_source_provenance",
+  "source_catalog": {
+    "schema_version": 1,
+    "catalog_id": "research-source-catalog",
+    "version": "2026-05-01-v1",
+    "approved_at": "2026-05-01T00:00:00Z",
+    "approved_by": "replace-with-data-steward-id",
+    "entries": [
+      {
+        "provider_id": "replace-with-provider-id",
+        "display_name": "Replace with reviewed external preparation provider",
+        "data_kinds": [
+          "ohlcv"
+        ],
+        "frequencies": [
+          "1m"
+        ],
+        "source_kinds": [
+          "file_export"
+        ],
+        "point_in_time_policy": "event_available_received_processed_times",
+        "revision_policy": "append_new_release_preserve_prior",
+        "license_id": "replace-with-reviewed-license-id",
+        "research_use_terms": "offline reproducible research only",
+        "redistribution_allowed": false,
+        "quality_level": "VERIFIED",
+        "preparation_boundary": "externally_prepared_offline_immutable_input_only",
+        "credential_boundary": "credentials_external_to_research_distribution",
+        "owner": "replace-with-data-owner-id",
+        "expected_delivery_lag_seconds": 60.0,
+        "maximum_staleness_seconds": 3600.0
+      }
+    ],
+    "catalog_hash": "sha256:b8bfd9688f51dc558323c1d7205130a38df0409d6044e67841c366db121648bd"
+  },
   "sources": [
     {
       "provider_id": "replace-with-provider-id",
@@ -58,5 +92,5 @@
       "transformation_id": "replace-with-standardization-contract-id"
     }
   ],
-  "provenance_manifest_hash": "sha256:764f5addd4db8b8a563722db83bb7474006c9ecf09453bde885b6a2227de87c9"
+  "provenance_manifest_hash": "sha256:a6f06862ab62d9423863d4a3ae41c2b1f009cd53cdfd7a4f35e38431d6362a52"
 }

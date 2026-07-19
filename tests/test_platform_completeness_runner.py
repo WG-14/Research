@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -124,6 +125,98 @@ def _stable_provenance(_repository: Path) -> RepositoryProvenance:
     return RepositoryProvenance(commit="b" * 40, dirty_diff_sha256="c" * 64)
 
 
+def test_repository_provenance_binds_tracked_deletion_with_explicit_sentinel(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "research@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Research Test"],
+        cwd=repository,
+        check=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("committed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgSign=false", "commit", "-q", "-m", "fixture"],
+        cwd=repository,
+        check=True,
+    )
+    tracked.unlink()
+
+    provenance = platform_completeness._repository_provenance(repository)
+
+    expected = hashlib.sha256()
+    expected.update(b"tracked.txt\0")
+    expected.update(platform_completeness._REPOSITORY_TRACKED_DELETION_SENTINEL)
+    expected.update(b"\0")
+    assert provenance.dirty_diff_sha256 == expected.hexdigest()
+
+
+def test_repository_provenance_does_not_treat_untracked_missing_path_as_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_git_bytes(_repository: Path, *args: str) -> bytes:
+        if args == ("rev-parse", "HEAD"):
+            return b"b" * 40 + b"\n"
+        if args == (
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ):
+            return b"vanished-untracked.txt\0"
+        if args == ("ls-files", "--deleted", "-z"):
+            return b""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(platform_completeness, "_git_bytes", fake_git_bytes)
+
+    with pytest.raises(EvidenceRunError, match="repository evidence path is unsafe"):
+        platform_completeness._repository_provenance(tmp_path)
+
+
+@pytest.mark.parametrize("relative", ("../outside.txt", "dangling-link.txt"))
+def test_repository_provenance_rejects_unsafe_path_even_if_reported_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    if relative == "dangling-link.txt":
+        (tmp_path / relative).symlink_to(tmp_path / "missing-target.txt")
+
+    encoded = relative.encode("utf-8") + b"\0"
+
+    def fake_git_bytes(_repository: Path, *args: str) -> bytes:
+        if args == ("rev-parse", "HEAD"):
+            return b"b" * 40 + b"\n"
+        if args == (
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ):
+            return encoded
+        if args == ("ls-files", "--deleted", "-z"):
+            return encoded
+        raise AssertionError(args)
+
+    monkeypatch.setattr(platform_completeness, "_git_bytes", fake_git_bytes)
+
+    with pytest.raises(EvidenceRunError, match="repository evidence path is unsafe"):
+        platform_completeness._repository_provenance(tmp_path)
+
+
 def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -133,7 +226,7 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
     original_manifest = manifest_path.read_bytes()
     calls: list[tuple[list[str], dict[str, Any]]] = []
     secret = "runner-secret-value"
-    monkeypatch.setenv("INTERNAL_WEB_SECRET_KEY", secret)
+    monkeypatch.setenv("RUNNER_TEST_TOKEN", secret)
     monkeypatch.setenv("PYTEST_ADDOPTS", "--deselect=tests/test_authority.py")
     monkeypatch.setattr(
         platform_completeness, "_repository_provenance", _stable_provenance
@@ -147,6 +240,14 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
         assert kwargs["shell"] is False
         assert kwargs["timeout"] == 12.0
         assert "PYTEST_ADDOPTS" not in kwargs["env"]
+        assert (
+            kwargs["env"]["DJANGO_SETTINGS_MODULE"]
+            == "market_research_web.settings_test"
+        )
+        assert (
+            kwargs["env"]["INTERNAL_WEB_SECRET_KEY"]
+            == "test-only-not-for-production-0123456789abcdef"
+        )
         return subprocess.CompletedProcess(
             command,
             0,
@@ -188,6 +289,13 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
     assert (
         ledger["execution_policy"]["environment"]["INTERNAL_WEB_SECRET_KEY"]
         == "<redacted>"
+    )
+    assert (
+        ledger["execution_policy"]["environment"]["RUNNER_TEST_TOKEN"] == "<redacted>"
+    )
+    assert (
+        ledger["execution_policy"]["environment"]["DJANGO_SETTINGS_MODULE"]
+        == "market_research_web.settings_test"
     )
     assert result.ledger_markdown.is_file()
     assert evaluate_manifest(
@@ -241,9 +349,7 @@ def test_runner_accepts_only_exact_known_platform_verification_subcommand(
 
 def test_platform_exposes_exact_verify_complete_entrypoint() -> None:
     script = (PROJECT_ROOT / "scripts" / "platform").read_text(encoding="utf-8")
-    documentation = (
-        PROJECT_ROOT / "docs" / "platform-completeness-evidence-runner.md"
-    ).read_text(encoding="utf-8")
+    documentation = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "verify-complete)" in script
     assert 'python tools/platform_completeness.py "$@"' in script

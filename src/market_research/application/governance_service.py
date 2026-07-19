@@ -30,6 +30,8 @@ from market_research.research.hashing import (
     sha256_prefixed,
 )
 from market_research.research.validation_pipeline import (
+    ValidationRunError,
+    resolve_bound_selected_candidate,
     validate_validated_research_result,
 )
 from market_research.storage_io import write_json_atomic_create_or_verify
@@ -275,20 +277,36 @@ class ResearchGovernanceApplicationService:
         if not hypothesis_id or not hypothesis_version or not hypothesis_contract_hash:
             raise GovernanceError("strategy_approval_hypothesis_identity_missing")
 
-        candidates = [
-            item for item in report.get("candidates") or [] if isinstance(item, dict)
-        ]
-        selected = next(
-            (
-                item
-                for item in candidates
-                if str(
-                    item.get("parameter_candidate_id") or item.get("candidate_id") or ""
+        selected: dict[str, Any] | None
+        if report.get("selected_candidate_binding_schema_version") == 1:
+            try:
+                selected = resolve_bound_selected_candidate(
+                    report,
+                    manager=self.paths,
                 )
-                == candidate_id
-            ),
-            None,
-        )
+            except ValidationRunError as exc:
+                raise GovernanceError(
+                    f"strategy_approval_selected_candidate_artifact_invalid:{exc}"
+                ) from exc
+        else:
+            candidates = [
+                item
+                for item in report.get("candidates") or []
+                if isinstance(item, dict)
+            ]
+            selected = next(
+                (
+                    item
+                    for item in candidates
+                    if str(
+                        item.get("parameter_candidate_id")
+                        or item.get("candidate_id")
+                        or ""
+                    )
+                    == candidate_id
+                ),
+                None,
+            )
         compiled = (
             selected.get("compiled_strategy_contract")
             if isinstance(selected, dict)

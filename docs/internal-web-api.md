@@ -1,8 +1,8 @@
 # Internal Web API contract
 
 - Status: current
-- Contract version: 1.0.0
-- Last semantic review: 2026-07-17
+- Contract version: 1.2.0
+- Last semantic review: 2026-07-19
 
 The internal Web API is an authenticated, same-origin adapter for durable
 offline research jobs. It does not expose market-data collection, account
@@ -40,6 +40,12 @@ timestamps, optimistic version, allowed actions, and links for status,
 cancellation, or a supported retry. Refreshing a browser or API client never
 owns execution state; the PostgreSQL/worker coordination domain does.
 
+Research exploration endpoints expose bounded, path-free projections of
+immutable datasets, quality evidence, feature definitions, lineage, validation
+decisions, prospective records, and final packages. They require
+`research.view`, record audited reads, and never return repository-external
+filesystem paths or mutate research state.
+
 ## Authorization and state changes
 
 Django model permission and object authorization are independent checks. The
@@ -51,4 +57,3 @@ Neither the GUI nor JSON views write job lifecycle fields directly. Submission
 uses `enqueue_research_job`, cancellation uses `request_job_cancellation`, and
 workers use the lease-fenced job services. Those are the same application
 boundaries exercised by the HTML workflow.
-

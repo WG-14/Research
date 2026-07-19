@@ -14,7 +14,7 @@ from .models import ResearchJob
 from .presenters import safe_error_action, safe_error_message
 
 
-API_VERSION = "1.0.0"
+API_VERSION = "1.2.0"
 API_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 JobStatus = Literal[
     "QUEUED",
@@ -103,6 +103,44 @@ class JobListResponse(ApiModel):
     schema_version: Literal["1.0"] = "1.0"
     page: PageMetadata
     items: tuple[JobResource, ...]
+
+
+class ResearchLinks(ApiModel):
+    web: str
+    technical: str
+
+
+class ResearchResource(ApiModel):
+    schema_version: Literal[1] = 1
+    kind: str = Field(min_length=1)
+    logical_id: str = Field(min_length=1, max_length=255)
+    version: str = Field(min_length=1, max_length=255)
+    status: str = Field(min_length=1)
+    summary: dict[str, Any]
+    technical: dict[str, Any] | None = None
+    links: ResearchLinks
+
+
+class ResearchPageMetadata(ApiModel):
+    count: int = Field(ge=0)
+    limit: int = Field(ge=1, le=100)
+    offset: int = Field(ge=0)
+    next: str | None = None
+    previous: str | None = None
+    filters: dict[str, str]
+    detail_level: Literal["summary", "technical"]
+
+
+class ResearchListResponse(ApiModel):
+    schema_version: Literal[1] = 1
+    page: ResearchPageMetadata
+    items: tuple[ResearchResource, ...]
+
+
+class ResearchProjectionResponse(ApiModel):
+    schema_version: Literal[1] = 1
+    kind: str = Field(min_length=1)
+    payload: dict[str, Any]
 
 
 STATUS_LABELS: dict[str, str] = {
@@ -228,6 +266,9 @@ def build_openapi_document() -> dict[str, Any]:
         JobSubmissionRequest,
         JobResource,
         JobListResponse,
+        ResearchResource,
+        ResearchListResponse,
+        ResearchProjectionResponse,
     ):
         schema, definitions = _openapi_schema(model)
         components[model.__name__] = schema
@@ -254,6 +295,7 @@ def build_openapi_document() -> dict[str, Any]:
             (405, "HTTP method not allowed"),
             (409, "Idempotency or active-job conflict"),
             (415, "Content type must be application/json"),
+            (503, "Verified registry or mandatory audit store unavailable"),
         )
     }
     job_response = {
@@ -268,14 +310,67 @@ def build_openapi_document() -> dict[str, Any]:
         "required": True,
         "schema": {"type": "string", "format": "uuid"},
     }
+    research_id_parameters = [
+        {
+            "name": name,
+            "in": "path",
+            "required": True,
+            "schema": {"type": "string", "minLength": 1, "maxLength": 255},
+        }
+        for name in ("logical_id", "version")
+    ]
+    research_detail_parameter = {
+        "name": "detail",
+        "in": "query",
+        "schema": {
+            "type": "string",
+            "enum": ["summary", "technical"],
+            "default": "summary",
+        },
+    }
+    research_page_parameters = [
+        {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25,
+            },
+        },
+        {
+            "name": "offset",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 0, "default": 0},
+        },
+        research_detail_parameter,
+    ]
+    research_list_response = {
+        "description": "Paginated safe research evidence summaries",
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/ResearchListResponse"}
+            }
+        },
+    }
+    research_detail_response = {
+        "description": "Safe research evidence detail",
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/ResearchResource"}
+            }
+        },
+    }
     return {
         "openapi": "3.1.0",
         "info": {
             "title": "Market Research Internal Web API",
             "version": API_VERSION,
             "description": (
-                "Authenticated, CSRF-protected API for offline research jobs. "
-                "All state changes use the same application services as the GUI."
+                "Authenticated API for offline research jobs and read-only, "
+                "path-free research evidence. All state changes use the same "
+                "application services as the GUI."
             ),
         },
         "servers": [{"url": "/", "description": "Current internal-web origin"}],
@@ -420,6 +515,326 @@ def build_openapi_document() -> dict[str, Any]:
                         },
                     ],
                     "responses": {"200": job_response, **error_responses},
+                }
+            },
+            "/api/v1/research/lineage/": {
+                "get": {
+                    "operationId": "listResearchLineage",
+                    "summary": "List observation, question, and hypothesis lineage",
+                    "parameters": [
+                        *research_page_parameters,
+                        {
+                            "name": "record_type",
+                            "in": "query",
+                            "schema": {
+                                "type": "string",
+                                "enum": [
+                                    "observation",
+                                    "research_question",
+                                    "hypothesis",
+                                ],
+                            },
+                        },
+                        {
+                            "name": "logical_id",
+                            "in": "query",
+                            "schema": {"type": "string", "maxLength": 255},
+                        },
+                    ],
+                    "responses": {"200": research_list_response, **error_responses},
+                }
+            },
+            "/api/v1/research/lineage/{record_type}/{logical_id}/{version}/": {
+                "get": {
+                    "operationId": "getResearchLineageDetail",
+                    "summary": "Get one lineage object and its evidence edges",
+                    "parameters": [
+                        {
+                            "name": "record_type",
+                            "in": "path",
+                            "required": True,
+                            "schema": {
+                                "type": "string",
+                                "enum": [
+                                    "observation",
+                                    "research_question",
+                                    "hypothesis",
+                                ],
+                            },
+                        },
+                        *research_id_parameters,
+                        research_detail_parameter,
+                    ],
+                    "responses": {"200": research_detail_response, **error_responses},
+                }
+            },
+            "/api/v1/research/validation-decisions/": {
+                "get": {
+                    "operationId": "listValidationDecisions",
+                    "summary": "List structured validation and negative outcomes",
+                    "parameters": [
+                        *research_page_parameters,
+                        *[
+                            {
+                                "name": name,
+                                "in": "query",
+                                "schema": {"type": "string", "maxLength": 255},
+                            }
+                            for name in ("hypothesis_id", "failure_type")
+                        ],
+                        {
+                            "name": "decision",
+                            "in": "query",
+                            "schema": {
+                                "type": "string",
+                                "enum": ["REJECTED", "INCONCLUSIVE", "VALIDATED"],
+                            },
+                        },
+                        {
+                            "name": "negative_only",
+                            "in": "query",
+                            "schema": {"type": "boolean", "default": False},
+                        },
+                    ],
+                    "responses": {"200": research_list_response, **error_responses},
+                }
+            },
+            "/api/v1/research/validation-decisions/{logical_id}/{version}/": {
+                "get": {
+                    "operationId": "getValidationDecision",
+                    "summary": "Get one structured validation decision",
+                    "parameters": [
+                        *research_id_parameters,
+                        research_detail_parameter,
+                    ],
+                    "responses": {"200": research_detail_response, **error_responses},
+                }
+            },
+            "/api/v1/research/prospective/": {
+                "get": {
+                    "operationId": "listProspectiveValidations",
+                    "summary": "List prospective quality and metric-comparison status",
+                    "parameters": [
+                        *research_page_parameters,
+                        {
+                            "name": "validation_id",
+                            "in": "query",
+                            "schema": {"type": "string", "maxLength": 255},
+                        },
+                        {
+                            "name": "status",
+                            "in": "query",
+                            "schema": {
+                                "type": "string",
+                                "enum": [
+                                    "PENDING",
+                                    "CONFIRMED",
+                                    "DEGRADED",
+                                    "INVALIDATED",
+                                    "INCONCLUSIVE",
+                                ],
+                            },
+                        },
+                    ],
+                    "responses": {"200": research_list_response, **error_responses},
+                }
+            },
+            "/api/v1/research/prospective/{logical_id}/{version}/": {
+                "get": {
+                    "operationId": "getProspectiveValidation",
+                    "summary": "Get prospective evaluation and conclusion detail",
+                    "parameters": [
+                        *research_id_parameters,
+                        research_detail_parameter,
+                    ],
+                    "responses": {"200": research_detail_response, **error_responses},
+                }
+            },
+            "/api/v1/research/datasets/": {
+                "get": {
+                    "operationId": "listImmutableDatasetArtifacts",
+                    "summary": (
+                        "Explore immutable snapshots, quality, revisions, and "
+                        "point-in-time metadata"
+                    ),
+                    "parameters": [
+                        *research_page_parameters,
+                        *[
+                            {
+                                "name": name,
+                                "in": "query",
+                                "schema": {"type": "string", "maxLength": 255},
+                            }
+                            for name in (
+                                "artifact_id",
+                                "market",
+                                "interval",
+                                "provider_id",
+                                "dataset_id",
+                            )
+                        ],
+                        {
+                            "name": "quality_status",
+                            "in": "query",
+                            "schema": {
+                                "type": "string",
+                                "enum": ["PASS", "WARN", "FAIL"],
+                            },
+                        },
+                        *[
+                            {
+                                "name": name,
+                                "in": "query",
+                                "schema": {"type": "integer", "format": "int64"},
+                            }
+                            for name in ("start_ts", "end_ts", "as_of_ts")
+                        ],
+                        {
+                            "name": "known_at",
+                            "in": "query",
+                            "schema": {"type": "string", "format": "date-time"},
+                        },
+                    ],
+                    "responses": {"200": research_list_response, **error_responses},
+                }
+            },
+            "/api/v1/research/datasets/{logical_id}/{version}/": {
+                "get": {
+                    "operationId": "getImmutableDatasetArtifact",
+                    "summary": (
+                        "Get path-free snapshot, verification, quality, PIT, "
+                        "revision, and lineage evidence"
+                    ),
+                    "parameters": [
+                        *research_id_parameters,
+                        research_detail_parameter,
+                    ],
+                    "responses": {"200": research_detail_response, **error_responses},
+                }
+            },
+            "/api/v1/research/features/": {
+                "get": {
+                    "operationId": "listFeatureDefinitions",
+                    "summary": "List versioned feature authorities without values",
+                    "parameters": [
+                        *research_page_parameters,
+                        *[
+                            {
+                                "name": name,
+                                "in": "query",
+                                "schema": {"type": "string", "maxLength": 255},
+                            }
+                            for name in ("feature_id", "strategy", "input_name")
+                        ],
+                    ],
+                    "responses": {"200": research_list_response, **error_responses},
+                }
+            },
+            "/api/v1/research/features/{logical_id}/{version}/": {
+                "get": {
+                    "operationId": "getFeatureDefinition",
+                    "summary": "Get one versioned feature definition and code hash",
+                    "parameters": [
+                        *research_id_parameters,
+                        research_detail_parameter,
+                    ],
+                    "responses": {"200": research_detail_response, **error_responses},
+                }
+            },
+            "/api/v1/research/packages/": {
+                "get": {
+                    "operationId": "listFinalResearchPackages",
+                    "summary": "Search final immutable Research Packages",
+                    "parameters": [
+                        *research_page_parameters,
+                        *[
+                            {
+                                "name": name,
+                                "in": "query",
+                                "schema": {"type": "string", "maxLength": 255},
+                            }
+                            for name in (
+                                "market",
+                                "instrument",
+                                "hypothesis_type",
+                                "status",
+                                "researcher",
+                                "dataset",
+                                "period_start",
+                                "period_end",
+                                "prospective_status",
+                            )
+                        ],
+                    ],
+                    "responses": {"200": research_list_response, **error_responses},
+                }
+            },
+            "/api/v1/research/packages/{logical_id}/{version}/": {
+                "get": {
+                    "operationId": "getFinalResearchPackage",
+                    "summary": "Get final package summary or technical evidence refs",
+                    "parameters": [
+                        *research_id_parameters,
+                        research_detail_parameter,
+                    ],
+                    "responses": {"200": research_detail_response, **error_responses},
+                }
+            },
+            "/api/v1/research/packages/{logical_id}/{version}/lineage/": {
+                "get": {
+                    "operationId": "getFinalResearchPackageLineage",
+                    "summary": "Get package supersession and evidence lineage",
+                    "parameters": research_id_parameters,
+                    "responses": {
+                        "200": {
+                            "description": "Safe package lineage",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ResearchProjectionResponse"
+                                    }
+                                }
+                            },
+                        },
+                        **error_responses,
+                    },
+                }
+            },
+            "/api/v1/research/packages/diff/": {
+                "get": {
+                    "operationId": "diffFinalResearchPackages",
+                    "summary": "Compare two immutable Research Packages",
+                    "parameters": [
+                        {
+                            "name": name,
+                            "in": "query",
+                            "required": True,
+                            "schema": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 255,
+                            },
+                        }
+                        for name in (
+                            "left_package_id",
+                            "left_version",
+                            "right_package_id",
+                            "right_version",
+                        )
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Safe package difference projection",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ResearchProjectionResponse"
+                                    }
+                                }
+                            },
+                        },
+                        **error_responses,
+                    },
                 }
             },
         },

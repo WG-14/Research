@@ -14,12 +14,17 @@ manifest. That provenance records every source and its priority, acquisition
 request parameters, request and receipt times, provider response version,
 external preparation-code version, retry count, complete/partial/failed status,
 error code, coverage, upstream checksum, supported market semantics, and the
-ordered raw, cleaned, and standardized lineage stages. Secret-like request
-parameter names are rejected. Partial or failed source records may be retained
-as provenance evidence but cannot be promoted into an authoritative frozen
-artifact.
+ordered raw, cleaned, and standardized lineage stages. Source-provenance schema
+3 also embeds the complete hash-bound source catalog: provider identity, data
+kind, frequency, approved source kinds, point-in-time and revision policies,
+license and research-use terms, redistribution policy, quality level, owner,
+delivery lag, staleness, and the exact external-preparation and credential
+boundaries. Every source record must resolve to a catalog entry and use one of
+that entry's approved source kinds. Secret-like request parameter names are
+rejected. Partial or failed source records may be retained as provenance
+evidence but cannot be promoted into an authoritative frozen artifact.
 
-The frozen-candle source-provenance v2 scope remains deliberately narrow:
+The frozen-candle source-provenance v3 scope remains deliberately narrow:
 single-instrument spot data, UTC, and a continuous 24x7 observation calendar.
 Price adjustment, corporate actions, and point-in-time universe membership are
 `not_applicable` to that physical artifact schema, so a provenance manifest
@@ -47,5 +52,7 @@ explicit exploratory compatibility source and cannot produce an authoritative
 reproduction receipt.
 
 Artifact-manifest schema 2 has no source provenance and is read-only legacy.
-There is no automatic migration: refreeze the original external input with a
-valid provenance manifest to create a new schema-3 artifact.
+Source-provenance schemas 1 and 2 are also rejected rather than translated.
+There is no automatic migration: review and bind a complete source catalog,
+then refreeze the original external input with a valid provenance-v3 manifest
+to create a new schema-3 artifact.

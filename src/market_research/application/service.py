@@ -25,10 +25,17 @@ from market_research.research.experiment_manifest import (
     ManifestValidationError,
     load_manifest_with_registry,
 )
+from market_research.research.research_classification import (
+    requires_candidate_validation,
+)
 from market_research.research.run_lifecycle import start_run
 from market_research.research.validation_pipeline import (
     ValidationRunError,
     run_research_validation,
+)
+from market_research.research.study_lifecycle import (
+    complete_study_validation as preserve_validation_result,
+    preserve_study_validation_failure as preserve_failed_validation,
 )
 from market_research.research.validation_protocol import ResearchValidationError
 from market_research.research.readiness import build_research_readiness_report
@@ -298,11 +305,16 @@ class ResearchApplicationService:
             if progress_callback is not None:
                 progress_callback(event)
 
+        manifest: Any | None = None
+        validation_bound = False
         try:
             self._check_cancelled(cancellation_check)
             manifest = load_manifest_with_registry(
                 request.manifest_path,
                 registry=self.strategy_registry,
+            )
+            validation_bound = requires_candidate_validation(
+                getattr(manifest, "research_classification", None)
             )
             bind_research_validation_experiment(
                 manager=self.paths,
@@ -354,6 +366,23 @@ class ResearchApplicationService:
             OSError,
             ValueError,
         ) as exc:
+            if (
+                manifest is not None
+                and validation_bound
+                and getattr(manifest, "hypothesis_spec", None) is not None
+            ):
+                try:
+                    preserve_failed_validation(
+                        manager=self.paths,
+                        manifest=manifest,
+                        run_id=handle.run_id,
+                        error=exc,
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError) as preserve_exc:
+                    exc.add_note(
+                        "validation failure evidence publication also failed: "
+                        f"{type(preserve_exc).__name__}"
+                    )
             handle.finish(
                 status="FAILED",
                 exit_code=1,
@@ -377,6 +406,23 @@ class ResearchApplicationService:
             )
             raise
         except BaseException as exc:
+            if (
+                manifest is not None
+                and validation_bound
+                and getattr(manifest, "hypothesis_spec", None) is not None
+            ):
+                try:
+                    preserve_failed_validation(
+                        manager=self.paths,
+                        manifest=manifest,
+                        run_id=handle.run_id,
+                        error=exc,
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError) as preserve_exc:
+                    exc.add_note(
+                        "validation failure evidence publication also failed: "
+                        f"{type(preserve_exc).__name__}"
+                    )
             handle.finish(
                 status="FAILED",
                 exit_code=1,
@@ -385,6 +431,29 @@ class ResearchApplicationService:
             )
             raise
 
+        if validation_bound and getattr(manifest, "hypothesis_spec", None) is not None:
+            try:
+                preserve_validation_result(
+                    manager=self.paths,
+                    manifest=manifest,
+                    run_id=handle.run_id,
+                    report=report,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                handle.finish(
+                    status="FAILED",
+                    exit_code=1,
+                    result_content_hash=None,
+                    error=exc,
+                )
+                return ResearchValidationResult(
+                    capability_id="research-validate",
+                    request_id=request.request_id,
+                    status=ResultStatus.FAILED,
+                    exit_code=1,
+                    run_id=handle.run_id,
+                    errors=(_error_from_exception(exc),),
+                )
         content_hash = _optional_string(report.get("content_hash"))
         outcome = _optional_string(report.get("end_to_end_validation_result"))
         passed = outcome == "PASS"

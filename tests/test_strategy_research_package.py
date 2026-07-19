@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from market_research.research.strategy_package import (
 from market_research.research.validation_pipeline import (
     validate_validated_research_result,
 )
+from market_research.research.validation_protocol import _candidate_result_path
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.hashing import report_content_hash_payload
 from market_research.research.hypothesis_contract import parse_hypothesis_spec
@@ -20,7 +22,9 @@ from market_research.research.final_selection import (
     FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION,
     FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION,
     compute_final_holdout_result_hash,
+    selection_candidate_binding_summary,
 )
+from market_research.research.report_writer import candidate_evidence_hash_inputs
 from market_research.research.experiment_registry import (
     FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
     append_attempt_completion,
@@ -340,6 +344,69 @@ def _bind_validation_admission(report, manager):
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
 
 
+def _bind_selected_candidate_artifact(report, manager):
+    selected = deepcopy(report["candidates"][0])
+    selected.update(
+        {
+            "experiment_id": report["experiment_id"],
+            "manifest_hash": report["manifest_hash"],
+            "dataset_snapshot_id": str(report.get("dataset_snapshot_id") or ""),
+            "dataset_content_hash": str(report.get("dataset_content_hash") or ""),
+        }
+    )
+    logical_hash = sha256_prefixed(
+        candidate_evidence_hash_inputs(selected),
+        label="candidate_evidence_hash",
+    )
+    selection_binding = selection_candidate_binding_summary(selected)
+    candidate_artifact_hash = sha256_prefixed(
+        selected, label="candidate_result_artifact_hash"
+    )
+    candidate_target = _candidate_result_path(
+        manager,
+        report["experiment_id"],
+        "candidate-1",
+        candidate_artifact_hash,
+    )
+    candidate_target.parent.mkdir(parents=True, exist_ok=True)
+    candidate_target.write_text(
+        json.dumps(selected, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    compact = deepcopy(selected)
+    compact.update(
+        {
+            "candidate_payload_hash": logical_hash,
+            "selection_binding": selection_binding,
+            "candidate_result_artifact_ref": candidate_target.resolve()
+            .relative_to(manager.data_dir().resolve())
+            .as_posix(),
+            "candidate_result_artifact_hash": candidate_artifact_hash,
+            "candidate_result_artifact_detail_policy": "external_full",
+        }
+    )
+    report["candidates"] = [compact]
+    report["selected_candidate"] = compact
+    selected_target = manager.report_path(
+        "research", report["experiment_id"], "selected_candidate.json"
+    )
+    selected_target.parent.mkdir(parents=True, exist_ok=True)
+    selected_target.write_text(
+        json.dumps(selected, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    report.update(
+        {
+            "selected_candidate_binding_schema_version": 1,
+            "selected_candidate_path": str(selected_target.resolve()),
+            "selected_candidate_artifact_hash": sha256_prefixed(
+                selected, label="selected_candidate_artifact_hash"
+            ),
+        }
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+
 def _approval(report, tmp_path):
     manager = _context(tmp_path).paths
     _bind_validation_admission(report, manager)
@@ -400,6 +467,7 @@ def _approval(report, tmp_path):
             label="final_holdout_confirmation",
         )
         report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    _bind_selected_candidate_artifact(report, manager)
     subject = GovernanceSubject(
         GovernanceSubjectType.STRATEGY_CANDIDATE, "candidate-1", "1"
     )
@@ -646,6 +714,47 @@ def test_package_rejects_missing_execution_evidence(monkeypatch):
     value["candidates"][0]["execution_evidence"].pop("ledger_stream_hash")
     with pytest.raises(StrategyPackageError, match="missing_execution_evidence"):
         build_strategy_research_package(value)
+
+
+def test_package_rejects_incomplete_point_in_time_binding(monkeypatch):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    report = _result()
+    report["candidates"][0]["execution_evidence"][
+        "point_in_time_decision_stream_hash"
+    ] = "sha256:" + "1" * 64
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+    with pytest.raises(StrategyPackageError, match="point_in_time_binding_incomplete"):
+        build_strategy_research_package(report)
+
+
+def test_package_rejects_point_in_time_lineage_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    report = _result()
+    point_in_time = {
+        "point_in_time_decision_stream_hash": "sha256:" + "1" * 64,
+        "point_in_time_authority_binding_hash": "sha256:" + "2" * 64,
+        "point_in_time_evidence_content_hash": "sha256:" + "3" * 64,
+    }
+    report["candidates"][0]["execution_evidence"].update(point_in_time)
+    report["lineage"] = {
+        "dataset_split_evidence": {
+            "validation": {
+                **point_in_time,
+                "point_in_time_evidence_content_hash": "sha256:" + "9" * 64,
+            }
+        }
+    }
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+    with pytest.raises(StrategyPackageError, match="point_in_time_lineage_mismatch"):
+        build_strategy_research_package(report)
 
 
 @pytest.mark.parametrize(

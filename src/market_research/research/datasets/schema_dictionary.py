@@ -13,7 +13,7 @@ import json
 
 
 DATA_DICTIONARY_SCHEMA_VERSION = 1
-DATA_DICTIONARY_VERSION = "2026-07-17.2"
+DATA_DICTIONARY_VERSION = "2026-07-18.1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +87,7 @@ _CANDLES_V1 = (
         description="Initial immutable canonical OHLCV storage contract.",
     ),
 )
-_PROVENANCE_V2 = (
+_PROVENANCE_V3 = (
     SchemaChange(
         version="dataset_source_provenance/v1",
         effective_date="2025-01-01",
@@ -99,6 +99,26 @@ _PROVENANCE_V2 = (
         description=(
             "Added acquisition request, timing, response, code-version, retry, "
             "partial-status, and error evidence; v1 is rejected rather than translated."
+        ),
+    ),
+    SchemaChange(
+        version="dataset_source_provenance/v3",
+        effective_date="2026-07-18",
+        description=(
+            "Requires the complete immutable source_catalog/v1 contract, binds its "
+            "catalog hash into provenance, and rejects providers or source kinds not "
+            "approved by that catalog; v2 is rejected rather than translated."
+        ),
+    ),
+)
+_SOURCE_CATALOG_V1 = (
+    SchemaChange(
+        version="source_catalog/v1",
+        effective_date="2026-07-18",
+        description=(
+            "Added reviewed provider, data-kind, frequency, source-kind, point-in-time, "
+            "revision, license, quality, ownership, staleness, external preparation, "
+            "and credential-boundary policy with a complete catalog hash."
         ),
     ),
 )
@@ -181,7 +201,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="non-empty canonical instrument identifier",
             generation_method="Copied from the validated freeze request market field.",
             available_at="Before dataset freeze; fixed for the immutable artifact.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -195,7 +215,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="interval token accepted by interval_to_milliseconds",
             generation_method="Copied from the validated freeze request interval field.",
             available_at="Before dataset freeze; fixed for the immutable artifact.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -209,7 +229,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="integer >= 0; unique with pair and interval",
             generation_method="Copied without temporal shifting from the prepared row.",
             available_at="Full row is knowable only at ts + interval duration.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -223,7 +243,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="finite value > 0 and low <= open <= high",
             generation_method="Copied from validated externally prepared OHLCV.",
             available_at="At candle open, but the canonical row is released at candle close.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -237,7 +257,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="finite value > 0 and high >= max(open, low, close)",
             generation_method="Copied from validated externally prepared OHLCV.",
             available_at="Only after the candle closes.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -251,7 +271,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="finite value > 0 and low <= min(open, high, close)",
             generation_method="Copied from validated externally prepared OHLCV.",
             available_at="Only after the candle closes.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -265,7 +285,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="finite value > 0 and low <= close <= high",
             generation_method="Copied from validated externally prepared OHLCV.",
             available_at="Only after the candle closes.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -279,7 +299,7 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             valid_range="finite value >= 0",
             generation_method="Copied from validated externally prepared OHLCV.",
             available_at="Only after the candle closes.",
-            provider="Externally prepared dataset, bound by source provenance v2.",
+            provider="Externally prepared dataset, bound by source provenance v3.",
             change_history=_CANDLES_V1,
             owner_module=candle_owner,
         ),
@@ -418,10 +438,208 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
             generation_method=generation,
             available_at="Before Research accepts or freezes the dataset.",
             provider="External preparation pipeline; validated but never acquired by Research.",
-            change_history=_PROVENANCE_V2,
+            change_history=_PROVENANCE_V3,
             owner_module=provenance_owner,
         )
         for name, field_type, unit, meaning, valid_range, generation in provenance_specs
+    )
+    source_catalog_specs = (
+        (
+            "schema_version",
+            "JSON integer",
+            "contract version",
+            "Exact source-catalog schema accepted by Research.",
+            "1",
+            "Declared by the reviewed external source catalog.",
+        ),
+        (
+            "catalog_id",
+            "JSON string",
+            "stable catalog identity",
+            "Stable identity of the reviewed source authority.",
+            "non-empty restricted identifier",
+            "Assigned by external data governance.",
+        ),
+        (
+            "version",
+            "JSON string",
+            "immutable catalog version",
+            "Immutable release identity for the complete catalog.",
+            "non-empty restricted identifier",
+            "Assigned for each reviewed catalog release.",
+        ),
+        (
+            "approved_at",
+            "RFC 3339 timestamp",
+            "approval instant",
+            "Timezone-aware instant at which the catalog was approved.",
+            "timezone-aware timestamp",
+            "Recorded by external data governance.",
+        ),
+        (
+            "approved_by",
+            "JSON string",
+            "reviewer identity",
+            "Identity of the authority that approved the catalog.",
+            "non-empty",
+            "Recorded by external data governance.",
+        ),
+        (
+            "catalog_hash",
+            "JSON string",
+            "SHA-256 digest",
+            "Hash binding the complete catalog identity and every entry.",
+            "sha256: followed by 64 lowercase hexadecimal characters",
+            "Computed canonically over every catalog field except this digest.",
+        ),
+        (
+            "entries[].provider_id",
+            "JSON string",
+            "provider identity",
+            "Provider identity matched exactly by each provenance source record.",
+            "sorted unique restricted identifier",
+            "Assigned by external data governance.",
+        ),
+        (
+            "entries[].display_name",
+            "JSON string",
+            "human-readable provider name",
+            "Reviewed display name for the external preparation provider.",
+            "non-empty",
+            "Declared in the reviewed catalog.",
+        ),
+        (
+            "entries[].data_kinds",
+            "JSON array<string>",
+            "supported data classes",
+            "Data classes the provider is approved to prepare.",
+            "non-empty sorted unique strings",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].frequencies",
+            "JSON array<string>",
+            "supported observation frequencies",
+            "Frequencies the provider is approved to prepare.",
+            "non-empty sorted unique strings",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].source_kinds",
+            "JSON array<enum string>",
+            "external transport classes",
+            "Source kinds allowed for matching provenance records.",
+            "non-empty sorted subset of external_api, file_export, object_snapshot, vendor_archive",
+            "Approved by external data governance and enforced by Research.",
+        ),
+        (
+            "entries[].point_in_time_policy",
+            "JSON enum string",
+            "causal timestamp policy",
+            "Required event and knowledge-time evidence for prepared observations.",
+            "event_and_available_times | event_available_received_processed_times",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].revision_policy",
+            "JSON enum string",
+            "immutable correction policy",
+            "Policy requiring new releases or correction versions to preserve prior data.",
+            "append_new_release_preserve_prior | append_correction_version_preserve_prior",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].license_id",
+            "JSON string",
+            "license identity",
+            "Reviewed license or entitlement governing research use.",
+            "non-empty",
+            "Declared in the reviewed catalog without credentials.",
+        ),
+        (
+            "entries[].research_use_terms",
+            "JSON string",
+            "research-use policy",
+            "Human-readable reviewed limitations on offline research use.",
+            "non-empty",
+            "Declared in the reviewed catalog.",
+        ),
+        (
+            "entries[].redistribution_allowed",
+            "JSON boolean",
+            "redistribution permission",
+            "Whether the externally prepared input may be redistributed.",
+            "true | false",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].quality_level",
+            "JSON enum string",
+            "reviewed quality classification",
+            "Governance quality level assigned to the provider contract.",
+            "PROVISIONAL | REVIEWED | VERIFIED",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].preparation_boundary",
+            "JSON constant string",
+            "data preparation trust boundary",
+            "Requires externally prepared offline immutable inputs only.",
+            "externally_prepared_offline_immutable_input_only",
+            "Fixed by the Research repository boundary.",
+        ),
+        (
+            "entries[].credential_boundary",
+            "JSON constant string",
+            "credential trust boundary",
+            "Requires all source credentials to remain outside Research.",
+            "credentials_external_to_research_distribution",
+            "Fixed by the Research repository boundary.",
+        ),
+        (
+            "entries[].owner",
+            "JSON string",
+            "data owner identity",
+            "Accountable owner of the external preparation source contract.",
+            "non-empty",
+            "Declared in the reviewed catalog.",
+        ),
+        (
+            "entries[].expected_delivery_lag_seconds",
+            "JSON finite number",
+            "seconds",
+            "Expected lag before externally prepared observations arrive.",
+            "finite number >= 0",
+            "Approved by external data governance.",
+        ),
+        (
+            "entries[].maximum_staleness_seconds",
+            "JSON finite number",
+            "seconds",
+            "Maximum permitted age of externally prepared observations.",
+            "finite number > 0",
+            "Approved by external data governance.",
+        ),
+    )
+    source_catalog = tuple(
+        _field(
+            dataset="dataset_source_provenance.source_catalog",
+            name=name,
+            type=field_type,
+            unit=unit,
+            meaning=meaning,
+            nullable=False,
+            valid_range=valid_range,
+            generation_method=generation,
+            available_at="Before Research accepts or freezes the dataset.",
+            provider=(
+                "Reviewed external data-governance authority; consumed offline by "
+                "Research."
+            ),
+            change_history=_SOURCE_CATALOG_V1,
+            owner_module="market_research.research.datasets.source_catalog",
+        )
+        for name, field_type, unit, meaning, valid_range, generation in source_catalog_specs
     )
     universe_specs = (
         (
@@ -783,7 +1001,14 @@ def canonical_data_fields() -> tuple[DatasetFieldDefinition, ...]:
     )
     return tuple(
         sorted(
-            (*candles, *provenance, *universe, *calendars, *transformations),
+            (
+                *candles,
+                *provenance,
+                *source_catalog,
+                *universe,
+                *calendars,
+                *transformations,
+            ),
             key=lambda item: (item.dataset, item.name),
         )
     )

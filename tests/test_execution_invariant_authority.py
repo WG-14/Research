@@ -268,19 +268,26 @@ def test_depth_walk_output_passes_both_gates() -> None:
         max_quote_wait_ms=5_000,
         allow_same_candle_close_fill=False,
     )
-    model = DepthWalkExecutionModel(fee_rate=0.0)
+    model = DepthWalkExecutionModel(fee_rate=0.01)
     run = run_common_simulation_backtest(
         plugin=resolve_builtin_strategy("buy_and_hold_baseline"),
         dataset=dataset,
         parameter_values={"BUY_HOLD_BUY_INDEX": 0},
-        fee_rate=0.0,
+        fee_rate=0.01,
         slippage_bps=0.0,
         execution_model=model,
         execution_timing_policy=timing,
         portfolio_policy=legacy_research_portfolio_policy(),
     )
 
-    assert run.fills[0].depth_levels_consumed == 1
+    request = run.execution_requests[0]
+    fill = run.fills[0]
+    entry = run.ledger_entries[0]
+    assert fill.depth_levels_consumed == 1
+    assert fill.model_version == "research_depth_walk_v2"
+    assert fill.filled_notional + fill.fee == pytest.approx(request.requested_notional)
+    assert entry.cash_delta == pytest.approx(-(fill.filled_notional + fill.fee))
+    assert entry.cash_after >= -1e-8
     run.validate_execution_lineage()
     assert (
         validate_execution_evidence(run=run, timing=timing, model=model)["status"]

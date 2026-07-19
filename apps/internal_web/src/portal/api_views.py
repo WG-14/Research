@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from typing import Any, Literal, cast
 from urllib.parse import urlencode
 
@@ -18,6 +19,10 @@ from .api_contract import (
     JobListResponse,
     JobSubmissionRequest,
     PageMetadata,
+    ResearchListResponse,
+    ResearchPageMetadata,
+    ResearchProjectionResponse,
+    ResearchResource,
     build_openapi_document,
     project_job,
 )
@@ -29,10 +34,15 @@ from .jobs import (
     request_job_cancellation,
 )
 from .models import ResearchJob, ResourceAccessGrant
-
+from .research_explorer import (
+    RESEARCH_EXPLORATION_PERMISSION,
+    ResearchExplorerService,
+    audit_research_exploration_read,
+)
 
 SORT_FIELDS = frozenset({"created_at", "-created_at", "updated_at", "-updated_at"})
 SortOrder = Literal["created_at", "-created_at", "updated_at", "-updated_at"]
+_STABLE_RESEARCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 
 
 def _correlation_id(request: HttpRequest) -> str:
@@ -418,6 +428,589 @@ def job_cancel(request: HttpRequest, job_id: uuid.UUID) -> JsonResponse:
             action="소유자와 역할 권한을 다시 확인해 주세요.",
         )
     return _json_response(_project(request, cancelled))
+
+
+def _research_service() -> ResearchExplorerService:
+    from django.conf import settings
+
+    return ResearchExplorerService(settings.RESEARCH_PATHS)
+
+
+def _research_detail_level(request: HttpRequest) -> str | JsonResponse:
+    value = str(request.GET.get("detail") or "summary")
+    if value not in {"summary", "technical"}:
+        return _error(
+            request,
+            status=400,
+            code="DETAIL_LEVEL_INVALID",
+            message="detail 값이 지원되는 범위를 벗어났습니다.",
+            action="summary 또는 technical 중 하나를 사용해 주세요.",
+        )
+    return value
+
+
+def _research_pagination(
+    request: HttpRequest,
+) -> tuple[int, int] | JsonResponse:
+    try:
+        limit = int(request.GET.get("limit", "25"))
+        offset = int(request.GET.get("offset", "0"))
+    except ValueError:
+        limit, offset = 0, -1
+    if not 1 <= limit <= 100 or offset < 0:
+        return _error(
+            request,
+            status=400,
+            code="PAGINATION_INVALID",
+            message="페이지 범위가 허용된 한도를 벗어났습니다.",
+            action="limit은 1~100, offset은 0 이상으로 지정해 주세요.",
+        )
+    return limit, offset
+
+
+def _stable_research_identity(
+    request: HttpRequest, *values: str
+) -> JsonResponse | None:
+    if all(_STABLE_RESEARCH_ID.fullmatch(str(value)) for value in values):
+        return None
+    return _error(
+        request,
+        status=400,
+        code="RESEARCH_ID_INVALID",
+        message="연구 객체 식별자가 올바르지 않습니다.",
+        action="API가 반환한 logical_id와 version을 그대로 사용해 주세요.",
+    )
+
+
+def _research_query_error(request: HttpRequest, exc: BaseException) -> JsonResponse:
+    reason = str(exc)
+    if reason == "research_resource_not_found":
+        return _error(
+            request,
+            status=404,
+            code="RESEARCH_RESOURCE_NOT_FOUND",
+            message="요청한 연구 증거를 찾을 수 없습니다.",
+            action="stable ID, version 및 현재 registry 상태를 확인해 주세요.",
+        )
+    if any(
+        marker in reason
+        for marker in (
+            "filter_invalid",
+            "query_invalid",
+            "detail_level_invalid",
+            "record_type_invalid",
+            "section_invalid",
+            "identity_invalid",
+        )
+    ):
+        return _error(
+            request,
+            status=400,
+            code="RESEARCH_QUERY_INVALID",
+            message="연구 탐색 필터 또는 식별자가 올바르지 않습니다.",
+            action="OpenAPI의 허용 필터와 stable ID를 확인해 주세요.",
+        )
+    return _error(
+        request,
+        status=503,
+        code="RESEARCH_REGISTRY_UNAVAILABLE",
+        message="검증된 연구 registry를 현재 조회할 수 없습니다.",
+        action="registry 무결성 점검 결과와 문의 ID를 관리자에게 전달해 주세요.",
+        retryable=True,
+    )
+
+
+def _research_audit_error(request: HttpRequest) -> JsonResponse:
+    return _error(
+        request,
+        status=503,
+        code="AUDIT_UNAVAILABLE",
+        message="조회 감사 기록을 저장할 수 없습니다.",
+        action="감사 저장소 상태를 확인한 뒤 같은 조회를 다시 요청해 주세요.",
+        retryable=True,
+    )
+
+
+def _research_list_response(
+    request: HttpRequest,
+    *,
+    records: tuple[dict[str, Any], ...],
+    filters: dict[str, str],
+    detail_level: str,
+    audit_type: str,
+) -> JsonResponse:
+    pagination = _research_pagination(request)
+    if isinstance(pagination, JsonResponse):
+        return pagination
+    limit, offset = pagination
+    count = len(records)
+    items = records[offset : offset + limit]
+
+    def page_url(new_offset: int) -> str:
+        values = {
+            **filters,
+            "detail": detail_level,
+            "limit": str(limit),
+            "offset": str(new_offset),
+        }
+        return f"{request.path}?{urlencode(values)}"
+
+    try:
+        audit_research_exploration_read(
+            request,
+            object_type=audit_type,
+            object_id="collection",
+            filters=filters | {"limit": limit, "offset": offset},
+            detail_level=detail_level,
+        )
+    except PermissionDenied:
+        return _error(
+            request,
+            status=403,
+            code="PERMISSION_DENIED",
+            message="연구 탐색 권한을 확인할 수 없습니다.",
+            action="research.view 권한이 포함된 역할을 확인해 주세요.",
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _research_audit_error(request)
+    return _json_response(
+        ResearchListResponse(
+            page=ResearchPageMetadata(
+                count=count,
+                limit=limit,
+                offset=offset,
+                next=(page_url(offset + limit) if offset + limit < count else None),
+                previous=(page_url(max(0, offset - limit)) if offset > 0 else None),
+                filters=filters,
+                detail_level=cast(Literal["summary", "technical"], detail_level),
+            ),
+            items=tuple(ResearchResource.model_validate(item) for item in items),
+        )
+    )
+
+
+def _research_detail_response(
+    request: HttpRequest,
+    *,
+    record: dict[str, Any],
+    detail_level: str,
+    object_type: str,
+) -> JsonResponse:
+    try:
+        audit_research_exploration_read(
+            request,
+            object_type=object_type,
+            object_id=f"{record['logical_id']}:{record['version']}",
+            detail_level=detail_level,
+        )
+    except PermissionDenied:
+        return _error(
+            request,
+            status=403,
+            code="PERMISSION_DENIED",
+            message="연구 탐색 권한을 확인할 수 없습니다.",
+            action="research.view 권한이 포함된 역할을 확인해 주세요.",
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _research_audit_error(request)
+    return _json_response(ResearchResource.model_validate(record))
+
+
+def research_lineage_list(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in ("record_type", "logical_id")
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_service().list_records(
+            section="lineage", filters=filters, detail_level=detail
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_list_response(
+        request,
+        records=records,
+        filters=filters,
+        detail_level=detail,
+        audit_type="research_lineage_collection",
+    )
+
+
+def research_lineage_detail(
+    request: HttpRequest, record_type: str, logical_id: str, version: str
+) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    if invalid_id := _stable_research_identity(request, logical_id, version):
+        return invalid_id
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    try:
+        record = _research_service().get_record(
+            section="lineage",
+            logical_id=logical_id,
+            version=version,
+            record_type=record_type,
+            detail_level=detail,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_detail_response(
+        request,
+        record=record,
+        detail_level=detail,
+        object_type=record_type,
+    )
+
+
+def validation_decision_list(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in ("hypothesis_id", "decision", "failure_type", "negative_only")
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_service().list_records(
+            section="decisions", filters=filters, detail_level=detail
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_list_response(
+        request,
+        records=records,
+        filters=filters,
+        detail_level=detail,
+        audit_type="validation_decision_collection",
+    )
+
+
+def validation_decision_detail(
+    request: HttpRequest, logical_id: str, version: str
+) -> JsonResponse:
+    return _generic_research_detail(
+        request,
+        section="decisions",
+        logical_id=logical_id,
+        version=version,
+        object_type="validation_decision",
+    )
+
+
+def prospective_validation_list(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in ("validation_id", "status")
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_service().list_records(
+            section="prospective", filters=filters, detail_level=detail
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_list_response(
+        request,
+        records=records,
+        filters=filters,
+        detail_level=detail,
+        audit_type="prospective_validation_collection",
+    )
+
+
+def prospective_validation_detail(
+    request: HttpRequest, logical_id: str, version: str
+) -> JsonResponse:
+    return _generic_research_detail(
+        request,
+        section="prospective",
+        logical_id=logical_id,
+        version=version,
+        object_type="prospective_validation",
+    )
+
+
+def dataset_artifact_list(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in (
+            "artifact_id",
+            "market",
+            "interval",
+            "provider_id",
+            "dataset_id",
+            "quality_status",
+            "start_ts",
+            "end_ts",
+            "as_of_ts",
+            "known_at",
+        )
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_service().list_records(
+            section="datasets", filters=filters, detail_level=detail
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_list_response(
+        request,
+        records=records,
+        filters=filters,
+        detail_level=detail,
+        audit_type="dataset_artifact_collection",
+    )
+
+
+def dataset_artifact_detail(
+    request: HttpRequest, logical_id: str, version: str
+) -> JsonResponse:
+    return _generic_research_detail(
+        request,
+        section="datasets",
+        logical_id=logical_id,
+        version=version,
+        object_type="dataset_artifact",
+    )
+
+
+def feature_definition_list(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in ("feature_id", "strategy", "input_name")
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_service().list_records(
+            section="features", filters=filters, detail_level=detail
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_list_response(
+        request,
+        records=records,
+        filters=filters,
+        detail_level=detail,
+        audit_type="feature_definition_collection",
+    )
+
+
+def feature_definition_detail(
+    request: HttpRequest, logical_id: str, version: str
+) -> JsonResponse:
+    return _generic_research_detail(
+        request,
+        section="features",
+        logical_id=logical_id,
+        version=version,
+        object_type="feature_definition",
+    )
+
+
+def research_package_list(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    filter_names = (
+        "market",
+        "instrument",
+        "hypothesis_type",
+        "status",
+        "researcher",
+        "dataset",
+        "period_start",
+        "period_end",
+        "prospective_status",
+    )
+    filters = {
+        key: str(request.GET.get(key) or "")
+        for key in filter_names
+        if request.GET.get(key)
+    }
+    try:
+        records = _research_service().list_records(
+            section="packages", filters=filters, detail_level=detail
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_list_response(
+        request,
+        records=records,
+        filters=filters,
+        detail_level=detail,
+        audit_type="research_package_collection",
+    )
+
+
+def research_package_detail(
+    request: HttpRequest, logical_id: str, version: str
+) -> JsonResponse:
+    return _generic_research_detail(
+        request,
+        section="packages",
+        logical_id=logical_id,
+        version=version,
+        object_type="research_package",
+    )
+
+
+def _generic_research_detail(
+    request: HttpRequest,
+    *,
+    section: str,
+    logical_id: str,
+    version: str,
+    object_type: str,
+) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    if invalid_id := _stable_research_identity(request, logical_id, version):
+        return invalid_id
+    detail = _research_detail_level(request)
+    if isinstance(detail, JsonResponse):
+        return detail
+    try:
+        record = _research_service().get_record(
+            section=section,
+            logical_id=logical_id,
+            version=version,
+            detail_level=detail,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    return _research_detail_response(
+        request,
+        record=record,
+        detail_level=detail,
+        object_type=object_type,
+    )
+
+
+def research_package_lineage_view(
+    request: HttpRequest, logical_id: str, version: str
+) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    if invalid_id := _stable_research_identity(request, logical_id, version):
+        return invalid_id
+    try:
+        payload = _research_service().package_lineage(
+            package_id=logical_id, version=version
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    try:
+        audit_research_exploration_read(
+            request,
+            object_type="research_package_lineage",
+            object_id=f"{logical_id}:{version}",
+            detail_level="technical",
+        )
+    except PermissionDenied:
+        return _error(
+            request,
+            status=403,
+            code="PERMISSION_DENIED",
+            message="연구 탐색 권한을 확인할 수 없습니다.",
+            action="research.view 권한이 포함된 역할을 확인해 주세요.",
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _research_audit_error(request)
+    return _json_response(
+        ResearchProjectionResponse(kind="research_package_lineage", payload=payload)
+    )
+
+
+def research_package_diff_view(request: HttpRequest) -> JsonResponse:
+    if invalid := _require_method(request, "GET"):
+        return invalid
+    if denied := _require_permission(request, RESEARCH_EXPLORATION_PERMISSION):
+        return denied
+    values = {
+        key: str(request.GET.get(key) or "")
+        for key in (
+            "left_package_id",
+            "left_version",
+            "right_package_id",
+            "right_version",
+        )
+    }
+    if invalid_id := _stable_research_identity(request, *values.values()):
+        return invalid_id
+    try:
+        payload = _research_service().package_diff(**values)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _research_query_error(request, exc)
+    try:
+        audit_research_exploration_read(
+            request,
+            object_type="research_package_diff",
+            object_id=(
+                f"{values['left_package_id']}:{values['left_version']}:"
+                f"{values['right_package_id']}:{values['right_version']}"
+            ),
+            filters=values,
+            detail_level="technical",
+        )
+    except PermissionDenied:
+        return _error(
+            request,
+            status=403,
+            code="PERMISSION_DENIED",
+            message="연구 탐색 권한을 확인할 수 없습니다.",
+            action="research.view 권한이 포함된 역할을 확인해 주세요.",
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _research_audit_error(request)
+    return _json_response(
+        ResearchProjectionResponse(kind="research_package_diff", payload=payload)
+    )
 
 
 def csrf_failure(

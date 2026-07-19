@@ -55,9 +55,18 @@ class GovernanceSubjectType(str, Enum):
 
 class HypothesisLifecycleState(str, Enum):
     IDEA = "IDEA"
+    STRUCTURED = "STRUCTURED"
+    EXPLORATORY = "EXPLORATORY"
+    PREREGISTERED = "PREREGISTERED"
     HYPOTHESIS_DEFINED = "HYPOTHESIS_DEFINED"
     EXPLORING = "EXPLORING"
     VALIDATING = "VALIDATING"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    VALIDATED = "VALIDATED"
+    PROSPECTIVE_VALIDATION = "PROSPECTIVE_VALIDATION"
+    CONFIRMED = "CONFIRMED"
+    DEGRADED = "DEGRADED"
+    INVALIDATED = "INVALIDATED"
     SUPPORTED = "SUPPORTED"
     REJECTED = "REJECTED"
     ARCHIVED = "ARCHIVED"
@@ -81,7 +90,30 @@ class HumanReviewDecision(str, Enum):
 
 _HYPOTHESIS_TRANSITIONS = {
     HypothesisLifecycleState.IDEA: frozenset(
-        {HypothesisLifecycleState.HYPOTHESIS_DEFINED}
+        {
+            HypothesisLifecycleState.STRUCTURED,
+            HypothesisLifecycleState.HYPOTHESIS_DEFINED,
+        }
+    ),
+    HypothesisLifecycleState.STRUCTURED: frozenset(
+        {
+            HypothesisLifecycleState.EXPLORATORY,
+            HypothesisLifecycleState.REJECTED,
+            HypothesisLifecycleState.ARCHIVED,
+        }
+    ),
+    HypothesisLifecycleState.EXPLORATORY: frozenset(
+        {
+            HypothesisLifecycleState.PREREGISTERED,
+            HypothesisLifecycleState.REJECTED,
+            HypothesisLifecycleState.ARCHIVED,
+        }
+    ),
+    HypothesisLifecycleState.PREREGISTERED: frozenset(
+        {
+            HypothesisLifecycleState.VALIDATING,
+            HypothesisLifecycleState.ARCHIVED,
+        }
     ),
     HypothesisLifecycleState.HYPOTHESIS_DEFINED: frozenset(
         {
@@ -100,11 +132,44 @@ _HYPOTHESIS_TRANSITIONS = {
     HypothesisLifecycleState.VALIDATING: frozenset(
         {
             HypothesisLifecycleState.EXPLORING,
+            HypothesisLifecycleState.INCONCLUSIVE,
+            HypothesisLifecycleState.VALIDATED,
             HypothesisLifecycleState.SUPPORTED,
             HypothesisLifecycleState.REJECTED,
         }
     ),
-    HypothesisLifecycleState.SUPPORTED: frozenset({HypothesisLifecycleState.ARCHIVED}),
+    HypothesisLifecycleState.VALIDATED: frozenset(
+        {
+            HypothesisLifecycleState.PROSPECTIVE_VALIDATION,
+            HypothesisLifecycleState.ARCHIVED,
+        }
+    ),
+    HypothesisLifecycleState.PROSPECTIVE_VALIDATION: frozenset(
+        {
+            HypothesisLifecycleState.CONFIRMED,
+            HypothesisLifecycleState.DEGRADED,
+            HypothesisLifecycleState.INVALIDATED,
+            HypothesisLifecycleState.INCONCLUSIVE,
+        }
+    ),
+    HypothesisLifecycleState.SUPPORTED: frozenset(
+        {
+            HypothesisLifecycleState.PROSPECTIVE_VALIDATION,
+            HypothesisLifecycleState.ARCHIVED,
+        }
+    ),
+    HypothesisLifecycleState.CONFIRMED: frozenset(
+        {HypothesisLifecycleState.ARCHIVED}
+    ),
+    HypothesisLifecycleState.DEGRADED: frozenset(
+        {HypothesisLifecycleState.ARCHIVED}
+    ),
+    HypothesisLifecycleState.INVALIDATED: frozenset(
+        {HypothesisLifecycleState.ARCHIVED}
+    ),
+    HypothesisLifecycleState.INCONCLUSIVE: frozenset(
+        {HypothesisLifecycleState.ARCHIVED}
+    ),
     HypothesisLifecycleState.REJECTED: frozenset({HypothesisLifecycleState.ARCHIVED}),
     HypothesisLifecycleState.ARCHIVED: frozenset(),
 }
@@ -152,7 +217,28 @@ _REQUIRED_EVIDENCE = {
     HypothesisLifecycleState.HYPOTHESIS_DEFINED.value: frozenset(
         {"hypothesis_contract_hash"}
     ),
+    HypothesisLifecycleState.STRUCTURED.value: frozenset(
+        {"hypothesis_contract_hash"}
+    ),
+    HypothesisLifecycleState.PREREGISTERED.value: frozenset(
+        {"preregistration_hash"}
+    ),
     HypothesisLifecycleState.VALIDATING.value: frozenset({"validation_manifest_hash"}),
+    HypothesisLifecycleState.VALIDATED.value: frozenset(
+        {"validation_decision_hash", "validation_report_hash"}
+    ),
+    HypothesisLifecycleState.PROSPECTIVE_VALIDATION.value: frozenset(
+        {"prospective_validation_spec_hash"}
+    ),
+    HypothesisLifecycleState.CONFIRMED.value: frozenset(
+        {"prospective_evaluation_hash", "research_conclusion_hash"}
+    ),
+    HypothesisLifecycleState.DEGRADED.value: frozenset(
+        {"prospective_evaluation_hash", "research_conclusion_hash"}
+    ),
+    HypothesisLifecycleState.INVALIDATED.value: frozenset(
+        {"prospective_evaluation_hash", "research_conclusion_hash"}
+    ),
     HypothesisLifecycleState.SUPPORTED.value: frozenset({"validation_report_hash"}),
     StrategyCandidateLifecycleState.BACKTESTED.value: frozenset(
         {"backtest_report_hash"}
@@ -174,7 +260,19 @@ _REQUIRED_EVIDENCE = {
 _MATERIAL_HYPOTHESIS_TRANSITIONS = frozenset(
     {
         ("IDEA", "HYPOTHESIS_DEFINED"),
+        ("IDEA", "STRUCTURED"),
+        ("STRUCTURED", "EXPLORATORY"),
+        ("EXPLORATORY", "PREREGISTERED"),
+        ("PREREGISTERED", "VALIDATING"),
         ("EXPLORING", "VALIDATING"),
+        ("VALIDATING", "INCONCLUSIVE"),
+        ("VALIDATING", "VALIDATED"),
+        ("VALIDATED", "PROSPECTIVE_VALIDATION"),
+        ("SUPPORTED", "PROSPECTIVE_VALIDATION"),
+        ("PROSPECTIVE_VALIDATION", "CONFIRMED"),
+        ("PROSPECTIVE_VALIDATION", "DEGRADED"),
+        ("PROSPECTIVE_VALIDATION", "INVALIDATED"),
+        ("PROSPECTIVE_VALIDATION", "INCONCLUSIVE"),
         ("VALIDATING", "SUPPORTED"),
         ("HYPOTHESIS_DEFINED", "REJECTED"),
         ("HYPOTHESIS_DEFINED", "ARCHIVED"),
@@ -194,6 +292,18 @@ _MATERIAL_STRATEGY_TARGETS = frozenset(
 )
 _MATERIAL_TRANSITION_POLICY_VERSION = "material-transition-policy.v1"
 _STRATEGY_APPROVAL_POLICY_VERSION = "strategy-approval-policy.v1"
+_APPROVAL_ELIGIBLE_HYPOTHESIS_STATES = frozenset(
+    {
+        HypothesisLifecycleState.SUPPORTED.value,
+        HypothesisLifecycleState.VALIDATED.value,
+    }
+)
+_HYPOTHESIS_CONTRACT_STATES = frozenset(
+    {
+        HypothesisLifecycleState.HYPOTHESIS_DEFINED.value,
+        HypothesisLifecycleState.STRUCTURED.value,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -630,7 +740,7 @@ def approve_strategy_candidate(
             raise GovernanceError("strategy_approval_requires_out_of_sample_passed")
         if (
             _current_state_from_rows(rows, hypothesis_subject)
-            != HypothesisLifecycleState.SUPPORTED.value
+            not in _APPROVAL_ELIGIBLE_HYPOTHESIS_STATES
         ):
             raise GovernanceError("strategy_approval_requires_supported_hypothesis")
         out_of_sample = _latest_transition_to(
@@ -646,10 +756,8 @@ def approve_strategy_candidate(
             != final_holdout_confirmation_hash
         ):
             raise GovernanceError("strategy_approval_holdout_evidence_mismatch")
-        hypothesis_defined = _latest_transition_to(
-            rows,
-            hypothesis_subject,
-            HypothesisLifecycleState.HYPOTHESIS_DEFINED.value,
+        hypothesis_defined = _latest_hypothesis_contract_row(
+            rows, hypothesis_subject
         )
         if (
             hypothesis_defined is None
@@ -1144,10 +1252,15 @@ def _hypothesis_supported_row(
     subject: GovernanceSubject,
     source_report_hash: str,
 ) -> dict[str, Any]:
-    row = _latest_transition_to(
-        rows,
-        subject,
-        HypothesisLifecycleState.SUPPORTED.value,
+    row = next(
+        (
+            item
+            for item in reversed(rows)
+            if item.get("event_type") == "lifecycle_transition"
+            and _row_matches_identity(item, subject)
+            and item.get("to_state") in _APPROVAL_ELIGIBLE_HYPOTHESIS_STATES
+        ),
+        None,
     )
     if (
         row is None
@@ -1156,6 +1269,22 @@ def _hypothesis_supported_row(
     ):
         raise GovernanceError("strategy_approval_hypothesis_evidence_mismatch")
     return row
+
+
+def _latest_hypothesis_contract_row(
+    rows: list[dict[str, Any]],
+    subject: GovernanceSubject,
+) -> dict[str, Any] | None:
+    return next(
+        (
+            row
+            for row in reversed(rows)
+            if row.get("event_type") == "lifecycle_transition"
+            and _row_matches_identity(row, subject)
+            and row.get("to_state") in _HYPOTHESIS_CONTRACT_STATES
+        ),
+        None,
+    )
 
 
 def _unpaired_approved_review_hashes(rows: list[dict[str, Any]]) -> set[str]:
@@ -1415,7 +1544,7 @@ def validate_strategy_approval(
             or hypothesis_transition.get("subject_id") != hypothesis_id
             or hypothesis_transition.get("subject_version") != hypothesis_version
             or hypothesis_transition.get("to_state")
-            != HypothesisLifecycleState.SUPPORTED.value
+            not in _APPROVAL_ELIGIBLE_HYPOTHESIS_STATES
             or (hypothesis_transition.get("evidence_hashes") or {}).get(
                 "validation_report_hash"
             )
@@ -1433,7 +1562,7 @@ def validate_strategy_approval(
         if (
             not hypothesis_rows
             or hypothesis_rows[-1].get("to_state")
-            != HypothesisLifecycleState.SUPPORTED.value
+            not in _APPROVAL_ELIGIBLE_HYPOTHESIS_STATES
         ):
             reasons.append("strategy_approval_hypothesis_not_current")
     return sorted(set(reasons))
@@ -1732,6 +1861,18 @@ def _validate_transition(
     if missing:
         raise GovernanceError(
             "governance_transition_evidence_missing:" + ",".join(missing)
+        )
+    if (
+        subject_type is GovernanceSubjectType.HYPOTHESIS
+        and target_value == HypothesisLifecycleState.INCONCLUSIVE.value
+        and not {
+            "validation_decision_hash",
+            "prospective_evaluation_hash",
+        }.intersection(evidence)
+    ):
+        raise GovernanceError(
+            "governance_transition_evidence_missing:"
+            "validation_decision_hash_or_prospective_evaluation_hash"
         )
 
 

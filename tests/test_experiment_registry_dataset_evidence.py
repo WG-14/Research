@@ -20,8 +20,6 @@ from market_research.research.experiment_registry import (
     validate_experiment_registry_binding,
 )
 from market_research.research.final_selection import (
-    apply_final_selection_contract,
-    build_selection_artifact,
     compute_final_holdout_result_hash,
     validate_confirmation_artifact,
 )
@@ -34,7 +32,10 @@ from market_research.research.cli import cmd_research_registry_validate
 from market_research.research_composition import builtin_strategy_registry
 from market_research.research_cli.context import ResearchAppContext
 
-from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
+from .test_frozen_dataset_multi_split_integration import (
+    _prepare_confirmable_single_candidate_report,
+    frozen_manifest_and_manager,
+)
 
 
 def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) -> None:
@@ -58,32 +59,10 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
         manager=manager,
         strategy_registry=builtin_strategy_registry(),
     )
-    candidate = report["candidates"][0]
-    candidate["aggregate_acceptance_gate_result"] = "PASS"
-    candidate["acceptance_gate_result"] = "PASS"
-    selection = apply_final_selection_contract(
-        contract=parsed.final_selection,
-        candidates=report["candidates"],
-        report_context={"dataset_quality_gate_status": "PASS"},
-        validation_required=False,
-    )
-    report.update(
-        {
-            "final_selection_contract": selection["final_selection_contract"],
-            "final_selection_contract_hash": selection["final_selection_contract_hash"],
-            "final_selection_gate_result": selection["gate_result"],
-            "final_selection_fail_reasons": selection["fail_reasons"],
-            "selected_candidate_id": selection["selected_candidate_id"],
-            "best_candidate_id": selection["selected_candidate_id"],
-            "selected_candidate_score_hash": selection["selected_candidate_score_hash"],
-            "candidate_final_scores_hash": selection["candidate_final_scores_hash"],
-            "candidate_final_scores": selection["candidate_final_scores"],
-        }
-    )
-    report["selection_artifact"] = build_selection_artifact(
-        manifest_hash=parsed.manifest_hash(),
-        selection_result=selection,
-        candidates=report["candidates"],
+    _prepare_confirmable_single_candidate_report(
+        report=report,
+        manifest=parsed,
+        manager=manager,
     )
     confirmation = run_final_holdout_confirmation(
         manifest=parsed,

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_CATALOG,
+    TEST_SOURCE_PROVENANCE,
+    build_test_source_catalog,
+)
 import json
 import sqlite3
 from pathlib import Path
@@ -64,6 +68,10 @@ def test_freeze_writes_first_class_artifact_manifest(tmp_path: Path) -> None:
         manifest.source_provenance.provenance_manifest_hash
         == frozen["source_provenance_hash"]
     )
+    assert (
+        manifest.source_provenance.source_catalog.catalog_hash
+        == TEST_SOURCE_CATALOG.catalog_hash
+    )
 
 
 def test_same_rows_with_different_provenance_publish_distinct_artifacts(
@@ -80,6 +88,7 @@ def test_same_rows_with_different_provenance_publish_distinct_artifacts(
         out_dir=tmp_path / "out",
     )
     alternate = build_dataset_source_provenance(
+        source_catalog=build_test_source_catalog(provider_id="alternate-provider"),
         sources=(
             {
                 **TEST_SOURCE_PROVENANCE.sources[0].as_dict(),
@@ -112,10 +121,14 @@ def test_source_provenance_priority_and_supported_semantics_fail_closed() -> Non
         parse_dataset_source_provenance(payload)
 
 
-def test_source_provenance_v2_preserves_external_acquisition_evidence() -> None:
+def test_source_provenance_v3_binds_catalog_and_external_acquisition_evidence() -> None:
     source = TEST_SOURCE_PROVENANCE.sources[0]
 
-    assert TEST_SOURCE_PROVENANCE.schema_version == 2
+    assert TEST_SOURCE_PROVENANCE.schema_version == 3
+    assert TEST_SOURCE_PROVENANCE.source_catalog == TEST_SOURCE_CATALOG
+    serialized_catalog = TEST_SOURCE_PROVENANCE.as_dict()["source_catalog"]
+    assert isinstance(serialized_catalog, dict)
+    assert serialized_catalog["catalog_hash"] == TEST_SOURCE_CATALOG.catalog_hash
     assert source.source_kind == "file_export"
     assert dict(source.request_parameters) == {
         "interval": "1m",
@@ -128,6 +141,44 @@ def test_source_provenance_v2_preserves_external_acquisition_evidence() -> None:
     assert source.retry_count == 0
     assert source.acquisition_status == "complete"
     assert source.error_code == ""
+
+
+def test_source_provenance_rejects_legacy_or_missing_catalog_contract() -> None:
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    payload["schema_version"] = 2
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+    with pytest.raises(SourceProvenanceError, match="schema_version_unsupported"):
+        parse_dataset_source_provenance(payload)
+
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    del payload["source_catalog"]
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+    with pytest.raises(SourceProvenanceError, match="source_catalog_must_be_object"):
+        parse_dataset_source_provenance(payload)
+
+
+def test_each_source_provider_and_kind_must_be_approved_by_bound_catalog() -> None:
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    payload["sources"][0]["provider_id"] = "unreviewed-provider"
+    payload["source_priority"] = ["unreviewed-provider"]
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+    with pytest.raises(SourceProvenanceError, match="provider_not_registered"):
+        parse_dataset_source_provenance(payload)
+
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    payload["sources"][0]["source_kind"] = "vendor_archive"
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+    with pytest.raises(SourceProvenanceError, match="not_approved_by_catalog"):
+        parse_dataset_source_provenance(payload)
+
+
+def test_catalog_tamper_fails_even_when_outer_provenance_hash_is_recomputed() -> None:
+    payload = TEST_SOURCE_PROVENANCE.as_dict()
+    payload["source_catalog"]["entries"][0]["quality_level"] = "PROVISIONAL"
+    payload["provenance_manifest_hash"] = source_provenance_hash(payload)
+
+    with pytest.raises(SourceProvenanceError, match="source_catalog_hash_mismatch"):
+        parse_dataset_source_provenance(payload)
 
 
 def test_incomplete_source_is_preserved_but_cannot_freeze_authoritative_artifact(
@@ -186,6 +237,7 @@ def test_source_acquisition_contract_fails_closed(mutation: str, reason: str) ->
 
 def test_artifact_scope_must_be_covered_by_each_declared_source(tmp_path: Path) -> None:
     narrow = build_dataset_source_provenance(
+        source_catalog=TEST_SOURCE_CATALOG,
         sources=(
             {
                 **TEST_SOURCE_PROVENANCE.sources[0].as_dict(),

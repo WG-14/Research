@@ -6,11 +6,14 @@ profile, replay, or account-execution stage.
 
 from __future__ import annotations
 
+import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import write_json_atomic
+from market_research.storage_io import write_json_atomic_create_or_verify
 
 from .experiment_manifest import ExperimentManifest
 from .experiment_registry import (
@@ -19,6 +22,7 @@ from .experiment_registry import (
     validate_experiment_registry_binding,
 )
 from .final_selection import (
+    selection_candidate_binding_summary,
     validate_confirmation_artifact,
     validate_selection_artifact_binding,
 )
@@ -34,17 +38,257 @@ from .knowledge_registry import (
     validation_admission_binding_reasons,
 )
 from .validation_protocol import (
+    resolve_candidate_result_artifact,
     run_final_holdout_confirmation,
     run_research_backtest,
     run_research_walk_forward,
 )
 from .strategy_registry import StrategyRegistry
 from .research_decision_report import build_research_decision_report
+from .report_writer import candidate_evidence_hash_inputs, summarize_report_candidate
 from .research_classification import requires_candidate_validation
+from .study_lifecycle import StudyLifecycleError, admit_study_validation
 
 
 class ValidationRunError(ValueError):
     pass
+
+
+_MAX_TERMINAL_JSON_BYTES = 16 * 1024 * 1024
+
+
+def _lexical_absolute(path: str | Path) -> Path:
+    """Return an absolute normalized path without following symlinks."""
+
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _require_selected_artifact_path(
+    *, manager: ResearchPathManager, experiment_id: str, declared_path: str
+) -> Path:
+    report_root = _lexical_absolute(manager.report_root)
+    expected_path = _lexical_absolute(
+        manager.report_path("research", experiment_id, "selected_candidate.json")
+    )
+    declared = Path(declared_path)
+    if not declared_path or not declared.is_absolute():
+        raise ValidationRunError("selected_candidate_artifact_path_mismatch")
+    if _lexical_absolute(declared) != expected_path:
+        raise ValidationRunError("selected_candidate_artifact_path_mismatch")
+    try:
+        expected_path.relative_to(report_root)
+    except ValueError as exc:
+        raise ValidationRunError("selected_candidate_artifact_path_mismatch") from exc
+
+    cursor = expected_path
+    while True:
+        if cursor.is_symlink():
+            raise ValidationRunError("selected_candidate_artifact_symlink_rejected")
+        if cursor == report_root:
+            break
+        if cursor.parent == cursor:
+            raise ValidationRunError("selected_candidate_artifact_path_mismatch")
+        cursor = cursor.parent
+    return expected_path
+
+
+def resolve_bound_selected_candidate(
+    report: dict[str, Any], *, manager: ResearchPathManager
+) -> dict[str, Any]:
+    """Load and verify the full selected candidate behind a compact terminal report."""
+
+    if report.get("selected_candidate_binding_schema_version") != 1:
+        raise ValidationRunError("selected_candidate_binding_schema_invalid")
+
+    experiment_id = str(report.get("experiment_id") or "").strip()
+    if not experiment_id:
+        raise ValidationRunError("selected_candidate_experiment_id_missing")
+    declared_path = str(report.get("selected_candidate_path") or "").strip()
+    expected_path = _require_selected_artifact_path(
+        manager=manager,
+        experiment_id=experiment_id,
+        declared_path=declared_path,
+    )
+    if not expected_path.is_file():
+        raise ValidationRunError("selected_candidate_artifact_missing")
+    try:
+        payload = json.loads(expected_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationRunError("selected_candidate_artifact_unreadable") from exc
+    if not isinstance(payload, dict):
+        raise ValidationRunError("selected_candidate_artifact_malformed")
+    actual_hash = sha256_prefixed(payload, label="selected_candidate_artifact_hash")
+    if actual_hash != report.get("selected_candidate_artifact_hash"):
+        raise ValidationRunError("selected_candidate_artifact_hash_mismatch")
+    selected_id = str(report.get("selected_candidate_id") or "")
+    artifact_id = str(
+        payload.get("parameter_candidate_id") or payload.get("candidate_id") or ""
+    )
+    if selected_id != artifact_id:
+        raise ValidationRunError("selected_candidate_artifact_identity_mismatch")
+    compact = report.get("selected_candidate")
+    if not isinstance(compact, dict):
+        raise ValidationRunError("selected_candidate_compact_projection_missing")
+    logical_candidate_hash = sha256_prefixed(
+        candidate_evidence_hash_inputs(payload),
+        label="candidate_evidence_hash",
+    )
+    if compact.get("candidate_payload_hash") != logical_candidate_hash:
+        raise ValidationRunError("selected_candidate_logical_hash_mismatch")
+    if compact.get("selection_binding") != selection_candidate_binding_summary(payload):
+        raise ValidationRunError("selected_candidate_selection_binding_mismatch")
+    return payload
+
+
+def _candidate_identity(candidate: dict[str, Any]) -> str:
+    return str(
+        candidate.get("parameter_candidate_id") or candidate.get("candidate_id") or ""
+    ).strip()
+
+
+def _has_compact_candidate_binding(candidate: dict[str, Any]) -> bool:
+    return bool(
+        str(candidate.get("candidate_payload_hash") or "").startswith("sha256:")
+        and isinstance(candidate.get("selection_binding"), dict)
+    )
+
+
+def _terminal_candidate_projections(
+    *,
+    selection_report: dict[str, Any],
+    authoritative_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return compact, artifact-bound candidate rows for every terminal mode."""
+
+    authoritative_by_id: dict[str, dict[str, Any]] = {}
+    for candidate in authoritative_candidates:
+        candidate_id = _candidate_identity(candidate)
+        if not candidate_id:
+            raise ValidationRunError("terminal_candidate_identity_missing")
+        if candidate_id in authoritative_by_id:
+            raise ValidationRunError("terminal_candidate_identity_duplicate")
+        authoritative_by_id[candidate_id] = candidate
+
+    raw_rows = [
+        item
+        for item in selection_report.get("candidates") or []
+        if isinstance(item, dict)
+    ]
+    if not raw_rows:
+        raw_rows = list(authoritative_candidates)
+    contract = selection_report.get("final_selection_contract")
+    final_selection_contract = contract if isinstance(contract, dict) else None
+    projections: list[dict[str, Any]] = []
+    observed_ids: set[str] = set()
+    for row in raw_rows:
+        candidate_id = _candidate_identity(row)
+        if not candidate_id:
+            raise ValidationRunError("terminal_candidate_identity_missing")
+        if candidate_id in observed_ids:
+            raise ValidationRunError("terminal_candidate_identity_duplicate")
+        observed_ids.add(candidate_id)
+        if _has_compact_candidate_binding(row):
+            projection = dict(row)
+        else:
+            source = authoritative_by_id.get(candidate_id, row)
+            projection = summarize_report_candidate(
+                source,
+                final_selection_contract=final_selection_contract,
+            )
+        if not _has_compact_candidate_binding(projection):
+            raise ValidationRunError("terminal_candidate_compact_binding_missing")
+        projections.append(projection)
+    return projections
+
+
+def _terminal_json_bytes(payload: dict[str, Any]) -> bytes:
+    serialized = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    if len(serialized) > _MAX_TERMINAL_JSON_BYTES:
+        raise ValueError("atomic_json_target_too_large")
+    return serialized
+
+
+def _preflight_terminal_target(path: Path, expected: bytes) -> None:
+    if path.is_symlink():
+        raise ValueError("atomic_json_target_conflict")
+    if not path.exists():
+        return
+    try:
+        actual = path.read_bytes()
+    except OSError as exc:
+        raise ValueError("atomic_json_target_conflict") from exc
+    if actual != expected:
+        raise ValueError("atomic_json_target_conflict")
+
+
+@contextmanager
+def _terminal_publication_lock(candidate_target: Path) -> Iterator[None]:
+    lock_path = candidate_target.parent / ".terminal-validation-publication.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_module: Any | None = None
+    try:
+        try:
+            import fcntl
+        except ImportError as exc:
+            raise RuntimeError("terminal_validation_process_lock_unavailable") from exc
+        lock_module = fcntl
+        lock_module.flock(fd, lock_module.LOCK_EX)
+        yield
+    finally:
+        try:
+            if lock_module is not None:
+                lock_module.flock(fd, lock_module.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _publish_terminal_validation_artifacts(
+    *,
+    summary_target: Path,
+    summary: dict[str, Any],
+    candidate_target: Path,
+    decision_report: dict[str, Any],
+    selected_target: Path,
+    selected_candidate: dict[str, Any],
+) -> None:
+    """Publish terminal validation projections without replacing prior evidence."""
+
+    targets = (
+        (selected_target, selected_candidate),
+        (candidate_target, decision_report),
+        (summary_target, summary),
+    )
+    with _terminal_publication_lock(candidate_target):
+        serialized_by_path: dict[Path, bytes] = {}
+        for path, payload in targets:
+            key = _lexical_absolute(path)
+            try:
+                serialized = _terminal_json_bytes(payload)
+                if key in serialized_by_path:
+                    raise ValueError("atomic_json_target_conflict")
+                serialized_by_path[key] = serialized
+                _preflight_terminal_target(path, serialized)
+            except ValueError as exc:
+                raise ValidationRunError(
+                    f"terminal_validation_artifact_publication_failed:{path.name}:{exc}"
+                ) from exc
+        for path, payload in targets:
+            try:
+                write_json_atomic_create_or_verify(path, payload)
+            except ValueError as exc:
+                raise ValidationRunError(
+                    f"terminal_validation_artifact_publication_failed:{path.name}:{exc}"
+                ) from exc
 
 
 VALIDATION_STAGE_ORDER = (
@@ -94,6 +338,10 @@ def validate_validated_research_result(
     if report.get("validation_admission_binding_schema_version") != 1:
         reasons.append("validation_admission_binding_schema_invalid")
     reasons.extend(validation_admission_binding_reasons(report, manager=manager))
+    if report.get("selected_candidate_binding_schema_version") != 1:
+        reasons.append(
+            "validated_research_result_selected_candidate_binding_schema_invalid"
+        )
     if report.get("end_to_end_validation_result") != "PASS":
         reasons.append("validated_research_result_terminal_gate_not_passed")
     blocking = report.get("validation_blocking_reasons")
@@ -159,6 +407,62 @@ def validate_validated_research_result(
         != selected_id
     ):
         reasons.append("validated_research_result_selected_candidate_mismatch")
+    elif not _has_compact_candidate_binding(selected):
+        reasons.append("validated_research_result_selected_candidate_binding_invalid")
+    if (
+        manager is not None
+        and validation_bound
+        and report.get("selected_candidate_binding_schema_version") == 1
+    ):
+        try:
+            resolve_bound_selected_candidate(report, manager=manager)
+        except ValidationRunError as exc:
+            reasons.append(
+                "validated_research_result_selected_candidate_artifact_invalid:"
+                + str(exc)
+            )
+        compact_candidates = report.get("candidates")
+        if not isinstance(compact_candidates, list) or not compact_candidates:
+            reasons.append("validated_research_result_candidate_artifacts_missing")
+        else:
+            for candidate in compact_candidates:
+                if not isinstance(candidate, dict):
+                    reasons.append(
+                        "validated_research_result_candidate_artifact_invalid"
+                    )
+                    continue
+                detail_policy = str(
+                    candidate.get("candidate_result_artifact_detail_policy") or ""
+                )
+                if detail_policy == "standard_bounded":
+                    # Standard artifacts intentionally retain only a bounded
+                    # diagnostic projection. The independently published full
+                    # selected artifact remains the promotion authority.
+                    continue
+                if detail_policy not in {"external_full", "full"}:
+                    reasons.append(
+                        "validated_research_result_candidate_artifact_invalid:"
+                        "candidate_result_artifact_detail_policy_invalid"
+                    )
+                    continue
+                try:
+                    resolve_candidate_result_artifact(
+                        manager=manager,
+                        compact_candidate=candidate,
+                        expected_experiment_id=str(report.get("experiment_id") or ""),
+                        expected_manifest_hash=str(report.get("manifest_hash") or ""),
+                        expected_dataset_snapshot_id=str(
+                            report.get("dataset_snapshot_id") or ""
+                        ),
+                        expected_dataset_content_hash=str(
+                            report.get("dataset_content_hash") or ""
+                        ),
+                    )
+                except ValueError as exc:
+                    reasons.append(
+                        "validated_research_result_candidate_artifact_invalid:"
+                        + str(exc)
+                    )
     return sorted(set(reasons))
 
 
@@ -418,9 +722,22 @@ def run_research_validation(
             )
         except KnowledgeRegistryError as exc:
             raise ValidationRunError(f"validation_admission_failed:{exc}") from exc
+        if requires_candidate_validation(manifest.research_classification):
+            try:
+                admit_study_validation(
+                    manager=manager,
+                    manifest=manifest,
+                    validation_admission=validation_admission,
+                    run_id=run_id,
+                )
+            except StudyLifecycleError as exc:
+                raise ValidationRunError(
+                    f"validation_study_lifecycle_admission_failed:{exc}"
+                ) from exc
     walk_forward_required = bool(
         getattr(manifest.acceptance_gate, "walk_forward_required", False)
     )
+    full_candidates: list[dict[str, Any]] = []
     selection_report = (
         run_research_walk_forward(
             manifest=manifest,
@@ -432,6 +749,7 @@ def run_research_validation(
             generated_at=generated_at,
             progress_callback=progress_callback,
             strategy_registry=strategy_registry,
+            full_candidates_sink=full_candidates,
         )
         if walk_forward_required
         else run_research_backtest(
@@ -444,6 +762,7 @@ def run_research_validation(
             generated_at=generated_at,
             progress_callback=progress_callback,
             strategy_registry=strategy_registry,
+            full_candidates_sink=full_candidates,
         )
     )
     artifact = selection_report.get("selection_artifact")
@@ -454,11 +773,33 @@ def run_research_validation(
     )
     if candidate_id is not None and str(candidate_id) != selected_id:
         raise ValidationRunError("candidate_id_does_not_match_frozen_selection")
-    candidates = [
+    selection_candidates = [
         item
         for item in selection_report.get("candidates") or []
         if isinstance(item, dict)
     ]
+    externally_bound = bool(selection_candidates) and all(
+        item.get("candidate_result_artifact_detail_policy") == "external_full"
+        for item in selection_candidates
+    )
+    if externally_bound:
+        candidates = [
+            resolve_candidate_result_artifact(
+                manager=manager,
+                compact_candidate=item,
+                expected_experiment_id=manifest.experiment_id,
+                expected_manifest_hash=manifest.manifest_hash(),
+                expected_dataset_snapshot_id=str(
+                    selection_report.get("dataset_snapshot_id") or ""
+                ),
+                expected_dataset_content_hash=str(
+                    selection_report.get("dataset_content_hash") or ""
+                ),
+            )
+            for item in selection_candidates
+        ]
+    else:
+        candidates = full_candidates or selection_candidates
     selected = next(
         (
             item
@@ -467,10 +808,27 @@ def run_research_validation(
         ),
         None,
     )
+    terminal_candidates = _terminal_candidate_projections(
+        selection_report=selection_report,
+        authoritative_candidates=candidates,
+    )
+    compact_selected = next(
+        (
+            item
+            for item in terminal_candidates
+            if str(item.get("parameter_candidate_id") or item.get("candidate_id") or "")
+            == selected_id
+        ),
+        None,
+    )
+    if selected is not None and compact_selected is None:
+        raise ValidationRunError("terminal_selected_candidate_projection_missing")
+    selection_evidence_report = dict(selection_report)
+    selection_evidence_report["candidates"] = candidates
     confirmation = (
         run_final_holdout_confirmation(
             manifest=manifest,
-            selection_report=selection_report,
+            selection_report=selection_evidence_report,
             db_path=db_path,
             manager=manager,
             generated_at=generated_at,
@@ -586,10 +944,10 @@ def run_research_validation(
             "final_selection_gate_result"
         ),
         "selected_candidate_id": selected_id or None,
-        "candidates": candidates,
+        "candidates": terminal_candidates,
         "selection_artifact": artifact,
         "reproduction_binding": reproduction_binding,
-        "selected_candidate": selected,
+        "selected_candidate": compact_selected,
         "validation_blocking_reasons": blocking_reasons,
         "end_to_end_validation_result": status,
     }
@@ -629,8 +987,17 @@ def run_research_validation(
     summary["validation_run_path"] = str(target.resolve())
     summary["research_candidate_report_path"] = str(candidate_target.resolve())
     summary["selected_candidate_path"] = str(selected_target.resolve())
+    summary["selected_candidate_binding_schema_version"] = 1
+    summary["selected_candidate_artifact_hash"] = sha256_prefixed(
+        selected or {}, label="selected_candidate_artifact_hash"
+    )
     summary["content_hash"] = sha256_prefixed(report_content_hash_payload(summary))
-    write_json_atomic(target, summary)
-    write_json_atomic(candidate_target, decision_report)
-    write_json_atomic(selected_target, selected or {})
+    _publish_terminal_validation_artifacts(
+        summary_target=target,
+        summary=summary,
+        candidate_target=candidate_target,
+        decision_report=decision_report,
+        selected_target=selected_target,
+        selected_candidate=selected or {},
+    )
     return summary

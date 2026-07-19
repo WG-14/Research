@@ -24,13 +24,15 @@ research-operations
 
 market-research-internal-web
   -> market_research.application / adapter_contracts
+  -> published read-only research query contracts
 
 market-research
   -X-> web or operations packages
 ```
 
-The web package does not import Research implementation modules directly, and
-Operations reaches web behavior only through
+The web package does not reimplement Research rules: mutations use application
+contracts and authenticated exploration uses the published, read-only Research
+query boundary. Operations reaches web behavior only through
 `market_research_web.operations_contract`. See
 [`docs/monorepo-architecture.md`](docs/monorepo-architecture.md) for the full
 boundary.
@@ -64,10 +66,11 @@ scripts/platform research --help
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
-`verify-complete` evaluates the strict 153-criterion receipt manifest. Its
-opt-in `--run-evidence` mode writes only to a new absolute repository-external
-root; see
-[`docs/platform-completeness-evidence-runner.md`](docs/platform-completeness-evidence-runner.md).
+`verify-complete` evaluates the canonical research-only matrix: all 215
+criteria, all 11 blocking conditions, and hash-bound E4/E5 receipts remain in
+the denominator. A narrative score never grants completion credit. See the
+[evaluation matrix](docs/research-platform-evaluation-matrix.json) and the
+[durable review](docs/research-platform-completeness-review.md).
 
 ## Research CLI
 
@@ -130,7 +133,20 @@ nonzero. The comparison document is written to `--out` (or beneath the
 configured external report root when omitted), and records the isolated
 reproduced report and receipt paths plus exact drift rows.
 
-The freeze command prints the generated schema-3 `artifact_manifest_uri` and
+Validation-bound studies advance through immutable, evidence-backed states:
+`IDEA → STRUCTURED → EXPLORATORY → PREREGISTERED → VALIDATING`, followed by
+`VALIDATED`, `REJECTED`, or `INCONCLUSIVE`. A validated study may enter the
+published `ProspectiveValidationApplicationService`, which freezes rules before
+the observation period, records only simulated fills and actual arrival/missing
+evidence, publishes a research conclusion, and creates a final versioned
+Research Package whose explicit references bind the run, snapshot, Feature
+definitions, validation decision, prospective stream, conclusion, and
+reproduction receipt. These are research conclusions only and never authorize
+capital deployment.
+
+The freeze command accepts only provenance schema 3, including its complete
+hash-bound external source catalog; legacy provenance is not translated. It
+prints the generated schema-3 `artifact_manifest_uri` and
 `artifact_manifest_hash`. Bind both exact values into the experiment manifest
 and set `dataset.source=frozen_sqlite_candles`. The mutable
 `dataset.source=sqlite_candles` compatibility path is exploratory only and

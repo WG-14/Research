@@ -4,6 +4,7 @@ from typing import Any, Mapping, SupportsIndex, SupportsInt, cast
 
 from market_research.research.exit_decision import ExitDecision
 from .sma_exit_rules import evaluate_sma_exit_policy, materialize_sma_exit_policy
+from .sma_with_filter_features import SMA_WITH_FILTER_FEATURE_DEFINITIONS
 from market_research.research.position_model import ResearchPosition
 from market_research.research.strategy_contract import (
     MaterializedParameterSet,
@@ -14,7 +15,6 @@ from market_research.research.strategy_contract import (
     ResearchStrategyPlugin,
 )
 from market_research.research.strategy_spec import (
-    StrategyFeatureDefinition,
     StrategyParameterSchema,
     StrategyRuleDeclaration,
     StrategyRuleSpec,
@@ -229,36 +229,7 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
         ),
         exit_priority=("stop_loss", "opposite_cross", "max_holding_time"),
     ),
-    feature_definitions=(
-        StrategyFeatureDefinition(
-            "short_sma",
-            "Arithmetic mean of completed closes over the short window.",
-            ("candles.close",),
-            "mean(close[-SMA_SHORT:])",
-            ("SMA_SHORT",),
-        ),
-        StrategyFeatureDefinition(
-            "long_sma",
-            "Arithmetic mean of completed closes over the long window.",
-            ("candles.close",),
-            "mean(close[-SMA_LONG:])",
-            ("SMA_LONG",),
-        ),
-        StrategyFeatureDefinition(
-            "gap_ratio",
-            "Relative distance between short and long moving averages.",
-            ("short_sma", "long_sma"),
-            "(short_sma - long_sma) / long_sma",
-            (),
-        ),
-        StrategyFeatureDefinition(
-            "range_ratio",
-            "Completed-candle high-low range relative to close.",
-            ("candles.high", "candles.low", "candles.close"),
-            "(high - low) / close",
-            ("SMA_FILTER_VOL_WINDOW",),
-        ),
-    ),
+    feature_definitions=SMA_WITH_FILTER_FEATURE_DEFINITIONS,
 )
 
 # The event module imports the completed spec above; this late import breaks that cycle.

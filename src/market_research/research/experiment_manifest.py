@@ -26,6 +26,7 @@ from .strategy_spec import (
     validate_parameter_space_against_strategy_spec,
 )
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
+from .datasets.artifact_manifest import load_artifact_manifest
 from .datasets.contracts import DatasetArtifactRef
 from .hypothesis_contract import (
     HYPOTHESIS_LINEAGE_SCHEMA_VERSION,
@@ -204,6 +205,60 @@ class DatasetSpec:
         if self.depth is not None:
             payload["depth"] = self.depth.as_dict()
         return payload
+
+
+_PHYSICAL_LOCATION_FIELD_NAMES = frozenset({"path", "uri", "url"})
+_PHYSICAL_LOCATION_FIELD_SUFFIXES = ("_path", "_uri", "_url")
+
+
+def _dataset_simulation_seed_scope_payload(
+    dataset: DatasetSpec,
+) -> dict[str, Any]:
+    """Bind immutable dataset identity without binding its mounted location."""
+
+    payload: dict[str, Any] = dataset.as_dict()
+    if dataset.artifact_ref is not None:
+        artifact = load_artifact_manifest(
+            dataset.artifact_ref.artifact_manifest_uri,
+            dataset.artifact_ref.artifact_manifest_hash,
+        )
+        payload.pop("artifact_manifest_uri", None)
+        payload.pop("artifact_manifest_hash", None)
+        payload["artifact_manifest_identity"] = {
+            "artifact_id": artifact.artifact_id,
+            "artifact_identity_hash": artifact.artifact_identity_hash,
+            "artifact_content_hash": artifact.content_hash,
+            "artifact_schema_hash": artifact.schema_hash,
+            "source_provenance_manifest_hash": (
+                artifact.source_provenance.provenance_manifest_hash
+            ),
+        }
+    projected = _simulation_seed_scope_projection(payload)
+    assert isinstance(projected, dict)
+    return projected
+
+
+def _simulation_seed_scope_projection(value: Any) -> Any:
+    """Remove physical locations while retaining logical and hashed authority."""
+
+    if isinstance(value, dict):
+        return {
+            key: _simulation_seed_scope_projection(item)
+            for key, item in sorted(value.items())
+            if not _is_physical_location_field(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_simulation_seed_scope_projection(item) for item in value]
+    return value
+
+
+def _is_physical_location_field(key: object) -> bool:
+    if not isinstance(key, str):
+        return False
+    normalized = key.strip().lower()
+    return normalized in _PHYSICAL_LOCATION_FIELD_NAMES or normalized.endswith(
+        _PHYSICAL_LOCATION_FIELD_SUFFIXES
+    )
 
 
 @dataclass(frozen=True)
@@ -1011,7 +1066,7 @@ class ExperimentManifest:
             "strategy_name": self.strategy_name,
             "market": self.market,
             "interval": self.interval,
-            "dataset": self.dataset.as_dict(),
+            "dataset": _dataset_simulation_seed_scope_payload(self.dataset),
             "parameter_space": {
                 key: sorted(list(value), key=repr)
                 for key, value in sorted(self.parameter_space.items())
@@ -1026,13 +1081,23 @@ class ExperimentManifest:
             else None,
         }
         if self.instrument.source == "manifest":
-            payload["instrument"] = self.instrument.as_dict()
-            payload["corporate_action_set"] = self.corporate_action_set.as_dict()
-            payload["corporate_action_policy"] = self.corporate_action_policy.as_dict()
+            payload["instrument"] = _simulation_seed_scope_projection(
+                self.instrument.as_dict()
+            )
+            payload["corporate_action_set"] = _simulation_seed_scope_projection(
+                self.corporate_action_set.as_dict()
+            )
+            payload["corporate_action_policy"] = _simulation_seed_scope_projection(
+                self.corporate_action_policy.as_dict()
+            )
         if self.universe is not None:
-            payload["universe"] = self.universe.as_dict()
+            payload["universe"] = _simulation_seed_scope_projection(
+                self.universe.as_dict()
+            )
         if self.market_calendar is not None:
-            payload["market_calendar"] = self.market_calendar.as_dict()
+            payload["market_calendar"] = _simulation_seed_scope_projection(
+                self.market_calendar.as_dict()
+            )
         return payload
 
     def simulation_seed_scope_hash(self) -> str:

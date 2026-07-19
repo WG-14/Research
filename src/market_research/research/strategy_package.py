@@ -30,7 +30,11 @@ from .strategy_compiler import (
     StrategyCompilationError,
     validate_compiled_strategy_contract,
 )
-from .validation_pipeline import validate_validated_research_result
+from .strategy_contract import is_sha256_hash
+from .validation_pipeline import (
+    resolve_bound_selected_candidate,
+    validate_validated_research_result,
+)
 
 
 class StrategyPackageError(ValueError):
@@ -405,16 +409,25 @@ def build_strategy_research_package(
     selected_id = str(report.get("selected_candidate_id") or "")
     if not selected_id:
         raise StrategyPackageError("strategy_package_selected_candidate_missing")
-    candidates = list(report.get("candidates") or ())
-    selected = next(
-        (
-            item
-            for item in candidates
-            if str(item.get("parameter_candidate_id") or item.get("candidate_id") or "")
-            == selected_id
-        ),
-        None,
-    )
+    selected: dict[str, Any] | None
+    if (
+        manager is not None
+        and report.get("selected_candidate_binding_schema_version") == 1
+    ):
+        selected = resolve_bound_selected_candidate(report, manager=manager)
+    else:
+        candidates = list(report.get("candidates") or ())
+        selected = next(
+            (
+                item
+                for item in candidates
+                if str(
+                    item.get("parameter_candidate_id") or item.get("candidate_id") or ""
+                )
+                == selected_id
+            ),
+            None,
+        )
     if selected is None:
         raise StrategyPackageError("strategy_package_selected_candidate_mismatch")
     if (
@@ -720,6 +733,47 @@ def build_strategy_research_package(
         "source_report_content_hash": recorded_report_hash,
         "selected_candidate_evidence_hash": candidate_evidence_hash,
     }
+    point_in_time_fields = (
+        "point_in_time_decision_stream_hash",
+        "point_in_time_authority_binding_hash",
+        "point_in_time_evidence_content_hash",
+    )
+    point_in_time_bindings = {
+        field: evidence.get(field)
+        for field in point_in_time_fields
+        if evidence.get(field) is not None
+    }
+    if point_in_time_bindings and set(point_in_time_bindings) != set(
+        point_in_time_fields
+    ):
+        raise StrategyPackageError("strategy_package_point_in_time_binding_incomplete")
+    if any(not is_sha256_hash(value) for value in point_in_time_bindings.values()):
+        raise StrategyPackageError("strategy_package_point_in_time_hash_invalid")
+    if point_in_time_bindings:
+        lineage = report.get("lineage")
+        split_evidence = (
+            lineage.get("dataset_split_evidence") if isinstance(lineage, dict) else None
+        )
+        validation_split = (
+            split_evidence.get("validation")
+            if isinstance(split_evidence, dict)
+            else None
+        )
+        if not isinstance(validation_split, dict):
+            raise StrategyPackageError(
+                "strategy_package_point_in_time_validation_lineage_missing"
+            )
+        mismatches = [
+            field
+            for field, value in point_in_time_bindings.items()
+            if validation_split.get(field) != value
+        ]
+        if mismatches:
+            raise StrategyPackageError(
+                "strategy_package_point_in_time_lineage_mismatch:"
+                + ",".join(sorted(mismatches))
+            )
+    package.update(point_in_time_bindings)
     if report.get("validation_admission_binding_schema_version") == 1:
         package.update(
             {

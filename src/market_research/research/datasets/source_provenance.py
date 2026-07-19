@@ -9,13 +9,19 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..hashing import sha256_prefixed
+from .source_catalog import (
+    SourceCatalog,
+    SourceCatalogError,
+    parse_source_catalog,
+)
 
 
-SOURCE_PROVENANCE_SCHEMA_VERSION = 2
+SOURCE_PROVENANCE_SCHEMA_VERSION = 3
 _TOP_LEVEL_FIELDS = frozenset(
     {
         "schema_version",
         "artifact_type",
+        "source_catalog",
         "sources",
         "source_priority",
         "semantics",
@@ -150,6 +156,7 @@ class LineageStage:
 class DatasetSourceProvenance:
     schema_version: int
     artifact_type: str
+    source_catalog: SourceCatalog
     sources: tuple[SourceRecord, ...]
     source_priority: tuple[str, ...]
     semantics: tuple[tuple[str, str], ...]
@@ -160,6 +167,7 @@ class DatasetSourceProvenance:
         return {
             "schema_version": self.schema_version,
             "artifact_type": self.artifact_type,
+            "source_catalog": self.source_catalog.as_dict(),
             "sources": [source.as_dict() for source in self.sources],
             "source_priority": list(self.source_priority),
             "semantics": dict(self.semantics),
@@ -180,21 +188,25 @@ def source_provenance_hash(payload: dict[str, Any]) -> str:
         if key != "provenance_manifest_hash"
     }
     return sha256_prefixed(
-        {"hash_domain": "dataset_source_provenance_v2", "provenance": material},
+        {"hash_domain": "dataset_source_provenance_v3", "provenance": material},
         label="dataset_source_provenance_hash",
     )
 
 
 def build_dataset_source_provenance(
     *,
+    source_catalog: SourceCatalog,
     sources: Iterable[dict[str, object]],
     source_priority: Iterable[str],
     lineage: Iterable[dict[str, object]],
     semantics: dict[str, str] | None = None,
 ) -> DatasetSourceProvenance:
+    if not isinstance(source_catalog, SourceCatalog):
+        raise SourceProvenanceError("source_provenance_source_catalog_required")
     payload: dict[str, Any] = {
         "schema_version": SOURCE_PROVENANCE_SCHEMA_VERSION,
         "artifact_type": "dataset_source_provenance",
+        "source_catalog": source_catalog.as_dict(),
         "sources": list(sources),
         "source_priority": list(source_priority),
         "semantics": dict(semantics or _REQUIRED_SEMANTICS),
@@ -227,6 +239,11 @@ def parse_dataset_source_provenance(payload: Any) -> DatasetSourceProvenance:
     if source_provenance_hash(payload) != expected_hash:
         raise SourceProvenanceError("source_provenance_hash_mismatch")
 
+    try:
+        source_catalog = parse_source_catalog(payload.get("source_catalog"))
+    except SourceCatalogError as exc:
+        raise SourceProvenanceError(str(exc)) from exc
+
     raw_sources = payload.get("sources")
     if not isinstance(raw_sources, list) or not raw_sources:
         raise SourceProvenanceError("source_provenance_sources_required")
@@ -234,6 +251,7 @@ def parse_dataset_source_provenance(payload: Any) -> DatasetSourceProvenance:
     provider_ids = tuple(source.provider_id for source in sources)
     if len(set(provider_ids)) != len(provider_ids):
         raise SourceProvenanceError("source_provenance_provider_id_duplicate")
+    _validate_sources_against_catalog(sources, source_catalog)
 
     raw_priority = payload.get("source_priority")
     if not isinstance(raw_priority, list) or not raw_priority:
@@ -267,6 +285,7 @@ def parse_dataset_source_provenance(payload: Any) -> DatasetSourceProvenance:
     return DatasetSourceProvenance(
         schema_version=SOURCE_PROVENANCE_SCHEMA_VERSION,
         artifact_type="dataset_source_provenance",
+        source_catalog=source_catalog,
         sources=sources,
         source_priority=priority,
         semantics=tuple(sorted(semantics.items())),
@@ -287,6 +306,20 @@ def validate_source_coverage(
         ):
             raise SourceProvenanceError(
                 "source_provenance_requested_range_outside_source_coverage"
+            )
+
+
+def _validate_sources_against_catalog(
+    sources: tuple[SourceRecord, ...], source_catalog: SourceCatalog
+) -> None:
+    for source in sources:
+        try:
+            catalog_entry = source_catalog.resolve(source.provider_id)
+        except SourceCatalogError as exc:
+            raise SourceProvenanceError(str(exc)) from exc
+        if source.source_kind not in catalog_entry.source_kinds:
+            raise SourceProvenanceError(
+                "source_provenance_source_kind_not_approved_by_catalog"
             )
 
 

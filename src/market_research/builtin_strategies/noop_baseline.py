@@ -74,11 +74,25 @@ NOOP_BASELINE_SPEC = StrategySpec(
     ),
     feature_definitions=(
         StrategyFeatureDefinition(
-            "decision_index",
+            "candle_index",
             "Zero-based candle index used only to emit deterministic HOLD decisions.",
             ("candles",),
             "candle_index",
             ("NOOP_DECISION_START_INDEX",),
+            feature_id="noop_baseline.candle_index",
+            version="1.0.0",
+            value_type="int",
+            warm_up_bars=1,
+            current_bar_rule="completed_current_bar_inclusive",
+            availability_lag_ms=0,
+            missing_policy="always_available_for_loaded_completed_candle",
+            outlier_policy="not_applicable_index",
+            unit="candle_index",
+            leakage_risk="low_completed_bar_only",
+            consumers=(
+                "noop_baseline.decision_schedule",
+                "noop_baseline.runtime_evidence",
+            ),
         ),
     ),
 )

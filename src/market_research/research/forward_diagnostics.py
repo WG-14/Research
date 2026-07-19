@@ -362,7 +362,7 @@ def run_forward_diagnostics_on_snapshot(
         view = AsOfCandleView(candles=snapshot.candles, index=index)
         values: list[FeatureValue] = []
         for spec in provider_specs:
-            value = spec.provider.compute(view=view)
+            value = spec.compute(view=view)
             if value is None:
                 continue
             validate_feature_value_against_spec(spec, value)

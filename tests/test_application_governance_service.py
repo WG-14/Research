@@ -41,7 +41,11 @@ from market_research.research.hashing import (
     sha256_prefixed,
 )
 from tests.test_run_lifecycle import _context
-from tests.test_strategy_research_package import _bind_validation_admission, _result
+from tests.test_strategy_research_package import (
+    _bind_selected_candidate_artifact,
+    _bind_validation_admission,
+    _result,
+)
 
 
 def _actor(
@@ -175,6 +179,7 @@ def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]
         confirmation_material,
         label="final_holdout_confirmation",
     )
+    _bind_selected_candidate_artifact(report, manager)
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
 
     candidate = GovernanceSubject(

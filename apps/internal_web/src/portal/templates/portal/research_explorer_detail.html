@@ -1,0 +1,113 @@
+{% extends "portal/base.html" %}
+{% block title %}{{ record.logical_id }} · Research Console{% endblock %}
+{% block breadcrumbs %}연구 운영 / <a href="{% url 'portal:research-explorer' %}?section={{ section }}">{{ section_label }}</a> / <strong>{{ record.logical_id }}</strong>{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">VERIFIED RESEARCH EVIDENCE</p>
+    <h1>{{ record.logical_id }}</h1>
+    <p>stable ID <code>{{ record.logical_id }}</code> · version <code>{{ record.version }}</code> · {{ record.kind }}</p>
+  </div>
+  <span class="badge">{{ record.status }}</span>
+</div>
+
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>검토 요약</h2><p>일상 검토에 필요한 안전한 기본 투영입니다.</p></div></div>
+  <div class="responsive-table">
+    <table>
+      <caption class="sr-only">{{ record.logical_id }} 검토 요약</caption>
+      <tbody>
+      {% for key, value in record.summary.items %}
+        <tr><th scope="row">{{ key }}</th><td>{{ value|default:"—" }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if section == "datasets" %}
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>Snapshot·품질</h2><p>불변 artifact의 전체 검증과 dense interval 결측 검사를 분리해 표시합니다.</p></div></div>
+  <div class="responsive-table">
+    <table>
+      <caption class="sr-only">데이터 snapshot 및 품질 증거</caption>
+      <tbody>
+        <tr><th scope="row">artifact 검증</th><td>{{ record.technical.snapshot.verification.overall_status }}</td></tr>
+        <tr><th scope="row">manifest hash</th><td><code>{{ record.technical.snapshot.artifact_manifest_hash }}</code></td></tr>
+        <tr><th scope="row">content hash</th><td><code>{{ record.technical.snapshot.artifact_content_hash }}</code></td></tr>
+        <tr><th scope="row">행 수</th><td>{{ record.technical.snapshot.row_count }}</td></tr>
+        <tr><th scope="row">결측</th><td>{{ record.technical.quality.verified_dense_grid.missing_count }} · off-grid {{ record.technical.quality.verified_dense_grid.off_grid_count }}</td></tr>
+        <tr><th scope="row">품질 판정</th><td>{{ record.technical.quality.verified_dense_grid.status }} · {{ record.technical.quality.verified_dense_grid.method }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>Point-in-time·수정 이력</h2><p>관측시점과 외부 수신 지식시점을 분리하며, as-of 조회에는 이후 revision이 포함되지 않습니다.</p></div></div>
+  <p><strong>관측 기준</strong> {{ record.technical.point_in_time.observation_time_basis }} · <strong>지식 기준</strong> {{ record.technical.point_in_time.knowledge_time_basis }}</p>
+  <div class="responsive-table">
+    <table>
+      <caption class="sr-only">데이터 revision 이력</caption>
+      <thead><tr><th scope="col">provider / dataset</th><th scope="col">release</th><th scope="col">수신 시각</th><th scope="col">artifact hash</th></tr></thead>
+      <tbody>
+      {% for revision in record.technical.revision_history %}
+        <tr><td>{{ revision.provider_id }} / {{ revision.dataset_id }}</td><td>{{ revision.release_id }}</td><td>{{ revision.received_at }}</td><td><code>{{ revision.artifact_content_hash }}</code></td></tr>
+      {% empty %}
+        <tr><td colspan="4">기록된 revision이 없습니다.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>Raw→정제→표준화 계보</h2><p>값을 노출하지 않고 단계별 artifact·content hash·transformation만 비교합니다.</p></div></div>
+  <div class="responsive-table">
+    <table>
+      <caption class="sr-only">Raw 정제 표준화 lineage</caption>
+      <thead><tr><th scope="col">단계</th><th scope="col">artifact ID</th><th scope="col">content hash</th><th scope="col">변환</th></tr></thead>
+      <tbody>
+      {% for stage in record.technical.lineage %}
+        <tr><td>{{ stage.layer }}</td><td>{{ stage.artifact_id }}</td><td><code>{{ stage.content_hash }}</code></td><td>{{ stage.transformation_id }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p><a href="{% url 'portal:research-explorer' %}?section=features">이 데이터 입력을 사용하는 versioned Feature 정의 보기</a></p>
+</section>
+{% elif section == "features" %}
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>Feature 계산 계약</h2><p>입력·시점 규칙·warm-up·결측 정책과 구현 code hash가 하나의 정의 hash에 결합됩니다.</p></div></div>
+  <div class="responsive-table">
+    <table>
+      <caption class="sr-only">Feature 계산 계약</caption>
+      <tbody>
+        <tr><th scope="row">입력</th><td>{{ record.summary.inputs|join:", " }}</td></tr>
+        <tr><th scope="row">현재 bar 규칙</th><td>{{ record.summary.current_bar_rule }}</td></tr>
+        <tr><th scope="row">availability lag</th><td>{{ record.summary.availability_lag_ms }} ms</td></tr>
+        <tr><th scope="row">결측 정책</th><td>{{ record.summary.missing_policy }}</td></tr>
+        <tr><th scope="row">definition hash</th><td><code>{{ record.summary.definition_hash }}</code></td></tr>
+        <tr><th scope="row">implementation hash</th><td><code>{{ record.technical.definition.implementation_code_hash }}</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>기술 증거</h2><p>검토 가능한 hash·reference·판정 근거입니다. 원시 holdout 값과 경로는 제외됩니다.</p></div></div>
+  <details>
+    <summary>기술 증거 펼치기</summary>
+    <pre><code>{{ technical_json }}</code></pre>
+  </details>
+  <p><a href="{{ record.links.technical }}">동일 투영을 JSON API로 열기</a></p>
+</section>
+
+{% if lineage_json %}
+<section class="panel evidence-panel">
+  <div class="panel-head"><div><h2>패키지 lineage</h2><p>supersession chain과 불변 evidence reference입니다.</p></div></div>
+  <details><summary>lineage 펼치기</summary><pre><code>{{ lineage_json }}</code></pre></details>
+</section>
+{% endif %}
+{% endblock %}

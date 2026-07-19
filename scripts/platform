@@ -17,6 +17,43 @@ VECLIB_MAXIMUM_THREADS=1
 export PYTHONHASHSEED OMP_NUM_THREADS OPENBLAS_NUM_THREADS MKL_NUM_THREADS
 export NUMEXPR_NUM_THREADS BLIS_NUM_THREADS VECLIB_MAXIMUM_THREADS
 
+configure_test_tmpdir() {
+  test_tmpdir=${RESEARCH_TEST_TMPDIR:-${TMPDIR:-/tmp}}
+  if [ ! -d "$test_tmpdir" ]; then
+    echo "test temp directory does not exist: $test_tmpdir" >&2
+    exit 78
+  fi
+  if ! RESEARCH_SOCKET_CHECK_ROOT="$test_tmpdir" python3 - <<'PY'
+import os
+import socket
+import tempfile
+from pathlib import Path
+
+root = Path(os.environ["RESEARCH_SOCKET_CHECK_ROOT"])
+with tempfile.TemporaryDirectory(prefix="market-research-af-unix-", dir=root) as tmp:
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(Path(tmp) / "listener.sock"))
+    finally:
+        listener.close()
+PY
+  then
+    echo "test temp directory must support AF_UNIX sockets: $test_tmpdir" >&2
+    echo "set RESEARCH_TEST_TMPDIR to a Linux filesystem path such as /tmp" >&2
+    exit 78
+  fi
+  TMPDIR=$test_tmpdir
+  TEMP=$test_tmpdir
+  TMP=$test_tmpdir
+  export TMPDIR TEMP TMP
+}
+
+case "${1:-}" in
+  test-core|test-web|test-operations|test-all|test-browser|test-integration|verify-deployment)
+    configure_test_tmpdir
+    ;;
+esac
+
 case "${1:-}" in
   bootstrap)
     exec uv sync --all-packages --all-groups --frozen

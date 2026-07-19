@@ -140,9 +140,10 @@ Every Research CLI command has exactly one GUI policy:
 | `research-governance-transition` | `admin_only` | Critical lifecycle mutation behind explicit governance policy. |
 | `research-record-human-review` | `admin_only` | Records independent review against the current evidence hash. |
 | `research-approve-strategy-candidate` | `admin_only` | Step-up, separation-of-duties, locked lifecycle, and idempotency gates apply. |
+| `research.explore` | `required` | Bounded, path-free exploration of immutable research evidence with read auditing. |
 
-GUI-only list/detail/download capabilities are bounded projections. They do not
-add research semantics.
+GUI-only exploration, list, detail, and download capabilities are bounded
+projections. They do not add research semantics.
 
 ## Job execution and concurrency
 

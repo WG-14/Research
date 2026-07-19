@@ -138,27 +138,18 @@ def test_noop_event_defaults_and_negative_start_index_preserve_legacy_semantics(
     assert [event.reason for event in events] == ["noop_baseline_hold"] * 5
 
 
-def test_noop_marks_an_initial_position_without_changing_it() -> None:
+def test_noop_rejects_an_unfunded_initial_position() -> None:
     policy = replace(legacy_research_portfolio_policy(), initial_position_qty=10.0)
-    result = run_noop_baseline_backtest(
-        dataset=_dataset(),
-        parameter_values={
-            "NOOP_DECISION_START_INDEX": 1,
-            "NOOP_DECISION_REASON": "initial_position",
-        },
-        fee_rate=0.001,
-        slippage_bps=10.0,
-        portfolio_policy=policy,
-        strategy_registry=builtin_strategy_registry(),
-    )
 
-    assert result.metrics_v2 is not None
-    assert result.resource_usage["final_cash"] == 1_000_000.0
-    assert result.resource_usage["final_asset_qty"] == 10.0
-    assert result.resource_usage["final_marked_equity"] == 1_001_200.0
-    assert result.metrics.return_pct == pytest.approx(0.12)
-    assert result.metrics.max_drawdown_pct > 0.0
-    assert all(
-        point.cash == 1_000_000.0 and point.asset_qty == 10.0
-        for point in result.equity_curve
-    )
+    with pytest.raises(ValueError, match="ledger_initial_position_cost_basis_required"):
+        run_noop_baseline_backtest(
+            dataset=_dataset(),
+            parameter_values={
+                "NOOP_DECISION_START_INDEX": 1,
+                "NOOP_DECISION_REASON": "initial_position",
+            },
+            fee_rate=0.001,
+            slippage_bps=10.0,
+            portfolio_policy=policy,
+            strategy_registry=builtin_strategy_registry(),
+        )

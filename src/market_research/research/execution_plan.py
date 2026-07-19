@@ -26,6 +26,11 @@ from .code_provenance import collect_code_provenance
 from .resource_planner import plan_research_resources
 from .backtest_types import resolve_tick_observability_policy
 from .source_archive import publish_source_archive
+from .point_in_time_selection import (
+    PointInTimeSelectionError,
+    require_point_in_time_scope,
+)
+from .research_classification import requires_candidate_validation
 from market_research.paths import ResearchPathManager
 
 
@@ -58,12 +63,16 @@ def require_authoritative_source_eligibility(manifest: ExperimentManifest) -> No
     if manifest.research_classification == "research_only":
         return
     provenance = collect_code_provenance(Path(__file__).resolve().parents[3])
-    if provenance.get("source_layout") != "repository_src":
-        return
-    if provenance.get("git_available") is not True:
-        raise RuntimeError("authoritative_execution_requires_git_source_identity")
-    if provenance.get("git_dirty") is not False:
-        raise RuntimeError("authoritative_execution_requires_clean_git_checkout")
+    if provenance.get("source_layout") == "repository_src":
+        if provenance.get("git_available") is not True:
+            raise RuntimeError("authoritative_execution_requires_git_source_identity")
+        if provenance.get("git_dirty") is not False:
+            raise RuntimeError("authoritative_execution_requires_clean_git_checkout")
+    if requires_candidate_validation(manifest.research_classification):
+        try:
+            require_point_in_time_scope(manifest, verify_source_content=True)
+        except PointInTimeSelectionError as exc:
+            raise RuntimeError(f"validation_point_in_time_admission_failed:{exc}") from exc
 
 
 def parallel_work_task_count(

@@ -18,7 +18,7 @@ from market_research.execution_reality_contract import (
 )
 from .execution_calibration_contract import ExecutionCalibrationThresholds
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import write_json_atomic
+from market_research.storage_io import write_json_atomic_create_or_verify
 from market_research.market_regime import (
     MARKET_REGIME_VERSION,
     evaluate_regime_acceptance_gate,
@@ -112,6 +112,7 @@ from .final_selection import (
     apply_final_selection_contract,
     build_selection_artifact,
     compute_final_holdout_result_hash,
+    selection_candidate_binding_summary,
     validate_selection_artifact,
     validate_selection_artifact_binding,
 )
@@ -144,6 +145,7 @@ from .parameter_space import candidate_id, iter_parameter_candidates
 from .candidate_profile import build_candidate_behavior_profile, build_candidate_profile
 from .profiling import run_with_cprofile
 from .report_writer import (
+    candidate_evidence_hash_inputs,
     summarize_candidate_result,
     write_research_report,
 )
@@ -169,6 +171,20 @@ from .strategy_spec import exit_policy_hash
 
 class ResearchValidationError(ValueError):
     pass
+
+
+def _publish_final_holdout_confirmation(
+    path: Path,
+    report: dict[str, Any],
+) -> None:
+    """Create one immutable final-holdout confirmation or verify an exact retry."""
+
+    try:
+        write_json_atomic_create_or_verify(path, report)
+    except ValueError as exc:
+        raise ResearchValidationError(
+            f"final_holdout_confirmation_publication_failed:{path.name}:{exc}"
+        ) from exc
 
 
 TOP_OF_BOOK_OPTIONAL_COVERAGE_WARNING = "top_of_book_optional_coverage_warning"
@@ -958,13 +974,154 @@ def _candidate_events_path(manager: ResearchPathManager, experiment_id: str) -> 
 
 
 def _candidate_result_path(
-    manager: ResearchPathManager, experiment_id: str, candidate_id: str
+    manager: ResearchPathManager,
+    experiment_id: str,
+    candidate_id: str,
+    candidate_artifact_hash: str,
 ) -> Path:
+    candidate_component = str(candidate_id)
+    if (
+        not candidate_component
+        or candidate_component in {".", ".."}
+        or "/" in candidate_component
+        or "\\" in candidate_component
+    ):
+        raise ResearchValidationError("candidate_result_artifact_candidate_id_invalid")
+    artifact_hash = str(candidate_artifact_hash)
+    digest = artifact_hash.removeprefix("sha256:")
+    if (
+        len(artifact_hash) != 71
+        or not artifact_hash.startswith("sha256:")
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ResearchValidationError("candidate_result_artifact_hash_invalid")
     return (
         _research_artifact_root(manager, experiment_id)
         / "candidate_results"
-        / f"{candidate_id}.json"
+        / candidate_component
+        / f"{digest}.json"
     )
+
+
+def _has_authoritative_candidate_evidence(candidate: dict[str, Any]) -> bool:
+    return bool(
+        (
+            isinstance(candidate.get("parameter_values_raw"), dict)
+            or isinstance(candidate.get("parameter_values"), dict)
+        )
+        and isinstance(candidate.get("compiled_strategy_contract"), dict)
+        and isinstance(candidate.get("scenario_results"), list)
+    )
+
+
+def resolve_candidate_result_artifact(
+    *,
+    manager: ResearchPathManager,
+    compact_candidate: dict[str, Any],
+    expected_experiment_id: str,
+    expected_manifest_hash: str,
+    expected_dataset_snapshot_id: str,
+    expected_dataset_content_hash: str,
+) -> dict[str, Any]:
+    """Resolve a compact or authoritative candidate ref to bound full detail."""
+
+    candidate_id = str(
+        compact_candidate.get("parameter_candidate_id")
+        or compact_candidate.get("candidate_id")
+        or ""
+    ).strip()
+    ref = str(compact_candidate.get("candidate_result_artifact_ref") or "").strip()
+    expected_hash = str(
+        compact_candidate.get("candidate_result_artifact_hash") or ""
+    ).strip()
+    if not candidate_id or not ref or not expected_hash:
+        raise ResearchValidationError("candidate_result_artifact_binding_missing")
+    relative = Path(ref)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ResearchValidationError("candidate_result_artifact_ref_invalid")
+    data_dir = manager.data_dir().resolve()
+    unresolved = data_dir / relative
+    cursor = unresolved
+    while cursor != data_dir:
+        if cursor.is_symlink():
+            raise ResearchValidationError("candidate_result_artifact_symlink_rejected")
+        if cursor.parent == cursor:
+            raise ResearchValidationError("candidate_result_artifact_ref_invalid")
+        cursor = cursor.parent
+    resolved = unresolved.resolve()
+    expected_path = _candidate_result_path(
+        manager,
+        expected_experiment_id,
+        candidate_id,
+        expected_hash,
+    ).resolve()
+    if resolved != expected_path or not ResearchPathManager.is_within(
+        resolved, data_dir
+    ):
+        raise ResearchValidationError("candidate_result_artifact_path_mismatch")
+    if not resolved.is_file():
+        raise ResearchValidationError("candidate_result_artifact_missing")
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ResearchValidationError("candidate_result_artifact_unreadable") from exc
+    if not isinstance(payload, dict):
+        raise ResearchValidationError("candidate_result_artifact_malformed")
+    actual_hash = sha256_prefixed(
+        payload,
+        label="candidate_result_artifact_hash",
+    )
+    if actual_hash != expected_hash:
+        raise ResearchValidationError("candidate_result_artifact_hash_mismatch")
+    expected_bindings = {
+        "experiment_id": expected_experiment_id,
+        "manifest_hash": expected_manifest_hash,
+        "dataset_snapshot_id": expected_dataset_snapshot_id,
+        "dataset_content_hash": expected_dataset_content_hash,
+    }
+    mismatches = [
+        field
+        for field, expected in expected_bindings.items()
+        if str(payload.get(field) or "") != str(expected)
+    ]
+    artifact_candidate_id = str(
+        payload.get("parameter_candidate_id") or payload.get("candidate_id") or ""
+    )
+    if artifact_candidate_id != candidate_id:
+        mismatches.append("parameter_candidate_id")
+    if mismatches:
+        raise ResearchValidationError(
+            "candidate_result_artifact_binding_mismatch:"
+            + ",".join(sorted(set(mismatches)))
+        )
+    artifact_logical_hash = sha256_prefixed(
+        candidate_evidence_hash_inputs(payload),
+        label="candidate_evidence_hash",
+    )
+    expected_logical_hash: Any
+    expected_selection_binding: Any
+    if _has_authoritative_candidate_evidence(compact_candidate):
+        expected_logical_hash = sha256_prefixed(
+            candidate_evidence_hash_inputs(compact_candidate),
+            label="candidate_evidence_hash",
+        )
+        expected_selection_binding = selection_candidate_binding_summary(
+            compact_candidate
+        )
+    else:
+        expected_logical_hash = compact_candidate.get("candidate_payload_hash")
+        expected_selection_binding = compact_candidate.get("selection_binding")
+    if expected_logical_hash != artifact_logical_hash:
+        raise ResearchValidationError(
+            "candidate_result_artifact_logical_candidate_hash_mismatch"
+        )
+    artifact_selection_binding = selection_candidate_binding_summary(payload)
+    if expected_selection_binding != artifact_selection_binding:
+        raise ResearchValidationError(
+            "candidate_result_artifact_selection_binding_mismatch"
+        )
+    return payload
 
 
 def _candidate_detail_result_path(
@@ -1170,6 +1327,35 @@ def _reserve_experiment_attempt(
                 "snapshot_data_hash": snapshot.snapshot_data_hash(),
                 "snapshot_query_hash": snapshot.snapshot_query_hash(),
                 "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+                **(
+                    {
+                        "point_in_time_decision_stream_hash": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "decision_stream_hash"
+                            )
+                        ),
+                        "point_in_time_authority_binding_hash": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "authority_binding_hash"
+                            )
+                        ),
+                        "point_in_time_evidence_content_hash": (
+                            snapshot.point_in_time_decision_evidence.get("content_hash")
+                        ),
+                        "point_in_time_selected_candle_count": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "selected_candle_count"
+                            )
+                        ),
+                        "point_in_time_excluded_candle_count": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "excluded_candle_count"
+                            )
+                        ),
+                    }
+                    if snapshot.point_in_time_decision_evidence is not None
+                    else {}
+                ),
                 "quality_hash": quality_reports[name].content_hash,
                 "verification_status": snapshot.verification.overall_status.value
                 if snapshot.verification
@@ -1998,6 +2184,114 @@ def collect_parent_serial_stage_summary(
     }
 
 
+def _install_published_report_payload(
+    *,
+    in_memory_report: dict[str, Any],
+    published_report: dict[str, Any],
+    report_detail: str,
+    full_candidates_sink: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Replace transient full rows with the immutable published projection."""
+
+    full_candidates = [
+        item
+        for item in in_memory_report.get("candidates") or []
+        if isinstance(item, dict)
+    ]
+    if full_candidates_sink is not None:
+        full_candidates_sink.extend(full_candidates)
+    in_memory_report.clear()
+    in_memory_report.update(published_report)
+    if report_detail == "standard":
+        in_memory_report["candidates"] = full_candidates
+    return full_candidates
+
+
+def _publish_candidate_result_artifacts(
+    *,
+    report: dict[str, Any],
+    manifest: ExperimentManifest,
+    manager: ResearchPathManager,
+    artifact_context: ResearchArtifactContext | None,
+) -> dict[str, Any]:
+    """Publish final, report-enriched candidate rows before report compaction."""
+
+    started = time.perf_counter()
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+        budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+    )
+    file_count = 0
+    total_bytes = 0
+    for candidate in report.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            raise ResearchValidationError(
+                "candidate_result_artifact_candidate_malformed"
+            )
+        candidate_id = str(
+            candidate.get("parameter_candidate_id")
+            or candidate.get("candidate_id")
+            or ""
+        ).strip()
+        if not candidate_id:
+            raise ResearchValidationError(
+                "candidate_result_artifact_candidate_id_missing"
+            )
+        candidate_result_payload = summarize_candidate_result(
+            candidate,
+            "full",
+        )
+        candidate_result_hash = sha256_prefixed(
+            candidate_result_payload,
+            label="candidate_result_artifact_hash",
+        )
+        candidate_result_path = _candidate_result_path(
+            manager,
+            manifest.experiment_id,
+            candidate_id,
+            candidate_result_hash,
+        )
+        candidate["candidate_result_artifact_ref"] = _data_dir_relative_ref(
+            manager, candidate_result_path
+        )
+        candidate["candidate_result_artifact_hash"] = candidate_result_hash
+        candidate["candidate_result_artifact_detail_policy"] = "external_full"
+        write_event = store.write_json_atomic_create_or_verify(
+            candidate_result_path,
+            candidate_result_payload,
+        )
+        file_count += 1
+        total_bytes += int(write_event.bytes)
+    wall_seconds = round(time.perf_counter() - started, 6)
+    return {
+        "candidate_result_file_count": file_count,
+        "candidate_result_total_bytes": total_bytes,
+        "candidate_result_write_wall_seconds": wall_seconds,
+    }
+
+
+def _record_candidate_artifact_publication(
+    *,
+    report: dict[str, Any],
+    execution_observability: dict[str, Any],
+    observability: dict[str, Any],
+) -> None:
+    """Attach one authoritative publication observation to the report."""
+
+    execution_observability["candidate_artifact_write"] = dict(observability)
+    execution_observability.setdefault("stage_timings", []).append(
+        {
+            "stage": "candidate_result_artifact_write",
+            "wall_seconds": observability["candidate_result_write_wall_seconds"],
+            **observability,
+        }
+    )
+    report.setdefault("artifact_observability", {})["candidate_results"] = dict(
+        observability
+    )
+
+
 def run_research_backtest(
     *,
     manifest: ExperimentManifest,
@@ -2011,6 +2305,7 @@ def run_research_backtest(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
     governance_authority_manager: ResearchPathManager | None = None,
+    full_candidates_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         require_authoritative_source_eligibility(manifest)
@@ -2202,8 +2497,16 @@ def run_research_backtest(
         artifact_context=artifact_context,
         governance_authority_manager=governance_authority_manager,
     )
-    report_payload.setdefault("artifact_observability", {})["candidate_results"] = dict(
-        evaluation.candidate_artifact_observability
+    candidate_artifact_observability = _publish_candidate_result_artifacts(
+        report=report_payload,
+        manifest=manifest,
+        manager=manager,
+        artifact_context=artifact_context,
+    )
+    _record_candidate_artifact_publication(
+        report=report_payload,
+        execution_observability=execution_observability,
+        observability=candidate_artifact_observability,
     )
     _emit_progress(
         progress_callback,
@@ -2240,14 +2543,15 @@ def run_research_backtest(
             report_bytes=write_result.artifact_write_summary["report_bytes"],
         )
     )
-    full_candidates = report_payload.get("candidates")
-    report_payload.clear()
-    report_payload.update(write_result.report_payload or {})
-    if manifest.research_run.report_detail in {"index", "summary", "standard"}:
-        report_payload["candidates"] = full_candidates
+    full_candidates = _install_published_report_payload(
+        in_memory_report=report_payload,
+        published_report=write_result.report_payload or {},
+        report_detail=manifest.research_run.report_detail,
+        full_candidates_sink=full_candidates_sink,
+    )
     _attach_authoritative_reproduction_receipt(
         report=report_payload,
-        full_candidates=full_candidates or [],
+        full_candidates=full_candidates,
         manifest=manifest,
         report_path=paths.report_path,
     )
@@ -2274,6 +2578,7 @@ def run_research_walk_forward(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
     governance_authority_manager: ResearchPathManager | None = None,
+    full_candidates_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         require_authoritative_source_eligibility(manifest)
@@ -2464,8 +2769,16 @@ def run_research_walk_forward(
         artifact_context=artifact_context,
         governance_authority_manager=governance_authority_manager,
     )
-    report_payload.setdefault("artifact_observability", {})["candidate_results"] = dict(
-        evaluation.candidate_artifact_observability
+    candidate_artifact_observability = _publish_candidate_result_artifacts(
+        report=report_payload,
+        manifest=manifest,
+        manager=manager,
+        artifact_context=artifact_context,
+    )
+    _record_candidate_artifact_publication(
+        report=report_payload,
+        execution_observability=execution_observability,
+        observability=candidate_artifact_observability,
     )
     _emit_progress(
         progress_callback,
@@ -2502,14 +2815,15 @@ def run_research_walk_forward(
             report_bytes=write_result.artifact_write_summary["report_bytes"],
         )
     )
-    full_candidates = report_payload.get("candidates")
-    report_payload.clear()
-    report_payload.update(write_result.report_payload or {})
-    if manifest.research_run.report_detail in {"index", "summary", "standard"}:
-        report_payload["candidates"] = full_candidates
+    full_candidates = _install_published_report_payload(
+        in_memory_report=report_payload,
+        published_report=write_result.report_payload or {},
+        report_detail=manifest.research_run.report_detail,
+        full_candidates_sink=full_candidates_sink,
+    )
     _attach_authoritative_reproduction_receipt(
         report=report_payload,
-        full_candidates=full_candidates or [],
+        full_candidates=full_candidates,
         manifest=manifest,
         report_path=paths.report_path,
     )
@@ -2791,7 +3105,7 @@ def run_final_holdout_confirmation(
     target = manager.report_path(
         "research", manifest.experiment_id, "final_holdout_confirmation.json"
     )
-    write_json_atomic(target, report)
+    _publish_final_holdout_confirmation(target, report)
     report["confirmation_artifact_path"] = str(target.resolve())
     return report
 
@@ -4482,7 +4796,6 @@ def _evaluate_candidates(
     profile_hash_observability = _empty_hash_observability()
     behavior_profile_hash_observability = _empty_hash_observability()
     candidate_profile_hash_observability = _empty_hash_observability()
-    artifact_write_wall_seconds = 0.0
     append_complete_wall_seconds = 0.0
     for candidate_payload in rows:
         total_started = time.perf_counter()
@@ -4529,27 +4842,6 @@ def _evaluate_candidates(
             candidate_profile_hash_observability, behavior_hash_observer.as_dict()
         )
         profile_total_wall_seconds = time.perf_counter() - total_started
-        store = artifact_context or ResearchArtifactContext(
-            manager=manager,
-            experiment_id=manifest.experiment_id,
-            budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
-        )
-        write_started = time.perf_counter()
-        write_event = store.write_json_atomic(
-            _candidate_result_path(
-                manager,
-                manifest.experiment_id,
-                str(candidate_payload["parameter_candidate_id"]),
-            ),
-            summarize_candidate_result(
-                candidate_payload, manifest.research_run.report_detail
-            ),
-        )
-        artifact_write_wall_seconds += time.perf_counter() - write_started
-        candidate_artifact_observability["candidate_result_file_count"] += 1
-        candidate_artifact_observability["candidate_result_total_bytes"] += int(
-            write_event.bytes
-        )
         append_started = time.perf_counter()
         _append_candidate_event(
             manager=manager,
@@ -4573,10 +4865,6 @@ def _evaluate_candidates(
                 profile_total_wall_seconds,
                 6,
             )
-    candidate_artifact_observability["candidate_result_write_wall_seconds"] = round(
-        artifact_write_wall_seconds,
-        6,
-    )
     substage_timings.append(
         {
             "stage": "candidate_profile_hash",
@@ -4632,13 +4920,6 @@ def _evaluate_candidates(
             ),
             "candidate_count": len(rows),
             **candidate_profile_hash_observability,
-        }
-    )
-    substage_timings.append(
-        {
-            "stage": "candidate_result_artifact_write",
-            "wall_seconds": round(artifact_write_wall_seconds, 6),
-            **candidate_artifact_observability,
         }
     )
     substage_timings.append(
@@ -7767,6 +8048,35 @@ def _report_payload(
                 "snapshot_data_hash": snapshot.snapshot_data_hash(),
                 "snapshot_query_hash": snapshot.snapshot_query_hash(),
                 "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+                **(
+                    {
+                        "point_in_time_decision_stream_hash": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "decision_stream_hash"
+                            )
+                        ),
+                        "point_in_time_authority_binding_hash": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "authority_binding_hash"
+                            )
+                        ),
+                        "point_in_time_evidence_content_hash": (
+                            snapshot.point_in_time_decision_evidence.get("content_hash")
+                        ),
+                        "point_in_time_selected_candle_count": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "selected_candle_count"
+                            )
+                        ),
+                        "point_in_time_excluded_candle_count": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "excluded_candle_count"
+                            )
+                        ),
+                    }
+                    if snapshot.point_in_time_decision_evidence is not None
+                    else {}
+                ),
                 "quality_hash": next(
                     report.content_hash
                     for report in quality_reports
@@ -8450,6 +8760,35 @@ def _report_payload(
                 "snapshot_data_hash": snapshot.snapshot_data_hash(),
                 "snapshot_query_hash": snapshot.snapshot_query_hash(),
                 "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+                **(
+                    {
+                        "point_in_time_decision_stream_hash": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "decision_stream_hash"
+                            )
+                        ),
+                        "point_in_time_authority_binding_hash": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "authority_binding_hash"
+                            )
+                        ),
+                        "point_in_time_evidence_content_hash": (
+                            snapshot.point_in_time_decision_evidence.get("content_hash")
+                        ),
+                        "point_in_time_selected_candle_count": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "selected_candle_count"
+                            )
+                        ),
+                        "point_in_time_excluded_candle_count": (
+                            snapshot.point_in_time_decision_evidence.get(
+                                "excluded_candle_count"
+                            )
+                        ),
+                    }
+                    if snapshot.point_in_time_decision_evidence is not None
+                    else {}
+                ),
                 "quality_hash": next(
                     report.content_hash
                     for report in quality_reports
@@ -10557,6 +10896,27 @@ def _dataset_adapter_provenance_payload(
             snapshot.split_name: snapshot.snapshot_fingerprint_hash()
             for snapshot in snapshots
         },
+        **(
+            {
+                "point_in_time_decision_stream_hashes": {
+                    snapshot.split_name: (
+                        snapshot.point_in_time_decision_evidence or {}
+                    ).get("decision_stream_hash")
+                    for snapshot in snapshots
+                },
+                "point_in_time_authority_binding_hashes": {
+                    snapshot.split_name: (
+                        snapshot.point_in_time_decision_evidence or {}
+                    ).get("authority_binding_hash")
+                    for snapshot in snapshots
+                },
+            }
+            if any(
+                snapshot.point_in_time_decision_evidence is not None
+                for snapshot in snapshots
+            )
+            else {}
+        ),
         "artifact_content_hashes": {
             snapshot.split_name: snapshot.artifact_content_hash
             for snapshot in snapshots
@@ -10648,6 +11008,15 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:dataset_source_missing")
         if not canonical_hash.startswith("sha256:"):
             reasons.append(f"{split_name}:canonical_snapshot_hash_missing")
+        for field in (
+            "point_in_time_decision_stream_hash",
+            "point_in_time_authority_binding_hash",
+            "point_in_time_evidence_content_hash",
+        ):
+            if not str(payload.get(field) or "").startswith("sha256:"):
+                reasons.append(f"{split_name}:{field}_missing")
+        if int(payload.get("point_in_time_selected_candle_count") or 0) <= 0:
+            reasons.append(f"{split_name}:point_in_time_no_eligible_candles")
         verification = _verification_from_quality_payload(payload)
         if verification is None or not verification_allowed(
             classification=manifest.research_classification, result=verification

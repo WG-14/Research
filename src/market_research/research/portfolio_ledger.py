@@ -49,7 +49,12 @@ class PortfolioSnapshot:
 
 
 class PortfolioLedger:
-    """Applies filled execution results exactly once and exposes snapshots."""
+    """Applies fills from an empty initial position and exposes snapshots.
+
+    A non-zero opening position would require an explicit funded cost-basis and
+    initial-valuation contract.  Until that contract exists, accepting only an
+    empty opening position prevents unaccounted assets from entering P&L.
+    """
 
     def __init__(
         self, *, starting_cash: float, initial_position_qty: float = 0.0
@@ -60,6 +65,8 @@ class PortfolioLedger:
             raise ValueError("ledger_starting_cash_invalid")
         if not isfinite(resolved_qty) or resolved_qty < 0.0:
             raise ValueError("ledger_initial_position_qty_invalid")
+        if resolved_qty > 0.0:
+            raise ValueError("ledger_initial_position_cost_basis_required")
         self.cash = resolved_cash
         self.asset_qty = resolved_qty
         self.cost_basis = 0.0

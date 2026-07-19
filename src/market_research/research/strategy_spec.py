@@ -8,6 +8,10 @@ if TYPE_CHECKING:
     from .strategy_registry import StrategyRegistry
 
 from .research_classification import requires_candidate_validation
+from .feature_definition import (
+    FeatureDefinition,
+    validate_feature_definition_set,
+)
 from .hashing import sha256_prefixed
 from .immutable_contract import canonical_mutable, deep_freeze
 
@@ -16,46 +20,9 @@ class StrategySpecError(ValueError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class StrategyFeatureDefinition:
-    name: str
-    description: str
-    source_data: tuple[str, ...]
-    calculation: str
-    lookback_parameter_names: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if (
-            not self.name.strip()
-            or not self.description.strip()
-            or not self.calculation.strip()
-        ):
-            raise StrategySpecError(
-                "strategy feature name, description, and calculation are required"
-            )
-        if not self.source_data or any(not item.strip() for item in self.source_data):
-            raise StrategySpecError(
-                f"strategy feature source_data is required:{self.name}"
-            )
-        if len(set(self.source_data)) != len(self.source_data):
-            raise StrategySpecError(
-                f"strategy feature has duplicate source data:{self.name}"
-            )
-        if len(set(self.lookback_parameter_names)) != len(
-            self.lookback_parameter_names
-        ):
-            raise StrategySpecError(
-                f"strategy feature has duplicate lookback parameter:{self.name}"
-            )
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "source_data": list(self.source_data),
-            "calculation": self.calculation,
-            "lookback_parameter_names": list(self.lookback_parameter_names),
-        }
+# Compatibility name for the public strategy-extension API.  Strategy and
+# diagnostic runtimes now share the same versioned feature authority.
+StrategyFeatureDefinition = FeatureDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +227,7 @@ class StrategySpec:
     exit_policy_schema: dict[str, Any]
     parameter_schema: tuple[StrategyParameterSchema, ...] = ()
     rule_spec: StrategyRuleSpec | None = None
-    feature_definitions: tuple[StrategyFeatureDefinition, ...] = ()
+    feature_definitions: tuple[FeatureDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -279,14 +246,15 @@ class StrategySpec:
                     "strategy rule spec references unknown parameter(s): "
                     + ",".join(unknown)
                 )
-        feature_names = [item.name for item in self.feature_definitions]
-        if len(set(feature_names)) != len(feature_names):
-            raise StrategySpecError("strategy feature names must be unique")
+        validate_feature_definition_set(self.feature_definitions)
         unknown_feature_parameters = sorted(
             {
                 name
                 for feature in self.feature_definitions
-                for name in feature.lookback_parameter_names
+                for name in (
+                    *feature.lookback_parameter_names,
+                    *feature.warm_up_parameter_names,
+                )
                 if name not in self.accepted_parameter_names
             }
         )

@@ -14,7 +14,7 @@ from typing import Any, Mapping
 import json
 import re
 
-from market_research.storage_io import write_json_atomic
+from market_research.storage_io import write_json_atomic_create_or_verify
 
 from .code_provenance import (
     CODE_PROVENANCE_SCHEMA_VERSION,
@@ -248,7 +248,13 @@ def create_reproduction_receipt(
     payload["receipt_content_hash"] = sha256_prefixed(
         content_hash_payload(payload), label="reproduction_receipt_content"
     )
-    write_json_atomic(Path(receipt_path), payload)
+    target = Path(receipt_path)
+    try:
+        write_json_atomic_create_or_verify(target, payload)
+    except ValueError as exc:
+        raise ReproductionContractError(
+            f"reproduction_receipt_publication_failed:{target.name}:{exc}"
+        ) from exc
     return payload
 
 
@@ -353,47 +359,55 @@ def _dataset_split_hashes(report: Mapping[str, Any]) -> tuple[dict[str, object],
             raise ReproductionContractError(
                 f"report.dataset_splits.{split_name} must be an object"
             )
-        rows.append(
-            {
-                "split_name": str(split_name),
-                "content_hash": _required_sha256(
-                    split, "content_hash", f"dataset_splits.{split_name}"
-                ),
-                "quality_hash": _required_sha256(
-                    split, "quality_hash", f"dataset_splits.{split_name}"
-                ),
-                "snapshot_data_hash": _required_sha256(
-                    split, "snapshot_data_hash", f"dataset_splits.{split_name}"
-                ),
-                "snapshot_query_hash": _required_sha256(
-                    split, "snapshot_query_hash", f"dataset_splits.{split_name}"
-                ),
-                "snapshot_fingerprint_hash": _required_sha256(
-                    split, "snapshot_fingerprint_hash", f"dataset_splits.{split_name}"
-                ),
-                "artifact_id": _required_string(
-                    split, "artifact_id", f"dataset_splits.{split_name}"
-                ),
-                "artifact_manifest_hash": _required_sha256(
-                    split, "artifact_manifest_hash", f"dataset_splits.{split_name}"
-                ),
-                "artifact_content_hash": _required_sha256(
-                    split, "artifact_content_hash", f"dataset_splits.{split_name}"
-                ),
-                "artifact_schema_hash": _required_sha256(
-                    split, "artifact_schema_hash", f"dataset_splits.{split_name}"
-                ),
-                "verification_status": _required_string(
-                    split, "verification_status", f"dataset_splits.{split_name}"
-                ),
-                "verification": _required_mapping(
-                    split, "verification", f"dataset_splits.{split_name}"
-                ),
-                "requested_range": _required_mapping(
-                    split, "requested_range", f"dataset_splits.{split_name}"
-                ),
-            }
-        )
+        row: dict[str, object] = {
+            "split_name": str(split_name),
+            "content_hash": _required_sha256(
+                split, "content_hash", f"dataset_splits.{split_name}"
+            ),
+            "quality_hash": _required_sha256(
+                split, "quality_hash", f"dataset_splits.{split_name}"
+            ),
+            "snapshot_data_hash": _required_sha256(
+                split, "snapshot_data_hash", f"dataset_splits.{split_name}"
+            ),
+            "snapshot_query_hash": _required_sha256(
+                split, "snapshot_query_hash", f"dataset_splits.{split_name}"
+            ),
+            "snapshot_fingerprint_hash": _required_sha256(
+                split, "snapshot_fingerprint_hash", f"dataset_splits.{split_name}"
+            ),
+            "artifact_id": _required_string(
+                split, "artifact_id", f"dataset_splits.{split_name}"
+            ),
+            "artifact_manifest_hash": _required_sha256(
+                split, "artifact_manifest_hash", f"dataset_splits.{split_name}"
+            ),
+            "artifact_content_hash": _required_sha256(
+                split, "artifact_content_hash", f"dataset_splits.{split_name}"
+            ),
+            "artifact_schema_hash": _required_sha256(
+                split, "artifact_schema_hash", f"dataset_splits.{split_name}"
+            ),
+            "verification_status": _required_string(
+                split, "verification_status", f"dataset_splits.{split_name}"
+            ),
+            "verification": _required_mapping(
+                split, "verification", f"dataset_splits.{split_name}"
+            ),
+            "requested_range": _required_mapping(
+                split, "requested_range", f"dataset_splits.{split_name}"
+            ),
+        }
+        for field in (
+            "point_in_time_decision_stream_hash",
+            "point_in_time_authority_binding_hash",
+            "point_in_time_evidence_content_hash",
+        ):
+            if split.get(field) is not None:
+                row[field] = _required_sha256(
+                    split, field, f"dataset_splits.{split_name}"
+                )
+        rows.append(row)
     return tuple(sorted(rows, key=lambda item: str(item["split_name"])))
 
 
@@ -401,6 +415,55 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     if not isinstance(candidate, dict):
         raise ReproductionContractError("report.candidates entries must be objects")
     candidate_id = _required_string(candidate, "parameter_candidate_id", "candidate")
+    precomputed = candidate.get("reproduction_candidate_fingerprint")
+    if precomputed is not None:
+        _validate_candidate_fingerprint(precomputed, context="report")
+        if not isinstance(precomputed, dict):
+            raise ReproductionContractError(
+                "candidate.reproduction_candidate_fingerprint must be an object"
+            )
+        if precomputed.get("candidate_id") != candidate_id:
+            raise ReproductionContractError(
+                f"candidate {candidate_id}.reproduction fingerprint identity mismatch"
+            )
+        for field in (
+            "effective_strategy_parameters_hash",
+            "strategy_spec_hash",
+            "strategy_plugin_contract_hash",
+            "strategy_registry_hash",
+            "compiled_strategy_contract_hash",
+        ):
+            if candidate.get(field) is not None and candidate.get(
+                field
+            ) != precomputed.get(field):
+                raise ReproductionContractError(
+                    f"candidate {candidate_id}.{field} compact fingerprint mismatch"
+                )
+        compact_aliases = {
+            "acceptance_gate_result": "acceptance_gate_status",
+            "acceptance_gate_status": "acceptance_gate_status",
+            "primary_scenario_id": "primary_scenario_id",
+        }
+        for compact_field, fingerprint_field in compact_aliases.items():
+            if candidate.get(compact_field) is not None and candidate.get(
+                compact_field
+            ) != precomputed.get(fingerprint_field):
+                raise ReproductionContractError(
+                    f"candidate {candidate_id}.{compact_field} compact fingerprint mismatch"
+                )
+        if candidate.get("gate_fail_reasons") is not None:
+            compact_reasons = sorted(
+                str(item)
+                for item in _string_list(
+                    candidate.get("gate_fail_reasons"),
+                    f"candidate {candidate_id}.gate_fail_reasons",
+                )
+            )
+            if compact_reasons != precomputed.get("gate_fail_reasons"):
+                raise ReproductionContractError(
+                    f"candidate {candidate_id}.gate_fail_reasons compact fingerprint mismatch"
+                )
+        return dict(precomputed)
     scenarios_value = candidate.get("scenario_results")
     if not isinstance(scenarios_value, list) or not scenarios_value:
         raise ReproductionContractError(
@@ -498,7 +561,7 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
             key=_scenario_sort_key,
         )
     )
-    return {
+    fingerprint: dict[str, object] = {
         "candidate_id": candidate_id,
         "effective_strategy_parameters_hash": effective_hash,
         "strategy_spec_hash": _required_sha256(
@@ -523,6 +586,14 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
         "primary_scenario_id": primary_scenario_id,
         "scenarios": list(scenarios),
     }
+    _validate_candidate_fingerprint(fingerprint, context="candidate")
+    return fingerprint
+
+
+def candidate_reproduction_fingerprint(candidate: dict[str, Any]) -> dict[str, object]:
+    """Build the validated bounded fingerprint retained by compact reports."""
+
+    return _candidate_fingerprint(candidate)
 
 
 def _scenario_fingerprint(
@@ -613,6 +684,15 @@ def _scenario_fingerprint(
     if isinstance(execution, dict):
         aliases = {
             "decision_stream_hash": "decision_stream_hash",
+            "point_in_time_decision_stream_hash": (
+                "point_in_time_decision_stream_hash"
+            ),
+            "point_in_time_authority_binding_hash": (
+                "point_in_time_authority_binding_hash"
+            ),
+            "point_in_time_evidence_content_hash": (
+                "point_in_time_evidence_content_hash"
+            ),
             "execution_timing_policy_hash": "executed_execution_timing_policy_hash",
             "execution_timing_stream_hash": "execution_timing_stream_hash",
             "execution_model_hash": "executed_execution_model_hash",
@@ -1010,7 +1090,10 @@ def _source_archive_identity(
 def _validate_source_archive_identity(
     value: Mapping[str, Any], *, context: str
 ) -> None:
-    if value.get("schema_version") != 1 or value.get("format") != "deterministic_zip_v1":
+    if (
+        value.get("schema_version") != 1
+        or value.get("format") != "deterministic_zip_v1"
+    ):
         raise ReproductionContractError(f"{context} schema or format is unsupported")
     for key in (
         "digest",
@@ -1375,6 +1458,8 @@ def _validate_candidate_fingerprint(candidate: Any, *, context: str) -> None:
     _required_sha256(candidate, "effective_strategy_parameters_hash", candidate_context)
     _required_sha256(candidate, "strategy_spec_hash", candidate_context)
     _required_sha256(candidate, "strategy_plugin_contract_hash", candidate_context)
+    _required_sha256(candidate, "strategy_registry_hash", candidate_context)
+    _required_sha256(candidate, "compiled_strategy_contract_hash", candidate_context)
     _required_string(candidate, "acceptance_gate_status", candidate_context)
     _string_list(
         candidate.get("gate_fail_reasons"), f"{candidate_context}.gate_fail_reasons"
@@ -1395,6 +1480,7 @@ def _validate_candidate_fingerprint(candidate: Any, *, context: str) -> None:
         for key in ("scenario_id", "scenario_role"):
             _required_string(scenario, key, scenario_context)
         for key in (
+            "compiled_strategy_contract_hash",
             "behavior_hash",
             "strategy_behavior_hash",
             "trade_ledger_hash",
@@ -1405,6 +1491,20 @@ def _validate_candidate_fingerprint(candidate: Any, *, context: str) -> None:
             "portfolio_policy_hash",
         ):
             _required_sha256(scenario, key, scenario_context)
+        for key in (
+            "decision_stream_hash",
+            "point_in_time_decision_stream_hash",
+            "point_in_time_authority_binding_hash",
+            "point_in_time_evidence_content_hash",
+            "execution_timing_policy_hash",
+            "execution_timing_stream_hash",
+            "request_stream_hash",
+            "fill_stream_hash",
+            "ledger_stream_hash",
+            "stochastic_seed_evidence_hash",
+        ):
+            if scenario.get(key) is not None:
+                _required_sha256(scenario, key, scenario_context)
 
 
 def _compare_value(

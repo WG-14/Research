@@ -1,11 +1,55 @@
 from __future__ import annotations
 
+from market_research.research.datasets.source_catalog import (
+    SourceCatalog,
+    build_source_catalog,
+)
 from market_research.research.datasets.source_provenance import (
     build_dataset_source_provenance,
 )
 
 
+def build_test_source_catalog(
+    *,
+    provider_id: str = "test-provider",
+    source_kinds: tuple[str, ...] = ("file_export",),
+) -> SourceCatalog:
+    return build_source_catalog(
+        catalog_id="test-research-source-catalog",
+        version="test-v1",
+        approved_at="2025-12-31T00:00:00Z",
+        approved_by="test-data-steward",
+        entries=(
+            {
+                "provider_id": provider_id,
+                "display_name": "Externally prepared test fixture",
+                "data_kinds": ["ohlcv"],
+                "frequencies": ["1m"],
+                "source_kinds": sorted(source_kinds),
+                "point_in_time_policy": ("event_available_received_processed_times"),
+                "revision_policy": "append_new_release_preserve_prior",
+                "license_id": "test-research-license-v1",
+                "research_use_terms": "offline reproducible research only",
+                "redistribution_allowed": False,
+                "quality_level": "VERIFIED",
+                "preparation_boundary": (
+                    "externally_prepared_offline_immutable_input_only"
+                ),
+                "credential_boundary": (
+                    "credentials_external_to_research_distribution"
+                ),
+                "owner": "test-data-steward",
+                "expected_delivery_lag_seconds": 1.0,
+                "maximum_staleness_seconds": 3600.0,
+            },
+        ),
+    )
+
+
+TEST_SOURCE_CATALOG = build_test_source_catalog()
+
 TEST_SOURCE_PROVENANCE = build_dataset_source_provenance(
+    source_catalog=TEST_SOURCE_CATALOG,
     sources=(
         {
             "provider_id": "test-provider",

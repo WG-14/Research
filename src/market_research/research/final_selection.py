@@ -338,6 +338,7 @@ def _selection_only_payload(value: Any) -> Any:
             key: _selection_only_payload(item)
             for key, item in sorted(value.items())
             if "final_holdout" not in str(key)
+            and key not in {"stage_trace", "stage_trace_count", "stage_trace_hash"}
         }
     if isinstance(value, (list, tuple)):
         return [_selection_only_payload(item) for item in value]
@@ -350,7 +351,21 @@ def selection_candidate_binding_summary(
     """Return the compact candidate evidence needed to verify selection later."""
 
     existing = candidate.get("selection_binding")
-    if isinstance(existing, dict):
+    has_authoritative_source = any(
+        key in candidate
+        for key in (
+            "parameter_values",
+            "parameter_values_raw",
+            "effective_strategy_parameters",
+            "compiled_strategy_contract",
+            "scenario_results",
+            "scenarios",
+        )
+    )
+    # A compact projection may contain only the previously computed binding.
+    # Full artifacts must always be recomputed so injecting a cached binding
+    # cannot conceal tampered metric or execution evidence.
+    if isinstance(existing, dict) and not has_authoritative_source:
         return dict(existing)
     candidate_id = str(
         candidate.get("parameter_candidate_id") or candidate.get("candidate_id") or ""
