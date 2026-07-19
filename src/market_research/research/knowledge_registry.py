@@ -8,7 +8,7 @@ can never observe a partially published lineage.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -34,7 +34,9 @@ from .knowledge_contract import (
     PreregistrationRecord,
     ResearchNoteSpec,
     authority_ref_from_dict,
+    hypothesis_outcome_spec_from_dict,
     knowledge_ref_from_dict,
+    literature_spec_from_dict,
     validate_research_note_authority_refs,
 )
 from .point_in_time_selection import (
@@ -50,6 +52,129 @@ KNOWLEDGE_REGISTRY_HASH_LABEL = "research_knowledge_registry"
 
 class KnowledgeRegistryError(ValueError):
     """The knowledge stream or a requested registry mutation is invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeRegistryProof:
+    """Self-contained validated prefix proof for one knowledge record."""
+
+    target_ref: KnowledgeRef
+    rows: tuple[Mapping[str, Any], ...]
+    stream_hash: str
+    content_hash: str = dataclass_field(init=False)
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise KnowledgeRegistryError("knowledge_proof_schema_unsupported")
+        if not isinstance(self.target_ref, KnowledgeRef):
+            raise KnowledgeRegistryError("knowledge_proof_target_ref_invalid")
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(self.rows):
+            if not isinstance(raw, Mapping) or any(
+                not isinstance(key, str) for key in raw
+            ):
+                raise KnowledgeRegistryError(
+                    f"knowledge_proof_row_invalid:{index}"
+                )
+            normalized.append(deepcopy(dict(raw)))
+        _validate_knowledge_proof_material(
+            target_ref=self.target_ref,
+            rows=normalized,
+            stream_hash=self.stream_hash,
+        )
+        object.__setattr__(self, "rows", tuple(normalized))
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                self.identity_payload(), label="knowledge_registry_prefix_proof"
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "artifact_type": "knowledge_registry_hash_chain_proof",
+            "hash_chain_label": KNOWLEDGE_REGISTRY_HASH_LABEL,
+            "target_ref": self.target_ref.as_dict(),
+            "row_count": len(self.rows),
+            "stream_hash": self.stream_hash,
+            "rows": [deepcopy(dict(row)) for row in self.rows],
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self.identity_payload(), "content_hash": self.content_hash}
+
+    def as_external_evidence(self) -> dict[str, Any]:
+        """Adapt the proof to a repository-independent supporting payload."""
+
+        return {
+            "schema_version": 1,
+            "artifact_type": "knowledge_registry_external_evidence",
+            "authority": "knowledge_registry",
+            "logical_id": self.target_ref.logical_id,
+            "version": self.target_ref.version,
+            "content_hash": self.content_hash,
+            "payload": self.as_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> KnowledgeRegistryProof:
+        payload = _proof_mapping(value, "knowledge_proof")
+        expected = {
+            "schema_version",
+            "artifact_type",
+            "hash_chain_label",
+            "target_ref",
+            "row_count",
+            "stream_hash",
+            "rows",
+            "content_hash",
+        }
+        if set(payload) != expected:
+            raise KnowledgeRegistryError("knowledge_proof_fields_invalid")
+        if payload["artifact_type"] != "knowledge_registry_hash_chain_proof":
+            raise KnowledgeRegistryError("knowledge_proof_artifact_type_invalid")
+        if payload["hash_chain_label"] != KNOWLEDGE_REGISTRY_HASH_LABEL:
+            raise KnowledgeRegistryError("knowledge_proof_label_invalid")
+        schema_version = _proof_integer(
+            payload["schema_version"], "knowledge_proof.schema_version"
+        )
+        rows_raw = _proof_list(payload["rows"], "knowledge_proof.rows")
+        if _proof_integer(payload["row_count"], "knowledge_proof.row_count") != len(
+            rows_raw
+        ):
+            raise KnowledgeRegistryError("knowledge_proof_row_count_mismatch")
+        rows = tuple(
+            _proof_mapping(item, f"knowledge_proof.rows[{index}]")
+            for index, item in enumerate(rows_raw)
+        )
+        target_payload = _proof_mapping(
+            payload["target_ref"], "knowledge_proof.target_ref"
+        )
+        target_fields = {"record_type", "logical_id", "version", "record_hash"}
+        if set(target_payload) != target_fields or any(
+            not isinstance(target_payload[field], str) for field in target_fields
+        ):
+            raise KnowledgeRegistryError("knowledge_proof_target_ref_invalid")
+        try:
+            target_ref = knowledge_ref_from_dict(
+                dict(target_payload), context="knowledge_proof.target_ref"
+            )
+        except KnowledgeContractError as exc:
+            raise KnowledgeRegistryError("knowledge_proof_target_ref_invalid") from exc
+        result = cls(
+            schema_version=schema_version,
+            target_ref=target_ref,
+            rows=rows,
+            stream_hash=_proof_text(
+                payload["stream_hash"], "knowledge_proof.stream_hash"
+            ),
+        )
+        if payload["content_hash"] != result.content_hash:
+            raise KnowledgeRegistryError("knowledge_proof_content_hash_mismatch")
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +227,87 @@ def validate_knowledge_registry(manager: ResearchPathManager) -> dict[str, Any]:
         "stream_hash": snapshot.stream_hash,
         "path": str(path.resolve()),
     }
+
+
+def export_knowledge_registry_proof(
+    *, manager: ResearchPathManager, target_ref: KnowledgeRef
+) -> KnowledgeRegistryProof:
+    """Export the immutable stream prefix ending at ``target_ref``."""
+
+    rows = _validated_rows(manager)
+    matches = [
+        row
+        for row in rows
+        if (
+            row.get("record_type"),
+            row.get("logical_id"),
+            row.get("version"),
+            row.get("record_hash"),
+        )
+        == (
+            target_ref.record_type,
+            target_ref.logical_id,
+            target_ref.version,
+            target_ref.record_hash,
+        )
+    ]
+    if len(matches) != 1:
+        raise KnowledgeRegistryError("knowledge_proof_target_unresolved")
+    sequence = matches[0].get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        raise KnowledgeRegistryError("knowledge_proof_target_sequence_invalid")
+    prefix = tuple(rows[: sequence + 1])
+    stream_hash = prefix[-1].get("row_hash")
+    if not isinstance(stream_hash, str):
+        raise KnowledgeRegistryError("knowledge_proof_stream_hash_invalid")
+    return KnowledgeRegistryProof(
+        target_ref=target_ref,
+        rows=prefix,
+        stream_hash=stream_hash,
+    )
+
+
+def verify_knowledge_registry_proof(value: object) -> KnowledgeRegistryProof:
+    """Strictly verify a detached proof without access to the source registry."""
+
+    return KnowledgeRegistryProof.from_dict(value)
+
+
+def verify_knowledge_registry_external_evidence(
+    value: object,
+) -> KnowledgeRegistryProof:
+    """Verify the external-evidence adapter and return its typed proof."""
+
+    payload = _proof_mapping(value, "knowledge_external_evidence")
+    expected = {
+        "schema_version",
+        "artifact_type",
+        "authority",
+        "logical_id",
+        "version",
+        "content_hash",
+        "payload",
+    }
+    if set(payload) != expected:
+        raise KnowledgeRegistryError("knowledge_external_evidence_fields_invalid")
+    if _proof_integer(
+        payload["schema_version"], "knowledge_external_evidence.schema_version"
+    ) != 1:
+        raise KnowledgeRegistryError("knowledge_external_evidence_schema_unsupported")
+    if payload["artifact_type"] != "knowledge_registry_external_evidence":
+        raise KnowledgeRegistryError(
+            "knowledge_external_evidence_artifact_type_invalid"
+        )
+    if payload["authority"] != "knowledge_registry":
+        raise KnowledgeRegistryError("knowledge_external_evidence_authority_invalid")
+    proof = KnowledgeRegistryProof.from_dict(payload["payload"])
+    if (
+        payload["logical_id"] != proof.target_ref.logical_id
+        or payload["version"] != proof.target_ref.version
+        or payload["content_hash"] != proof.content_hash
+    ):
+        raise KnowledgeRegistryError("knowledge_external_evidence_binding_mismatch")
+    return proof
 
 
 def publish_observation(
@@ -178,13 +384,16 @@ def publish_literature(
     literature: LiteratureSpec,
     expected_previous_record_hash: str | None = None,
 ) -> dict[str, Any]:
+    relation_refs = tuple(
+        item.hypothesis_ref for item in literature.internal_hypothesis_relations
+    )
     descriptor = _Descriptor(
         record_type="literature",
         logical_id=literature.literature_id,
         version=literature.version,
         record_hash=literature.contract_hash(),
         payload=literature.as_dict(),
-        outbound_refs=literature.references,
+        outbound_refs=(*literature.references, *relation_refs),
         actor_id=literature.actor_id,
         recorded_at=literature.recorded_at,
         expected_previous_record_hash=expected_previous_record_hash,
@@ -1112,6 +1321,51 @@ def _semantic_reasons(rows: list[dict[str, Any]]) -> list[str]:
                 raise KnowledgeRegistryError("actor_id_required")
             if key[0] == "decision":
                 _validate_decision_payload(payload)
+            if key[0] == "literature":
+                literature = literature_spec_from_dict(payload)
+                if literature.as_dict() != payload:
+                    raise KnowledgeRegistryError("literature_payload_not_canonical")
+                expected_refs = [
+                    item.as_dict()
+                    for item in (
+                        *literature.references,
+                        *(
+                            relation.hypothesis_ref
+                            for relation in literature.internal_hypothesis_relations
+                        ),
+                    )
+                ]
+                if refs != expected_refs:
+                    raise KnowledgeRegistryError("literature_outbound_refs_mismatch")
+                if (
+                    key[1] != literature.literature_id
+                    or key[2] != literature.version
+                    or row.get("actor_id") != literature.actor_id
+                    or row.get("recorded_at") != literature.recorded_at
+                ):
+                    raise KnowledgeRegistryError("literature_registry_binding_mismatch")
+            if key[0] == "hypothesis_outcome":
+                outcome = hypothesis_outcome_spec_from_dict(payload)
+                if outcome.as_dict() != payload:
+                    raise KnowledgeRegistryError(
+                        "hypothesis_outcome_payload_not_canonical"
+                    )
+                expected_outcome_refs = [outcome.hypothesis_ref.as_dict()]
+                if outcome.question_ref is not None:
+                    expected_outcome_refs.append(outcome.question_ref.as_dict())
+                if refs != expected_outcome_refs:
+                    raise KnowledgeRegistryError(
+                        "hypothesis_outcome_outbound_refs_mismatch"
+                    )
+                if (
+                    key[1] != outcome.outcome_id
+                    or key[2] != outcome.version
+                    or row.get("actor_id") != outcome.actor_id
+                    or row.get("recorded_at") != outcome.recorded_at
+                ):
+                    raise KnowledgeRegistryError(
+                        "hypothesis_outcome_registry_binding_mismatch"
+                    )
             if key[0] == "ai_advisory":
                 _validate_ai_advisory_payload(payload)
                 if payload.get("source_refs") != refs:
@@ -1377,6 +1631,110 @@ def _event_id(key: tuple[str, str, str]) -> str:
         {"record_type": key[0], "logical_id": key[1], "version": key[2]},
         label="knowledge_registry_event",
     )
+
+
+def _validate_knowledge_proof_material(
+    *,
+    target_ref: KnowledgeRef,
+    rows: list[dict[str, Any]],
+    stream_hash: str,
+) -> None:
+    if not rows:
+        raise KnowledgeRegistryError("knowledge_proof_rows_required")
+    prior_hash: str | None = None
+    required_row_fields = {
+        "schema_version",
+        "event_id",
+        "event_type",
+        "record_type",
+        "logical_id",
+        "version",
+        "record_hash",
+        "previous_record_hash",
+        "outbound_refs",
+        "payload",
+        "actor_id",
+        "recorded_at",
+        "sequence",
+        "prior_hash",
+        "row_hash",
+    }
+    for index, row in enumerate(rows):
+        row_fields = frozenset(row)
+        if row_fields not in {
+            frozenset(required_row_fields),
+            frozenset((*required_row_fields, "authority_refs")),
+        }:
+            raise KnowledgeRegistryError(
+                f"knowledge_proof_row_fields_invalid:{index}"
+            )
+        if row.get("sequence") != index:
+            raise KnowledgeRegistryError(
+                f"knowledge_proof_sequence_mismatch:{index}"
+            )
+        if row.get("prior_hash") != prior_hash:
+            raise KnowledgeRegistryError(
+                f"knowledge_proof_prior_hash_mismatch:{index}"
+            )
+        material = {key: value for key, value in row.items() if key != "row_hash"}
+        try:
+            expected_hash = sha256_prefixed(
+                content_hash_payload(material),
+                label=f"{KNOWLEDGE_REGISTRY_HASH_LABEL}_row",
+            )
+        except (TypeError, ValueError) as exc:
+            raise KnowledgeRegistryError("knowledge_proof_row_not_canonical") from exc
+        if row.get("row_hash") != expected_hash:
+            raise KnowledgeRegistryError(
+                f"knowledge_proof_row_hash_mismatch:{index}"
+            )
+        prior_hash = expected_hash
+    if stream_hash != prior_hash:
+        raise KnowledgeRegistryError("knowledge_proof_stream_hash_mismatch")
+    last = rows[-1]
+    if (
+        last.get("record_type"),
+        last.get("logical_id"),
+        last.get("version"),
+        last.get("record_hash"),
+    ) != (
+        target_ref.record_type,
+        target_ref.logical_id,
+        target_ref.version,
+        target_ref.record_hash,
+    ):
+        raise KnowledgeRegistryError("knowledge_proof_target_not_terminal")
+    semantic_reasons = _semantic_reasons(rows)
+    if semantic_reasons:
+        raise KnowledgeRegistryError(
+            "knowledge_proof_semantic_invalid:" + ",".join(semantic_reasons)
+        )
+
+
+def _proof_mapping(value: object, context: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or any(
+        not isinstance(key, str) for key in value
+    ):
+        raise KnowledgeRegistryError(f"{context}_object_required")
+    return value
+
+
+def _proof_list(value: object, context: str) -> list[object]:
+    if not isinstance(value, list):
+        raise KnowledgeRegistryError(f"{context}_array_required")
+    return value
+
+
+def _proof_text(value: object, context: str) -> str:
+    if not isinstance(value, str):
+        raise KnowledgeRegistryError(f"{context}_string_required")
+    return value
+
+
+def _proof_integer(value: object, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise KnowledgeRegistryError(f"{context}_integer_required")
+    return value
 
 
 def _require_timestamp(value: str, context: str) -> None:

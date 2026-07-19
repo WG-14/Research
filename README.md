@@ -66,11 +66,13 @@ scripts/platform research --help
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
-`verify-complete` evaluates the canonical research-only matrix: all 215
-criteria, all 11 blocking conditions, and hash-bound E4/E5 receipts remain in
-the denominator. A narrative score never grants completion credit. See the
-[evaluation matrix](docs/research-platform-evaluation-matrix.json) and the
-[durable review](docs/research-platform-completeness-review.md).
+`verify-complete` evaluates the current full-scope research-only matrix: all
+431 explicit and normative criteria, all 19 blocking conditions, and
+hash-bound E4/E5 receipts remain in the denominator. A narrative score never
+grants completion credit. See the
+[full-scope evaluation matrix](docs/research-platform-full-scope-evaluation-matrix.json)
+and the [durable review](docs/research-platform-full-scope-review.md). The
+215-row matrix is retained only as historical evidence for the earlier rubric.
 
 ## Research CLI
 
@@ -118,6 +120,11 @@ scripts/platform research research-walk-forward \
 scripts/platform research research-validate \
   --manifest /abs/experiment.json
 ```
+
+Futures and options deliberately use a separate product-semantic authority;
+they are never admitted to the spot-candle engine. Their immutable chain,
+simulation and evidence-bundle workflow is documented in
+[`docs/derivative-research.md`](docs/derivative-research.md).
 
 Replay an authoritative receipt with the same deterministic launcher:
 

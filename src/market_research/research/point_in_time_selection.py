@@ -103,6 +103,14 @@ def require_point_in_time_scope(
             required=verify_source_content,
         ),
     }
+    etf_nav = getattr(manifest, "etf_nav", None)
+    if etf_nav is not None:
+        source_verification["etf_nav"] = _verify_local_authority_source(
+            source_uri=etf_nav.source_uri,
+            expected_hash=etf_nav.source_content_hash,
+            authority="etf_nav",
+            required=verify_source_content,
+        )
     authorities: dict[str, object] = {
         "instrument": {
             "instrument_id": manifest.instrument.instrument_id,
@@ -129,6 +137,8 @@ def require_point_in_time_scope(
         },
         "source_content_verification": source_verification,
     }
+    if etf_nav is not None:
+        authorities["etf_nav"] = etf_nav.evidence()
     return {
         "authorities": authorities,
         "authority_binding_hash": sha256_prefixed(
@@ -419,6 +429,17 @@ def _decision_row(
     actions = manifest.corporate_action_set.latest_effective_and_known(
         as_of=knowledge_at
     )
+    etf_nav_records: dict[str, object] | None = None
+    etf_nav = getattr(manifest, "etf_nav", None)
+    if etf_nav is not None:
+        etf_nav_records = {}
+        for nav_type in ("official_nav", "inav"):
+            record = etf_nav.latest_known_at(
+                known_at=knowledge_at, nav_type=nav_type
+            )
+            etf_nav_records[nav_type] = (
+                record.evidence() if record is not None else None
+            )
     tradability = "tradable"
     for event in actions:
         if event.event_type == "trading_halt":
@@ -470,6 +491,7 @@ def _decision_row(
             }
             for item in actions
         ],
+        "latest_known_etf_nav": etf_nav_records,
         "tradability_state": tradability,
         "selected": not reasons,
         "reasons": sorted(reasons),
@@ -523,7 +545,7 @@ def _verify_snapshot_domain_bindings(
     *, snapshot: "DatasetSnapshot", authorities: Mapping[str, Any]
 ) -> None:
     domain = dict((snapshot.options or {}).get("domain_contracts") or {})
-    expected_pairs = (
+    expected_pairs: list[tuple[str, str, object]] = [
         (
             "instrument",
             "instrument_contract_hash",
@@ -546,7 +568,12 @@ def _verify_snapshot_domain_bindings(
             "action_set_hash",
             authorities.get("corporate_actions", {}).get("action_set_hash"),
         ),
-    )
+    ]
+    etf_nav = authorities.get("etf_nav")
+    if isinstance(etf_nav, Mapping):
+        expected_pairs.append(
+            ("etf_nav", "etf_nav_contract_hash", etf_nav.get("etf_nav_contract_hash"))
+        )
     for section, key, expected in expected_pairs:
         value = domain.get(section)
         if not isinstance(value, Mapping) or value.get(key) != expected:

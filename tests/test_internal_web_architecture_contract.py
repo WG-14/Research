@@ -42,6 +42,9 @@ EXPECTED_GUI_POLICY = {
     "research-governance-transition": "admin_only",
     "research-record-human-review": "admin_only",
     "research-approve-strategy-candidate": "admin_only",
+    "research-derivative-register": "cli_only",
+    "research-derivative-replay": "cli_only",
+    "research-derivative-diff": "cli_only",
 }
 
 FORBIDDEN_WEB_IMPORT_ROOTS = {

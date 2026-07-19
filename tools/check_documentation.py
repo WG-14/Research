@@ -38,10 +38,13 @@ _DOCUMENTATION_ROOTS = (
 _REQUIRED_DOCUMENTS = (
     Path("README.md"),
     Path("docs/dataset_artifact_legacy_policy.md"),
+    Path("docs/derivative-research.md"),
     Path("docs/internal-web-architecture.md"),
     Path("docs/investment-research-platform.md"),
     Path("docs/research-platform-completeness-review.md"),
     Path("docs/research-platform-evaluation-matrix.json"),
+    Path("docs/research-platform-full-scope-evaluation-matrix.json"),
+    Path("docs/research-platform-full-scope-review.md"),
     Path("docs/research-data-dictionary.md"),
     Path("services/research_operations/README.md"),
     Path("services/research_operations/docs/runbook.md"),

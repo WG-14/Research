@@ -146,6 +146,52 @@ def _complete_semantic_contract(
                 raise StrategyPackageError(
                     "strategy_package_instrument_evidence_hash_invalid"
                 )
+        etf_nav_evidence = instrument_evidence.get("etf_nav")
+        if etf_nav_evidence is not None:
+            if (
+                not isinstance(etf_nav_evidence, dict)
+                or instrument_evidence.get("asset_type") != "etf"
+            ):
+                raise StrategyPackageError("strategy_package_etf_nav_evidence_invalid")
+            required_etf_nav_fields = {
+                "authority_id",
+                "authority_version_id",
+                "etf_nav_contract_hash",
+                "instrument_id",
+                "underlying_index_id",
+                "underlying_index_content_hash",
+                "currency",
+                "source_manifest_hash",
+                "source_content_hash",
+                "source_schema_hash",
+            }
+            if any(
+                not str(etf_nav_evidence.get(field) or "").strip()
+                for field in required_etf_nav_fields
+            ):
+                raise StrategyPackageError(
+                    "strategy_package_etf_nav_evidence_incomplete"
+                )
+            if (
+                etf_nav_evidence.get("instrument_id")
+                != instrument_evidence.get("instrument_id")
+                or etf_nav_evidence.get("currency")
+                != instrument_evidence.get("trading_currency")
+            ):
+                raise StrategyPackageError(
+                    "strategy_package_etf_nav_evidence_scope_mismatch"
+                )
+            for field in (
+                "etf_nav_contract_hash",
+                "underlying_index_content_hash",
+                "source_manifest_hash",
+                "source_content_hash",
+                "source_schema_hash",
+            ):
+                if not str(etf_nav_evidence[field]).startswith("sha256:"):
+                    raise StrategyPackageError(
+                        "strategy_package_etf_nav_evidence_hash_invalid"
+                    )
         target_asset["instrument_evidence"] = dict(instrument_evidence)
     expected_performance = _expected_performance_range(
         primary=primary,

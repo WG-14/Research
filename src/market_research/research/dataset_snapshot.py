@@ -716,6 +716,9 @@ def _snapshot_materialization_contract(
         domain_contracts["point_in_time_universe"] = manifest.universe.evidence()
     if manifest.market_calendar is not None:
         domain_contracts["market_calendar"] = manifest.market_calendar.evidence()
+    etf_nav = getattr(manifest, "etf_nav", None)
+    if etf_nav is not None:
+        domain_contracts["etf_nav"] = etf_nav.evidence()
     if domain_contracts:
         payload["domain_contracts"] = domain_contracts
     return payload

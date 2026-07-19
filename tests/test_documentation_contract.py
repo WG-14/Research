@@ -60,10 +60,13 @@ def test_documentation_checker_requires_operator_docs_and_commands(
 
     for relative in (
         "docs/dataset_artifact_legacy_policy.md",
+        "docs/derivative-research.md",
         "docs/internal-web-architecture.md",
         "docs/investment-research-platform.md",
         "docs/research-platform-completeness-review.md",
         "docs/research-platform-evaluation-matrix.json",
+        "docs/research-platform-full-scope-evaluation-matrix.json",
+        "docs/research-platform-full-scope-review.md",
         "docs/research-data-dictionary.md",
         "services/research_operations/README.md",
         "services/research_operations/docs/runbook.md",

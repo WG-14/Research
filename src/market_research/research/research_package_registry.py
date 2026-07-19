@@ -97,6 +97,7 @@ _ALLOWED_SOURCE_PROVENANCE_PATH_KEYS = frozenset({"knowledge_registry_path"})
 _PROJECTED_SOURCE_LOCATION_KEYS = frozenset({"source_uri"})
 _PROJECTABLE_INSTRUMENT_SOURCE_PATHS = frozenset(
     {
+        "$.target_asset.instrument_evidence.etf_nav.source_uri",
         "$.target_asset.instrument_evidence.market_calendar.source_uri",
         "$.target_asset.instrument_evidence.point_in_time_universe.source_uri",
     }
@@ -567,6 +568,21 @@ def _project_target_asset(base_package: Mapping[str, Any]) -> dict[str, Any]:
             ("universe_id", "universe_version_id"),
             (
                 "universe_contract_hash",
+                "source_content_hash",
+                "source_schema_hash",
+            ),
+        ),
+        "etf_nav": (
+            (
+                "authority_id",
+                "authority_version_id",
+                "instrument_id",
+                "underlying_index_id",
+            ),
+            (
+                "etf_nav_contract_hash",
+                "underlying_index_content_hash",
+                "source_manifest_hash",
                 "source_content_hash",
                 "source_schema_hash",
             ),

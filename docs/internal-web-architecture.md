@@ -140,6 +140,9 @@ Every Research CLI command has exactly one GUI policy:
 | `research-governance-transition` | `admin_only` | Critical lifecycle mutation behind explicit governance policy. |
 | `research-record-human-review` | `admin_only` | Records independent review against the current evidence hash. |
 | `research-approve-strategy-candidate` | `admin_only` | Step-up, separation-of-duties, locked lifecycle, and idempotency gates apply. |
+| `research-derivative-register` | `cli_only` | Registers a complete repository-external immutable derivative evidence bundle; no generic upload surface is exposed. |
+| `research-derivative-replay` | `cli_only` | Replays a hash-bound external derivative evidence bundle without exposing paths through the GUI. |
+| `research-derivative-diff` | `cli_only` | Compares immutable derivative packages as an expert evidence diagnostic. |
 | `research.explore` | `required` | Bounded, path-free exploration of immutable research evidence with read auditing. |
 
 GUI-only exploration, list, detail, and download capabilities are bounded

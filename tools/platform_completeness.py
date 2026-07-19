@@ -26,17 +26,40 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = PROJECT_ROOT / "docs" / "research-platform-evaluation-matrix.json"
+DEFAULT_MANIFEST = (
+    PROJECT_ROOT / "docs" / "research-platform-full-scope-evaluation-matrix.json"
+)
 DEFAULT_REPORT = (
     PROJECT_ROOT / "docs" / "research-platform-completeness-status.generated.md"
 )
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _ID_RE = re.compile(r"^[A-Z]+-[0-9]{2}$")
+_FULL_SCOPE_ID_RE = re.compile(r"^S[1-7]-[A-Z]+[0-9]{2}$")
+_FULL_SCOPE_RUBRIC_SHA256 = (
+    "13ab8fbd3c37a3095ca9fd2c69818c4cb7d5f85fdf96f9f27fedb626ba17d635"
+)
+_FULL_SCOPE_INSTRUCTION_SHA256 = (
+    "25ddd87c30dce17b5c22c24096b5d8642375dc58570f8fa2dcbb67ce34a19396"
+)
+_FULL_SCOPE_CRITERION_COUNT = 431
+_FULL_SCOPE_EXPLICIT_COUNT = 268
+_FULL_SCOPE_SUPPLEMENTAL_COUNT = 163
+_FULL_SCOPE_BLOCKER_COUNT = 19
+_FULL_SCOPE_SCOPES = {
+    "CORE",
+    "SPOT",
+    "FUTURES",
+    "OPTIONS",
+    "DERIVATIVES_PORTFOLIO",
+    "DERIVATIVES_RISK",
+}
 _EVIDENCE_RANK = {"E0": 0, "E1": 1, "E2": 2, "E3": 3, "E4": 4, "E5": 5}
 _FORBIDDEN_SELF_EVIDENCE = {
     "docs/research-platform-completeness-review.md",
     "docs/research-platform-evaluation-matrix.json",
+    "docs/research-platform-full-scope-evaluation-matrix.json",
+    "docs/research-platform-full-scope-review.md",
     "docs/research-platform-completeness-status.generated.md",
 }
 _FORBIDDEN_COMMAND_TOKENS = {
@@ -874,11 +897,13 @@ def _evaluate_research_only_matrix(
                 f"expected 215, got {len(raw_criteria)}",
             )
         )
-    ids = [
-        item.get("id")
-        for item in raw_criteria
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ]
+    ids: list[str] = []
+    for item in raw_criteria:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        if isinstance(item_id, str):
+            ids.append(item_id)
     if len(ids) != len(set(ids)):
         findings.append(
             Finding("manifest", "criterion_ids_duplicate", "IDs must be unique")
@@ -1127,6 +1152,404 @@ def _evaluate_research_only_matrix(
     )
 
 
+def _full_scope_for_criterion_id(criterion_id: str) -> str:
+    """Return the rubric product scope encoded by a full-scope criterion ID."""
+
+    stage_text, suffix = criterion_id.split("-", 1)
+    prefix = suffix.rstrip("0123456789")
+    if prefix == "S":
+        return "SPOT"
+    if prefix in {"F", "FP"}:
+        return "FUTURES"
+    if prefix in {"O", "OM", "OP"}:
+        return "OPTIONS"
+    if prefix == "P":
+        return "DERIVATIVES_PORTFOLIO"
+    if prefix == "R" and stage_text == "S5":
+        return "DERIVATIVES_RISK"
+    return "CORE"
+
+
+def _evaluate_full_scope_matrix(
+    *,
+    manifest: dict[str, Any],
+    manifest_hash: str,
+    repository_root: Path,
+    evidence_root: Path | None,
+) -> Evaluation:
+    """Fail closed on the current Spot/Futures/Options 431-row rubric.
+
+    Unlike the historical matrix, the rubric and instruction hashes plus all
+    criterion and blocker counts are bound to this evaluator generation.  A
+    count or ID can therefore change only with an explicit evaluator and
+    canonical-matrix revision.
+    """
+
+    findings: list[Finding] = []
+    matrix_assessment = manifest.get("assessment")
+    if not isinstance(matrix_assessment, dict):
+        findings.append(Finding("manifest", "assessment_missing", "required"))
+    else:
+        iteration = matrix_assessment.get("iteration")
+        if not isinstance(iteration, int) or iteration < 2:
+            findings.append(
+                Finding(
+                    "manifest",
+                    "assessment_stale",
+                    f"current re-assessment iteration required, got {iteration!r}",
+                )
+            )
+    canonical = manifest.get("canonical_source")
+    if not isinstance(canonical, dict):
+        canonical = {}
+        findings.append(Finding("manifest", "canonical_source_missing", "required"))
+    rubric_hash = canonical.get("sha256")
+    if rubric_hash != _FULL_SCOPE_RUBRIC_SHA256:
+        findings.append(
+            Finding(
+                "manifest",
+                "rubric_hash_mismatch",
+                f"expected {_FULL_SCOPE_RUBRIC_SHA256}, got {rubric_hash!r}",
+            )
+        )
+        rubric_hash = "" if not isinstance(rubric_hash, str) else rubric_hash
+    instruction_hash = canonical.get("instruction_sha256")
+    if instruction_hash != _FULL_SCOPE_INSTRUCTION_SHA256:
+        findings.append(
+            Finding(
+                "manifest",
+                "instruction_hash_mismatch",
+                f"expected {_FULL_SCOPE_INSTRUCTION_SHA256}, got {instruction_hash!r}",
+            )
+        )
+    expected_criteria = canonical.get("criterion_count")
+    expected_blockers = canonical.get("blocker_count")
+    explicit_count = canonical.get("explicit_criterion_count")
+    supplemental_count = canonical.get("supplemental_normative_criterion_count")
+    if expected_criteria != _FULL_SCOPE_CRITERION_COUNT:
+        findings.append(
+            Finding(
+                "manifest",
+                "criterion_count_invalid",
+                f"expected {_FULL_SCOPE_CRITERION_COUNT}, got {expected_criteria!r}",
+            )
+        )
+        expected_criteria = _FULL_SCOPE_CRITERION_COUNT
+    if expected_blockers != _FULL_SCOPE_BLOCKER_COUNT:
+        findings.append(
+            Finding(
+                "manifest",
+                "blocker_count_invalid",
+                f"expected {_FULL_SCOPE_BLOCKER_COUNT}, got {expected_blockers}",
+            )
+        )
+    if (
+        explicit_count != _FULL_SCOPE_EXPLICIT_COUNT
+        or supplemental_count != _FULL_SCOPE_SUPPLEMENTAL_COUNT
+    ):
+        findings.append(
+            Finding(
+                "manifest",
+                "criterion_source_count_mismatch",
+                "expected "
+                f"{_FULL_SCOPE_EXPLICIT_COUNT}+{_FULL_SCOPE_SUPPLEMENTAL_COUNT}, "
+                f"got {explicit_count!r}+{supplemental_count!r}",
+            )
+        )
+
+    criteria = manifest.get("criteria")
+    if not isinstance(criteria, list):
+        criteria = []
+        findings.append(Finding("manifest", "criteria_missing", "must be a list"))
+    if len(criteria) != expected_criteria:
+        findings.append(
+            Finding(
+                "manifest",
+                "criterion_count_mismatch",
+                f"expected {expected_criteria}, got {len(criteria)}",
+            )
+        )
+    ids = [
+        row.get("id")
+        for row in criteria
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    ]
+    if len(ids) != len(set(ids)):
+        findings.append(
+            Finding("manifest", "criterion_ids_duplicate", "IDs must be unique")
+        )
+
+    stage_scores: dict[int, list[int]] = {stage: [] for stage in range(1, 8)}
+    stage_weights: dict[int, int] = {}
+    criterion_results: list[CriterionResult] = []
+    for raw in criteria:
+        if not isinstance(raw, dict):
+            findings.append(Finding("manifest", "criterion_invalid", repr(raw)))
+            continue
+        criterion_id = raw.get("id")
+        if not isinstance(criterion_id, str) or not _FULL_SCOPE_ID_RE.fullmatch(
+            criterion_id
+        ):
+            findings.append(
+                Finding(str(criterion_id), "criterion_id_invalid", repr(criterion_id))
+            )
+            continue
+        local: list[Finding] = []
+        stage = raw.get("stage")
+        weight = raw.get("stage_weight")
+        if not isinstance(stage, int) or stage not in stage_scores:
+            local.append(Finding(criterion_id, "criterion_stage_invalid", repr(stage)))
+            stage = 0
+        elif not isinstance(weight, int) or weight <= 0:
+            local.append(Finding(criterion_id, "criterion_weight_invalid", repr(weight)))
+        elif stage in stage_weights and stage_weights[stage] != weight:
+            local.append(
+                Finding(criterion_id, "criterion_weight_inconsistent", repr(weight))
+            )
+        else:
+            stage_weights[stage] = weight
+        scope = raw.get("scope")
+        if scope not in _FULL_SCOPE_SCOPES:
+            local.append(
+                Finding(criterion_id, "criterion_scope_invalid", repr(scope))
+            )
+            scope = "unknown"
+        expected_scope = _full_scope_for_criterion_id(criterion_id)
+        if scope != "unknown" and scope != expected_scope:
+            local.append(
+                Finding(
+                    criterion_id,
+                    "criterion_scope_mismatch",
+                    f"expected {expected_scope}, got {scope}",
+                )
+            )
+        for field_name in (
+            "title",
+            "exact_meaning",
+            "ideal_state",
+            "completion_condition",
+        ):
+            if not isinstance(raw.get(field_name), str) or not str(
+                raw.get(field_name)
+            ).strip():
+                local.append(
+                    Finding(criterion_id, f"{field_name}_missing", field_name)
+                )
+        for field_name in (
+            "inspection_targets",
+            "objective_evidence",
+            "dependencies",
+            "verification_method",
+        ):
+            value = raw.get(field_name)
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(isinstance(item, str) and item for item in value)
+            ):
+                local.append(
+                    Finding(criterion_id, f"{field_name}_invalid", field_name)
+                )
+        assessment = raw.get("current_assessment")
+        if not isinstance(assessment, dict):
+            assessment = raw.get("baseline_assessment")
+            if not isinstance(assessment, dict):
+                assessment = {}
+            local.append(
+                Finding(criterion_id, "current_assessment_missing", "required")
+            )
+        else:
+            for field_name in ("code_evidence", "test_evidence"):
+                value = assessment.get(field_name)
+                if (
+                    not isinstance(value, list)
+                    or not value
+                    or not all(isinstance(item, str) and item for item in value)
+                ):
+                    local.append(
+                        Finding(
+                            criterion_id,
+                            f"current_{field_name}_invalid",
+                            field_name,
+                        )
+                    )
+        history = raw.get("assessment_history")
+        if not isinstance(history, list) or len(history) < 2:
+            local.append(
+                Finding(criterion_id, "assessment_history_incomplete", "required")
+            )
+        elif isinstance(assessment, dict) and history[-1] != assessment:
+            local.append(
+                Finding(
+                    criterion_id,
+                    "assessment_history_current_state_mismatch",
+                    "latest",
+                )
+            )
+        score = assessment.get("score")
+        if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 5:
+            local.append(Finding(criterion_id, "score_invalid", repr(score)))
+            numeric_score: int | None = None
+        else:
+            numeric_score = score
+            if stage in stage_scores:
+                stage_scores[stage].append(score)
+        status = assessment.get("status")
+        if status not in {"FULL", "PARTIAL", "GAP", "UNDETERMINED"}:
+            local.append(Finding(criterion_id, "criterion_status_invalid", repr(status)))
+        elif status != "FULL":
+            local.append(Finding(criterion_id, "criterion_not_full", str(status)))
+        if status == "FULL" and numeric_score != 5:
+            local.append(
+                Finding(criterion_id, "full_status_score_mismatch", repr(score))
+            )
+        declared_level = assessment.get("evidence_level")
+        if declared_level not in _EVIDENCE_RANK:
+            local.append(
+                Finding(
+                    criterion_id,
+                    "declared_evidence_level_invalid",
+                    repr(declared_level),
+                )
+            )
+            declared_level = "E0"
+        required_level = raw.get("required_evidence_level")
+        if required_level not in {"E4", "E5"}:
+            required_level = "E5" if int(stage or 0) in {4, 6, 7} else "E4"
+        evidence_paths: tuple[tuple[str, str | None], ...] = ()
+        verification_commands: tuple[tuple[str, tuple[str, ...]], ...] = ()
+        receipt_bindings: tuple[tuple[str, str, str | None], ...] = ()
+        achieved_level = "E0"
+        if status == "FULL":
+            if _EVIDENCE_RANK[str(declared_level)] < _EVIDENCE_RANK[required_level]:
+                local.append(
+                    Finding(
+                        criterion_id,
+                        "declared_evidence_level_insufficient",
+                        f"required {required_level}, got {declared_level}",
+                    )
+                )
+            evidence_findings, achieved_level = _evidence_findings(
+                subject=criterion_id,
+                evidence=raw.get("evidence"),
+                rubric_sha256=rubric_hash,
+                repository_root=repository_root,
+                evidence_root=evidence_root,
+            )
+            local.extend(evidence_findings)
+            projected = _criterion_report_bindings(raw.get("evidence"))
+            evidence_paths = projected[1]
+            verification_commands = projected[2]
+            receipt_bindings = projected[3]
+        complete = not local and status == "FULL" and numeric_score == 5
+        criterion_results.append(
+            CriterionResult(
+                criterion_id=criterion_id,
+                area_id=scope,
+                score=numeric_score,
+                evidence_level=achieved_level,
+                complete=complete,
+                finding_codes=tuple(sorted({finding.code for finding in local})),
+                required_evidence_level=required_level,
+                evidence_paths=evidence_paths,
+                verification_commands=verification_commands,
+                receipt_bindings=receipt_bindings,
+                local_findings=tuple(local),
+            )
+        )
+        findings.extend(local)
+
+    if set(stage_weights) != set(range(1, 8)) or sum(stage_weights.values()) != 100:
+        findings.append(
+            Finding(
+                "manifest",
+                "stage_weights_invalid",
+                repr(dict(sorted(stage_weights.items()))),
+            )
+        )
+    declared_score = 0.0
+    for stage, weight in stage_weights.items():
+        values = stage_scores[stage]
+        if not values:
+            findings.append(
+                Finding(f"S{stage}", "stage_score_missing", "no criteria")
+            )
+            continue
+        declared_score += (sum(values) / len(values)) / 5.0 * weight
+
+    blockers = manifest.get("blockers")
+    if not isinstance(blockers, list):
+        blockers = []
+        findings.append(Finding("manifest", "blockers_missing", "must be a list"))
+    if len(blockers) != _FULL_SCOPE_BLOCKER_COUNT:
+        findings.append(
+            Finding("manifest", "blocker_count_mismatch", f"got {len(blockers)}")
+        )
+    blocker_ids: list[str] = []
+    for blocker in blockers:
+        if not isinstance(blocker, dict):
+            findings.append(Finding("manifest", "blocker_invalid", repr(blocker)))
+            continue
+        blocker_id = blocker.get("id")
+        if not isinstance(blocker_id, str) or not re.fullmatch(r"B-[0-9]{2}", blocker_id):
+            findings.append(
+                Finding("manifest", "blocker_id_invalid", repr(blocker_id))
+            )
+            continue
+        blocker_ids.append(blocker_id)
+        status = blocker.get("current_status")
+        if status is None:
+            findings.append(
+                Finding(blocker_id, "current_blocker_status_missing", "required")
+            )
+            status = blocker.get("baseline_status")
+        blocker_history = blocker.get("assessment_history")
+        if not isinstance(blocker_history, list) or len(blocker_history) < 2:
+            findings.append(
+                Finding(blocker_id, "blocker_history_incomplete", "required")
+            )
+        elif (
+            not isinstance(blocker_history[-1], dict)
+            or blocker_history[-1].get("status") != status
+        ):
+            findings.append(
+                Finding(
+                    blocker_id,
+                    "blocker_history_current_state_mismatch",
+                    repr(status),
+                )
+            )
+        if status != "PASS":
+            findings.append(Finding(blocker_id, "blocker_not_cleared", str(status)))
+        elif blocker.get("evidence") is None:
+            findings.append(Finding(blocker_id, "blocker_evidence_missing", "required"))
+        else:
+            blocker_findings, _level = _evidence_findings(
+                subject=blocker_id,
+                evidence=blocker.get("evidence"),
+                rubric_sha256=rubric_hash,
+                repository_root=repository_root,
+                evidence_root=evidence_root,
+            )
+            findings.extend(blocker_findings)
+    if blocker_ids != [
+        f"B-{number:02d}" for number in range(1, _FULL_SCOPE_BLOCKER_COUNT + 1)
+    ]:
+        findings.append(
+            Finding("manifest", "blocker_ids_mismatch", repr(blocker_ids))
+        )
+
+    return Evaluation(
+        manifest_sha256=manifest_hash,
+        rubric_sha256=rubric_hash,
+        expected_criteria=expected_criteria,
+        declared_score=round(declared_score, 12),
+        verified_criteria=sum(item.complete for item in criterion_results),
+        criteria=tuple(criterion_results),
+        findings=tuple(sorted(set(findings))),
+    )
+
+
 def evaluate_manifest(
     manifest_path: Path = DEFAULT_MANIFEST,
     *,
@@ -1140,6 +1563,19 @@ def evaluate_manifest(
     )
     if not isinstance(manifest, dict):
         raise ValueError("manifest root must be an object")
+
+    canonical = manifest.get("canonical_source")
+    if (
+        manifest.get("schema_version") == 2
+        and isinstance(canonical, dict)
+        and canonical.get("blocker_count") == 19
+    ):
+        return _evaluate_full_scope_matrix(
+            manifest=manifest,
+            manifest_hash=manifest_hash,
+            repository_root=repository_root,
+            evidence_root=evidence_root,
+        )
 
     if "canonical_source" in manifest and "decision_policy" in manifest:
         return _evaluate_research_only_matrix(
@@ -1756,7 +2192,7 @@ def _subject_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 def _rubric_hash_from_manifest(manifest: dict[str, Any]) -> str:
     """Return the rubric identity for either supported manifest generation."""
 
-    if "canonical_source" in manifest and "decision_policy" in manifest:
+    if "canonical_source" in manifest:
         source = manifest.get("canonical_source")
         value = source.get("sha256") if isinstance(source, dict) else None
     else:
@@ -1779,7 +2215,9 @@ def _prepare_evidence_commands(
     for row in _subject_rows(manifest):
         subject = row.get("id")
         evidence = row.get("evidence")
-        if not isinstance(subject, str) or not _ID_RE.fullmatch(subject):
+        if not isinstance(subject, str) or not (
+            _ID_RE.fullmatch(subject) or _FULL_SCOPE_ID_RE.fullmatch(subject)
+        ):
             raise EvidenceRunError(f"manifest subject ID is invalid: {subject!r}")
         if not isinstance(evidence, dict):
             raise EvidenceRunError(f"{subject}: evidence must be an object")

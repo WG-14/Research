@@ -37,6 +37,15 @@ def execute_research_command(
             )
         )
 
+    if command in {
+        "research-derivative-register",
+        "research-derivative-replay",
+        "research-derivative-diff",
+    }:
+        return _execute_derivative_evidence_command(
+            command=command, args=args, context=context
+        )
+
     from market_research.research import cli
 
     lifecycle_commands = {
@@ -244,6 +253,56 @@ def _namespace_payload(args: argparse.Namespace) -> dict[str, Any]:
         for key, value in vars(args).items()
         if key not in {"func", "handler"}
     }
+
+
+def _execute_derivative_evidence_command(
+    *,
+    command: str,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+) -> int:
+    from market_research.research.derivatives.workflow import (
+        diff_derivative_evidence_packages,
+        register_derivative_evidence_bundle,
+        replay_derivative_evidence_bundle,
+    )
+
+    if command == "research-derivative-register":
+        package_ref = register_derivative_evidence_bundle(context.paths, args.bundle)
+        context.run_result_hash = package_ref.content_hash
+        context.printer(
+            json.dumps(
+                {
+                    "status": "REGISTERED",
+                    "package_ref": package_ref.as_dict(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if command == "research-derivative-replay":
+        receipt = replay_derivative_evidence_bundle(
+            context.paths,
+            args.bundle,
+            verified_at=args.verified_at,
+        )
+        context.run_result_hash = receipt.content_hash
+        context.printer(
+            json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True)
+        )
+        return 0
+    if command == "research-derivative-diff":
+        difference = diff_derivative_evidence_packages(
+            context.paths,
+            left_package_id=args.left_package_id,
+            left_version=args.left_version,
+            right_package_id=args.right_package_id,
+            right_version=args.right_version,
+        )
+        context.printer(json.dumps(difference, ensure_ascii=False, sort_keys=True))
+        return 0
+    raise ValueError(f"unsupported derivative evidence command: {command}")
 
 
 def _application_service(context: ResearchAppContext) -> ResearchApplicationService:

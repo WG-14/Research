@@ -1,5 +1,10 @@
 # Research-only platform completeness review
 
+> Historical review only. This document evaluates the earlier 215-row rubric
+> and must not be used as the current Spot/Futures/Options completion result.
+> The current 431-row assessment is
+> [research-platform-full-scope-review.md](research-platform-full-scope-review.md).
+
 This is the durable assessment record for the user-supplied **research-only**
 platform rubric. The canonical rubric SHA-256 is
 `5a457d1ba9c3b2f9afc74d1118c971d4e32089e26288a1c97ef322ba0756b8d5`;

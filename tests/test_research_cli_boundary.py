@@ -46,6 +46,9 @@ RESEARCH_COMMANDS = {
     "research-governance-transition",
     "research-record-human-review",
     "research-approve-strategy-candidate",
+    "research-derivative-register",
+    "research-derivative-replay",
+    "research-derivative-diff",
 }
 
 FORBIDDEN_OPERATIONAL_COMMANDS = {

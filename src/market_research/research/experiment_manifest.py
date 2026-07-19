@@ -59,6 +59,11 @@ from .universe_contract import (
     UniverseContractError,
     parse_point_in_time_universe,
 )
+from .etf_nav_contract import (
+    EtfNavContractError,
+    EtfNavHistory,
+    parse_etf_nav_history,
+)
 
 if TYPE_CHECKING:
     from .strategy_registry import StrategyRegistry
@@ -995,6 +1000,7 @@ class ExperimentManifest:
     walk_forward: WalkForwardConfig | None
     research_run: ResearchRunPolicy
     raw: dict[str, Any]
+    etf_nav: EtfNavHistory | None = None
     manifest_input_provenance: ManifestInputProvenance = field(
         default_factory=ManifestInputProvenance
     )
@@ -1056,6 +1062,8 @@ class ExperimentManifest:
             payload["universe"] = self.universe.as_dict()
         if self.market_calendar is not None:
             payload["market_calendar"] = self.market_calendar.as_dict()
+        if self.etf_nav is not None:
+            payload["etf_nav"] = self.etf_nav.as_dict()
         return payload
 
     def manifest_hash(self) -> str:
@@ -1098,6 +1106,10 @@ class ExperimentManifest:
             payload["market_calendar"] = _simulation_seed_scope_projection(
                 self.market_calendar.as_dict()
             )
+        if self.etf_nav is not None:
+            payload["etf_nav"] = _simulation_seed_scope_projection(
+                self.etf_nav.as_dict()
+            )
         return payload
 
     def simulation_seed_scope_hash(self) -> str:
@@ -1139,6 +1151,8 @@ class ExperimentManifest:
             evidence["point_in_time_universe"] = self.universe.evidence()
         if self.market_calendar is not None:
             evidence["market_calendar"] = self.market_calendar.evidence()
+        if self.etf_nav is not None:
+            evidence["etf_nav"] = self.etf_nav.evidence()
         return evidence
 
     def simulation_policy_hash(self) -> str:
@@ -1205,6 +1219,7 @@ def parse_manifest(
         "corporate_action_policy",
         "universe",
         "market_calendar",
+        "etf_nav",
         "interval",
         "dataset",
         "parameter_space",
@@ -1258,11 +1273,17 @@ def parse_manifest(
             if payload.get("market_calendar") is not None
             else None
         )
+        etf_nav = (
+            parse_etf_nav_history(payload["etf_nav"])
+            if payload.get("etf_nav") is not None
+            else None
+        )
     except (
         InstrumentContractError,
         CorporateActionContractError,
         UniverseContractError,
         MarketCalendarContractError,
+        EtfNavContractError,
     ) as exc:
         raise ManifestValidationError(str(exc)) from exc
     if universe is not None and instrument.instrument_id not in {
@@ -1271,6 +1292,15 @@ def parse_manifest(
         raise ManifestValidationError(
             "manifest_instrument_missing_from_point_in_time_universe_history"
         )
+    if etf_nav is not None:
+        if instrument.asset_type != "etf":
+            raise ManifestValidationError("etf_nav_requires_etf_instrument")
+        if etf_nav.instrument_id != instrument.instrument_id:
+            raise ManifestValidationError("etf_nav_instrument_mismatch")
+        if etf_nav.underlying_index_id != instrument.etf_underlying_index_id:
+            raise ManifestValidationError("etf_nav_underlying_index_mismatch")
+        if etf_nav.currency != instrument.trading_currency:
+            raise ManifestValidationError("etf_nav_currency_mismatch")
     interval = _required_str(payload, "interval")
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
@@ -1481,6 +1511,7 @@ def parse_manifest(
         walk_forward=walk_forward,
         research_run=research_run,
         raw=dict(payload),
+        etf_nav=etf_nav,
         manifest_input_provenance=manifest_input_provenance,
         validated_strategy_registry_hash=registry.execution_scope_hash(strategy_name),
     )

@@ -10,7 +10,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from enum import StrEnum
+from typing import Any, Mapping, Sequence
 
 from .hashing import sha256_prefixed
 
@@ -41,6 +42,52 @@ _NOTE_STATUSES = frozenset({"active", "superseded", "withdrawn"})
 _HYPOTHESIS_OUTCOMES = frozenset(
     {"supported", "rejected", "failed", "inconclusive", "archived"}
 )
+
+
+class HypothesisFailureClassification(StrEnum):
+    """Controlled failure repository taxonomy from the research rubric."""
+
+    PHENOMENON_ABSENT = "PHENOMENON_ABSENT"
+    ELIMINATED_AFTER_COSTS = "ELIMINATED_AFTER_COSTS"
+    DATA_ERROR = "DATA_ERROR"
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    FUTURE_INFORMATION_LEAKAGE = "FUTURE_INFORMATION_LEAKAGE"
+    SURVIVORSHIP_BIAS = "SURVIVORSHIP_BIAS"
+    OVERFITTING = "OVERFITTING"
+    INSUFFICIENT_SAMPLE = "INSUFFICIENT_SAMPLE"
+    ROLL_POLICY_DEPENDENCE = "ROLL_POLICY_DEPENDENCE"
+    TERM_STRUCTURE_DEPENDENCE = "TERM_STRUCTURE_DEPENDENCE"
+    OPTION_LIQUIDITY_INSUFFICIENT = "OPTION_LIQUIDITY_INSUFFICIENT"
+    MIDPOINT_ILLUSION = "MIDPOINT_ILLUSION"
+    SURFACE_MODEL_DEPENDENCE = "SURFACE_MODEL_DEPENDENCE"
+    EARLY_EXERCISE_RISK = "EARLY_EXERCISE_RISK"
+    TAIL_EVENT_CONCENTRATION = "TAIL_EVENT_CONCENTRATION"
+    MULTI_LEG_EXECUTION_INFEASIBLE = "MULTI_LEG_EXECUTION_INFEASIBLE"
+
+
+class LiteratureSourceType(StrEnum):
+    JOURNAL_ARTICLE = "JOURNAL_ARTICLE"
+    PREPRINT = "PREPRINT"
+    BOOK = "BOOK"
+    DATASET = "DATASET"
+    TECHNICAL_REPORT = "TECHNICAL_REPORT"
+    WEB_ARCHIVE = "WEB_ARCHIVE"
+
+
+class LiteratureReproductionStatus(StrEnum):
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    REPRODUCED = "REPRODUCED"
+    PARTIALLY_REPRODUCED = "PARTIALLY_REPRODUCED"
+    FAILED_TO_REPRODUCE = "FAILED_TO_REPRODUCE"
+    INCONCLUSIVE = "INCONCLUSIVE"
+
+
+class InternalHypothesisRelationType(StrEnum):
+    SUPPORTS = "SUPPORTS"
+    CONTRADICTS = "CONTRADICTS"
+    CONTEXTUALIZES = "CONTEXTUALIZES"
+    EXTENDS = "EXTENDS"
+    REPLICATION_TARGET = "REPLICATION_TARGET"
 _RISK_SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 _APPROVER_TYPES = frozenset({"human", "policy"})
 RESEARCH_NOTE_AUTHORITY_SUBJECT_TYPES = frozenset(
@@ -189,6 +236,56 @@ class ResearchNoteSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class LiteratureSource:
+    source_type: LiteratureSourceType
+    publisher: str
+    locator: str
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_type, LiteratureSourceType):
+            raise KnowledgeContractError("literature.source.source_type_invalid")
+        _require_text(self.publisher, "literature.source.publisher")
+        _require_text(self.locator, "literature.source.locator")
+        _require_hash(self.content_hash, "literature.source.content_hash")
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "source_type": self.source_type.value,
+            "publisher": self.publisher,
+            "locator": self.locator,
+            "content_hash": self.content_hash,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InternalHypothesisRelation:
+    hypothesis_ref: KnowledgeRef
+    relation: InternalHypothesisRelationType
+    rationale: str
+
+    def __post_init__(self) -> None:
+        if self.hypothesis_ref.record_type != "hypothesis":
+            raise KnowledgeContractError(
+                "literature.internal_hypothesis_relation_ref_invalid"
+            )
+        if not isinstance(self.relation, InternalHypothesisRelationType):
+            raise KnowledgeContractError(
+                "literature.internal_hypothesis_relation_type_invalid"
+            )
+        _require_text(
+            self.rationale, "literature.internal_hypothesis_relation.rationale"
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "hypothesis_ref": self.hypothesis_ref.as_dict(),
+            "relation": self.relation.value,
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class LiteratureSpec:
     schema_version: int
     literature_id: str
@@ -200,23 +297,88 @@ class LiteratureSpec:
     source_uri: str | None = None
     source_content_hash: str | None = None
     references: tuple[KnowledgeRef, ...] = ()
+    source: LiteratureSource | None = None
+    published_at: str | None = None
+    accessed_at: str | None = None
+    key_claims: tuple[str, ...] = ()
+    reproduction_status: LiteratureReproductionStatus | None = None
+    reproduction_evidence_hashes: tuple[str, ...] = ()
+    internal_hypothesis_relations: tuple[InternalHypothesisRelation, ...] = ()
 
     def __post_init__(self) -> None:
-        _require_schema(self.schema_version, "literature")
+        _require_extended_schema(self.schema_version, "literature")
         _require_stable_id(self.literature_id, "literature.literature_id")
         _require_stable_id(self.version, "literature.version")
         _require_text(self.title, "literature.title")
         _require_text(self.citation, "literature.citation")
         _require_text(self.actor_id, "literature.actor_id")
         _require_timestamp(self.recorded_at, "literature.recorded_at")
-        if self.source_uri is not None:
-            _require_text(self.source_uri, "literature.source_uri")
-        if self.source_content_hash is not None:
-            _require_hash(self.source_content_hash, "literature.source_content_hash")
         _require_unique_refs(self.references, "literature.references")
+        if self.schema_version == 1:
+            if self.source_uri is not None:
+                _require_text(self.source_uri, "literature.source_uri")
+            if self.source_content_hash is not None:
+                _require_hash(
+                    self.source_content_hash, "literature.source_content_hash"
+                )
+            if any(
+                (
+                    self.source is not None,
+                    self.published_at is not None,
+                    self.accessed_at is not None,
+                    bool(self.key_claims),
+                    self.reproduction_status is not None,
+                    bool(self.reproduction_evidence_hashes),
+                    bool(self.internal_hypothesis_relations),
+                )
+            ):
+                raise KnowledgeContractError("literature.v2_fields_forbidden_in_v1")
+            return
+        if self.source_uri is not None or self.source_content_hash is not None:
+            raise KnowledgeContractError("literature.legacy_source_fields_forbidden")
+        if not isinstance(self.source, LiteratureSource):
+            raise KnowledgeContractError("literature.source_required")
+        if self.published_at is None or self.accessed_at is None:
+            raise KnowledgeContractError("literature.publication_access_times_required")
+        published = _require_timestamp(self.published_at, "literature.published_at")
+        accessed = _require_timestamp(self.accessed_at, "literature.accessed_at")
+        recorded = _require_timestamp(self.recorded_at, "literature.recorded_at")
+        if not published <= accessed <= recorded:
+            raise KnowledgeContractError("literature.date_order_invalid")
+        _require_texts(self.key_claims, "literature.key_claims", required=True)
+        if len(set(self.key_claims)) != len(self.key_claims):
+            raise KnowledgeContractError("literature.key_claims_duplicate")
+        if not isinstance(self.reproduction_status, LiteratureReproductionStatus):
+            raise KnowledgeContractError("literature.reproduction_status_required")
+        _require_hashes(
+            self.reproduction_evidence_hashes,
+            "literature.reproduction_evidence_hashes",
+        )
+        if self.reproduction_status is LiteratureReproductionStatus.NOT_ATTEMPTED:
+            if self.reproduction_evidence_hashes:
+                raise KnowledgeContractError(
+                    "literature.unattempted_reproduction_evidence_forbidden"
+                )
+        elif not self.reproduction_evidence_hashes:
+            raise KnowledgeContractError(
+                "literature.reproduction_evidence_required"
+            )
+        if not self.internal_hypothesis_relations:
+            raise KnowledgeContractError(
+                "literature.internal_hypothesis_relations_required"
+            )
+        relation_refs = tuple(
+            item.hypothesis_ref for item in self.internal_hypothesis_relations
+        )
+        _require_unique_refs(
+            relation_refs, "literature.internal_hypothesis_relations"
+        )
+        _require_unique_refs(
+            (*self.references, *relation_refs), "literature.all_references"
+        )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        base: dict[str, Any] = {
             "schema_version": self.schema_version,
             "literature_id": self.literature_id,
             "version": self.version,
@@ -224,9 +386,30 @@ class LiteratureSpec:
             "citation": self.citation,
             "actor_id": self.actor_id,
             "recorded_at": self.recorded_at,
-            "source_uri": self.source_uri,
-            "source_content_hash": self.source_content_hash,
             "references": [item.as_dict() for item in self.references],
+        }
+        if self.schema_version == 1:
+            return {
+                **base,
+                "source_uri": self.source_uri,
+                "source_content_hash": self.source_content_hash,
+                "references": [item.as_dict() for item in self.references],
+            }
+        assert self.source is not None
+        assert self.reproduction_status is not None
+        return {
+            **base,
+            "source": self.source.as_dict(),
+            "published_at": self.published_at,
+            "accessed_at": self.accessed_at,
+            "key_claims": list(self.key_claims),
+            "reproduction_status": self.reproduction_status.value,
+            "reproduction_evidence_hashes": list(
+                self.reproduction_evidence_hashes
+            ),
+            "internal_hypothesis_relations": [
+                item.as_dict() for item in self.internal_hypothesis_relations
+            ],
         }
 
     def contract_hash(self) -> str:
@@ -250,9 +433,10 @@ class HypothesisOutcomeSpec:
     recorded_at: str
     evidence_hashes: tuple[str, ...]
     question_ref: KnowledgeRef | None = None
+    failure_classification: HypothesisFailureClassification | None = None
 
     def __post_init__(self) -> None:
-        _require_schema(self.schema_version, "hypothesis_outcome")
+        _require_extended_schema(self.schema_version, "hypothesis_outcome")
         _require_stable_id(self.outcome_id, "hypothesis_outcome.outcome_id")
         _require_stable_id(self.version, "hypothesis_outcome.version")
         if self.hypothesis_ref.record_type != "hypothesis":
@@ -270,9 +454,32 @@ class HypothesisOutcomeSpec:
         _require_hashes(
             self.evidence_hashes, "hypothesis_outcome.evidence_hashes", required=True
         )
+        if self.schema_version == 1:
+            if self.failure_classification is not None:
+                raise KnowledgeContractError(
+                    "hypothesis_outcome.failure_classification_v2_only"
+                )
+            return
+        failure_outcomes = {"failed", "rejected", "inconclusive"}
+        if self.outcome in failure_outcomes and not isinstance(
+            self.failure_classification, HypothesisFailureClassification
+        ):
+            raise KnowledgeContractError(
+                "hypothesis_outcome.failure_classification_required"
+            )
+        if self.outcome == "supported" and self.failure_classification is not None:
+            raise KnowledgeContractError(
+                "hypothesis_outcome.supported_failure_classification_forbidden"
+            )
+        if self.failure_classification is not None and not isinstance(
+            self.failure_classification, HypothesisFailureClassification
+        ):
+            raise KnowledgeContractError(
+                "hypothesis_outcome.failure_classification_invalid"
+            )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "outcome_id": self.outcome_id,
             "version": self.version,
@@ -284,6 +491,13 @@ class HypothesisOutcomeSpec:
             "recorded_at": self.recorded_at,
             "evidence_hashes": list(self.evidence_hashes),
         }
+        if self.schema_version == 2:
+            payload["failure_classification"] = (
+                self.failure_classification.value
+                if self.failure_classification is not None
+                else None
+            )
+        return payload
 
     def contract_hash(self) -> str:
         return sha256_prefixed(self.as_dict())
@@ -698,6 +912,216 @@ def authority_ref_from_dict(
     )
 
 
+def literature_spec_from_dict(value: object) -> LiteratureSpec:
+    """Strictly parse a legacy v1 or extended v2 literature contract."""
+
+    payload = _strict_mapping(value, "literature")
+    schema_version = _strict_integer(
+        payload.get("schema_version"), "literature.schema_version"
+    )
+    common = {
+        "schema_version",
+        "literature_id",
+        "version",
+        "title",
+        "citation",
+        "actor_id",
+        "recorded_at",
+        "references",
+    }
+    legacy = common | {"source_uri", "source_content_hash"}
+    extended = common | {
+        "source",
+        "published_at",
+        "accessed_at",
+        "key_claims",
+        "reproduction_status",
+        "reproduction_evidence_hashes",
+        "internal_hypothesis_relations",
+    }
+    _require_exact_payload_fields(
+        payload,
+        legacy if schema_version == 1 else extended,
+        "literature",
+    )
+    references = tuple(
+        _strict_knowledge_ref(item, "literature.reference")
+        for item in _strict_list(payload["references"], "literature.references")
+    )
+    common_values: dict[str, object] = {
+        "schema_version": schema_version,
+        "literature_id": _strict_text(
+            payload["literature_id"], "literature.literature_id"
+        ),
+        "version": _strict_text(payload["version"], "literature.version"),
+        "title": _strict_text(payload["title"], "literature.title"),
+        "citation": _strict_text(payload["citation"], "literature.citation"),
+        "actor_id": _strict_text(payload["actor_id"], "literature.actor_id"),
+        "recorded_at": _strict_text(
+            payload["recorded_at"], "literature.recorded_at"
+        ),
+        "references": references,
+    }
+    if schema_version == 1:
+        raw_uri = payload["source_uri"]
+        raw_hash = payload["source_content_hash"]
+        return LiteratureSpec(
+            **common_values,  # type: ignore[arg-type]
+            source_uri=(
+                None
+                if raw_uri is None
+                else _strict_text(raw_uri, "literature.source_uri")
+            ),
+            source_content_hash=(
+                None
+                if raw_hash is None
+                else _strict_text(raw_hash, "literature.source_content_hash")
+            ),
+        )
+    source_payload = _strict_mapping(payload["source"], "literature.source")
+    _require_exact_payload_fields(
+        source_payload,
+        {"source_type", "publisher", "locator", "content_hash"},
+        "literature.source",
+    )
+    source = LiteratureSource(
+        source_type=_strict_enum(
+            LiteratureSourceType,
+            source_payload["source_type"],
+            "literature.source.source_type",
+        ),
+        publisher=_strict_text(
+            source_payload["publisher"], "literature.source.publisher"
+        ),
+        locator=_strict_text(source_payload["locator"], "literature.source.locator"),
+        content_hash=_strict_text(
+            source_payload["content_hash"], "literature.source.content_hash"
+        ),
+    )
+    relations: list[InternalHypothesisRelation] = []
+    for index, raw in enumerate(
+        _strict_list(
+            payload["internal_hypothesis_relations"],
+            "literature.internal_hypothesis_relations",
+        )
+    ):
+        label = f"literature.internal_hypothesis_relations[{index}]"
+        relation_payload = _strict_mapping(raw, label)
+        _require_exact_payload_fields(
+            relation_payload,
+            {"hypothesis_ref", "relation", "rationale"},
+            label,
+        )
+        relations.append(
+            InternalHypothesisRelation(
+                hypothesis_ref=_strict_knowledge_ref(
+                    relation_payload["hypothesis_ref"], f"{label}.hypothesis_ref"
+                ),
+                relation=_strict_enum(
+                    InternalHypothesisRelationType,
+                    relation_payload["relation"],
+                    f"{label}.relation",
+                ),
+                rationale=_strict_text(
+                    relation_payload["rationale"], f"{label}.rationale"
+                ),
+            )
+        )
+    return LiteratureSpec(
+        **common_values,  # type: ignore[arg-type]
+        source=source,
+        published_at=_strict_text(
+            payload["published_at"], "literature.published_at"
+        ),
+        accessed_at=_strict_text(payload["accessed_at"], "literature.accessed_at"),
+        key_claims=tuple(
+            _strict_text(item, "literature.key_claim")
+            for item in _strict_list(payload["key_claims"], "literature.key_claims")
+        ),
+        reproduction_status=_strict_enum(
+            LiteratureReproductionStatus,
+            payload["reproduction_status"],
+            "literature.reproduction_status",
+        ),
+        reproduction_evidence_hashes=tuple(
+            _strict_text(item, "literature.reproduction_evidence_hash")
+            for item in _strict_list(
+                payload["reproduction_evidence_hashes"],
+                "literature.reproduction_evidence_hashes",
+            )
+        ),
+        internal_hypothesis_relations=tuple(relations),
+    )
+
+
+def hypothesis_outcome_spec_from_dict(value: object) -> HypothesisOutcomeSpec:
+    """Strictly parse an outcome, including the schema-v2 failure taxonomy."""
+
+    payload = _strict_mapping(value, "hypothesis_outcome")
+    schema_version = _strict_integer(
+        payload.get("schema_version"), "hypothesis_outcome.schema_version"
+    )
+    fields = {
+        "schema_version",
+        "outcome_id",
+        "version",
+        "hypothesis_ref",
+        "question_ref",
+        "outcome",
+        "rationale",
+        "actor_id",
+        "recorded_at",
+        "evidence_hashes",
+    }
+    if schema_version == 2:
+        fields.add("failure_classification")
+    _require_exact_payload_fields(payload, fields, "hypothesis_outcome")
+    raw_question = payload["question_ref"]
+    raw_classification = payload.get("failure_classification")
+    return HypothesisOutcomeSpec(
+        schema_version=schema_version,
+        outcome_id=_strict_text(
+            payload["outcome_id"], "hypothesis_outcome.outcome_id"
+        ),
+        version=_strict_text(payload["version"], "hypothesis_outcome.version"),
+        hypothesis_ref=_strict_knowledge_ref(
+            payload["hypothesis_ref"], "hypothesis_outcome.hypothesis_ref"
+        ),
+        question_ref=(
+            None
+            if raw_question is None
+            else _strict_knowledge_ref(
+                raw_question, "hypothesis_outcome.question_ref"
+            )
+        ),
+        outcome=_strict_text(payload["outcome"], "hypothesis_outcome.outcome"),
+        rationale=_strict_text(
+            payload["rationale"], "hypothesis_outcome.rationale"
+        ),
+        actor_id=_strict_text(
+            payload["actor_id"], "hypothesis_outcome.actor_id"
+        ),
+        recorded_at=_strict_text(
+            payload["recorded_at"], "hypothesis_outcome.recorded_at"
+        ),
+        evidence_hashes=tuple(
+            _strict_text(item, "hypothesis_outcome.evidence_hash")
+            for item in _strict_list(
+                payload["evidence_hashes"], "hypothesis_outcome.evidence_hashes"
+            )
+        ),
+        failure_classification=(
+            None
+            if raw_classification is None
+            else _strict_enum(
+                HypothesisFailureClassification,
+                raw_classification,
+                "hypothesis_outcome.failure_classification",
+            )
+        ),
+    )
+
+
 def validate_research_note_authority_refs(
     values: tuple[AuthorityRef, ...],
 ) -> None:
@@ -728,6 +1152,11 @@ def validate_research_note_authority_refs(
 
 def _require_schema(value: int, context: str) -> None:
     if value != KNOWLEDGE_CONTRACT_SCHEMA_VERSION:
+        raise KnowledgeContractError(f"{context}.schema_version_unsupported")
+
+
+def _require_extended_schema(value: int, context: str) -> None:
+    if isinstance(value, bool) or value not in {1, 2}:
         raise KnowledgeContractError(f"{context}.schema_version_unsupported")
 
 
@@ -777,7 +1206,7 @@ def _require_unique_refs(values: tuple[KnowledgeRef, ...], context: str) -> None
         raise KnowledgeContractError(f"{context}_duplicate")
 
 
-def _require_timestamp(value: str, context: str) -> None:
+def _require_timestamp(value: str, context: str) -> datetime:
     _require_text(value, context)
     try:
         parsed = datetime.fromisoformat(value)
@@ -785,3 +1214,61 @@ def _require_timestamp(value: str, context: str) -> None:
         raise KnowledgeContractError(f"{context}_invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise KnowledgeContractError(f"{context}_timezone_required")
+    return parsed
+
+
+def _strict_mapping(value: object, context: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or any(
+        not isinstance(key, str) for key in value
+    ):
+        raise KnowledgeContractError(f"{context}_object_required")
+    return value
+
+
+def _require_exact_payload_fields(
+    payload: Mapping[str, object], expected: set[str], context: str
+) -> None:
+    if set(payload) != expected:
+        raise KnowledgeContractError(f"{context}_fields_invalid")
+
+
+def _strict_text(value: object, context: str) -> str:
+    if not isinstance(value, str):
+        raise KnowledgeContractError(f"{context}_string_required")
+    return value
+
+
+def _strict_integer(value: object, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise KnowledgeContractError(f"{context}_integer_required")
+    return value
+
+
+def _strict_list(value: object, context: str) -> Sequence[object]:
+    if not isinstance(value, list):
+        raise KnowledgeContractError(f"{context}_array_required")
+    return value
+
+
+def _strict_knowledge_ref(value: object, context: str) -> KnowledgeRef:
+    payload = _strict_mapping(value, context)
+    fields = {"record_type", "logical_id", "version", "record_hash"}
+    _require_exact_payload_fields(payload, fields, context)
+    if any(not isinstance(payload[field], str) for field in fields):
+        raise KnowledgeContractError(f"{context}_fields_invalid")
+    return KnowledgeRef(
+        record_type=_strict_text(payload["record_type"], f"{context}.record_type"),
+        logical_id=_strict_text(payload["logical_id"], f"{context}.logical_id"),
+        version=_strict_text(payload["version"], f"{context}.version"),
+        record_hash=_strict_text(payload["record_hash"], f"{context}.record_hash"),
+    )
+
+
+def _strict_enum[T: StrEnum](
+    enum_type: type[T], value: object, context: str
+) -> T:
+    raw = _strict_text(value, context)
+    try:
+        return enum_type(raw)
+    except ValueError as exc:
+        raise KnowledgeContractError(f"{context}_unknown") from exc

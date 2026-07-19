@@ -184,6 +184,22 @@ def _approve_strategy_candidate(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", required=True)
 
 
+def _derivative_bundle(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--bundle", required=True)
+
+
+def _derivative_replay(parser: argparse.ArgumentParser) -> None:
+    _derivative_bundle(parser)
+    parser.add_argument("--verified-at", required=True)
+
+
+def _derivative_diff(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--left-package-id", required=True)
+    parser.add_argument("--left-version", required=True)
+    parser.add_argument("--right-package-id", required=True)
+    parser.add_argument("--right-version", required=True)
+
+
 def _call_existing(
     command: str, args: argparse.Namespace, context: ResearchAppContext
 ) -> int:
@@ -289,6 +305,21 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
         "research-approve-strategy-candidate",
         _approve_strategy_candidate,
         "approve an out-of-sample-passed strategy candidate",
+    ),
+    (
+        "research-derivative-register",
+        _derivative_bundle,
+        "register a complete immutable futures or options evidence bundle",
+    ),
+    (
+        "research-derivative-replay",
+        _derivative_replay,
+        "replay-verify a derivative evidence bundle against the registry",
+    ),
+    (
+        "research-derivative-diff",
+        _derivative_diff,
+        "compare two hash-verified derivative research packages",
     ),
 )
 
