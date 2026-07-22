@@ -29,7 +29,7 @@ INSTRUCTION_COPY = (
 )
 RUBRIC_SHA256 = "f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae"
 INSTRUCTION_SHA256 = "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
-ASSESSED_COMMIT = "378081dcbf1caf758bb0d7981798d6a70204c7ec"
+ASSESSED_COMMIT = "bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d"
 
 _CRITERIA_TEXT = """
 A-01|C|연구 전용 플랫폼 목적이 코드와 문서에 일관되게 정의되어 있는가
@@ -1492,7 +1492,7 @@ def build_matrix() -> dict[str, Any]:
             "repository_commit": ASSESSED_COMMIT,
             "repository_branch": "main",
             "worktree_was_clean": False,
-            "diagnosis": "post-remediation reassessment; base commit plus uncommitted audited working-tree changes",
+            "diagnosis": "post-remediation reassessment; committed implementation plus uncommitted audit-provenance refresh",
             "score_cap": 84,
             "score_cap_reason": "FG-06: retained local production E2E의 same-state 실행은 PASS지만 빈 환경의 독립 복원·재현 증거가 없어 원문 상한 규칙을 적용한다.",
             "assessment_surface": audit_surface(PROJECT_ROOT),

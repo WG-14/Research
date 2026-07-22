@@ -1013,6 +1013,7 @@ _COMMANDS = (
     "scripts/platform audit — PASS: no known locked runtime dependency vulnerabilities",
     "scripts/platform build — expected fail-closed on dirty audit worktree; uv build --all-packages to external output — 3 wheels and 3 sdists PASS",
     "runtime package-content inspection — PASS: distribution boundaries, migration/SQL assets, and secret/runtime-artifact exclusions",
+    "post-commit audit provenance refresh — 29 audit-tool tests passed in 6.51s; generator, renderer, structure, and Git binding checks PASS",
 )
 
 _TEST_FAILURES = (
@@ -1091,6 +1092,17 @@ _TEST_FAILURES = (
             "kept the clean-checkout release guard intact and built all three "
             "packages to a repository-external directory with uv; package-content "
             "inspection passed"
+        ),
+    },
+    {
+        "command": "post-commit canonical audit drift check",
+        "failure": (
+            "the implementation had been committed at bfe1d93, while the audit "
+            "still named the prior base commit and dirty worktree state"
+        ),
+        "resolution": (
+            "bound the assessment to bfe1d93, regenerated both reports, and "
+            "confirmed findings=0 with 29 focused audit-tool tests passing"
         ),
     },
 )

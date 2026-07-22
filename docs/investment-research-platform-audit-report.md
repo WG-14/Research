@@ -2,7 +2,7 @@
 
 기준 원문 SHA-256: `f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae`  
 실행 지시 SHA-256: `26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`  
-평가 대상: base commit `378081dcbf1caf758bb0d7981798d6a70204c7ec` + 이 보고서에 결속된 working-tree assessment surface
+평가 대상: base commit `bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d` + 이 보고서에 결속된 working-tree assessment surface
 
 ## 13.1 Executive Verdict
 
@@ -29,7 +29,7 @@
 | --- | --- |
 | 레포 이름 | market-research platform monorepo |
 | root | `/home/vorac/work/Research` |
-| commit / branch / dirty | `378081dcbf1caf758bb0d7981798d6a70204c7ec` / `main` / true |
+| commit / branch / dirty | `bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d` / `main` / true |
 | 기술 스택 | Python 3.12, uv workspace, pandas, Pydantic, Django, PostgreSQL/psycopg, SQLite |
 | 실행 진입점 | `scripts/platform`, `market-research`, Django portal, `research-ops` |
 | 테스트 | pytest, pytest-django, property/integration/boundary tests |
@@ -396,6 +396,7 @@ Final ResearchPackage sha256:814781…
 - scripts/platform audit — PASS: no known locked runtime dependency vulnerabilities
 - scripts/platform build — expected fail-closed on dirty audit worktree; uv build --all-packages to external output — 3 wheels and 3 sdists PASS
 - runtime package-content inspection — PASS: distribution boundaries, migration/SQL assets, and secret/runtime-artifact exclusions
+- post-commit audit provenance refresh — 29 audit-tool tests passed in 6.51s; generator, renderer, structure, and Git binding checks PASS
 
 실패 및 해소 기록:
 
@@ -406,6 +407,7 @@ Final ResearchPackage sha256:814781…
 - `ruff format --check` — one legacy completeness-gate test required formatting → formatted that file, rechecked all 534 Python files, and reran its reported full-suite selector successfully
 - `scripts/platform typecheck` — Core mypy rejected a duplicate local variable annotation in reproduction.py → removed only the duplicate annotation; Core, Web, Operations, and the four audit tools then passed strict mypy
 - `scripts/platform build` — release_checkout_not_clean → kept the clean-checkout release guard intact and built all three packages to a repository-external directory with uv; package-content inspection passed
+- `post-commit canonical audit drift check` — the implementation had been committed at bfe1d93, while the audit still named the prior base commit and dirty worktree state → bound the assessment to bfe1d93, regenerated both reports, and confirmed findings=0 with 29 focused audit-tool tests passing
 
 ## 13.11 Anti-Pattern Findings
 
@@ -835,13 +837,13 @@ Final ResearchPackage sha256:814781…
   "score_cap": 84.0,
   "repository": {
     "root": "/home/vorac/work/Research",
-    "commit": "378081dcbf1caf758bb0d7981798d6a70204c7ec",
+    "commit": "bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d",
     "branch": "main",
     "dirty": true,
     "assessment_surface": {
       "schema_version": 2,
       "file_count": 682,
-      "sha256": "06e9cc1fbcbb48786eb7e80fa9c7b847bd86acf0645e289a1acf0686d9c3721f",
+      "sha256": "11ca151c6ad7eae12c02170b185a161de3f64ddacd3ce0df0f9f5ec73430bbdd",
       "exclusions": [
         "directory:.git",
         "directory:.hypothesis",
@@ -5181,7 +5183,8 @@ Final ResearchPackage sha256:814781…
     "scripts/platform compile; scripts/platform docs-check — PASS",
     "scripts/platform audit — PASS: no known locked runtime dependency vulnerabilities",
     "scripts/platform build — expected fail-closed on dirty audit worktree; uv build --all-packages to external output — 3 wheels and 3 sdists PASS",
-    "runtime package-content inspection — PASS: distribution boundaries, migration/SQL assets, and secret/runtime-artifact exclusions"
+    "runtime package-content inspection — PASS: distribution boundaries, migration/SQL assets, and secret/runtime-artifact exclusions",
+    "post-commit audit provenance refresh — 29 audit-tool tests passed in 6.51s; generator, renderer, structure, and Git binding checks PASS"
   ],
   "tests_failed": [
     {
@@ -5218,6 +5221,11 @@ Final ResearchPackage sha256:814781…
       "command": "scripts/platform build",
       "failure": "release_checkout_not_clean",
       "resolution": "kept the clean-checkout release guard intact and built all three packages to a repository-external directory with uv; package-content inspection passed"
+    },
+    {
+      "command": "post-commit canonical audit drift check",
+      "failure": "the implementation had been committed at bfe1d93, while the audit still named the prior base commit and dirty worktree state",
+      "resolution": "bound the assessment to bfe1d93, regenerated both reports, and confirmed findings=0 with 29 focused audit-tool tests passing"
     }
   ],
   "final_reasoning": "통합 연구 workflow와 강한 PIT/holdout/immutability 경계는 존재하지만 FG-06의 비인증 caller identity, terminal source 독립 검증 깊이, cold-host proof, execution capacity reality, project aggregate와 fully nested selection이 남아 완전 판정할 수 없다."
