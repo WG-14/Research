@@ -64,7 +64,9 @@ def test_full_scope_completion_gate_reports_the_current_audit_as_incomplete() ->
     assert ("S4-O01", "criterion_not_full") in codes
 
 
-def test_full_scope_completion_gate_fails_closed_on_stale_assessment(tmp_path: Path) -> None:
+def test_full_scope_completion_gate_fails_closed_on_stale_assessment(
+    tmp_path: Path,
+) -> None:
     matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
     matrix["assessment"]["iteration"] = 1
     matrix["criteria"][0].pop("current_assessment")
@@ -76,3 +78,18 @@ def test_full_scope_completion_gate_fails_closed_on_stale_assessment(tmp_path: P
 
     assert ("manifest", "assessment_stale") in codes
     assert ("S1-C01", "current_assessment_missing") in codes
+
+
+def test_full_scope_completion_gate_recomputes_strict_axis_score(
+    tmp_path: Path,
+) -> None:
+    matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
+    matrix["assessment"]["strict_axis_score"] = 69.87
+    candidate = tmp_path / "strict-score-tamper.json"
+    candidate.write_text(json.dumps(matrix), encoding="utf-8")
+
+    evaluation = evaluate_manifest(candidate)
+    codes = {(finding.subject, finding.code) for finding in evaluation.findings}
+
+    assert evaluation.strict_score == 58.8
+    assert ("manifest", "strict_axis_score_mismatch") in codes

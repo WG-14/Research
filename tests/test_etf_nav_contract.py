@@ -93,9 +93,7 @@ def _history_payload(*, include_correction: bool = True) -> dict[str, object]:
     inav_price = inav["market_price_ref"]
     assert isinstance(inav_price, dict)
     inav_price["available_at"] = "2026-01-01T15:59:12+00:00"
-    official_v1 = _record(
-        nav_id="nav_official_demo_0001", nav_type="official_nav"
-    )
+    official_v1 = _record(nav_id="nav_official_demo_0001", nav_type="official_nav")
     records = [inav, official_v1]
     if include_correction:
         records.append(

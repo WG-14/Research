@@ -2420,10 +2420,7 @@ def _sanitize_source_value(value: Any) -> Any:
             if (
                 normalized in _FORBIDDEN_OPERATIONAL_KEYS
                 or normalized in _PROJECTED_SOURCE_LOCATION_KEYS
-                or (
-                    tokens & _PATH_KEY_TOKENS
-                    and normalized not in _SEMANTIC_PATH_KEYS
-                )
+                or (tokens & _PATH_KEY_TOKENS and normalized not in _SEMANTIC_PATH_KEYS)
             ):
                 continue
             sanitized = _sanitize_source_value(item)
@@ -2493,10 +2490,7 @@ def _reject_operational_fields(value: object, *, path: str = "$") -> None:
             if (
                 normalized in _FORBIDDEN_OPERATIONAL_KEYS
                 or (tokens & _FORBIDDEN_OPERATIONAL_TOKENS)
-                or (
-                    tokens & _PATH_KEY_TOKENS
-                    and normalized not in _SEMANTIC_PATH_KEYS
-                )
+                or (tokens & _PATH_KEY_TOKENS and normalized not in _SEMANTIC_PATH_KEYS)
             ):
                 raise ResearchPackageRegistryError(
                     f"research_package_operational_field_forbidden:{path}.{raw_key}"

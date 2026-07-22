@@ -26,6 +26,7 @@ from .knowledge_registry import (
     require_validation_admission,
 )
 from .research_classification import requires_candidate_validation
+from .research_standard import ResearchStandardBinding
 from .validation_decision import (
     classify_validation_result,
     preserve_failed_validation,
@@ -80,15 +81,36 @@ def admit_study_validation(
         raise StudyLifecycleError("study_lifecycle_validation_bound_manifest_required")
     hypothesis = _required_hypothesis(manifest)
     admission = _normalize_admission(manager, manifest, validation_admission)
-    publish_manifest_lineage(manager=manager, hypothesis=hypothesis)
+    standard_binding = getattr(manifest, "research_standard_binding", None)
+    if standard_binding is not None and not isinstance(
+        standard_binding, ResearchStandardBinding
+    ):
+        raise StudyLifecycleError("study_lifecycle_research_standard_invalid")
+    publish_manifest_lineage(
+        manager=manager,
+        hypothesis=hypothesis,
+        research_standard_binding=standard_binding,
+    )
     subject = _subject(hypothesis)
     timestamp = _admission_timestamp(admission)
     run_hash = _run_identity_hash(manifest, hypothesis, run_id) if run_id else None
+    standard_evidence = _research_standard_lifecycle_evidence(standard_binding)
     standard_steps = (
         (
             None,
             "IDEA",
-            {"hypothesis_semantic_fingerprint": hypothesis.semantic_fingerprint()},
+            {
+                "hypothesis_semantic_fingerprint": hypothesis.semantic_fingerprint(),
+                **(
+                    {
+                        "research_standard_observation_set_hash": standard_evidence[
+                            "observation_set_hash"
+                        ]
+                    }
+                    if standard_evidence
+                    else {}
+                ),
+            },
         ),
         (
             "IDEA",
@@ -96,6 +118,24 @@ def admit_study_validation(
             {
                 "hypothesis_contract_hash": hypothesis.contract_hash(),
                 "hypothesis_lineage_hash": str(hypothesis.lineage_hash()),
+                **(
+                    {
+                        "research_standard_binding_hash": standard_evidence[
+                            "binding_hash"
+                        ],
+                        "research_standard_question_hash": standard_evidence[
+                            "research_question_hash"
+                        ],
+                        "research_standard_mechanism_hash": standard_evidence[
+                            "mechanism_hash"
+                        ],
+                        "research_standard_hypothesis_hash": standard_evidence[
+                            "hypothesis_version_hash"
+                        ],
+                    }
+                    if standard_evidence
+                    else {}
+                ),
             },
         ),
         (
@@ -103,6 +143,15 @@ def admit_study_validation(
             "EXPLORATORY",
             {
                 "hypothesis_lineage_hash": str(hypothesis.lineage_hash()),
+                **(
+                    {
+                        "research_standard_binding_hash": standard_evidence[
+                            "binding_hash"
+                        ]
+                    }
+                    if standard_evidence
+                    else {}
+                ),
             },
         ),
         (
@@ -111,6 +160,16 @@ def admit_study_validation(
             {
                 "preregistration_hash": admission["record_hash"],
                 "validation_admission_row_hash": admission["row_hash"],
+                **(
+                    {
+                        "external_preregistration_evidence_hash": standard_evidence[
+                            "preregistration_evidence_hash"
+                        ]
+                    }
+                    if standard_evidence
+                    and standard_evidence.get("preregistration_evidence_hash")
+                    else {}
+                ),
             },
         ),
         (
@@ -119,6 +178,15 @@ def admit_study_validation(
             {
                 "validation_manifest_hash": str(manifest.manifest_hash()),
                 "validation_admission_row_hash": admission["row_hash"],
+                **(
+                    {
+                        "research_standard_binding_hash": standard_evidence[
+                            "binding_hash"
+                        ]
+                    }
+                    if standard_evidence
+                    else {}
+                ),
                 **(
                     {"validation_run_identity_hash": run_hash}
                     if run_hash is not None
@@ -345,6 +413,28 @@ def _required_hypothesis(manifest: Any) -> HypothesisSpec:
     if not isinstance(hypothesis, HypothesisSpec) or hypothesis.schema_version != 2:
         raise StudyLifecycleError("study_lifecycle_hypothesis_lineage_required")
     return hypothesis
+
+
+def _research_standard_lifecycle_evidence(
+    binding: ResearchStandardBinding | None,
+) -> dict[str, str]:
+    if binding is None:
+        return {}
+    evidence = {
+        "binding_hash": binding.content_hash,
+        "observation_set_hash": sha256_prefixed(
+            [item.content_hash for item in binding.observations],
+            label="research_standard_observation_set",
+        ),
+        "research_question_hash": binding.research_question.content_hash,
+        "mechanism_hash": binding.mechanism.content_hash,
+        "hypothesis_version_hash": binding.hypothesis_version.content_hash,
+    }
+    if binding.preregistration_evidence_hash is not None:
+        evidence["preregistration_evidence_hash"] = (
+            binding.preregistration_evidence_hash
+        )
+    return evidence
 
 
 def _subject(hypothesis: HypothesisSpec) -> GovernanceSubject:

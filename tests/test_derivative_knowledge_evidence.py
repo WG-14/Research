@@ -442,10 +442,8 @@ def test_knowledge_archive_addition_preserves_schema_v1_contract_hashes() -> Non
     )
 
     assert legacy_literature.contract_hash() == (
-        "sha256:913f705c7f844ff2ce73d0687697dc60"
-        "c7665c47b308f192aaca06efb896c012"
+        "sha256:913f705c7f844ff2ce73d0687697dc60c7665c47b308f192aaca06efb896c012"
     )
     assert legacy_outcome.contract_hash() == (
-        "sha256:5b8f4765a344e2bc7164e17636018f0"
-        "39258abd08868e6156df7c17667de4aed"
+        "sha256:5b8f4765a344e2bc7164e17636018f039258abd08868e6156df7c17667de4aed"
     )

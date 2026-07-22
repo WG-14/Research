@@ -132,9 +132,7 @@ def _outcome(
         actor_id="validation-reviewer",
         recorded_at="2026-01-04T00:00:00+00:00",
         evidence_hashes=(_hash("d"),),
-        failure_classification=(
-            HypothesisFailureClassification.ELIMINATED_AFTER_COSTS
-        ),
+        failure_classification=(HypothesisFailureClassification.ELIMINATED_AFTER_COSTS),
     )
 
 
@@ -181,12 +179,10 @@ def test_failure_taxonomy_is_exact_and_v1_hashes_remain_stable() -> None:
         evidence_hashes=(_hash("a"),),
     )
     assert legacy_literature.contract_hash() == (
-        "sha256:913f705c7f844ff2ce73d0687697dc60"
-        "c7665c47b308f192aaca06efb896c012"
+        "sha256:913f705c7f844ff2ce73d0687697dc60c7665c47b308f192aaca06efb896c012"
     )
     assert legacy_outcome.contract_hash() == (
-        "sha256:5b8f4765a344e2bc7164e17636018f0"
-        "39258abd08868e6156df7c17667de4aed"
+        "sha256:5b8f4765a344e2bc7164e17636018f039258abd08868e6156df7c17667de4aed"
     )
     assert literature_spec_from_dict(legacy_literature.as_dict()) == legacy_literature
     assert hypothesis_outcome_spec_from_dict(legacy_outcome.as_dict()) == legacy_outcome
@@ -194,9 +190,7 @@ def test_failure_taxonomy_is_exact_and_v1_hashes_remain_stable() -> None:
 
 def test_schema_v2_outcome_requires_a_controlled_failure_classification() -> None:
     hypothesis_ref = KnowledgeRef("hypothesis", "hyp", "1", _hash("a"))
-    with pytest.raises(
-        KnowledgeContractError, match="failure_classification_required"
-    ):
+    with pytest.raises(KnowledgeContractError, match="failure_classification_required"):
         HypothesisOutcomeSpec(
             schema_version=2,
             outcome_id="missing-classification",
@@ -268,27 +262,31 @@ def test_registry_publishes_resolves_and_validates_v2_knowledge(tmp_path: Path) 
     outcome_row = publish_hypothesis_outcome(manager=manager, outcome=outcome)
 
     assert validate_knowledge_registry(manager)["status"] == "PASS"
-    assert get_knowledge_record(
-        manager=manager,
-        record_type="literature",
-        logical_id=literature.literature_id,
-        version=literature.version,
-    ) == literature_row
-    assert get_knowledge_record(
-        manager=manager,
-        record_type="hypothesis_outcome",
-        logical_id=outcome.outcome_id,
-        version=outcome.version,
-    ) == outcome_row
+    assert (
+        get_knowledge_record(
+            manager=manager,
+            record_type="literature",
+            logical_id=literature.literature_id,
+            version=literature.version,
+        )
+        == literature_row
+    )
+    assert (
+        get_knowledge_record(
+            manager=manager,
+            record_type="hypothesis_outcome",
+            logical_id=outcome.outcome_id,
+            version=outcome.version,
+        )
+        == outcome_row
+    )
     outbound = query_outbound_refs(
         manager=manager,
         record_type="literature",
         logical_id=literature.literature_id,
         version=literature.version,
     )
-    assert [item["logical_id"] for item in outbound] == [
-        hypothesis_ref.logical_id
-    ]
+    assert [item["logical_id"] for item in outbound] == [hypothesis_ref.logical_id]
 
 
 @pytest.mark.parametrize("tamper", ["unknown_field", "date_inversion"])
@@ -348,9 +346,10 @@ def test_self_contained_prefix_proof_round_trips_and_is_append_stable(
         manager=manager,
         outcome=_outcome(hypothesis_ref, question_ref),
     )
-    assert export_knowledge_registry_proof(
-        manager=manager, target_ref=literature.ref()
-    ) == proof
+    assert (
+        export_knowledge_registry_proof(manager=manager, target_ref=literature.ref())
+        == proof
+    )
 
     tampered = deepcopy(serialized)
     tampered["rows"][0]["actor_id"] = "forged-actor"

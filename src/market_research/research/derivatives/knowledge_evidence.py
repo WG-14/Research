@@ -72,9 +72,7 @@ class DerivativeKnowledgeEvidenceArchive:
     _literature_records: tuple[LiteratureSpec, ...] = field(
         init=False, repr=False, compare=False
     )
-    _decision_record: DecisionRecord = field(
-        init=False, repr=False, compare=False
-    )
+    _decision_record: DecisionRecord = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.schema_version != DERIVATIVE_KNOWLEDGE_EVIDENCE_SCHEMA_VERSION:
@@ -101,21 +99,15 @@ class DerivativeKnowledgeEvidenceArchive:
             _verified_proof(proof, f"literature_proofs[{index}]")
             for index, proof in enumerate(self.literature_proofs)
         )
-        literature_proofs = tuple(
-            sorted(literature_proofs, key=_proof_target_identity)
-        )
+        literature_proofs = tuple(sorted(literature_proofs, key=_proof_target_identity))
         decision_proof = _verified_proof(self.decision_proof, "decision_proof")
 
         outcome = _outcome_from_proof(outcome_proof)
-        literature = tuple(
-            _literature_from_proof(proof) for proof in literature_proofs
-        )
+        literature = tuple(_literature_from_proof(proof) for proof in literature_proofs)
         decision = _decision_from_proof(decision_proof)
 
         supporting_proofs = (outcome_proof, *literature_proofs)
-        identities = tuple(
-            _proof_target_identity(proof) for proof in supporting_proofs
-        )
+        identities = tuple(_proof_target_identity(proof) for proof in supporting_proofs)
         if len(set(identities)) != len(identities):
             raise DerivativeKnowledgeEvidenceError(
                 "derivative_knowledge_evidence_target_duplicate"
@@ -136,8 +128,7 @@ class DerivativeKnowledgeEvidenceArchive:
         subject = decision.subject
         if (
             subject.authority != DERIVATIVE_RESEARCH_CONCLUSION_AUTHORITY
-            or subject.subject_type
-            != DERIVATIVE_RESEARCH_CONCLUSION_SUBJECT_TYPE
+            or subject.subject_type != DERIVATIVE_RESEARCH_CONCLUSION_SUBJECT_TYPE
         ):
             raise DerivativeKnowledgeEvidenceError(
                 "derivative_knowledge_evidence_decision_authority_mismatch"
@@ -227,9 +218,7 @@ class DerivativeKnowledgeEvidenceArchive:
             "conclusion_version": self.conclusion_version,
             "conclusion_hash": self.conclusion_hash,
             "outcome_proof": self.outcome_proof.as_dict(),
-            "literature_proofs": [
-                proof.as_dict() for proof in self.literature_proofs
-            ],
+            "literature_proofs": [proof.as_dict() for proof in self.literature_proofs],
             "decision_proof": self.decision_proof.as_dict(),
             "assembled_at": self.assembled_at,
         }
@@ -263,18 +252,14 @@ class DerivativeKnowledgeEvidenceArchive:
                 "derivative_knowledge_evidence_artifact_type_invalid"
             )
         try:
-            outcome_proof = KnowledgeRegistryProof.from_dict(
-                payload["outcome_proof"]
-            )
+            outcome_proof = KnowledgeRegistryProof.from_dict(payload["outcome_proof"])
             literature_proofs = tuple(
                 KnowledgeRegistryProof.from_dict(item)
                 for item in _array(
                     payload["literature_proofs"], "archive.literature_proofs"
                 )
             )
-            decision_proof = KnowledgeRegistryProof.from_dict(
-                payload["decision_proof"]
-            )
+            decision_proof = KnowledgeRegistryProof.from_dict(payload["decision_proof"])
         except KnowledgeRegistryError as exc:
             raise DerivativeKnowledgeEvidenceError(
                 "derivative_knowledge_evidence_embedded_proof_invalid"
@@ -285,9 +270,7 @@ class DerivativeKnowledgeEvidenceArchive:
             ),
             archive_id=_text(payload["archive_id"], "archive.archive_id"),
             version=_text(payload["version"], "archive.version"),
-            conclusion_id=_text(
-                payload["conclusion_id"], "archive.conclusion_id"
-            ),
+            conclusion_id=_text(payload["conclusion_id"], "archive.conclusion_id"),
             conclusion_version=_text(
                 payload["conclusion_version"], "archive.conclusion_version"
             ),
@@ -299,7 +282,10 @@ class DerivativeKnowledgeEvidenceArchive:
             decision_proof=decision_proof,
             assembled_at=_text(payload["assembled_at"], "archive.assembled_at"),
         )
-        if _text(payload["content_hash"], "archive.content_hash") != result.content_hash:
+        if (
+            _text(payload["content_hash"], "archive.content_hash")
+            != result.content_hash
+        ):
             raise DerivativeKnowledgeEvidenceError(
                 "derivative_knowledge_evidence_content_hash_mismatch"
             )
@@ -320,9 +306,7 @@ def verify_derivative_knowledge_evidence_archive(
     return DerivativeKnowledgeEvidenceArchive.from_dict(value)
 
 
-def _verified_proof(
-    value: object, label: str
-) -> KnowledgeRegistryProof:
+def _verified_proof(value: object, label: str) -> KnowledgeRegistryProof:
     if not isinstance(value, KnowledgeRegistryProof):
         raise DerivativeKnowledgeEvidenceError(
             f"derivative_knowledge_evidence_{label}_invalid"
@@ -466,18 +450,12 @@ def _decision_record_from_dict(value: object) -> DecisionRecord:
     )
     raw_supersedes = payload["supersedes"]
     result = DecisionRecord(
-        schema_version=_integer(
-            payload["schema_version"], "decision.schema_version"
-        ),
+        schema_version=_integer(payload["schema_version"], "decision.schema_version"),
         decision_id=_text(payload["decision_id"], "decision.decision_id"),
         version=_text(payload["version"], "decision.version"),
-        decision_type=_text(
-            payload["decision_type"], "decision.decision_type"
-        ),
+        decision_type=_text(payload["decision_type"], "decision.decision_type"),
         subject=_authority_ref(payload["subject"], "decision.subject"),
-        chosen_action=_text(
-            payload["chosen_action"], "decision.chosen_action"
-        ),
+        chosen_action=_text(payload["chosen_action"], "decision.chosen_action"),
         rationale=_text(payload["rationale"], "decision.rationale"),
         evidence_hashes=_text_array(
             payload["evidence_hashes"], "decision.evidence_hashes"
@@ -487,9 +465,7 @@ def _decision_record_from_dict(value: object) -> DecisionRecord:
             payload["expected_effects"], "decision.expected_effects"
         ),
         risks=risks,
-        proposer_ids=_text_array(
-            payload["proposer_ids"], "decision.proposer_ids"
-        ),
+        proposer_ids=_text_array(payload["proposer_ids"], "decision.proposer_ids"),
         approver=DecisionApprover(
             approver_type=_text(
                 approver_payload["approver_type"],
@@ -501,9 +477,7 @@ def _decision_record_from_dict(value: object) -> DecisionRecord:
             ),
             role=_text(approver_payload["role"], "decision.approver.role"),
         ),
-        policy_version=_text(
-            payload["policy_version"], "decision.policy_version"
-        ),
+        policy_version=_text(payload["policy_version"], "decision.policy_version"),
         decided_at=_text(payload["decided_at"], "decision.decided_at"),
         supersedes=(
             None
@@ -568,12 +542,8 @@ def _authority_ref(value: object, label: str) -> AuthorityRef:
         authority=_text(payload["authority"], f"{label}.authority"),
         subject_type=_text(payload["subject_type"], f"{label}.subject_type"),
         subject_id=_text(payload["subject_id"], f"{label}.subject_id"),
-        subject_version=_text(
-            payload["subject_version"], f"{label}.subject_version"
-        ),
-        authority_hash=_text(
-            payload["authority_hash"], f"{label}.authority_hash"
-        ),
+        subject_version=_text(payload["subject_version"], f"{label}.subject_version"),
+        authority_hash=_text(payload["authority_hash"], f"{label}.authority_hash"),
     )
 
 
@@ -606,9 +576,7 @@ def _require_exact_prefix(
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise DerivativeKnowledgeEvidenceError(
             f"derivative_knowledge_evidence_{label}_object_required"
         )

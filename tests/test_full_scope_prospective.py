@@ -39,7 +39,9 @@ def _spec() -> FrozenProspectiveSpec:
     )
 
 
-def _observation(spec: FrozenProspectiveSpec, index: int, value: float) -> ProspectiveObservation:
+def _observation(
+    spec: FrozenProspectiveSpec, index: int, value: float
+) -> ProspectiveObservation:
     return ProspectiveObservation(
         observation_id=f"prospective_observation_{index:03d}",
         prospective_spec_hash=spec.content_hash,
@@ -112,7 +114,20 @@ def test_prospective_decision_tracks_missing_data_and_distribution_drift() -> No
     )
     inconclusive = decide_prospective(
         replace(spec, minimum_observations=3),
-        (replace(observations[0], prospective_spec_hash=replace(spec, minimum_observations=3).content_hash), replace(missing, prospective_spec_hash=replace(spec, minimum_observations=3).content_hash)),
+        (
+            replace(
+                observations[0],
+                prospective_spec_hash=replace(
+                    spec, minimum_observations=3
+                ).content_hash,
+            ),
+            replace(
+                missing,
+                prospective_spec_hash=replace(
+                    spec, minimum_observations=3
+                ).content_hash,
+            ),
+        ),
         baseline_metrics={"net_expectancy": 0.01, "spread_width": 0.02},
         decided_at="2026-01-20T00:00:00+00:00",
     )

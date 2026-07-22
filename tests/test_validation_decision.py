@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from market_research.paths import ResearchPathManager
-from market_research.research.hashing import report_content_hash_payload, sha256_prefixed
+from market_research.research.hashing import (
+    report_content_hash_payload,
+    sha256_prefixed,
+)
 from market_research.research.hypothesis_contract import parse_hypothesis_spec
 from market_research.research.knowledge_contract import KnowledgeRef
 from market_research.research.knowledge_registry import validate_knowledge_registry
@@ -158,9 +161,7 @@ def test_validated_decision_requires_every_criterion_to_pass(tmp_path: Path) -> 
             ),
         )
 
-    with pytest.raises(
-        ValidationDecisionError, match="contains_failed_criterion"
-    ):
+    with pytest.raises(ValidationDecisionError, match="contains_failed_criterion"):
         ValidationDecision(
             schema_version=VALIDATION_DECISION_SCHEMA_VERSION,
             decision_id="validation-decision-invalid",
@@ -241,10 +242,10 @@ def test_failed_terminal_report_is_rejected_and_searchable(
     )
     assert len(rows) == 1
     assert rows[0]["payload"]["learned"]
-    report_path = Path(
-        rows[0]["payload"]["terminal_report_ref"]["artifact_path"]
-    )
+    report_path = Path(rows[0]["payload"]["terminal_report_ref"]["artifact_path"])
     report_path.unlink()
     validation = validate_validation_decision_registry(manager)
     assert validation["status"] == "FAIL"
-    assert any("terminal_report_ref_unreadable" in item for item in validation["reasons"])
+    assert any(
+        "terminal_report_ref_unreadable" in item for item in validation["reasons"]
+    )

@@ -72,7 +72,9 @@ def require_authoritative_source_eligibility(manifest: ExperimentManifest) -> No
         try:
             require_point_in_time_scope(manifest, verify_source_content=True)
         except PointInTimeSelectionError as exc:
-            raise RuntimeError(f"validation_point_in_time_admission_failed:{exc}") from exc
+            raise RuntimeError(
+                f"validation_point_in_time_admission_failed:{exc}"
+            ) from exc
 
 
 def parallel_work_task_count(

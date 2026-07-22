@@ -162,16 +162,16 @@ EXPECTED_DRIFT_METHOD: Mapping[MonitoringMetric, DriftMethod] = {
 }
 
 
-def required_metrics(product_kind: MonitoringProductKind) -> tuple[MonitoringMetric, ...]:
+def required_metrics(
+    product_kind: MonitoringProductKind,
+) -> tuple[MonitoringMetric, ...]:
     if not isinstance(product_kind, MonitoringProductKind):
         raise DerivativeResearchError("monitoring_product_kind_invalid")
     return _REQUIRED_METRICS[product_kind]
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise DerivativeResearchError(f"{label}_must_be_object")
     return value
 
@@ -310,7 +310,9 @@ class MetricObservation:
             parsed_values = None
         else:
             if self.observed_count <= 0:
-                raise DerivativeResearchError("monitoring_observed_values_without_sample")
+                raise DerivativeResearchError(
+                    "monitoring_observed_values_without_sample"
+                )
             parsed_values = tuple(
                 exact_decimal(value, "monitoring_observation.value")
                 for value in self.values
@@ -387,14 +389,19 @@ class MetricObservation:
             ),
             "monitoring_observation",
         )
-        if _integer(data["schema_version"], "monitoring_observation.schema_version") != 1:
+        if (
+            _integer(data["schema_version"], "monitoring_observation.schema_version")
+            != 1
+        ):
             raise DerivativeResearchError("monitoring_observation_schema_unsupported")
         metric = _enum_value(
             MonitoringMetric, data["metric"], "monitoring_observation.metric"
         )
         dimensions = tuple(
             _string(item, "monitoring_observation.dimension")
-            for item in _sequence(data["dimensions"], "monitoring_observation.dimensions")
+            for item in _sequence(
+                data["dimensions"], "monitoring_observation.dimensions"
+            )
         )
         if dimensions != METRIC_DIMENSIONS[metric]:
             raise DerivativeResearchError("monitoring_metric_dimensions_tampered")
@@ -448,12 +455,12 @@ class MetricObservation:
             frozen_spec_hash=(
                 None
                 if raw_spec_hash is None
-                else _string(
-                    raw_spec_hash, "monitoring_observation.frozen_spec_hash"
-                )
+                else _string(raw_spec_hash, "monitoring_observation.frozen_spec_hash")
             ),
         )
-        _verify_hash(data["content_hash"], result.content_hash, "monitoring_observation")
+        _verify_hash(
+            data["content_hash"], result.content_hash, "monitoring_observation"
+        )
         return result
 
 
@@ -544,7 +551,9 @@ class MetricDriftRule:
             "monitoring_rule",
         )
         result = cls(
-            metric=_enum_value(MonitoringMetric, data["metric"], "monitoring_rule.metric"),
+            metric=_enum_value(
+                MonitoringMetric, data["metric"], "monitoring_rule.metric"
+            ),
             method=_enum_value(DriftMethod, data["method"], "monitoring_rule.method"),
             threshold_version=_string(
                 data["threshold_version"], "monitoring_rule.threshold_version"
@@ -611,7 +620,9 @@ class FrozenMonitoringSpec:
             raise DerivativeResearchError("monitoring_spec_baseline_item_invalid")
         if any(not isinstance(item, MetricDriftRule) for item in rules):
             raise DerivativeResearchError("monitoring_spec_rule_item_invalid")
-        if {item.metric for item in observations} != required or len(observations) != len(required):
+        if {item.metric for item in observations} != required or len(
+            observations
+        ) != len(required):
             raise DerivativeResearchError("monitoring_spec_required_baselines_invalid")
         if {item.metric for item in rules} != required or len(rules) != len(required):
             raise DerivativeResearchError("monitoring_spec_required_rules_invalid")
@@ -621,12 +632,25 @@ class FrozenMonitoringSpec:
             if observation.role is not ObservationRole.BASELINE:
                 raise DerivativeResearchError("monitoring_spec_baseline_role_invalid")
             if observation.product_kind is not self.product_kind:
-                raise DerivativeResearchError("monitoring_spec_baseline_product_mismatch")
-            if parse_timestamp(observation.known_at, "monitoring_spec.baseline_known_at") > frozen:
-                raise DerivativeResearchError("monitoring_spec_future_baseline_forbidden")
-            if parse_timestamp(
-                observation.period_ended_at, "monitoring_spec.baseline_period_ended_at"
-            ) >= started:
+                raise DerivativeResearchError(
+                    "monitoring_spec_baseline_product_mismatch"
+                )
+            if (
+                parse_timestamp(
+                    observation.known_at, "monitoring_spec.baseline_known_at"
+                )
+                > frozen
+            ):
+                raise DerivativeResearchError(
+                    "monitoring_spec_future_baseline_forbidden"
+                )
+            if (
+                parse_timestamp(
+                    observation.period_ended_at,
+                    "monitoring_spec.baseline_period_ended_at",
+                )
+                >= started
+            ):
                 raise DerivativeResearchError("monitoring_spec_baseline_period_overlap")
         object.__setattr__(
             self,
@@ -688,9 +712,13 @@ class FrozenMonitoringSpec:
         if _integer(data["schema_version"], "monitoring_spec.schema_version") != 1:
             raise DerivativeResearchError("monitoring_spec_schema_unsupported")
         result = cls(
-            monitoring_id=_string(data["monitoring_id"], "monitoring_spec.monitoring_id"),
+            monitoring_id=_string(
+                data["monitoring_id"], "monitoring_spec.monitoring_id"
+            ),
             product_kind=_enum_value(
-                MonitoringProductKind, data["product_kind"], "monitoring_spec.product_kind"
+                MonitoringProductKind,
+                data["product_kind"],
+                "monitoring_spec.product_kind",
             ),
             research_rule_hash=_string(
                 data["research_rule_hash"], "monitoring_spec.research_rule_hash"
@@ -711,7 +739,9 @@ class FrozenMonitoringSpec:
             ),
             drift_rules=tuple(
                 MetricDriftRule.from_dict(item)
-                for item in _sequence(data["drift_rules"], "monitoring_spec.drift_rules")
+                for item in _sequence(
+                    data["drift_rules"], "monitoring_spec.drift_rules"
+                )
             ),
             frozen_at=_string(data["frozen_at"], "monitoring_spec.frozen_at"),
             monitoring_started_at=_string(
@@ -742,7 +772,9 @@ class MetricMonitoringDecision:
             self.method, DriftMethod
         ):
             raise DerivativeResearchError("monitoring_decision_type_invalid")
-        require_stable_id(self.threshold_version, "monitoring_decision.threshold_version")
+        require_stable_id(
+            self.threshold_version, "monitoring_decision.threshold_version"
+        )
         require_hash(
             self.baseline_observation_hash,
             "monitoring_decision.baseline_observation_hash",
@@ -762,7 +794,9 @@ class MetricMonitoringDecision:
         if drift is not None and drift < _ZERO:
             raise DerivativeResearchError("monitoring_decision_drift_negative")
         if not _ZERO <= missing_fraction <= _ONE:
-            raise DerivativeResearchError("monitoring_decision_missing_fraction_invalid")
+            raise DerivativeResearchError(
+                "monitoring_decision_missing_fraction_invalid"
+            )
         if self.observed_count < 0 or self.missing_count < 0:
             raise DerivativeResearchError("monitoring_decision_count_invalid")
         if not isinstance(self.outcome, MonitoringOutcome):
@@ -773,7 +807,9 @@ class MetricMonitoringDecision:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(self.identity_payload(), label="monitoring_metric_decision"),
+            sha256_prefixed(
+                self.identity_payload(), label="monitoring_metric_decision"
+            ),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -907,24 +943,36 @@ class ProspectiveMonitoringArtifact:
         if {item.metric for item in observations} != required or len(
             observations
         ) != len(required):
-            raise DerivativeResearchError("monitoring_artifact_required_metrics_invalid")
+            raise DerivativeResearchError(
+                "monitoring_artifact_required_metrics_invalid"
+            )
         if len({item.observation_id for item in observations}) != len(observations):
-            raise DerivativeResearchError("monitoring_artifact_observation_id_duplicate")
+            raise DerivativeResearchError(
+                "monitoring_artifact_observation_id_duplicate"
+            )
         for observation in observations:
             if observation.role is not ObservationRole.CURRENT:
-                raise DerivativeResearchError("monitoring_artifact_current_role_required")
+                raise DerivativeResearchError(
+                    "monitoring_artifact_current_role_required"
+                )
             if observation.product_kind is not self.spec.product_kind:
                 raise DerivativeResearchError("monitoring_artifact_product_mismatch")
             if observation.frozen_spec_hash != self.spec.content_hash:
                 raise DerivativeResearchError("monitoring_artifact_spec_hash_mismatch")
-            if parse_timestamp(
-                observation.period_started_at,
-                "monitoring_artifact.current_period_started_at",
-            ) < started:
+            if (
+                parse_timestamp(
+                    observation.period_started_at,
+                    "monitoring_artifact.current_period_started_at",
+                )
+                < started
+            ):
                 raise DerivativeResearchError("monitoring_artifact_pre_start_data")
-            if parse_timestamp(
-                observation.known_at, "monitoring_artifact.current_known_at"
-            ) > evaluated:
+            if (
+                parse_timestamp(
+                    observation.known_at, "monitoring_artifact.current_known_at"
+                )
+                > evaluated
+            ):
                 raise DerivativeResearchError("monitoring_artifact_future_data")
         baseline_by_metric = {
             item.metric: item for item in self.spec.baseline_observations
@@ -958,7 +1006,9 @@ class ProspectiveMonitoringArtifact:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(self.identity_payload(), label="prospective_monitoring_artifact"),
+            sha256_prefixed(
+                self.identity_payload(), label="prospective_monitoring_artifact"
+            ),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -1021,16 +1071,23 @@ class ProspectiveMonitoringArtifact:
         rebuilt = evaluate_prospective_monitoring(
             spec,
             current,
-            evaluated_at=_string(data["evaluated_at"], "monitoring_artifact.evaluated_at"),
+            evaluated_at=_string(
+                data["evaluated_at"], "monitoring_artifact.evaluated_at"
+            ),
         )
         supplied_decisions = _sequence(
             data["metric_decisions"], "monitoring_artifact.metric_decisions"
         )
-        if list(supplied_decisions) != [item.as_dict() for item in rebuilt.metric_decisions]:
+        if list(supplied_decisions) != [
+            item.as_dict() for item in rebuilt.metric_decisions
+        ]:
             raise DerivativeResearchError("monitoring_artifact_decisions_tampered")
-        if _enum_value(
-            MonitoringOutcome, data["outcome"], "monitoring_artifact.outcome"
-        ) is not rebuilt.outcome:
+        if (
+            _enum_value(
+                MonitoringOutcome, data["outcome"], "monitoring_artifact.outcome"
+            )
+            is not rebuilt.outcome
+        ):
             raise DerivativeResearchError("monitoring_artifact_outcome_tampered")
         _verify_hash(data["content_hash"], rebuilt.content_hash, "monitoring_artifact")
         return rebuilt
@@ -1084,11 +1141,17 @@ class MonitoringArtifactRef:
         ):
             raise DerivativeResearchError("monitoring_ref_kind_invalid")
         return cls(
-            monitoring_id=_string(data["monitoring_id"], "monitoring_ref.monitoring_id"),
-            product_kind=_enum_value(
-                MonitoringProductKind, data["product_kind"], "monitoring_ref.product_kind"
+            monitoring_id=_string(
+                data["monitoring_id"], "monitoring_ref.monitoring_id"
             ),
-            artifact_hash=_string(data["artifact_hash"], "monitoring_ref.artifact_hash"),
+            product_kind=_enum_value(
+                MonitoringProductKind,
+                data["product_kind"],
+                "monitoring_ref.product_kind",
+            ),
+            artifact_hash=_string(
+                data["artifact_hash"], "monitoring_ref.artifact_hash"
+            ),
             evaluated_at=_string(data["evaluated_at"], "monitoring_ref.evaluated_at"),
         )
 
@@ -1113,7 +1176,9 @@ def evaluate_prospective_monitoring(
     if any(not isinstance(item, MetricObservation) for item in observations):
         raise DerivativeResearchError("monitoring_evaluation_observation_invalid")
     required = set(required_metrics(spec.product_kind))
-    if {item.metric for item in observations} != required or len(observations) != len(required):
+    if {item.metric for item in observations} != required or len(observations) != len(
+        required
+    ):
         raise DerivativeResearchError("monitoring_evaluation_required_metrics_missing")
     if len({item.observation_id for item in observations}) != len(observations):
         raise DerivativeResearchError("monitoring_evaluation_observation_id_duplicate")
@@ -1124,14 +1189,22 @@ def evaluate_prospective_monitoring(
             raise DerivativeResearchError("monitoring_evaluation_product_mismatch")
         if observation.frozen_spec_hash != spec.content_hash:
             raise DerivativeResearchError("monitoring_evaluation_spec_hash_mismatch")
-        if parse_timestamp(
-            observation.period_started_at,
-            "monitoring_evaluation.current_period_started_at",
-        ) < started:
-            raise DerivativeResearchError("monitoring_evaluation_pre_start_data_forbidden")
-        if parse_timestamp(
-            observation.known_at, "monitoring_evaluation.current_known_at"
-        ) > evaluated:
+        if (
+            parse_timestamp(
+                observation.period_started_at,
+                "monitoring_evaluation.current_period_started_at",
+            )
+            < started
+        ):
+            raise DerivativeResearchError(
+                "monitoring_evaluation_pre_start_data_forbidden"
+            )
+        if (
+            parse_timestamp(
+                observation.known_at, "monitoring_evaluation.current_known_at"
+            )
+            > evaluated
+        ):
             raise DerivativeResearchError("monitoring_evaluation_future_data_forbidden")
     baseline_by_metric = {item.metric: item for item in spec.baseline_observations}
     current_by_metric = {item.metric: item for item in observations}

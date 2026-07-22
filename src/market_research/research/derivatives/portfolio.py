@@ -271,9 +271,7 @@ class PositionExposure:
             "portfolio_position.capital_use_seconds",
         )
         if capital_seconds != _exact_elapsed_seconds(capital_started, as_of):
-            raise DerivativeResearchError(
-                "portfolio_position_capital_seconds_mismatch"
-            )
+            raise DerivativeResearchError("portfolio_position_capital_seconds_mismatch")
 
         if self.instrument_kind is InstrumentKind.SPOT:
             if self.expiry_at is not None:
@@ -299,15 +297,15 @@ class PositionExposure:
                 self.instrument_kind is InstrumentKind.FUTURE
                 and parsed_signed["premium"] != _ZERO
             ):
-                raise DerivativeResearchError(
-                    "portfolio_future_premium_must_be_zero"
-                )
+                raise DerivativeResearchError("portfolio_future_premium_must_be_zero")
 
         if not isinstance(self.stress_pnl, tuple):
             raise DerivativeResearchError("portfolio_stress_tuple_required")
         if not isinstance(self.evidence_hashes, PositionEvidenceHashes):
             raise DerivativeResearchError("portfolio_evidence_hashes_invalid")
-        ordered_stress = tuple(sorted(self.stress_pnl, key=lambda item: item.scenario_id))
+        ordered_stress = tuple(
+            sorted(self.stress_pnl, key=lambda item: item.scenario_id)
+        )
         computed_stress_hash = stress_set_hash(ordered_stress)
         if computed_stress_hash != self.evidence_hashes.stress_hash:
             raise DerivativeResearchError("portfolio_stress_evidence_hash_mismatch")
@@ -392,9 +390,7 @@ class ExposureAggregate:
             )
         _require_currency(self.currency, "portfolio_aggregate.currency")
         if self.position_count <= 0:
-            raise DerivativeResearchError(
-                "portfolio_aggregate_position_count_invalid"
-            )
+            raise DerivativeResearchError("portfolio_aggregate_position_count_invalid")
         if not isinstance(self.member_hashes, tuple):
             raise DerivativeResearchError("portfolio_aggregate_members_tuple_required")
         if len(self.member_hashes) != self.position_count:
@@ -650,9 +646,7 @@ class ExpiryConcentration:
             "total_capital_basis": decimal_text(self.total_capital_basis),
             "shares": [item.as_dict() for item in self.shares],
             "maximum_share": (
-                None
-                if self.maximum_share is None
-                else decimal_text(self.maximum_share)
+                None if self.maximum_share is None else decimal_text(self.maximum_share)
             ),
             "herfindahl_index": (
                 None
@@ -684,9 +678,7 @@ def _aggregate_positions(
         theta=_decimal_sum([item.theta for item in positions]),
         rho=_decimal_sum([item.rho for item in positions]),
         premium=_decimal_sum([item.premium for item in positions]),
-        margin_required=_decimal_sum(
-            [item.margin_required for item in positions]
-        ),
+        margin_required=_decimal_sum([item.margin_required for item in positions]),
         collateral_cash=_decimal_sum([item.collateral_cash for item in positions]),
         capital_use_seconds=_decimal_sum(
             [item.capital_use_seconds for item in positions]
@@ -723,10 +715,7 @@ class PortfolioExposureSnapshot:
             self.aggregation_policy_hash,
             "portfolio_snapshot.aggregation_policy_hash",
         )
-        if (
-            self.aggregation_policy_hash
-            != PORTFOLIO_EXPOSURE_AGGREGATION_POLICY_HASH
-        ):
+        if self.aggregation_policy_hash != PORTFOLIO_EXPOSURE_AGGREGATION_POLICY_HASH:
             raise DerivativeResearchError(
                 "portfolio_snapshot_aggregation_policy_unsupported"
             )
@@ -779,8 +768,7 @@ class PortfolioExposureSnapshot:
                 positions=[
                     item
                     for item in ordered_positions
-                    if item.underlying_id == underlying_id
-                    and item.currency == currency
+                    if item.underlying_id == underlying_id and item.currency == currency
                 ],
             )
             for underlying_id, currency in underlying_keys
@@ -852,9 +840,7 @@ class PortfolioExposureSnapshot:
 
     def _require_complete_stress_scenarios(self) -> None:
         first = self.positions[0]
-        expected = {
-            item.scenario_id: item.scenario_hash for item in first.stress_pnl
-        }
+        expected = {item.scenario_id: item.scenario_hash for item in first.stress_pnl}
         for position in self.positions[1:]:
             observed = {
                 item.scenario_id: item.scenario_hash for item in position.stress_pnl
@@ -975,8 +961,7 @@ class PortfolioExposureSnapshot:
     @property
     def total_collateral_by_currency(self) -> tuple[tuple[str, Decimal], ...]:
         return tuple(
-            (item.currency, item.collateral_cash)
-            for item in self.currency_exposure
+            (item.currency, item.collateral_cash) for item in self.currency_exposure
         )
 
     @property
@@ -984,8 +969,7 @@ class PortfolioExposureSnapshot:
         self,
     ) -> tuple[tuple[str, Decimal], ...]:
         return tuple(
-            (item.currency, item.capital_use_seconds)
-            for item in self.currency_exposure
+            (item.currency, item.capital_use_seconds) for item in self.currency_exposure
         )
 
     def currency_total(self, currency: str) -> ExposureAggregate:
@@ -1052,9 +1036,7 @@ class PortfolioExposureSnapshot:
             "expiry_concentration_by_currency": [
                 item.as_dict() for item in self.expiry_concentration_by_currency
             ],
-            "total_capital_use_seconds": decimal_text(
-                self.total_capital_use_seconds
-            ),
+            "total_capital_use_seconds": decimal_text(self.total_capital_use_seconds),
         }
 
     def as_dict(self) -> dict[str, object]:

@@ -24,6 +24,7 @@ from market_research.research.derivatives.futures import (
     FuturesContract,
     FuturesCostPolicy,
     FuturesLedger,
+    FuturesLifecycleEvent,
     FuturesOrderIntent,
     FuturesRiskSummary,
     FuturesRobustnessSummary,
@@ -33,6 +34,7 @@ from market_research.research.derivatives.futures import (
     FuturesStressCase,
     FuturesStressKind,
     FuturesStressResult,
+    LifecycleEventType,
     MarginCallAction,
     MarginSimulationPolicy,
     MarketState,
@@ -177,7 +179,7 @@ def _chain(
                 decision=QualityDecision.PASS,
             ),
         ),
-        source_manifest_hashes=(HASH_B,),
+        source_manifest_hashes=(HASH_A,),
     )
 
 
@@ -369,6 +371,53 @@ def test_chain_selection_and_volume_roll_are_strictly_point_in_time() -> None:
         replace(policy, forbid_future_observations=False)
 
 
+def test_contract_chain_structurally_binds_quote_and_lifecycle_sources() -> None:
+    near, _deferred, chain, _later = _market_fixture()
+
+    with pytest.raises(
+        DerivativeResearchError, match="contract_chain_quote_source_unbound"
+    ):
+        replace(
+            chain,
+            quotes=(
+                replace(chain.quotes[0], source_hash=HASH_B),
+                chain.quotes[1],
+            ),
+        )
+
+    unbound_lifecycle = FuturesLifecycleEvent(
+        event_id="lifecycle.unbound.source",
+        contract_id=near.contract_id,
+        event_type=LifecycleEventType.LISTED,
+        event_at=chain.observed_at,
+        availability=_availability(chain.observed_at),
+        source_hash=HASH_B,
+    )
+    with pytest.raises(
+        DerivativeResearchError, match="contract_chain_lifecycle_source_unbound"
+    ):
+        replace(chain, lifecycle_events=(unbound_lifecycle,))
+
+
+def test_contract_chain_rejects_lifecycle_unknown_at_snapshot_time() -> None:
+    near, _deferred, chain, _later = _market_fixture()
+    future_at = "2026-03-11T16:00:00Z"
+    future_lifecycle = FuturesLifecycleEvent(
+        event_id="lifecycle.future.knowledge",
+        contract_id=near.contract_id,
+        event_type=LifecycleEventType.FINAL_SETTLEMENT,
+        event_at=future_at,
+        availability=_availability(future_at),
+        source_hash=HASH_A,
+    )
+
+    with pytest.raises(
+        DerivativeResearchError,
+        match="contract_chain_lifecycle_not_known_at_snapshot",
+    ):
+        replace(chain, lifecycle_events=(future_lifecycle,))
+
+
 def test_continuous_series_is_append_only_signal_mapping_not_an_instrument() -> None:
     near, deferred, first, second = _market_fixture()
     roll_policy = _volume_roll_policy()
@@ -509,9 +558,7 @@ def test_basis_curve_and_roll_attribution_keep_distinct_returns() -> None:
     assert attribution.settlement_return != attribution.execution_return
 
     skewed_spot = _availability("2026-03-11T15:59:59Z")
-    with pytest.raises(
-        DerivativeResearchError, match="basis_inputs_not_time_aligned"
-    ):
+    with pytest.raises(DerivativeResearchError, match="basis_inputs_not_time_aligned"):
         compute_basis_feature(
             feature_id="basis.bad",
             feature_version="v1",
@@ -527,9 +574,7 @@ def test_simulator_applies_tick_multiplier_long_short_and_daily_settlement() -> 
     contract = _contract("FUT.202603", last_trade="2026-03-20")
     simulator = _simulator((contract,))
     ledger = FuturesLedger.open("ledger.pnl", Decimal("100000"))
-    open_quote = _quote(
-        contract.contract_id, "2026-03-10T16:00:00Z", "100.12"
-    )
+    open_quote = _quote(contract.contract_id, "2026-03-10T16:00:00Z", "100.12")
     opened = simulator.execute(
         ledger,
         FuturesOrderIntent(
@@ -609,9 +654,7 @@ def test_daily_loss_triggers_each_typed_margin_shortfall_policy(
     contract = _contract("FUT.202603", last_trade="2026-03-20")
     simulator = _simulator((contract,), margin_action=action, commission="0")
     ledger = FuturesLedger.open(f"ledger.margin.{action.value}", Decimal("2000"))
-    open_quote = _quote(
-        contract.contract_id, "2026-03-10T16:00:00Z", "100"
-    )
+    open_quote = _quote(contract.contract_id, "2026-03-10T16:00:00Z", "100")
     opened = simulator.execute(
         ledger,
         FuturesOrderIntent(
@@ -817,9 +860,7 @@ def test_roll_is_two_actual_contract_fills_with_two_costs_and_roll_yield() -> No
         decision,
         input_quote_hashes=(old_quote.content_hash, HASH_B),
     )
-    with pytest.raises(
-        DerivativeResearchError, match="quote_not_in_pit_decision"
-    ):
+    with pytest.raises(DerivativeResearchError, match="quote_not_in_pit_decision"):
         simulator.roll(
             opened.ledger,
             future_bound,
@@ -842,9 +883,7 @@ def test_expiration_uses_settlement_price_and_never_models_physical_delivery() -
     )
     simulator = _simulator((cash_contract, physical_contract), commission="0")
     cash_ledger = FuturesLedger.open("ledger.expiry.cash", Decimal("100000"))
-    cash_open_quote = _quote(
-        cash_contract.contract_id, "2026-03-19T16:00:00Z", "100"
-    )
+    cash_open_quote = _quote(cash_contract.contract_id, "2026-03-19T16:00:00Z", "100")
     cash_opened = simulator.execute(
         cash_ledger,
         FuturesOrderIntent(
@@ -874,9 +913,7 @@ def test_expiration_uses_settlement_price_and_never_models_physical_delivery() -
     assert expired.settlement_events[0].variation_margin == Decimal("250")
     assert expired.diagnostics == ("CASH_SETTLED_AT_FINAL_SETTLEMENT_PRICE",)
 
-    physical_ledger = FuturesLedger.open(
-        "ledger.expiry.physical", Decimal("100000")
-    )
+    physical_ledger = FuturesLedger.open("ledger.expiry.physical", Decimal("100000"))
     physical_open_quote = _quote(
         physical_contract.contract_id, "2026-03-10T16:00:00Z", "100"
     )
@@ -905,12 +942,8 @@ def test_expiration_uses_settlement_price_and_never_models_physical_delivery() -
     assert physical_result.ledger.failed
     assert physical_result.diagnostics == ("PHYSICAL_DELIVERY_NOT_SIMULATED",)
 
-    cutoff_quote = _quote(
-        physical_contract.contract_id, "2026-03-15T00:00:00Z", "101"
-    )
-    with pytest.raises(
-        DerivativeResearchError, match="open_after_expiry_exit_cutoff"
-    ):
+    cutoff_quote = _quote(physical_contract.contract_id, "2026-03-15T00:00:00Z", "101")
+    with pytest.raises(DerivativeResearchError, match="open_after_expiry_exit_cutoff"):
         simulator.execute(
             FuturesLedger.open("ledger.cutoff", Decimal("100000")),
             FuturesOrderIntent(
@@ -937,9 +970,7 @@ def test_price_limits_halts_and_night_day_session_order_block_false_fills() -> N
         market_state=MarketState.LIMIT_UP,
         limit_up="101",
     )
-    with pytest.raises(
-        DerivativeResearchError, match="limit_up_buy_unavailable"
-    ):
+    with pytest.raises(DerivativeResearchError, match="limit_up_buy_unavailable"):
         simulator.execute(
             ledger,
             FuturesOrderIntent(
@@ -1065,9 +1096,7 @@ def test_calendar_spread_records_each_leg_cost_and_legging_basis_risk() -> None:
     assert execution.legging_cost == Decimal("12.5")
     assert step.diagnostics == ("SPREAD_BASIS_RISK",)
 
-    simultaneous = replace(
-        order, order_id="spread.order.2", simultaneous_fill=True
-    )
+    simultaneous = replace(order, order_id="spread.order.2", simultaneous_fill=True)
     _, simultaneous_execution = simulator.execute_spread(
         FuturesLedger.open("ledger.spread.simultaneous", Decimal("100000")),
         simultaneous,
@@ -1159,7 +1188,9 @@ def test_risk_and_robustness_require_all_twelve_futures_stress_dimensions() -> N
         incomplete.require_complete_s5_coverage()
 
 
-def test_prospective_evidence_freezes_chain_roll_settlement_margin_and_curve_drift() -> None:
+def test_prospective_evidence_freezes_chain_roll_settlement_margin_and_curve_drift() -> (
+    None
+):
     near, deferred, first, second = _market_fixture()
     roll_policy = _volume_roll_policy()
     continuous_policy = ContinuousFuturesPolicy(

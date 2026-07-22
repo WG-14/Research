@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import ast
+import json
+import re
 import subprocess
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "src" / "market_research"
 WEB = ROOT / "apps" / "internal_web" / "src"
 OPERATIONS = ROOT / "services" / "research_operations" / "src"
+ARCHITECTURE = ROOT / "docs" / "architecture-boundaries.json"
+_DOTTED_MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 def _imports(path: Path) -> set[str]:
@@ -29,46 +34,158 @@ def _python_imports(root: Path) -> list[tuple[Path, str]]:
     ]
 
 
+def _architecture() -> dict[str, object]:
+    return cast(dict[str, object], json.loads(ARCHITECTURE.read_text(encoding="utf-8")))
+
+
+def _dependency_rule(payload: dict[str, object], name: str) -> tuple[str, ...]:
+    rules = payload["dependency_rules"]
+    assert isinstance(rules, dict)
+    value = rules[name]
+    assert isinstance(value, list)
+    result = tuple(str(item) for item in value)
+    assert result
+    assert len(result) == len(set(result))
+    assert all(_DOTTED_MODULE.fullmatch(item) for item in result)
+    return result
+
+
+def _import_roots(payload: dict[str, object], distribution: str) -> tuple[str, ...]:
+    distributions = payload["distributions"]
+    assert isinstance(distributions, dict)
+    metadata = distributions[distribution]
+    assert isinstance(metadata, dict)
+    roots = metadata["python_import_roots"]
+    assert isinstance(roots, list)
+    result = tuple(str(item) for item in roots)
+    assert result
+    assert len(result) == len(set(result))
+    assert all(_DOTTED_MODULE.fullmatch(item) for item in result)
+    return result
+
+
+def _matches_prefix(module: str, prefix: str) -> bool:
+    return module == prefix or module.startswith(prefix + ".")
+
+
+def _belongs_to(module: str, roots: tuple[str, ...]) -> bool:
+    return any(_matches_prefix(module, root) for root in roots)
+
+
+def _public_contract_modules(payload: dict[str, object]) -> tuple[str, ...]:
+    contracts = payload["public_adapter_contracts"]
+    assert isinstance(contracts, list)
+    assert len(contracts) == len(set(str(item) for item in contracts))
+    modules: list[str] = []
+    for raw_path in contracts:
+        path = ROOT / str(raw_path)
+        assert path.is_file()
+        assert path.suffix == ".py"
+        if path.is_relative_to(CORE):
+            parts = ("market_research", *path.relative_to(CORE).with_suffix("").parts)
+        elif path.is_relative_to(WEB):
+            parts = path.relative_to(WEB).with_suffix("").parts
+        elif path.is_relative_to(OPERATIONS):
+            parts = path.relative_to(OPERATIONS).with_suffix("").parts
+        else:
+            raise AssertionError(
+                f"public contract is outside a distribution: {raw_path}"
+            )
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        module = ".".join(parts)
+        assert _DOTTED_MODULE.fullmatch(module)
+        modules.append(module)
+    assert len(modules) == len(set(modules))
+    return tuple(modules)
+
+
+def _assert_exact_allowlist(
+    *,
+    imports: list[tuple[Path, str]],
+    owned_roots: tuple[str, ...],
+    allowed_modules: tuple[str, ...],
+) -> None:
+    cross_distribution = [
+        (path, imported)
+        for path, imported in imports
+        if _belongs_to(imported, owned_roots)
+    ]
+    violations = [
+        (path.relative_to(ROOT).as_posix(), imported)
+        for path, imported in cross_distribution
+        if imported not in allowed_modules
+    ]
+    used = {
+        module
+        for module in allowed_modules
+        if any(imported == module for _, imported in cross_distribution)
+    }
+
+    assert violations == []
+    assert set(allowed_modules) - used == set()
+
+
+def test_architecture_manifest_defines_executable_import_namespaces() -> None:
+    payload = _architecture()
+    assert payload["schema_version"] == 7
+    all_roots = tuple(
+        root
+        for distribution in ("research", "web", "operations")
+        for root in _import_roots(payload, distribution)
+    )
+    assert len(all_roots) == len(set(all_roots))
+    public_modules = _public_contract_modules(payload)
+
+    target_roots_by_rule = {
+        "web_core_access_allowed_through": _import_roots(payload, "research"),
+        "operations_core_access_allowed_through": _import_roots(payload, "research"),
+        "operations_web_access_allowed_through": _import_roots(payload, "web"),
+    }
+    for rule, target_roots in target_roots_by_rule.items():
+        allowed = _dependency_rule(payload, rule)
+        assert all(_belongs_to(prefix, target_roots) for prefix in allowed)
+        assert set(allowed) <= set(public_modules)
+
+
 def test_core_never_depends_on_web_or_operations() -> None:
-    forbidden = ("django", "portal", "market_research_web", "research_operations")
+    payload = _architecture()
+    forbidden = _dependency_rule(payload, "research_distribution_forbids")
     violations = [
         (path.relative_to(ROOT).as_posix(), imported)
         for path, imported in _python_imports(CORE)
-        if imported in forbidden
-        or imported.startswith(tuple(name + "." for name in forbidden))
+        if _belongs_to(imported, forbidden)
     ]
 
     assert violations == []
 
 
 def test_web_uses_public_core_application_or_composition_contracts() -> None:
-    violations = [
-        (path.relative_to(ROOT).as_posix(), imported)
-        for path, imported in _python_imports(WEB)
-        if imported == "market_research.research"
-        or imported.startswith("market_research.research.")
-        or imported == "market_research.research_cli"
-        or imported.startswith("market_research.research_cli.")
-    ]
-
-    assert violations == []
+    payload = _architecture()
+    _assert_exact_allowlist(
+        imports=_python_imports(WEB),
+        owned_roots=_import_roots(payload, "research"),
+        allowed_modules=_dependency_rule(payload, "web_core_access_allowed_through"),
+    )
 
 
 def test_operations_uses_web_and_core_facades_only() -> None:
-    violations = [
-        (path.relative_to(ROOT).as_posix(), imported)
-        for path, imported in _python_imports(OPERATIONS)
-        if imported == "portal"
-        or imported.startswith("portal.")
-        or imported == "market_research.research"
-        or imported.startswith("market_research.research.")
-        or imported == "market_research.research_cli"
-        or imported.startswith("market_research.research_cli.")
-        or imported == "market_research.research_composition"
-        or imported.startswith("market_research.research_composition.")
-    ]
-
-    assert violations == []
+    payload = _architecture()
+    imports = _python_imports(OPERATIONS)
+    _assert_exact_allowlist(
+        imports=imports,
+        owned_roots=_import_roots(payload, "research"),
+        allowed_modules=_dependency_rule(
+            payload, "operations_core_access_allowed_through"
+        ),
+    )
+    _assert_exact_allowlist(
+        imports=imports,
+        owned_roots=_import_roots(payload, "web"),
+        allowed_modules=_dependency_rule(
+            payload, "operations_web_access_allowed_through"
+        ),
+    )
 
 
 def test_operated_capability_issuer_is_imported_only_by_operations() -> None:

@@ -21,7 +21,10 @@ from market_research.builtin_strategies.threshold_research_only import (
     THRESHOLD_RESEARCH_ONLY_SPEC,
 )
 from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
-from market_research.research.experiment_manifest import DateRange, ExecutionTimingPolicy
+from market_research.research.experiment_manifest import (
+    DateRange,
+    ExecutionTimingPolicy,
+)
 from market_research.research.feature_definition import (
     FeatureDefinition,
     FeatureDefinitionError,
@@ -80,12 +83,8 @@ def _legacy_sma_feature_values(
     previous_long = sma(index, long_window)
     short = sma(index + 1, short_window)
     long = sma(index + 1, long_window)
-    volatility_window = max(
-        1, int(parameters.get("SMA_FILTER_VOL_WINDOW") or 10)
-    )
-    window_values = closes[
-        max(0, index + 1 - volatility_window) : index + 1
-    ]
+    volatility_window = max(1, int(parameters.get("SMA_FILTER_VOL_WINDOW") or 10))
+    window_values = closes[max(0, index + 1 - volatility_window) : index + 1]
     mean = sum(window_values) / len(window_values)
     overextension_lookback = max(
         1, int(parameters.get("SMA_FILTER_OVEREXT_LOOKBACK") or 3)
@@ -101,9 +100,7 @@ def _legacy_sma_feature_values(
         "volatility_ratio": (
             (max(window_values) - min(window_values)) / mean if mean else 0.0
         ),
-        "overextended_ratio": (
-            abs((closes[index] - base) / base) if base else 0.0
-        ),
+        "overextended_ratio": (abs((closes[index] - base) / base) if base else 0.0),
     }
 
 
@@ -274,6 +271,4 @@ def test_forward_diagnostics_persists_the_consumed_feature_authority() -> None:
     assert persisted["feature_id"] == authority.feature_id
     assert persisted["version"] == authority.version
     assert persisted["definition_hash"] == authority.definition_hash
-    assert persisted["implementation_code_hash"] == (
-        authority.implementation_code_hash
-    )
+    assert persisted["implementation_code_hash"] == (authority.implementation_code_hash)

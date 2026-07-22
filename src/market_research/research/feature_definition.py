@@ -59,7 +59,9 @@ class FeatureDefinition:
         feature_id = self.feature_id.strip() or f"feature.{self.name.strip()}"
         object.__setattr__(self, "feature_id", feature_id)
         if self.schema_version != 1:
-            raise FeatureDefinitionError("feature_definition_schema_version_unsupported")
+            raise FeatureDefinitionError(
+                "feature_definition_schema_version_unsupported"
+            )
         required_text = {
             "feature_id": self.feature_id,
             "version": self.version,
@@ -73,7 +75,9 @@ class FeatureDefinition:
             "unit": self.unit,
             "leakage_risk": self.leakage_risk,
         }
-        missing = sorted(key for key, value in required_text.items() if not value.strip())
+        missing = sorted(
+            key for key, value in required_text.items() if not value.strip()
+        )
         if missing:
             raise FeatureDefinitionError(
                 "feature_definition_required_field_missing:" + ",".join(missing)
@@ -306,7 +310,9 @@ def _stable_value(value: object) -> object:
     }
 
 
-def _require_unique(values: list[str] | tuple[str, ...], field: str, owner: str) -> None:
+def _require_unique(
+    values: list[str] | tuple[str, ...], field: str, owner: str
+) -> None:
     if len(values) != len(set(values)):
         raise FeatureDefinitionError(f"feature_definition_{field}_not_unique:{owner}")
 

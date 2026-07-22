@@ -25,7 +25,9 @@ from market_research.application.adapter_contracts import (
     sha256_prefixed,
     validate_research_decision_report,
 )
-from market_research.storage_io import write_json_atomic_create_or_verify
+from market_research.application.platform_contracts import (
+    write_json_atomic_create_or_verify,
+)
 
 from .audit import record_web_audit_event
 from .models import ImportedDecisionReport

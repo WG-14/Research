@@ -31,7 +31,9 @@ def _quality(decision: QualityDecision = QualityDecision.PASS) -> QualityResult:
     return QualityResult("derivative_chain_integrity", "1", decision)
 
 
-def _snapshot(*, quality: QualityDecision = QualityDecision.PASS) -> DerivativeDatasetSnapshot:
+def _snapshot(
+    *, quality: QualityDecision = QualityDecision.PASS
+) -> DerivativeDatasetSnapshot:
     dataset_filter = FuturesDatasetFilterContract(
         contract_selection_policy_hash=_hash("0"),
         missing_data_policy_hash=_hash("6"),
@@ -100,9 +102,12 @@ def test_option_dataset_filter_requires_pit_bid_ask_and_exact_staleness() -> Non
         stale_threshold_seconds=60,
     )
 
-    assert derivative_dataset_filter_from_dict(
-        option_filter.as_dict(), InstrumentKind.OPTION
-    ) == option_filter
+    assert (
+        derivative_dataset_filter_from_dict(
+            option_filter.as_dict(), InstrumentKind.OPTION
+        )
+        == option_filter
+    )
     with pytest.raises(DerivativeResearchError, match="quote_price_source_invalid"):
         replace(option_filter, quote_price_source="MIDPOINT")
     with pytest.raises(DerivativeResearchError, match="must_be_decimal"):
@@ -155,7 +160,9 @@ def test_raw_manifest_is_immutable_versioned_and_forbids_network_collection() ->
 
     assert revised.as_dict()["supersedes_raw_dataset_id"] == manifest.raw_dataset_id
     assert manifest.as_dict()["content_hash"] == _hash("2")
-    with pytest.raises(DerivativeResearchError, match="network_collection_not_permitted"):
+    with pytest.raises(
+        DerivativeResearchError, match="network_collection_not_permitted"
+    ):
         replace(source, preparation_method="NETWORK_API_COLLECTION")
 
 
@@ -207,5 +214,13 @@ def test_dataset_spec_and_run_hashes_bind_every_reproduction_authority() -> None
     assert spec.content_hash == spec.as_dict()["content_hash"]
     assert run.content_hash == run.as_dict()["content_hash"]
     assert replace(spec, random_seed=43).content_hash != spec.content_hash
+    with pytest.raises(
+        DerivativeResearchError, match="derivative_experiment_schema_unsupported"
+    ):
+        replace(spec, schema_version=1)
+    with pytest.raises(
+        DerivativeResearchError, match="derivative_run_schema_unsupported"
+    ):
+        replace(run, schema_version=1)
     with pytest.raises(DerivativeResearchError, match="failure_code_mismatch"):
         replace(run, status="FAILED")

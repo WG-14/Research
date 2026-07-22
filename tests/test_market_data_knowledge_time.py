@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from market_research.orderbook_depth_store import (
+    OrderbookDepthSnapshot,
     build_orderbook_depth_snapshot,
     load_orderbook_depth_snapshot_after_or_equal,
     summarize_orderbook_depth_evidence,
-    upsert_orderbook_depth_snapshot,
 )
 from market_research.research.causal_market_view import CausalMarketView
 from market_research.research.dataset_snapshot import (
@@ -38,6 +38,35 @@ from market_research.research.simulation_engine import run_common_simulation_bac
 from market_research.research_composition import resolve_builtin_strategy
 from market_research.orderbook_top_store import build_orderbook_top_snapshot
 from tests.test_common_simulation_engine import _dataset
+
+
+def _insert_orderbook_depth_fixture(
+    connection: sqlite3.Connection, snapshot: OrderbookDepthSnapshot
+) -> None:
+    connection.executemany(
+        """
+        INSERT INTO orderbook_depth_levels(
+            ts, pair, side, level_index, price, size,
+            cumulative_size, cumulative_notional, source, observed_at_epoch_sec
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                level.ts,
+                level.pair,
+                level.side,
+                level.level_index,
+                level.price,
+                level.size,
+                level.cumulative_size,
+                level.cumulative_notional,
+                level.source,
+                level.observed_at_epoch_sec,
+            )
+            for level in snapshot.all_levels()
+        ),
+    )
 
 
 def test_quote_event_time_cannot_bypass_later_observation_time() -> None:
@@ -411,7 +440,7 @@ def test_sql_depth_selector_matches_ceil_knowledge_time_boundary() -> None:
         source="fractional",
         observed_at_epoch_sec=60.0010000001,
     )
-    upsert_orderbook_depth_snapshot(connection, snapshot)
+    _insert_orderbook_depth_fixture(connection, snapshot)
 
     assert snapshot.available_at_ms() == 60_002
     assert (
@@ -617,7 +646,7 @@ def test_depth_observation_coverage_has_sql_materialized_snapshot_parity() -> No
         source="fixture",
         observed_at_epoch_sec=60.0,
     )
-    upsert_orderbook_depth_snapshot(connection, depth)
+    _insert_orderbook_depth_fixture(connection, depth)
     sql = summarize_orderbook_depth_evidence(connection, pair="KRW-BTC")
     materialized = _orderbook_depth_summary_from_snapshot(
         snapshot=replace(_dataset(), orderbook_depth_snapshots=(depth,))

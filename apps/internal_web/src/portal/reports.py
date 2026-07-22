@@ -25,7 +25,7 @@ from market_research.application.contracts import (
     ReportComparisonResult,
 )
 from market_research.application.service import ResearchApplicationService
-from market_research.paths import ResearchPathError
+from market_research.application.platform_contracts import ResearchPathError
 from market_research.application.adapter_contracts import (
     content_hash_payload,
     sha256_prefixed,

@@ -11,7 +11,10 @@ from django.contrib.auth.models import Group
 from django.db import IntegrityError, transaction
 
 from market_research.application import GovernanceSubjectRef
-from market_research.paths import ResearchPathManager
+from market_research.application.platform_contracts import (
+    ResearchPathManager,
+    ResearchSettings,
+)
 from market_research.research.governance import (
     GovernanceError,
     GovernanceSubject,
@@ -20,7 +23,6 @@ from market_research.research.governance import (
     governance_registry_path,
     load_governance_rows,
 )
-from market_research.settings import ResearchSettings
 import portal.governance as governance_module
 from portal.governance import (
     approve_job_candidate,

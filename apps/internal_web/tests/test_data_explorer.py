@@ -9,7 +9,10 @@ import pytest
 from django.test import Client
 from django.urls import reverse
 
-from market_research.paths import ResearchPathManager
+from market_research.application.platform_contracts import (
+    ResearchPathManager,
+    ResearchSettings,
+)
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.datasets.source_catalog import build_source_catalog
 from market_research.research.datasets.source_provenance import (
@@ -20,7 +23,6 @@ from market_research.research.exploration_queries import (
     ExplorationRecord,
     ResearchExplorationQueryError,
 )
-from market_research.settings import ResearchSettings
 from portal.api_contract import (
     ApiErrorEnvelope,
     ResearchListResponse,
@@ -46,9 +48,7 @@ def _source_provenance() -> DatasetSourceProvenance:
                 "data_kinds": ["ohlcv"],
                 "frequencies": ["1m"],
                 "source_kinds": ["file_export"],
-                "point_in_time_policy": (
-                    "event_available_received_processed_times"
-                ),
+                "point_in_time_policy": ("event_available_received_processed_times"),
                 "revision_policy": "append_new_release_preserve_prior",
                 "license_id": "web-test-license-v1",
                 "research_use_terms": "offline reproducible research only",
@@ -171,7 +171,7 @@ class FakeDataExplorer:
                         "observation_time_basis": "candle_event_timestamp",
                         "knowledge_time_basis": (
                             "externally_recorded_source_received_at"
-                        )
+                        ),
                     },
                     "quality": {
                         "verified_dense_grid": {
@@ -362,9 +362,7 @@ def test_dataset_detail_is_verified_path_free_and_read_only(
     assert resource.technical["snapshot"]["verification"]["overall_status"] == (
         "VERIFIED"
     )
-    assert resource.technical["raw_cleaned_comparison"][
-        "raw_values_exposed"
-    ] is False
+    assert resource.technical["raw_cleaned_comparison"]["raw_values_exposed"] is False
     assert "artifact_path" not in resource.technical
     assert resource.technical["api_secret"] == "<redacted>"
     assert "/private/datasets" not in body

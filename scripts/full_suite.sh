@@ -13,6 +13,19 @@ WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/market-research-codex-pytest}
 LOG_DIR="${CODEX_PYTEST_LOG_DIR:-${WORK_DIR}/logs}"
 ITERATION="${CODEX_PYTEST_ITERATION:-manual}"
 
+# Full-suite receipts must use the same deterministic runtime contract as the
+# supported platform launcher.  In particular, an unset or random hash seed
+# makes otherwise valid reproduction receipts fail closed after a long run.
+: "${PYTHONHASHSEED:=0}"
+: "${OMP_NUM_THREADS:=1}"
+: "${OPENBLAS_NUM_THREADS:=1}"
+: "${MKL_NUM_THREADS:=1}"
+: "${NUMEXPR_NUM_THREADS:=1}"
+: "${BLIS_NUM_THREADS:=1}"
+: "${VECLIB_MAXIMUM_THREADS:=1}"
+export PYTHONHASHSEED OMP_NUM_THREADS OPENBLAS_NUM_THREADS MKL_NUM_THREADS
+export NUMEXPR_NUM_THREADS BLIS_NUM_THREADS VECLIB_MAXIMUM_THREADS
+
 mkdir -p "${WORK_DIR}" "${LOG_DIR}"
 WORK_DIR="$(cd -- "${WORK_DIR}" && pwd -P)"
 LOG_DIR="$(cd -- "${LOG_DIR}" && pwd -P)"

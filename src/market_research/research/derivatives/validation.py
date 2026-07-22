@@ -44,9 +44,7 @@ class HoldoutAccessEvent:
         parse_timestamp(self.accessed_at, "holdout_access.accessed_at")
         if not self.reason.strip():
             raise DerivativeResearchError("holdout_access_reason_required")
-        require_hash(
-            self.preregistration_hash, "holdout_access.preregistration_hash"
-        )
+        require_hash(self.preregistration_hash, "holdout_access.preregistration_hash")
         require_hash(
             self.selected_parameter_hash,
             "holdout_access.selected_parameter_hash",
@@ -168,9 +166,7 @@ class PostHocFinding:
         if not self.statement.strip():
             raise DerivativeResearchError("post_hoc_statement_required")
         require_hash(self.source_run_hash, "post_hoc.source_run_hash")
-        require_hash(
-            self.branched_hypothesis_hash, "post_hoc.branched_hypothesis_hash"
-        )
+        require_hash(self.branched_hypothesis_hash, "post_hoc.branched_hypothesis_hash")
         if self.source_run_hash == self.branched_hypothesis_hash:
             raise DerivativeResearchError("post_hoc_branch_must_be_new_hypothesis")
 
@@ -199,10 +195,7 @@ class FullScopeValidationDecision:
             self.sample_evidence_hash,
         ):
             require_hash(value, "validation_decision.evidence_hash")
-        if (
-            self.holdout_access.selected_parameter_hash
-            != self.selected_parameter_hash
-        ):
+        if self.holdout_access.selected_parameter_hash != self.selected_parameter_hash:
             raise DerivativeResearchError("holdout_parameter_selection_drift")
         if not self.robustness_results:
             raise DerivativeResearchError("validation_robustness_results_required")
@@ -311,7 +304,9 @@ def bootstrap_statistical_evidence(
     )
 
 
-def concentration(values: tuple[tuple[str, float], ...]) -> tuple[tuple[str, float], ...]:
+def concentration(
+    values: tuple[tuple[str, float], ...],
+) -> tuple[tuple[str, float], ...]:
     if not values:
         raise DerivativeResearchError("concentration_values_required")
     totals: dict[str, float] = {}
@@ -337,7 +332,9 @@ def sample_set_hash(samples: tuple[SampleEvidence, ...]) -> str:
     )
 
 
-def annualized_information_ratio(values: tuple[float, ...], periods: int) -> float | None:
+def annualized_information_ratio(
+    values: tuple[float, ...], periods: int
+) -> float | None:
     if periods <= 0:
         raise DerivativeResearchError("annualization_periods_invalid")
     if len(values) < 2:
@@ -348,9 +345,7 @@ def annualized_information_ratio(values: tuple[float, ...], periods: int) -> flo
     return fmean(values) / dispersion * math.sqrt(periods)
 
 
-def _validate_concentration(
-    values: tuple[tuple[str, float], ...], label: str
-) -> None:
+def _validate_concentration(values: tuple[tuple[str, float], ...], label: str) -> None:
     if not values:
         raise DerivativeResearchError(f"validation_{label}_concentration_required")
     keys = [key for key, _value in values]
@@ -359,9 +354,7 @@ def _validate_concentration(
     for key, value in values:
         require_stable_id(key, f"validation.{label}_id")
         if not math.isfinite(value) or value < 0 or value > 1:
-            raise DerivativeResearchError(
-                f"validation_{label}_concentration_invalid"
-            )
+            raise DerivativeResearchError(f"validation_{label}_concentration_invalid")
     total = sum(value for _key, value in values)
     if not math.isclose(total, 1.0, abs_tol=1e-9) and not math.isclose(
         total, 0.0, abs_tol=1e-9

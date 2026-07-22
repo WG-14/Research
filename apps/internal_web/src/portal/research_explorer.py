@@ -27,7 +27,7 @@ from market_research.application.exploration import (
     query_validation_decision_detail,
     safe_research_projection,
 )
-from market_research.paths import ResearchPathManager
+from market_research.application.platform_contracts import ResearchPathManager
 from market_research.research_composition import builtin_strategy_registry
 
 from .audit import append_web_audit_event

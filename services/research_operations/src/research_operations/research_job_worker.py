@@ -19,12 +19,12 @@ from typing import Any
 
 import psycopg
 from django.db import OperationalError as DjangoOperationalError
+from market_research.application.platform_contracts import write_json_atomic
 from market_research.application.process_sandbox import (
     IsolatedProcessError,
     IsolatedProcessPolicy,
     run_isolated_command,
 )
-from market_research.storage_io import write_json_atomic
 
 from .admission import (
     ACTIVE,

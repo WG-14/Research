@@ -24,7 +24,7 @@ from market_research.application.adapter_contracts import (
     sha256_prefixed,
 )
 from market_research.research_composition import builtin_strategy_registry
-from market_research.storage_io import write_json_atomic
+from market_research.application.platform_contracts import write_json_atomic
 
 from .admission import validate_raw_manifest_admission
 from .jobs import (
@@ -309,9 +309,7 @@ class ResearchJobDispatcher:
             if not isinstance(result_path, str) or not isinstance(result_hash, str):
                 raise PublicJobError("SANDBOX_RESULT_CONTRACT_INVALID")
             resolved = Path(result_path).resolve()
-            if not settings.RESEARCH_PATHS.is_within(
-                resolved, sandbox_root.resolve()
-            ):
+            if not settings.RESEARCH_PATHS.is_within(resolved, sandbox_root.resolve()):
                 raise PublicJobError("SANDBOX_RESULT_PATH_INVALID")
             return JobExecutionResult(
                 result_ref=make_artifact_ref("artifact", resolved),

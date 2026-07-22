@@ -174,9 +174,7 @@ class ValidationDecision:
         if self.decision == "REJECTED" and all(
             item.passed for item in self.criterion_results
         ):
-            raise ValidationDecisionError(
-                "rejected_decision_requires_failed_criterion"
-            )
+            raise ValidationDecisionError("rejected_decision_requires_failed_criterion")
         _require_hashes(self.evidence_hashes, "validation_decision.evidence_hashes")
         _require_text(
             self.researcher_interpretation,
@@ -188,9 +186,7 @@ class ValidationDecision:
         if self.failure_type is not None:
             _require_id(self.failure_type, "validation_decision.failure_type")
         if self.decision == "REJECTED" and self.failure_type is None:
-            raise ValidationDecisionError(
-                "rejected_decision_failure_type_required"
-            )
+            raise ValidationDecisionError("rejected_decision_failure_type_required")
         if self.decision_id.startswith("validation-result:"):
             if self.terminal_report_ref is None:
                 raise ValidationDecisionError(
@@ -204,12 +200,16 @@ class ValidationDecision:
                 raise ValidationDecisionError(
                     "validation_result_terminal_report_ref_mismatch"
                 )
-        _require_unique_text(self.learned, "validation_decision.learned", required=False)
+        _require_unique_text(
+            self.learned, "validation_decision.learned", required=False
+        )
         followup_ids = [
             (item.record_type, item.logical_id, item.version)
             for item in self.followup_hypothesis_refs
         ]
-        if any(item.record_type != "hypothesis" for item in self.followup_hypothesis_refs):
+        if any(
+            item.record_type != "hypothesis" for item in self.followup_hypothesis_refs
+        ):
             raise ValidationDecisionError(
                 "validation_decision_followup_reference_invalid"
             )
@@ -487,9 +487,7 @@ def preserve_validation_result(
         learned=(
             ("Review the failed criteria before registering a follow-up hypothesis.",)
             if rejected
-            else (
-                "Collect the preregistered minimum evidence before a new decision.",
-            )
+            else ("Collect the preregistered minimum evidence before a new decision.",)
             if inconclusive
             else ()
         ),
@@ -582,8 +580,7 @@ def validate_validation_decision_registry(
                 raise ValidationDecisionError("identity_duplicate")
             identities.add(identity)
             if (
-                row.get("event_id")
-                != f"decision:{parsed.decision_id}:{parsed.version}"
+                row.get("event_id") != f"decision:{parsed.decision_id}:{parsed.version}"
                 or row.get("record_type") != "VALIDATION_DECISION"
                 or row.get("logical_id") != parsed.decision_id
                 or row.get("version") != parsed.version
@@ -603,9 +600,7 @@ def validate_validation_decision_registry(
                     report_ref=parsed.terminal_report_ref,
                 )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            reasons.append(
-                f"validation_decision_semantic_invalid:{index}:{exc}"
-            )
+            reasons.append(f"validation_decision_semantic_invalid:{index}:{exc}")
     return {
         "status": "PASS" if not reasons else "FAIL",
         "reasons": sorted(set(reasons)),
@@ -650,8 +645,7 @@ def _validate_terminal_report(
     admission_reasons = validation_admission_binding_reasons(report, manager=manager)
     if admission_reasons:
         raise ValidationDecisionError(
-            "validation_result_admission_binding_invalid:"
-            + ",".join(admission_reasons)
+            "validation_result_admission_binding_invalid:" + ",".join(admission_reasons)
         )
     terminal_result = str(report.get("end_to_end_validation_result") or "")
     if terminal_result == "PASS":
@@ -737,13 +731,13 @@ def _validate_terminal_report_ref(
         raise ValidationDecisionError("terminal_report_ref_unreadable") from exc
     if not isinstance(payload, dict):
         raise ValidationDecisionError("terminal_report_ref_payload_invalid")
-    if sha256_prefixed(
-        payload, label=_TERMINAL_REPORT_SNAPSHOT_HASH_LABEL
-    ) != report_ref.snapshot_hash:
+    if (
+        sha256_prefixed(payload, label=_TERMINAL_REPORT_SNAPSHOT_HASH_LABEL)
+        != report_ref.snapshot_hash
+    ):
         raise ValidationDecisionError("terminal_report_ref_snapshot_hash_mismatch")
     if (
-        sha256_prefixed(report_content_hash_payload(payload))
-        != report_ref.content_hash
+        sha256_prefixed(report_content_hash_payload(payload)) != report_ref.content_hash
         or payload.get("content_hash") != report_ref.content_hash
         or payload.get("experiment_id") != decision.experiment_id
         or payload.get("run_id") != decision.run_id
@@ -881,7 +875,10 @@ def _existing_subject_decision(
 
 
 def _require_outcome_binding(
-    *, manager: ResearchPathManager, row: Mapping[str, Any], decision: ValidationDecision
+    *,
+    manager: ResearchPathManager,
+    row: Mapping[str, Any],
+    decision: ValidationDecision,
 ) -> None:
     outcome = get_knowledge_record(
         manager=manager,
@@ -964,7 +961,9 @@ def _require_text(value: str, label: str) -> None:
 def _require_hashes(values: tuple[str, ...], label: str) -> None:
     if not values or len(values) != len(set(values)):
         raise ValidationDecisionError(f"{label}_required_or_duplicate")
-    if any(not isinstance(value, str) or not _SHA256.fullmatch(value) for value in values):
+    if any(
+        not isinstance(value, str) or not _SHA256.fullmatch(value) for value in values
+    ):
         raise ValidationDecisionError(f"{label}_invalid")
 
 

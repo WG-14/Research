@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
@@ -44,7 +45,6 @@ from .monitoring import (
     MonitoringArtifactRef,
     MonitoringOutcome,
     MonitoringProductKind,
-    PROSPECTIVE_MONITORING_SCHEMA_VERSION,
     ProspectiveMonitoringArtifact,
 )
 from .risk_metrics import (
@@ -65,6 +65,8 @@ _SIMULATION_SUPPORT_AUTHORITY = "derivative_simulation"
 _MONITORING_SUPPORT_AUTHORITY = "derivative_prospective_monitoring"
 _RISK_SUPPORT_AUTHORITY = "derivative_risk_evidence"
 _KNOWLEDGE_ARCHIVE_SUPPORT_AUTHORITY = "derivative_knowledge_archive"
+_OPTION_IV_MODEL_SUPPORT_AUTHORITY = "iv_model_registry"
+_OPTION_GREEKS_MODEL_SUPPORT_AUTHORITY = "greeks_model_registry"
 
 
 class DerivativeEvidenceError(DerivativeResearchError):
@@ -1542,6 +1544,7 @@ _FORBIDDEN_PACKAGE_KEYS = frozenset(
         "approved",
         "approval_status",
         "live_approval",
+        "live_account",
         "approved_for_live",
         "account",
         "account_id",
@@ -1552,8 +1555,35 @@ _FORBIDDEN_PACKAGE_KEYS = frozenset(
         "capital",
         "capital_allocation",
         "order_route",
+        "order_router",
         "order_submission",
         "broker_api_key",
+        "exchange_api_key",
+        "exchange_api_secret",
+        "private_exchange",
+        "private_exchange_api",
+        "network_market_data",
+        "network_market_data_collection",
+        "market_data_collection",
+    }
+)
+
+_FORBIDDEN_REPRODUCTION_TERMS = frozenset(
+    {
+        "account",
+        "broker",
+        "brokerage",
+        "capital",
+        "deploy",
+        "deployment",
+        "live",
+        "market_data_collection",
+        "network_market_data",
+        "order_route",
+        "order_router",
+        "order_submission",
+        "private_exchange",
+        "submit_order",
     }
 )
 
@@ -1972,6 +2002,11 @@ class DerivativeEvidenceRegistry:
             raise DerivativeEvidenceError(
                 "derivative_supporting_evidence_unbound:" + ",".join(extra)
             )
+        _validate_option_valuation_model_support(
+            package=package,
+            experiment_spec=experiment_spec,
+            supporting_evidence=supporting_evidence,
+        )
         _validate_product_chain_support(
             package,
             dataset,
@@ -2199,6 +2234,11 @@ class DerivativeEvidenceRegistry:
             raise DerivativeEvidenceError(
                 "derivative_replay_supporting_evidence_set_mismatch"
             )
+        _validate_option_valuation_model_support(
+            package=package,
+            experiment_spec=experiment_spec,
+            supporting_evidence=supporting_evidence,
+        )
         _validate_product_chain_support(
             package,
             dataset,
@@ -2300,6 +2340,21 @@ class DerivativeEvidenceRegistry:
         model = DerivativeModelRefs.from_dict(self.resolve_ref(package.models.ref()))
         if model != package.models:
             raise DerivativeEvidenceError("package_model_bundle_resolution_mismatch")
+        option_model_refs = tuple(
+            ref
+            for ref in (
+                package.models.implied_volatility_ref,
+                package.models.greeks_ref,
+            )
+            if ref is not None
+        )
+        _validate_option_valuation_model_support(
+            package=package,
+            experiment_spec=experiment_spec,
+            supporting_evidence={
+                ref: self.resolve_ref(ref) for ref in option_model_refs
+            },
+        )
         _validate_product_chain_support(
             package,
             dataset,
@@ -2902,7 +2957,19 @@ def _validate_simulation_support(
         raise DerivativeEvidenceError("simulation_result_dataset_mismatch")
     if simulation.experiment_spec_hash != experiment_spec.content_hash:
         raise DerivativeEvidenceError("simulation_result_experiment_mismatch")
-    if simulation.execution_model_hash != experiment_spec.simulation_policy_hash:
+    expected_execution_model_hash = experiment_spec.simulation_policy_hash
+    if package.product_kind in {
+        DerivativeProductKind.OPTION,
+        DerivativeProductKind.MULTI_LEG,
+    }:
+        expected_execution_model_hash = sha256_prefixed(
+            {
+                "execution_policy_hash": experiment_spec.simulation_policy_hash,
+                "valuation_model_hash": experiment_spec.valuation_model_hash,
+            },
+            label="option_simulation_model",
+        )
+    if simulation.execution_model_hash != expected_execution_model_hash:
         raise DerivativeEvidenceError("simulation_result_execution_model_mismatch")
     if len(package.inputs.chain_snapshot_refs) != 1:
         raise DerivativeEvidenceError("simulation_result_requires_one_product_chain")
@@ -2914,6 +2981,91 @@ def _validate_simulation_support(
     if simulation.product_chain_hash != chain.source_chain_hash:
         raise DerivativeEvidenceError("simulation_result_product_chain_mismatch")
     return simulation
+
+
+def _option_valuation_model_hash_from_support(
+    ref: EvidenceRef, payload: Mapping[str, object]
+) -> str:
+    expected_role = {
+        _OPTION_IV_MODEL_SUPPORT_AUTHORITY: "IMPLIED_VOLATILITY",
+        _OPTION_GREEKS_MODEL_SUPPORT_AUTHORITY: "GREEKS",
+    }.get(ref.authority)
+    if expected_role is None:
+        raise DerivativeEvidenceError("option_valuation_model_authority_invalid")
+    _require_exact_fields(
+        payload,
+        {
+            "schema_version",
+            "artifact_type",
+            "role",
+            "valuation_model",
+            "valuation_model_hash",
+        },
+        f"supporting_evidence.{ref.authority}",
+    )
+    if payload.get("schema_version") != DERIVATIVE_EVIDENCE_SCHEMA_VERSION:
+        raise DerivativeEvidenceError("option_valuation_model_schema_unsupported")
+    if payload.get("artifact_type") != "derivative_option_valuation_model_authority":
+        raise DerivativeEvidenceError("option_valuation_model_artifact_type_invalid")
+    if payload.get("role") != expected_role:
+        raise DerivativeEvidenceError("option_valuation_model_role_mismatch")
+    model = _mapping(
+        payload.get("valuation_model"),
+        f"supporting_evidence.{ref.authority}.valuation_model",
+    )
+    _require_exact_fields(
+        model,
+        {
+            "model_version",
+            "minimum_volatility",
+            "maximum_volatility",
+            "price_tolerance",
+            "maximum_iterations",
+            "content_hash",
+        },
+        f"supporting_evidence.{ref.authority}.valuation_model",
+    )
+    model_identity = {
+        key: value for key, value in model.items() if key != "content_hash"
+    }
+    observed_model_hash = sha256_prefixed(
+        model_identity, label="option_valuation_model"
+    )
+    if model.get("content_hash") != observed_model_hash:
+        raise DerivativeEvidenceError("option_valuation_model_domain_hash_mismatch")
+    if payload.get("valuation_model_hash") != observed_model_hash:
+        raise DerivativeEvidenceError("option_valuation_model_payload_hash_mismatch")
+    return observed_model_hash
+
+
+def _validate_option_valuation_model_support(
+    *,
+    package: DerivativeResearchPackageManifest,
+    experiment_spec: DerivativeExperimentSpec,
+    supporting_evidence: Mapping[EvidenceRef, Mapping[str, object]],
+) -> None:
+    if package.product_kind is DerivativeProductKind.FUTURE:
+        return
+    expected_hash = experiment_spec.valuation_model_hash
+    if expected_hash is None:
+        raise DerivativeEvidenceError("option_experiment_valuation_model_hash_required")
+    refs = (
+        package.models.implied_volatility_ref,
+        package.models.greeks_ref,
+    )
+    if any(ref is None for ref in refs):
+        raise DerivativeEvidenceError("option_valuation_model_refs_required")
+    observed_hashes: set[str] = set()
+    for ref in refs:
+        assert ref is not None
+        payload = supporting_evidence.get(ref)
+        if payload is None:
+            raise DerivativeEvidenceError(
+                f"option_valuation_model_support_missing:{ref.authority}"
+            )
+        observed_hashes.add(_option_valuation_model_hash_from_support(ref, payload))
+    if observed_hashes != {expected_hash}:
+        raise DerivativeEvidenceError("option_valuation_model_spec_binding_mismatch")
 
 
 def _supporting_payload_hash(ref: EvidenceRef, payload: Mapping[str, object]) -> str:
@@ -2960,11 +3112,18 @@ def _supporting_payload_hash(ref: EvidenceRef, payload: Mapping[str, object]) ->
             raise DerivativeEvidenceError(
                 "prospective_monitoring_support_identity_mismatch"
             )
-        if ref.version != str(PROSPECTIVE_MONITORING_SCHEMA_VERSION):
+        if ref.version != str(DERIVATIVE_EVIDENCE_SCHEMA_VERSION):
             raise DerivativeEvidenceError(
                 "prospective_monitoring_support_version_mismatch"
             )
         return monitoring_artifact.content_hash
+
+    if ref.authority in {
+        _OPTION_IV_MODEL_SUPPORT_AUTHORITY,
+        _OPTION_GREEKS_MODEL_SUPPORT_AUTHORITY,
+    }:
+        _option_valuation_model_hash_from_support(ref, payload)
+        return sha256_prefixed(payload, label="derivative_supporting_evidence")
 
     domains: dict[str, tuple[str, set[str]]] = {
         "derivative_futures_cost_model": (
@@ -3422,11 +3581,15 @@ def _experiment_spec_from_dict(value: object) -> DerivativeExperimentSpec:
         "code_version",
         "environment_hash",
         "dirty_worktree",
+        "valuation_model_hash",
         "content_hash",
     }
     _require_exact_fields(payload, expected, "experiment_spec")
     if not isinstance(payload["dirty_worktree"], bool):
         raise DerivativeEvidenceError("experiment_spec_dirty_worktree_boolean_required")
+    valuation_model_hash = payload["valuation_model_hash"]
+    if valuation_model_hash is not None and not isinstance(valuation_model_hash, str):
+        raise DerivativeEvidenceError("experiment_spec_valuation_model_hash_invalid")
     item = DerivativeExperimentSpec(
         schema_version=_integer(
             payload["schema_version"], "experiment_spec.schema_version"
@@ -3474,6 +3637,14 @@ def _experiment_spec_from_dict(value: object) -> DerivativeExperimentSpec:
             payload["environment_hash"], "experiment_spec.environment_hash"
         ),
         dirty_worktree=payload["dirty_worktree"],
+        valuation_model_hash=(
+            None
+            if valuation_model_hash is None
+            else _text(
+                valuation_model_hash,
+                "experiment_spec.valuation_model_hash",
+            )
+        ),
     )
     _require_serialized_hash(payload, item.content_hash, "experiment_spec")
     return item
@@ -3492,6 +3663,7 @@ def _experiment_run_from_dict(value: object) -> DerivativeExperimentRun:
         "event_stream_hash",
         "result_artifact_hash",
         "failure_code",
+        "observation_dataset_snapshot_hashes",
         "content_hash",
     }
     _require_exact_fields(payload, expected, "experiment_run")
@@ -3519,6 +3691,10 @@ def _experiment_run_from_dict(value: object) -> DerivativeExperimentRun:
             payload["result_artifact_hash"], "experiment_run.result_artifact_hash"
         ),
         failure_code=failure,
+        observation_dataset_snapshot_hashes=_texts(
+            payload["observation_dataset_snapshot_hashes"],
+            "experiment_run.observation_dataset_snapshot_hashes",
+        ),
     )
     _require_serialized_hash(payload, item.content_hash, "experiment_run")
     return item
@@ -3538,18 +3714,18 @@ def _validate_reproduction_command(command: tuple[str, ...]) -> None:
     _require_text_tuple(command, "package.reproduction_command")
     if len(command) < 2:
         raise DerivativeEvidenceError("package_reproduction_command_incomplete")
-    joined = " ".join(command).lower()
-    forbidden = ("live", "account", "deploy", "capital", "submit-order", "broker")
-    if any(token in joined for token in forbidden):
+    joined = _normalize_boundary_token("_".join(command))
+    padded = f"_{joined}_"
+    if any(f"_{token}_" in padded for token in _FORBIDDEN_REPRODUCTION_TERMS):
         raise DerivativeEvidenceError("package_reproduction_command_not_research_only")
-    if "derivative-replay" not in joined and "derivatives.evidence" not in joined:
+    if "_derivative_replay_" not in padded and "_derivatives_evidence_" not in padded:
         raise DerivativeEvidenceError("package_reproduction_command_wrong_entrypoint")
 
 
 def _reject_forbidden_package_fields(value: object, path: str = "package") -> None:
     if isinstance(value, Mapping):
         for raw_key, child in value.items():
-            key = str(raw_key).strip().lower()
+            key = _normalize_boundary_token(raw_key)
             if key in _FORBIDDEN_PACKAGE_KEYS:
                 raise DerivativeEvidenceError(
                     f"derivative_package_live_field_forbidden:{path}.{key}"
@@ -3558,6 +3734,13 @@ def _reject_forbidden_package_fields(value: object, path: str = "package") -> No
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
             _reject_forbidden_package_fields(child, f"{path}[{index}]")
+
+
+def _normalize_boundary_token(value: object) -> str:
+    raw = str(value).strip()
+    acronym_split = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", raw)
+    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", acronym_split)
+    return re.sub(r"[^A-Za-z0-9]+", "_", camel_split).strip("_").lower()
 
 
 def _reject_duplicate_json_pairs(

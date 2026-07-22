@@ -266,17 +266,13 @@ class FuturesContract:
             self.settlement_type is SettlementType.PHYSICAL_SETTLED
             and first_notice is None
         ):
-            raise DerivativeResearchError(
-                "physical_futures_first_notice_date_required"
-            )
+            raise DerivativeResearchError("physical_futures_first_notice_date_required")
         multiplier = _as_decimal(
             self.contract_multiplier,
             "futures_contract.contract_multiplier",
             positive=True,
         )
-        tick = _as_decimal(
-            self.tick_size, "futures_contract.tick_size", positive=True
-        )
+        tick = _as_decimal(self.tick_size, "futures_contract.tick_size", positive=True)
         object.__setattr__(self, "contract_multiplier", multiplier)
         object.__setattr__(self, "tick_size", tick)
         effective = parse_timestamp(
@@ -314,12 +310,9 @@ class FuturesContract:
 
     def tradable_at(self, as_of: str) -> bool:
         instant = parse_timestamp(as_of, "futures_contract.as_of")
-        return (
-            self.availability.known_at(as_of)
-            and _require_date(self.first_trade_date, "first_trade")
-            <= instant.date()
-            <= _require_date(self.last_trade_date, "last_trade")
-        )
+        return self.availability.known_at(as_of) and _require_date(
+            self.first_trade_date, "first_trade"
+        ) <= instant.date() <= _require_date(self.last_trade_date, "last_trade")
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,10 +343,14 @@ class RollPolicy:
             raise DerivativeResearchError("roll_policy_consecutive_invalid")
         if self.days_before_last_trade is not None and self.days_before_last_trade < 0:
             raise DerivativeResearchError("roll_policy_days_before_invalid")
-        if self.trigger in {
-            RollTrigger.DAYS_BEFORE_LAST_TRADE,
-            RollTrigger.COMPOSITE,
-        } and self.days_before_last_trade is None:
+        if (
+            self.trigger
+            in {
+                RollTrigger.DAYS_BEFORE_LAST_TRADE,
+                RollTrigger.COMPOSITE,
+            }
+            and self.days_before_last_trade is None
+        ):
             raise DerivativeResearchError("roll_policy_days_before_required")
         if self.trigger is RollTrigger.FIXED_CALENDAR and not self.fixed_roll_dates:
             raise DerivativeResearchError("roll_policy_fixed_dates_required")
@@ -421,9 +418,7 @@ class ContinuousFuturesPolicy:
                     "unadjusted_continuous_direction_must_be_none"
                 )
         elif self.adjustment_direction is AdjustmentDirection.NONE:
-            raise DerivativeResearchError(
-                "adjusted_continuous_direction_required"
-            )
+            raise DerivativeResearchError("adjusted_continuous_direction_required")
         object.__setattr__(
             self,
             "content_hash",
@@ -485,9 +480,7 @@ class SettlementPolicy:
             "settlement_price_field": self.settlement_price_field,
             "daily_mark_to_market": self.daily_mark_to_market,
             "realize_variation_margin_daily": self.realize_variation_margin_daily,
-            "collateral_annual_rate": _decimal_payload(
-                self.collateral_annual_rate
-            ),
+            "collateral_annual_rate": _decimal_payload(self.collateral_annual_rate),
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -637,12 +630,8 @@ class FuturesCostPolicy:
             "schema_version": self.schema_version,
             "policy_id": self.policy_id,
             "policy_version": self.policy_version,
-            "commission_per_contract": _decimal_payload(
-                self.commission_per_contract
-            ),
-            "execution_slippage_ticks": _decimal_payload(
-                self.execution_slippage_ticks
-            ),
+            "commission_per_contract": _decimal_payload(self.commission_per_contract),
+            "execution_slippage_ticks": _decimal_payload(self.execution_slippage_ticks),
             "roll_slippage_ticks": _decimal_payload(self.roll_slippage_ticks),
             "spread_legging_ticks": _decimal_payload(self.spread_legging_ticks),
         }
@@ -762,9 +751,12 @@ class ContractQuote:
                     name,
                     _as_decimal(raw, f"contract_quote.{name}", positive=True),
                 )
-        if not self.low_price <= min(
-            self.open_price, self.close_price, self.settlement_price
-        ) <= max(self.open_price, self.close_price, self.settlement_price) <= self.high_price:
+        if (
+            not self.low_price
+            <= min(self.open_price, self.close_price, self.settlement_price)
+            <= max(self.open_price, self.close_price, self.settlement_price)
+            <= self.high_price
+        ):
             raise DerivativeResearchError("contract_quote_ohlc_range_invalid")
         if (
             self.bid_price is not None
@@ -827,11 +819,11 @@ class ContractQuote:
         return {**self.identity_payload(), "content_hash": self.content_hash}
 
     def known_at(self, as_of: str) -> bool:
-        return (
-            parse_timestamp(self.observed_at, "contract_quote.observed_at")
-            <= parse_timestamp(as_of, "contract_quote.as_of")
-            and self.availability.known_at(as_of)
-        )
+        return parse_timestamp(
+            self.observed_at, "contract_quote.observed_at"
+        ) <= parse_timestamp(
+            as_of, "contract_quote.as_of"
+        ) and self.availability.known_at(as_of)
 
     def require_executable(self, side: OrderSide) -> None:
         if self.market_state is MarketState.HALTED:
@@ -866,7 +858,9 @@ class ContractChainSnapshot:
         ):
             raise DerivativeResearchError("contract_chain_event_time_mismatch")
         if not self.contracts or not self.quotes:
-            raise DerivativeResearchError("contract_chain_contracts_and_quotes_required")
+            raise DerivativeResearchError(
+                "contract_chain_contracts_and_quotes_required"
+            )
         contract_ids = [item.contract_id for item in self.contracts]
         if len(contract_ids) != len(set(contract_ids)):
             raise DerivativeResearchError("contract_chain_contract_duplicate")
@@ -878,20 +872,32 @@ class ContractChainSnapshot:
         ]
         if len(quote_keys) != len(set(quote_keys)):
             raise DerivativeResearchError("contract_chain_quote_duplicate")
-        for quote in self.quotes:
-            if quote.contract_id not in contract_ids or quote.root_id != self.root_id:
-                raise DerivativeResearchError("contract_chain_quote_orphan")
-            if parse_timestamp(quote.observed_at, "contract_quote.observed_at") > observed:
-                raise DerivativeResearchError("contract_chain_quote_from_future")
-        for event in self.lifecycle_events:
-            if event.contract_id not in contract_ids:
-                raise DerivativeResearchError("contract_chain_lifecycle_orphan")
         if not self.source_manifest_hashes:
             raise DerivativeResearchError("contract_chain_source_manifest_required")
         if len(self.source_manifest_hashes) != len(set(self.source_manifest_hashes)):
             raise DerivativeResearchError("contract_chain_source_manifest_duplicate")
         for source_hash in self.source_manifest_hashes:
             require_hash(source_hash, "contract_chain.source_manifest_hash")
+        admitted_source_hashes = set(self.source_manifest_hashes)
+        for quote in self.quotes:
+            if quote.contract_id not in contract_ids or quote.root_id != self.root_id:
+                raise DerivativeResearchError("contract_chain_quote_orphan")
+            if (
+                parse_timestamp(quote.observed_at, "contract_quote.observed_at")
+                > observed
+            ):
+                raise DerivativeResearchError("contract_chain_quote_from_future")
+            if quote.source_hash not in admitted_source_hashes:
+                raise DerivativeResearchError("contract_chain_quote_source_unbound")
+        for event in self.lifecycle_events:
+            if event.contract_id not in contract_ids:
+                raise DerivativeResearchError("contract_chain_lifecycle_orphan")
+            if event.source_hash not in admitted_source_hashes:
+                raise DerivativeResearchError("contract_chain_lifecycle_source_unbound")
+            if not event.availability.known_at(self.observed_at):
+                raise DerivativeResearchError(
+                    "contract_chain_lifecycle_not_known_at_snapshot"
+                )
         object.__setattr__(
             self,
             "content_hash",
@@ -1054,8 +1060,7 @@ def _roll_condition(
     last_trade = _require_date(contract.last_trade_date, "last_trade")
     calendar_condition = (
         policy.days_before_last_trade is not None
-        and decision_date
-        >= last_trade - timedelta(days=policy.days_before_last_trade)
+        and decision_date >= last_trade - timedelta(days=policy.days_before_last_trade)
     )
     volume_condition = (
         deferred_quote.volume >= current_quote.volume * policy.crossover_ratio
@@ -1125,7 +1130,8 @@ def decide_roll(
     next_contract = min(
         deferred,
         key=lambda item: (
-            _require_date(item.last_trade_date, "last_trade"), item.contract_id
+            _require_date(item.last_trade_date, "last_trade"),
+            item.contract_id,
         ),
     )
 
@@ -1162,9 +1168,8 @@ def decide_roll(
             break
     latest_current = chain.quote_for(current_contract_id, as_of)
     latest_deferred = chain.quote_for(next_contract.contract_id, as_of)
-    should_roll = (
-        len(observations) == policy.consecutive_observations
-        and all(item[0] for item in observations)
+    should_roll = len(observations) == policy.consecutive_observations and all(
+        item[0] for item in observations
     )
     reason = observations[0][1] if observations else "INSUFFICIENT_OBSERVATIONS"
     if not should_roll:
@@ -1401,7 +1406,9 @@ class BasisFeature:
             object.__setattr__(
                 self,
                 name,
-                _as_decimal(getattr(self, name), f"basis_feature.{name}", positive=True),
+                _as_decimal(
+                    getattr(self, name), f"basis_feature.{name}", positive=True
+                ),
             )
         for name in ("basis", "basis_ratio", "annualized_basis"):
             object.__setattr__(
@@ -1517,7 +1524,9 @@ class CurveFeature:
             object.__setattr__(
                 self,
                 name,
-                _as_decimal(getattr(self, name), f"curve_feature.{name}", positive=True),
+                _as_decimal(
+                    getattr(self, name), f"curve_feature.{name}", positive=True
+                ),
             )
         for name in ("calendar_spread", "annualized_slope"):
             object.__setattr__(
@@ -1668,9 +1677,7 @@ class RollAttributionFeature:
             "previous_contract_id": self.previous_contract_id,
             "current_contract_id": self.current_contract_id,
             "continuous_return": _decimal_payload(self.continuous_return),
-            "contract_price_return": _decimal_payload(
-                self.contract_price_return
-            ),
+            "contract_price_return": _decimal_payload(self.contract_price_return),
             "roll_return": _decimal_payload(self.roll_return),
             "settlement_return": (
                 None
@@ -1753,9 +1760,7 @@ class FuturesOrderIntent:
         if (self.signal_series_id is None) != (self.signal_point_hash is None):
             raise DerivativeResearchError("futures_intent_signal_binding_incomplete")
         if self.signal_series_id is not None:
-            require_stable_id(
-                self.signal_series_id, "futures_intent.signal_series_id"
-            )
+            require_stable_id(self.signal_series_id, "futures_intent.signal_series_id")
             require_hash(
                 self.signal_point_hash or "", "futures_intent.signal_point_hash"
             )
@@ -1828,9 +1833,7 @@ class FuturesPosition:
             "contract_id": self.contract_id,
             "quantity": self.quantity,
             "average_entry_price": _decimal_payload(self.average_entry_price),
-            "last_settlement_price": _decimal_payload(
-                self.last_settlement_price
-            ),
+            "last_settlement_price": _decimal_payload(self.last_settlement_price),
             "contract_spec_hash": self.contract_spec_hash,
         }
 
@@ -1983,9 +1986,7 @@ class FuturesLedger:
                 self.last_trading_date or "", "futures_ledger.last_trading_date"
             )
             if (self.last_session_sequence or 0) < 0:
-                raise DerivativeResearchError(
-                    "futures_ledger_session_sequence_invalid"
-                )
+                raise DerivativeResearchError("futures_ledger_session_sequence_invalid")
         object.__setattr__(
             self,
             "content_hash",
@@ -2154,9 +2155,7 @@ class MarginCallEvent:
             "event_id": self.event_id,
             "observed_at": self.observed_at,
             "equity": _decimal_payload(self.equity),
-            "maintenance_requirement": _decimal_payload(
-                self.maintenance_requirement
-            ),
+            "maintenance_requirement": _decimal_payload(self.maintenance_requirement),
             "action": self.action.value,
             "positions_before": list(self.positions_before),
             "positions_after": list(self.positions_after),
@@ -2185,9 +2184,7 @@ class RollExecution:
     def __post_init__(self) -> None:
         _require_schema(self.schema_version)
         require_stable_id(self.execution_id, "roll_execution.execution_id")
-        require_stable_id(
-            self.from_contract_id, "roll_execution.from_contract_id"
-        )
+        require_stable_id(self.from_contract_id, "roll_execution.from_contract_id")
         require_stable_id(self.to_contract_id, "roll_execution.to_contract_id")
         parse_timestamp(self.executed_at, "roll_execution.executed_at")
         for value in (
@@ -2277,16 +2274,12 @@ class SimulationStep:
             "step_id": self.step_id,
             "ledger": self.ledger.as_dict(),
             "fills": [item.as_dict() for item in self.fills],
-            "settlement_events": [
-                item.as_dict() for item in self.settlement_events
-            ],
+            "settlement_events": [item.as_dict() for item in self.settlement_events],
             "margin_call": (
                 None if self.margin_call is None else self.margin_call.as_dict()
             ),
             "roll_execution": (
-                None
-                if self.roll_execution is None
-                else self.roll_execution.as_dict()
+                None if self.roll_execution is None else self.roll_execution.as_dict()
             ),
             "diagnostics": list(self.diagnostics),
         }
@@ -2434,9 +2427,7 @@ class FuturesSimulator:
     def __post_init__(self) -> None:
         _require_schema(self.schema_version)
         require_stable_id(self.simulator_id, "futures_simulator.simulator_id")
-        require_stable_id(
-            self.simulator_version, "futures_simulator.simulator_version"
-        )
+        require_stable_id(self.simulator_version, "futures_simulator.simulator_version")
         if not self.contracts:
             raise DerivativeResearchError("futures_simulator_contracts_required")
         ids = [item.contract_id for item in self.contracts]
@@ -2498,7 +2489,9 @@ class FuturesSimulator:
         ):
             raise DerivativeResearchError("futures_session_order_reversed")
 
-    def _margin_requirement(self, positions: Iterable[FuturesPosition], *, maintenance: bool) -> Decimal:
+    def _margin_requirement(
+        self, positions: Iterable[FuturesPosition], *, maintenance: bool
+    ) -> Decimal:
         per_contract = (
             self.margin_policy.maintenance_margin_per_contract
             if maintenance
@@ -2566,7 +2559,9 @@ class FuturesSimulator:
         self._check_timeline(ledger, quote)
         quote.require_executable(intent.side)
         existing = ledger.position_for(contract.contract_id)
-        signed_delta = intent.quantity if intent.side is OrderSide.BUY else -intent.quantity
+        signed_delta = (
+            intent.quantity if intent.side is OrderSide.BUY else -intent.quantity
+        )
         old_quantity = 0 if existing is None else existing.quantity
         new_quantity = old_quantity + signed_delta
         increasing = abs(new_quantity) > abs(old_quantity)
@@ -2579,9 +2574,9 @@ class FuturesSimulator:
         )
         notice_exit = None
         if contract.first_notice_date is not None:
-            notice_exit = _require_date(contract.first_notice_date, "first_notice") - timedelta(
-                days=self.expiry_policy.exit_days_before_first_notice
-            )
+            notice_exit = _require_date(
+                contract.first_notice_date, "first_notice"
+            ) - timedelta(days=self.expiry_policy.exit_days_before_first_notice)
         cutoff = min(last_exit, notice_exit) if notice_exit is not None else last_exit
         if increasing and decision_date >= cutoff:
             raise DerivativeResearchError("futures_open_after_expiry_exit_cutoff")
@@ -2592,11 +2587,15 @@ class FuturesSimulator:
             if intent.side is OrderSide.SELL and reference < intent.limit_price:
                 raise DerivativeResearchError("futures_sell_limit_not_filled")
             reference = intent.limit_price
-        slippage_ticks = self.cost_policy.execution_slippage_ticks + extra_slippage_ticks
+        slippage_ticks = (
+            self.cost_policy.execution_slippage_ticks + extra_slippage_ticks
+        )
         if is_roll_leg:
             slippage_ticks += self.cost_policy.roll_slippage_ticks
         adverse = slippage_ticks * contract.tick_size
-        unrounded = reference + adverse if intent.side is OrderSide.BUY else reference - adverse
+        unrounded = (
+            reference + adverse if intent.side is OrderSide.BUY else reference - adverse
+        )
         fill_price = _round_to_tick(unrounded, contract.tick_size, intent.side)
         if quote.limit_up_price is not None and fill_price > quote.limit_up_price:
             raise DerivativeResearchError("futures_fill_above_price_limit")
@@ -2615,9 +2614,7 @@ class FuturesSimulator:
             )
         commission = self.cost_policy.commission_per_contract * intent.quantity
         slippage_cost = (
-            abs(fill_price - reference)
-            * contract.contract_multiplier
-            * intent.quantity
+            abs(fill_price - reference) * contract.contract_multiplier * intent.quantity
         )
         fill = FuturesFill(
             fill_id=fill_id,
@@ -2672,10 +2669,15 @@ class FuturesSimulator:
                 last_settlement_price=last_settlement,
                 contract_spec_hash=contract.content_hash,
             )
-        positions = tuple(sorted(positions_by_id.values(), key=lambda item: item.contract_id))
+        positions = tuple(
+            sorted(positions_by_id.values(), key=lambda item: item.contract_id)
+        )
         cash = ledger.cash_balance + realized_pnl - fill.total_cost
         initial_requirement = self._margin_requirement(positions, maintenance=False)
-        if increasing and cash * self.margin_policy.collateral_fraction < initial_requirement:
+        if (
+            increasing
+            and cash * self.margin_policy.collateral_fraction < initial_requirement
+        ):
             raise DerivativeResearchError("futures_initial_margin_insufficient")
         next_ledger = self._with_event(
             ledger,
@@ -2764,7 +2766,10 @@ class FuturesSimulator:
             after = before
             blocked = next_ledger.blocked_new_trades
             failed = next_ledger.failed
-            if self.margin_policy.margin_call_action is MarginCallAction.REDUCE_POSITION:
+            if (
+                self.margin_policy.margin_call_action
+                is MarginCallAction.REDUCE_POSITION
+            ):
                 # A margin policy may require reduction, but positions cannot
                 # disappear without an executable quote, fill, commission and
                 # slippage record.  Block increases and leave liquidation to a
@@ -2869,7 +2874,12 @@ class FuturesSimulator:
         direction = _ONE if position.quantity > 0 else -_ONE
         price_gap = new_quote.close_price - old_quote.close_price
         old_contract = self.contract_for(decision.from_contract_id)
-        roll_yield = -price_gap * abs(position.quantity) * old_contract.contract_multiplier * direction
+        roll_yield = (
+            -price_gap
+            * abs(position.quantity)
+            * old_contract.contract_multiplier
+            * direction
+        )
         execution = RollExecution(
             execution_id=execution_id,
             decision_hash=decision.content_hash,
@@ -2929,9 +2939,7 @@ class FuturesSimulator:
         fills: list[FuturesFill] = []
         legging_cost = _ZERO
         extra = (
-            _ZERO
-            if order.simultaneous_fill
-            else self.cost_policy.spread_legging_ticks
+            _ZERO if order.simultaneous_fill else self.cost_policy.spread_legging_ticks
         )
         for index, leg in enumerate(order.legs):
             side = OrderSide.BUY if leg.ratio > 0 else OrderSide.SELL
@@ -3008,10 +3016,15 @@ class FuturesSimulator:
         if position is None:
             raise DerivativeResearchError("expiry_position_missing")
         event_date = parse_timestamp(quote.observed_at, "quote.observed_at").date()
-        if event_date < _require_date(contract.final_settlement_date, "final_settlement"):
+        if event_date < _require_date(
+            contract.final_settlement_date, "final_settlement"
+        ):
             raise DerivativeResearchError("final_settlement_not_reached")
         if contract.settlement_type is SettlementType.PHYSICAL_SETTLED:
-            if self.expiry_policy.physical_delivery_action is PhysicalDeliveryAction.FAIL_RESEARCH:
+            if (
+                self.expiry_policy.physical_delivery_action
+                is PhysicalDeliveryAction.FAIL_RESEARCH
+            ):
                 failed_ledger = self._with_event(
                     ledger,
                     event_hash=sha256_prefixed(
@@ -3200,20 +3213,14 @@ class FuturesStressInputs:
     def __post_init__(self) -> None:
         _require_schema(self.schema_version)
         require_stable_id(self.input_id, "futures_stress_inputs.input_id")
-        require_stable_id(
-            self.input_version, "futures_stress_inputs.input_version"
-        )
+        require_stable_id(self.input_version, "futures_stress_inputs.input_version")
         parse_timestamp(self.as_of, "futures_stress_inputs.as_of")
         if not self.marks:
             raise DerivativeResearchError("futures_stress_marks_required")
         mark_ids = [item.contract_id for item in self.marks]
         if mark_ids != sorted(set(mark_ids)):
-            raise DerivativeResearchError(
-                "futures_stress_marks_not_unique_sorted"
-            )
-        contracts_by_id = {
-            item.contract_id: item for item in self.simulator.contracts
-        }
+            raise DerivativeResearchError("futures_stress_marks_not_unique_sorted")
+        contracts_by_id = {item.contract_id: item for item in self.simulator.contracts}
         for mark in self.marks:
             contract = contracts_by_id.get(mark.contract_id)
             if contract is None:
@@ -3225,9 +3232,7 @@ class FuturesStressInputs:
                     "futures_stress_mark_contract_root_mismatch"
                 )
             if not mark.known_at(self.as_of):
-                raise DerivativeResearchError(
-                    "futures_stress_mark_not_available_as_of"
-                )
+                raise DerivativeResearchError("futures_stress_mark_not_available_as_of")
         marks_by_id = {item.contract_id: item for item in self.marks}
         for position in self.ledger.positions:
             contract = contracts_by_id.get(position.contract_id)
@@ -3240,9 +3245,7 @@ class FuturesStressInputs:
                     "futures_stress_position_contract_spec_mismatch"
                 )
             if position.contract_id not in marks_by_id:
-                raise DerivativeResearchError(
-                    "futures_stress_position_mark_missing"
-                )
+                raise DerivativeResearchError("futures_stress_position_mark_missing")
         for field_name, contract_id in (
             ("selected", self.selected_contract_id),
             ("alternate", self.alternate_contract_id),
@@ -3260,9 +3263,7 @@ class FuturesStressInputs:
             self.selected_contract_id is not None
             and self.ledger.position_for(self.selected_contract_id) is None
         ):
-            raise DerivativeResearchError(
-                "futures_stress_selected_position_missing"
-            )
+            raise DerivativeResearchError("futures_stress_selected_position_missing")
         if (
             self.selected_contract_id is not None
             and self.alternate_contract_id == self.selected_contract_id
@@ -3299,8 +3300,7 @@ class FuturesStressInputs:
         if (
             self.continuous_policy is not None
             and self.roll_policy is not None
-            and self.continuous_policy.roll_policy_hash
-            != self.roll_policy.content_hash
+            and self.continuous_policy.roll_policy_hash != self.roll_policy.content_hash
         ):
             raise DerivativeResearchError(
                 "futures_stress_continuous_roll_policy_mismatch"
@@ -3406,17 +3406,11 @@ class FuturesStressExecution:
             "simulator_hash",
             "ledger_hash",
         ):
-            require_hash(
-                getattr(self, name), f"futures_stress_execution.{name}"
-            )
+            require_hash(getattr(self, name), f"futures_stress_execution.{name}")
         if not self.evidence_hashes:
-            raise DerivativeResearchError(
-                "futures_stress_execution_evidence_required"
-            )
+            raise DerivativeResearchError("futures_stress_execution_evidence_required")
         if len(self.evidence_hashes) != len(set(self.evidence_hashes)):
-            raise DerivativeResearchError(
-                "futures_stress_execution_evidence_duplicate"
-            )
+            raise DerivativeResearchError("futures_stress_execution_evidence_duplicate")
         for value in self.evidence_hashes:
             require_hash(value, "futures_stress_execution.evidence_hash")
         if self.result.case_hash != self.case_hash:
@@ -3478,9 +3472,7 @@ def _stress_selected(
 ) -> tuple[FuturesPosition, FuturesContract, ContractQuote]:
     contract_id = inputs.selected_contract_id
     if contract_id is None:
-        raise DerivativeResearchError(
-            "futures_stress_selected_contract_required"
-        )
+        raise DerivativeResearchError("futures_stress_selected_contract_required")
     position = inputs.ledger.position_for(contract_id)
     if position is None:
         raise DerivativeResearchError("futures_stress_selected_position_missing")
@@ -3494,9 +3486,7 @@ def _stress_alternate(
 ) -> tuple[FuturesContract, ContractQuote]:
     contract_id = inputs.alternate_contract_id
     if contract_id is None:
-        raise DerivativeResearchError(
-            "futures_stress_alternate_contract_required"
-        )
+        raise DerivativeResearchError("futures_stress_alternate_contract_required")
     contract = inputs.simulator.contract_for(contract_id)
     mark = next(item for item in inputs.marks if item.contract_id == contract_id)
     return contract, mark
@@ -3513,9 +3503,7 @@ def _stress_required_policy_hashes(
         required.add(inputs.roll_policy.content_hash)
     elif kind is FuturesStressKind.CONTINUOUS_ADJUSTMENT:
         if inputs.continuous_policy is None:
-            raise DerivativeResearchError(
-                "futures_stress_continuous_policy_required"
-            )
+            raise DerivativeResearchError("futures_stress_continuous_policy_required")
         required.add(inputs.continuous_policy.content_hash)
     elif kind in {
         FuturesStressKind.ROLL_COST,
@@ -3541,9 +3529,7 @@ def _validate_stress_policy_binding(
 ) -> None:
     supplied = set(case.baseline_policy_hashes)
     if len(supplied) != len(case.baseline_policy_hashes):
-        raise DerivativeResearchError(
-            "futures_stress_baseline_policy_hash_duplicate"
-        )
+        raise DerivativeResearchError("futures_stress_baseline_policy_hash_duplicate")
     simulator = inputs.simulator
     known = {
         simulator.content_hash,
@@ -3557,14 +3543,10 @@ def _validate_stress_policy_binding(
     if inputs.continuous_policy is not None:
         known.add(inputs.continuous_policy.content_hash)
     if not supplied.issubset(known):
-        raise DerivativeResearchError(
-            "futures_stress_unknown_baseline_policy_hash"
-        )
+        raise DerivativeResearchError("futures_stress_unknown_baseline_policy_hash")
     required = _stress_required_policy_hashes(case.kind, inputs)
     if not required.issubset(supplied):
-        raise DerivativeResearchError(
-            "futures_stress_required_policy_hash_missing"
-        )
+        raise DerivativeResearchError("futures_stress_required_policy_hash_missing")
 
 
 def _stress_exit_cost(
@@ -3572,9 +3554,11 @@ def _stress_exit_cost(
     contract: FuturesContract,
     quantity: int,
 ) -> Decimal:
-    per_contract = simulator.cost_policy.commission_per_contract + (
-        simulator.cost_policy.execution_slippage_ticks * contract.tick_size
-    ) * contract.contract_multiplier
+    per_contract = (
+        simulator.cost_policy.commission_per_contract
+        + (simulator.cost_policy.execution_slippage_ticks * contract.tick_size)
+        * contract.contract_multiplier
+    )
     return per_contract * abs(quantity)
 
 
@@ -3594,13 +3578,9 @@ def run_futures_stress_case(
     """
 
     require_stable_id(execution_id, "futures_stress_execution.execution_id")
-    require_stable_id(
-        execution_version, "futures_stress_execution.execution_version"
-    )
+    require_stable_id(execution_version, "futures_stress_execution.execution_version")
     if case.scalar < _ONE:
-        raise DerivativeResearchError(
-            "futures_stress_scalar_below_baseline"
-        )
+        raise DerivativeResearchError("futures_stress_scalar_below_baseline")
     _validate_stress_policy_binding(case, inputs)
     baseline_equity = _stress_marked_equity(inputs)
     stressed_equity = baseline_equity
@@ -3626,23 +3606,16 @@ def run_futures_stress_case(
         roll_policy = inputs.roll_policy
         assert roll_policy is not None
         if contract.root_id != alternate_contract.root_id:
-            raise DerivativeResearchError(
-                "futures_stress_roll_contract_root_mismatch"
-            )
+            raise DerivativeResearchError("futures_stress_roll_contract_root_mismatch")
         if not alternate_contract.tradable_at(inputs.as_of):
-            raise DerivativeResearchError(
-                "futures_stress_roll_target_not_tradable"
-            )
+            raise DerivativeResearchError("futures_stress_roll_target_not_tradable")
         roll_notional_gap = abs(
             alternate_mark.close_price * alternate_contract.contract_multiplier
             - mark.close_price * contract.contract_multiplier
         ) * abs(position.quantity)
-        estimated_round_trip_cost = (
-            _stress_exit_cost(inputs.simulator, contract, position.quantity)
-            + _stress_exit_cost(
-                inputs.simulator, alternate_contract, position.quantity
-            )
-        )
+        estimated_round_trip_cost = _stress_exit_cost(
+            inputs.simulator, contract, position.quantity
+        ) + _stress_exit_cost(inputs.simulator, alternate_contract, position.quantity)
         adverse = severity * (roll_notional_gap + estimated_round_trip_cost)
         stressed_equity -= adverse
         policy_days = max(roll_policy.days_before_last_trade or 1, 1)
@@ -3673,9 +3646,7 @@ def run_futures_stress_case(
         policy = inputs.continuous_policy
         point = inputs.continuous_point
         if policy is None or point is None:
-            raise DerivativeResearchError(
-                "futures_stress_continuous_evidence_required"
-            )
+            raise DerivativeResearchError("futures_stress_continuous_evidence_required")
         if point.source_contract_id != contract.contract_id:
             raise DerivativeResearchError(
                 "futures_stress_continuous_selected_contract_mismatch"
@@ -3705,13 +3676,9 @@ def run_futures_stress_case(
         position, contract, mark = _stress_selected(inputs)
         point = inputs.continuous_point
         if point is None:
-            raise DerivativeResearchError(
-                "futures_stress_signal_point_required"
-            )
+            raise DerivativeResearchError("futures_stress_signal_point_required")
         if point.source_quote_hash != mark.content_hash:
-            raise DerivativeResearchError(
-                "futures_stress_signal_mark_mismatch"
-            )
+            raise DerivativeResearchError("futures_stress_signal_mark_mismatch")
         divergence = (
             abs(point.continuous_price - mark.close_price)
             * abs(position.quantity)
@@ -3737,9 +3704,7 @@ def run_futures_stress_case(
             (item.total_roll_cost for item in inputs.roll_executions), _ZERO
         )
         if base_cost <= 0:
-            raise DerivativeResearchError(
-                "futures_stress_roll_cost_must_be_positive"
-            )
+            raise DerivativeResearchError("futures_stress_roll_cost_must_be_positive")
         adverse = base_cost * severity
         stressed_equity -= adverse
         scenario.update(
@@ -3765,26 +3730,19 @@ def run_futures_stress_case(
         stressed_cutoff = last_trade - timedelta(days=last_trade_days)
         first_notice_cutoff: date | None = None
         if contract.first_notice_date is not None:
-            first_notice = _require_date(
-                contract.first_notice_date, "first_notice"
-            )
+            first_notice = _require_date(contract.first_notice_date, "first_notice")
             notice_days = int(
                 (
-                    Decimal(expiry_policy.exit_days_before_first_notice)
-                    * case.scalar
+                    Decimal(expiry_policy.exit_days_before_first_notice) * case.scalar
                 ).to_integral_value(rounding=ROUND_CEILING)
             )
             first_notice_cutoff = first_notice - timedelta(days=notice_days)
             stressed_cutoff = min(stressed_cutoff, first_notice_cutoff)
-        as_of_date = parse_timestamp(
-            inputs.as_of, "futures_stress_inputs.as_of"
-        ).date()
+        as_of_date = parse_timestamp(inputs.as_of, "futures_stress_inputs.as_of").date()
         excluded = as_of_date >= stressed_cutoff
         exit_cost = _ZERO
         if excluded:
-            close_side = (
-                OrderSide.SELL if position.quantity > 0 else OrderSide.BUY
-            )
+            close_side = OrderSide.SELL if position.quantity > 0 else OrderSide.BUY
             try:
                 mark.require_executable(close_side)
             except DerivativeResearchError:
@@ -3820,9 +3778,7 @@ def run_futures_stress_case(
         position, contract, mark = _stress_selected(inputs)
         alternate_contract, alternate_mark = _stress_alternate(inputs)
         if contract.root_id != alternate_contract.root_id:
-            raise DerivativeResearchError(
-                "futures_stress_curve_contract_root_mismatch"
-            )
+            raise DerivativeResearchError("futures_stress_curve_contract_root_mismatch")
         curve_gap = abs(
             alternate_mark.close_price * alternate_contract.contract_multiplier
             - mark.close_price * contract.contract_multiplier
@@ -3841,19 +3797,19 @@ def run_futures_stress_case(
     elif case.kind is FuturesStressKind.HIGH_VOL_LOW_LIQUIDITY:
         position, contract, mark = _stress_selected(inputs)
         if mark.bid_price is None or mark.ask_price is None:
-            raise DerivativeResearchError(
-                "futures_stress_bid_ask_required"
-            )
+            raise DerivativeResearchError("futures_stress_bid_ask_required")
         if mark.volume <= 0:
-            raise DerivativeResearchError(
-                "futures_stress_positive_volume_required"
-            )
+            raise DerivativeResearchError("futures_stress_positive_volume_required")
         half_spread = (mark.ask_price - mark.bid_price) / Decimal("2")
         base_slippage = (
-            half_spread
-            + inputs.simulator.cost_policy.execution_slippage_ticks
-            * contract.tick_size
-        ) * contract.contract_multiplier * abs(position.quantity)
+            (
+                half_spread
+                + inputs.simulator.cost_policy.execution_slippage_ticks
+                * contract.tick_size
+            )
+            * contract.contract_multiplier
+            * abs(position.quantity)
+        )
         participation = Decimal(abs(position.quantity)) / mark.volume
         adverse = base_slippage * severity * (_ONE + participation)
         stressed_equity -= adverse
@@ -3863,9 +3819,7 @@ def run_futures_stress_case(
                 "half_spread": _decimal_payload(half_spread),
                 "volume": _decimal_payload(mark.volume),
                 "participation": _decimal_payload(participation),
-                "baseline_liquidation_slippage": _decimal_payload(
-                    base_slippage
-                ),
+                "baseline_liquidation_slippage": _decimal_payload(base_slippage),
                 "adverse_delta": _decimal_payload(-adverse),
             }
         )
@@ -3873,9 +3827,7 @@ def run_futures_stress_case(
     elif case.kind is FuturesStressKind.NIGHT_SESSION:
         position, contract, mark = _stress_selected(inputs)
         if mark.session is not SessionType.NIGHT:
-            raise DerivativeResearchError(
-                "futures_stress_night_session_mark_required"
-            )
+            raise DerivativeResearchError("futures_stress_night_session_mark_required")
         baseline_ticks = max(
             inputs.simulator.cost_policy.execution_slippage_ticks, _ONE
         )
@@ -3900,9 +3852,7 @@ def run_futures_stress_case(
         diagnostics.append("NIGHT_SESSION_SLIPPAGE_STRESSED")
     elif case.kind is FuturesStressKind.MARGIN_INCREASE:
         if not inputs.ledger.positions:
-            raise DerivativeResearchError(
-                "futures_stress_margin_positions_required"
-            )
+            raise DerivativeResearchError("futures_stress_margin_positions_required")
         simulator = inputs.simulator
         baseline_initial = simulator._margin_requirement(
             inputs.ledger.positions, maintenance=False
@@ -3917,23 +3867,18 @@ def run_futures_stress_case(
         if triggered:
             margin_call_count += 1
             diagnostics.append(
-                "MARGIN_CALL_ACTION_"
-                + simulator.margin_policy.margin_call_action.value
+                "MARGIN_CALL_ACTION_" + simulator.margin_policy.margin_call_action.value
             )
         else:
             diagnostics.append("STRESSED_MARGIN_SUFFICIENT")
         scenario.update(
             {
                 "margin_policy_hash": simulator.margin_policy.content_hash,
-                "baseline_initial_requirement": _decimal_payload(
-                    baseline_initial
-                ),
+                "baseline_initial_requirement": _decimal_payload(baseline_initial),
                 "baseline_maintenance_requirement": _decimal_payload(
                     baseline_maintenance
                 ),
-                "stressed_initial_requirement": _decimal_payload(
-                    stressed_initial
-                ),
+                "stressed_initial_requirement": _decimal_payload(stressed_initial),
                 "stressed_maintenance_requirement": _decimal_payload(
                     stressed_maintenance
                 ),
@@ -3953,18 +3898,14 @@ def run_futures_stress_case(
             limit_price = mark.limit_up_price
             expected_state = MarketState.LIMIT_UP
         if limit_price is None:
-            raise DerivativeResearchError(
-                "futures_stress_adverse_price_limit_required"
-            )
+            raise DerivativeResearchError("futures_stress_adverse_price_limit_required")
         adverse_move = (
             (limit_price - mark.settlement_price)
             * position.quantity
             * contract.contract_multiplier
         )
         if adverse_move >= 0:
-            raise DerivativeResearchError(
-                "futures_stress_price_limit_not_adverse"
-            )
+            raise DerivativeResearchError("futures_stress_price_limit_not_adverse")
         stressed_equity += adverse_move * case.scalar
         blocked_exit_count = 1
         scenario.update(
@@ -4008,21 +3949,13 @@ def run_futures_stress_case(
             {
                 "contract_hash": contract.content_hash,
                 "mark_hash": mark.content_hash,
-                "baseline_multiplier": _decimal_payload(
-                    contract.contract_multiplier
-                ),
+                "baseline_multiplier": _decimal_payload(contract.contract_multiplier),
                 "stressed_multiplier": _decimal_payload(stressed_multiplier),
                 "baseline_tick": _decimal_payload(contract.tick_size),
                 "stressed_tick": _decimal_payload(stressed_tick),
-                "baseline_unsettled_pnl": _decimal_payload(
-                    baseline_unsettled
-                ),
-                "baseline_liquidation_friction": _decimal_payload(
-                    baseline_friction
-                ),
-                "stressed_liquidation_friction": _decimal_payload(
-                    stressed_friction
-                ),
+                "baseline_unsettled_pnl": _decimal_payload(baseline_unsettled),
+                "baseline_liquidation_friction": _decimal_payload(baseline_friction),
+                "stressed_liquidation_friction": _decimal_payload(stressed_friction),
                 "adverse_delta": _decimal_payload(-adverse),
             }
         )
@@ -4039,9 +3972,7 @@ def run_futures_stress_case(
             raise DerivativeResearchError(
                 "futures_stress_non_simultaneous_spread_required"
             )
-        base_cost = sum(
-            (item.legging_cost for item in inputs.spread_executions), _ZERO
-        )
+        base_cost = sum((item.legging_cost for item in inputs.spread_executions), _ZERO)
         if base_cost <= 0:
             raise DerivativeResearchError(
                 "futures_stress_spread_legging_cost_must_be_positive"
@@ -4054,9 +3985,7 @@ def run_futures_stress_case(
                     item.content_hash for item in inputs.spread_executions
                 ],
                 "baseline_legging_cost": _decimal_payload(base_cost),
-                "stressed_legging_cost": _decimal_payload(
-                    base_cost * case.scalar
-                ),
+                "stressed_legging_cost": _decimal_payload(base_cost * case.scalar),
                 "adverse_delta": _decimal_payload(-adverse),
             }
         )
@@ -4217,9 +4146,7 @@ def summarize_futures_risk(
             raise DerivativeResearchError("futures_risk_mark_missing")
         contract = simulator.contract_for(position.contract_id)
         gross_notional += (
-            abs(position.quantity)
-            * quote.close_price
-            * contract.contract_multiplier
+            abs(position.quantity) * quote.close_price * contract.contract_multiplier
         )
     initial = simulator._margin_requirement(ledger.positions, maintenance=False)
     maintenance = simulator._margin_requirement(ledger.positions, maintenance=True)
@@ -4237,9 +4164,7 @@ def summarize_futures_risk(
         margin_utilization=utilization,
         cumulative_variation_margin=ledger.cumulative_variation_margin,
         cumulative_fees=ledger.cumulative_fees,
-        total_roll_cost=sum(
-            (item.total_roll_cost for item in roll_executions), _ZERO
-        ),
+        total_roll_cost=sum((item.total_roll_cost for item in roll_executions), _ZERO),
         total_roll_yield=sum((item.roll_yield for item in roll_executions), _ZERO),
         margin_call_count=ledger.margin_call_count,
         blocked_exit_count=blocked_exit_count,
@@ -4439,9 +4364,7 @@ class ProspectiveFuturesEvidence:
             previous_observation.observed_at, "previous_observation.observed_at"
         ) >= parse_timestamp(as_of, "prospective.as_of"):
             raise DerivativeResearchError("prospective_observations_not_append_only")
-        mean = _as_decimal(
-            historical_curve_mean, "prospective.historical_curve_mean"
-        )
+        mean = _as_decimal(historical_curve_mean, "prospective.historical_curve_mean")
         std = _as_decimal(
             historical_curve_std,
             "prospective.historical_curve_std",
@@ -4511,9 +4434,7 @@ class ProspectiveFuturesEvidence:
             "settlement_policy_hash": self.settlement_policy_hash,
             "curve_feature_hash": self.curve_feature_hash,
             "curve_slope": _decimal_payload(self.curve_slope),
-            "historical_curve_mean": _decimal_payload(
-                self.historical_curve_mean
-            ),
+            "historical_curve_mean": _decimal_payload(self.historical_curve_mean),
             "historical_curve_std": _decimal_payload(self.historical_curve_std),
             "curve_drift_zscore": _decimal_payload(self.curve_drift_zscore),
             "previous_observation_hash": self.previous_observation_hash,

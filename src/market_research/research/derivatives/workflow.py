@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Mapping, Sequence
 
 from market_research.paths import ResearchPathManager
 from market_research.research.hashing import sha256_prefixed
+from market_research.storage_io import write_json_atomic_create_or_verify
 
 from .common import (
     DERIVATIVE_RESEARCH_SCHEMA_VERSION,
@@ -65,6 +67,7 @@ _FORBIDDEN_KEYS = frozenset(
         "approved",
         "approval_status",
         "live_approval",
+        "live_account",
         "approved_for_live",
         "account",
         "account_id",
@@ -75,8 +78,16 @@ _FORBIDDEN_KEYS = frozenset(
         "capital",
         "capital_allocation",
         "order_route",
+        "order_router",
         "order_submission",
         "broker_api_key",
+        "exchange_api_key",
+        "exchange_api_secret",
+        "private_exchange",
+        "private_exchange_api",
+        "network_market_data",
+        "network_market_data_collection",
+        "market_data_collection",
     }
 )
 
@@ -178,7 +189,7 @@ class DerivativeEvidenceBundle:
     def load(
         cls, path: str | Path, manager: ResearchPathManager
     ) -> "DerivativeEvidenceBundle":
-        return cls.from_dict(_read_external_json(path, manager, "bundle"))
+        return cls.from_dict(read_external_derivative_json(path, manager, "bundle"))
 
     def identity_payload(self) -> dict[str, object]:
         supporting = [
@@ -455,6 +466,7 @@ def _experiment_spec_from_dict(value: object) -> DerivativeExperimentSpec:
         "code_version",
         "environment_hash",
         "dirty_worktree",
+        "valuation_model_hash",
         "content_hash",
     }
     _require_exact_fields(payload, expected, "experiment_spec")
@@ -462,6 +474,11 @@ def _experiment_spec_from_dict(value: object) -> DerivativeExperimentSpec:
     if not isinstance(dirty_worktree, bool):
         raise DerivativeEvidenceWorkflowError(
             "experiment_spec_dirty_worktree_boolean_required"
+        )
+    valuation_model_hash = payload["valuation_model_hash"]
+    if valuation_model_hash is not None and not isinstance(valuation_model_hash, str):
+        raise DerivativeEvidenceWorkflowError(
+            "experiment_spec_valuation_model_hash_invalid"
         )
     result = DerivativeExperimentSpec(
         schema_version=_integer(
@@ -515,6 +532,14 @@ def _experiment_spec_from_dict(value: object) -> DerivativeExperimentSpec:
             payload["environment_hash"], "experiment_spec.environment_hash"
         ),
         dirty_worktree=dirty_worktree,
+        valuation_model_hash=(
+            None
+            if valuation_model_hash is None
+            else _text(
+                valuation_model_hash,
+                "experiment_spec.valuation_model_hash",
+            )
+        ),
     )
     _require_content_hash(payload, result.content_hash, "experiment_spec")
     return result
@@ -533,6 +558,7 @@ def _experiment_run_from_dict(value: object) -> DerivativeExperimentRun:
         "event_stream_hash",
         "result_artifact_hash",
         "failure_code",
+        "observation_dataset_snapshot_hashes",
         "content_hash",
     }
     _require_exact_fields(payload, expected, "experiment_run")
@@ -563,14 +589,26 @@ def _experiment_run_from_dict(value: object) -> DerivativeExperimentRun:
             "experiment_run.result_artifact_hash",
         ),
         failure_code=failure_code,
+        observation_dataset_snapshot_hashes=_texts(
+            payload["observation_dataset_snapshot_hashes"],
+            "experiment_run.observation_dataset_snapshot_hashes",
+        ),
     )
     _require_content_hash(payload, result.content_hash, "experiment_run")
     return result
 
 
-def _read_external_json(
+def read_external_derivative_json(
     value: str | Path, manager: ResearchPathManager, label: str
 ) -> dict[str, object]:
+    """Read one bounded regular JSON file outside the source repository.
+
+    The final path component may not be a symlink, duplicate object keys are
+    rejected, and a size/stat check detects truncation or replacement while
+    the file is being read.  Product-specific parsers remain responsible for
+    their exact schema and content-hash checks.
+    """
+
     raw = Path(value).expanduser()
     if not raw.is_absolute():
         raise DerivativeEvidenceWorkflowError(
@@ -624,10 +662,35 @@ def _read_external_json(
     return _json_object(decoded, label)
 
 
+def write_external_derivative_json(
+    value: str | Path,
+    manager: ResearchPathManager,
+    payload: Mapping[str, object],
+    label: str,
+) -> Path:
+    """Atomically create or verify one repository-external JSON artifact."""
+
+    try:
+        target = manager.external_output_path(value, label=f"derivative {label}")
+        safe_payload = _json_object(payload, label)
+        write_json_atomic_create_or_verify(target, safe_payload)
+    except (OSError, TypeError, ValueError) as exc:
+        if isinstance(exc, DerivativeEvidenceWorkflowError):
+            raise
+        raise DerivativeEvidenceWorkflowError(
+            f"derivative_{label}_write_failed:{exc}"
+        ) from exc
+    return target
+
+
+# Compatibility alias for code that imported the earlier module-private helper.
+_read_external_json = read_external_derivative_json
+
+
 def _reject_forbidden_fields(value: object, path: str) -> None:
     if isinstance(value, Mapping):
         for raw_key, child in value.items():
-            key = str(raw_key).strip().lower()
+            key = _normalize_boundary_token(raw_key)
             if key in _FORBIDDEN_KEYS:
                 raise DerivativeEvidenceWorkflowError(
                     f"derivative_bundle_live_field_forbidden:{path}.{key}"
@@ -636,6 +699,13 @@ def _reject_forbidden_fields(value: object, path: str) -> None:
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
             _reject_forbidden_fields(child, f"{path}[{index}]")
+
+
+def _normalize_boundary_token(value: object) -> str:
+    raw = str(value).strip()
+    acronym_split = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", raw)
+    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", acronym_split)
+    return re.sub(r"[^A-Za-z0-9]+", "_", camel_split).strip("_").lower()
 
 
 def _reject_duplicate_pairs(

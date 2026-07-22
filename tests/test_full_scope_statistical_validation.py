@@ -74,9 +74,7 @@ def test_failed_parameters_and_every_scope_are_retained_in_sample_hash() -> None
     shares = concentration(
         (("market_xkrx", 2.0), ("market_xeurex", -1.0), ("market_xkrx", 1.0))
     )
-    assert dict(shares) == pytest.approx(
-        {"market_xeurex": 0.25, "market_xkrx": 0.75}
-    )
+    assert dict(shares) == pytest.approx({"market_xeurex": 0.25, "market_xkrx": 0.75})
 
 
 def test_validation_decision_binds_frozen_selection_holdout_and_robustness() -> None:

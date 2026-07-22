@@ -9,7 +9,7 @@ This is the durable assessment record for the user-supplied **research-only**
 platform rubric. The canonical rubric SHA-256 is
 `5a457d1ba9c3b2f9afc74d1118c971d4e32089e26288a1c97ef322ba0756b8d5`;
 the execution instruction SHA-256 is
-`25ddd87c30dce17b5c22c24096b5d8642375dc58570f8fa2dcbb67ce34a19396`.
+`26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`.
 The executable 215-row matrix is
 `docs/research-platform-evaluation-matrix.json`.
 

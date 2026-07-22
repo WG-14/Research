@@ -15,15 +15,17 @@ from django.urls import reverse
 
 from market_research.application.contracts import ReportComparisonRequest
 from market_research.application.service import ResearchApplicationService
-from market_research.paths import ResearchPathManager
+from market_research.application.platform_contracts import (
+    ResearchPathManager,
+    ResearchSettings,
+    write_json_atomic,
+)
 from market_research.research.hashing import (
     content_hash_payload,
     report_content_hash_payload,
     sha256_prefixed,
 )
 from market_research.research.research_decision_report import REPORT_SECTIONS
-from market_research.settings import ResearchSettings
-from market_research.storage_io import write_json_atomic
 from portal.models import ManifestUpload, ResearchJob
 from portal.reports import (
     VisibleDecisionReportResolver,

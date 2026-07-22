@@ -1086,9 +1086,7 @@ def _build_source_agnostic_dataset_quality_report(
         payload.update(
             {
                 "point_in_time_decision_stream_hash": (
-                    snapshot.point_in_time_decision_evidence.get(
-                        "decision_stream_hash"
-                    )
+                    snapshot.point_in_time_decision_evidence.get("decision_stream_hash")
                 ),
                 "point_in_time_authority_binding_hash": (
                     snapshot.point_in_time_decision_evidence.get(

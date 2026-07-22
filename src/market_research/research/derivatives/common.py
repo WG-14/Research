@@ -16,27 +16,16 @@ from enum import StrEnum
 from typing import Mapping, Sequence
 
 from market_research.research.hashing import sha256_prefixed
+from market_research.research.instrument_kinds import InstrumentKind as InstrumentKind
 
 
-DERIVATIVE_RESEARCH_SCHEMA_VERSION = 1
+DERIVATIVE_RESEARCH_SCHEMA_VERSION = 2
 _STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class DerivativeResearchError(ValueError):
     """A derivative research contract is incomplete or internally inconsistent."""
-
-
-class InstrumentKind(StrEnum):
-    SPOT = "SPOT"
-    EQUITY = "EQUITY"
-    ETF = "ETF"
-    INDEX = "INDEX"
-    FUTURE = "FUTURE"
-    OPTION = "OPTION"
-    RATE = "RATE"
-    FX = "FX"
-    COMMODITY = "COMMODITY"
 
 
 class RunType(StrEnum):
@@ -397,7 +386,9 @@ class OptionDatasetFilterContract:
                 "option_dataset_filter_quote_price_source_invalid"
             )
         if self.zero_bid_policy != "EXPLICIT_NON_EXECUTABLE_SELL":
-            raise DerivativeResearchError("option_dataset_filter_zero_bid_policy_invalid")
+            raise DerivativeResearchError(
+                "option_dataset_filter_zero_bid_policy_invalid"
+            )
         if self.require_pit_chain_membership is not True:
             raise DerivativeResearchError(
                 "option_dataset_filter_pit_chain_membership_required"
@@ -714,7 +705,9 @@ class DerivativeDatasetSnapshot:
         elif self.instrument_kind is InstrumentKind.OPTION:
             expected_filter_type = OptionDatasetFilterContract
         else:
-            raise DerivativeResearchError("derivative_dataset_instrument_kind_unsupported")
+            raise DerivativeResearchError(
+                "derivative_dataset_instrument_kind_unsupported"
+            )
         if not isinstance(self.filter_contract, expected_filter_type):
             raise DerivativeResearchError("derivative_dataset_filter_contract_invalid")
         if self.filter_contract.content_hash not in self.policy_hashes:
@@ -773,10 +766,13 @@ class DerivativeExperimentSpec:
     code_version: str
     environment_hash: str
     dirty_worktree: bool
+    valuation_model_hash: str | None = None
     content_hash: str = field(init=False)
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        if self.schema_version != DERIVATIVE_RESEARCH_SCHEMA_VERSION:
+            raise DerivativeResearchError("derivative_experiment_schema_unsupported")
         require_stable_id(self.experiment_id, "derivative_experiment.experiment_id")
         for value in (
             self.hypothesis_version_hash,
@@ -793,6 +789,11 @@ class DerivativeExperimentSpec:
             self.environment_hash,
         ):
             require_hash(value, "derivative_experiment.evidence_hash")
+        if self.valuation_model_hash is not None:
+            require_hash(
+                self.valuation_model_hash,
+                "derivative_experiment.valuation_model_hash",
+            )
         if not self.feature_version_hashes:
             raise DerivativeResearchError("derivative_experiment_features_required")
         if self.random_seed < 0:
@@ -802,7 +803,9 @@ class DerivativeExperimentSpec:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(self.identity_payload(), label="derivative_experiment_spec"),
+            sha256_prefixed(
+                self.identity_payload(), label="derivative_experiment_spec"
+            ),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -826,6 +829,7 @@ class DerivativeExperimentSpec:
             "code_version": self.code_version,
             "environment_hash": self.environment_hash,
             "dirty_worktree": self.dirty_worktree,
+            "valuation_model_hash": self.valuation_model_hash,
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -843,10 +847,13 @@ class DerivativeExperimentRun:
     event_stream_hash: str
     result_artifact_hash: str
     failure_code: str | None = None
+    observation_dataset_snapshot_hashes: tuple[str, ...] = ()
     content_hash: str = field(init=False)
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        if self.schema_version != DERIVATIVE_RESEARCH_SCHEMA_VERSION:
+            raise DerivativeResearchError("derivative_run_schema_unsupported")
         require_stable_id(self.run_id, "derivative_run.run_id")
         for value in (
             self.experiment_spec_hash,
@@ -865,6 +872,14 @@ class DerivativeExperimentRun:
             raise DerivativeResearchError("derivative_run_failure_code_mismatch")
         if self.failure_code is not None:
             require_stable_id(self.failure_code, "derivative_run.failure_code")
+        if len(self.observation_dataset_snapshot_hashes) != len(
+            set(self.observation_dataset_snapshot_hashes)
+        ):
+            raise DerivativeResearchError(
+                "derivative_run_observation_dataset_duplicate"
+            )
+        for value in self.observation_dataset_snapshot_hashes:
+            require_hash(value, "derivative_run.observation_dataset_snapshot_hash")
         object.__setattr__(
             self,
             "content_hash",
@@ -883,6 +898,9 @@ class DerivativeExperimentRun:
             "event_stream_hash": self.event_stream_hash,
             "result_artifact_hash": self.result_artifact_hash,
             "failure_code": self.failure_code,
+            "observation_dataset_snapshot_hashes": list(
+                self.observation_dataset_snapshot_hashes
+            ),
         }
 
     def as_dict(self) -> dict[str, object]:

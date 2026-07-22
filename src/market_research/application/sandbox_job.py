@@ -172,9 +172,10 @@ def _validated_request(request: object) -> dict[str, Any]:
             raise SandboxJobContractError(
                 f"sandbox_job_{field}_outside_job_root"
             ) from exc
-    if not isinstance(settings.get("max_workers"), int) or int(
-        settings["max_workers"]
-    ) <= 0:
+    if (
+        not isinstance(settings.get("max_workers"), int)
+        or int(settings["max_workers"]) <= 0
+    ):
         raise SandboxJobContractError("sandbox_job_max_workers_invalid")
     if not isinstance(settings.get("random_seed"), int):
         raise SandboxJobContractError("sandbox_job_random_seed_invalid")

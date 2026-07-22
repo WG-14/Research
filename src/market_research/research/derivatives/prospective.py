@@ -64,9 +64,7 @@ class FrozenProspectiveSpec:
             ("invalidation_threshold", self.invalidation_threshold),
         ):
             if not math.isfinite(threshold_value) or threshold_value < 0:
-                raise DerivativeResearchError(
-                    f"prospective_{threshold_name}_invalid"
-                )
+                raise DerivativeResearchError(f"prospective_{threshold_name}_invalid")
         if self.invalidation_threshold < self.degradation_threshold:
             raise DerivativeResearchError("prospective_threshold_order_invalid")
         object.__setattr__(
@@ -133,9 +131,14 @@ class ProspectiveObservation:
             raise DerivativeResearchError("prospective_observation_delay_mismatch")
         missing = self.actual_data_hash is None
         if missing != (self.missing_reason is not None):
-            raise DerivativeResearchError("prospective_observation_missing_state_invalid")
+            raise DerivativeResearchError(
+                "prospective_observation_missing_state_invalid"
+            )
         if missing:
-            if self.product_snapshot_hash is not None or self.feature_values_hash is not None:
+            if (
+                self.product_snapshot_hash is not None
+                or self.feature_values_hash is not None
+            ):
                 raise DerivativeResearchError(
                     "prospective_missing_observation_evidence_forbidden"
                 )
@@ -285,7 +288,11 @@ def decide_prospective(
             baseline = baseline_metrics[name]
             if not math.isfinite(baseline):
                 raise DerivativeResearchError("prospective_baseline_non_finite")
-            values = [dict(item.metric_values)[name] for item in observed if name in dict(item.metric_values)]
+            values = [
+                dict(item.metric_values)[name]
+                for item in observed
+                if name in dict(item.metric_values)
+            ]
             if len(values) != len(observed):
                 raise DerivativeResearchError(
                     f"prospective_metric_missing_from_observation:{name}"
@@ -317,7 +324,7 @@ def require_new_prospective_spec(
         return
     if previous.prospective_id == proposed.prospective_id:
         raise DerivativeResearchError("prospective_rule_change_requires_new_id")
-    if parse_timestamp(proposed.started_at, "prospective.started_at") <= parse_timestamp(
-        previous.started_at, "prospective.previous.started_at"
-    ):
+    if parse_timestamp(
+        proposed.started_at, "prospective.started_at"
+    ) <= parse_timestamp(previous.started_at, "prospective.previous.started_at"):
         raise DerivativeResearchError("prospective_successor_start_not_later")

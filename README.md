@@ -20,10 +20,10 @@ strictly one way:
 ```text
 research-operations
   -> market_research_web.operations_contract
-  -> market_research.application / adapter_contracts
+  -> market_research.application / adapter_contracts / platform_contracts
 
 market-research-internal-web
-  -> market_research.application / adapter_contracts
+  -> market_research.application / adapter_contracts / platform_contracts
   -> published read-only research query contracts
 
 market-research
@@ -35,7 +35,10 @@ contracts and authenticated exploration uses the published, read-only Research
 query boundary. Operations reaches web behavior only through
 `market_research_web.operations_contract`. See
 [`docs/monorepo-architecture.md`](docs/monorepo-architecture.md) for the full
-boundary.
+boundary. The exact import modules in
+[`docs/architecture-boundaries.json`](docs/architecture-boundaries.json) are
+the executable allowlist enforced against every production Python module; a
+listed package does not implicitly authorize its submodules.
 
 ## Workspace commands
 
@@ -251,6 +254,7 @@ checklist and site runbook have evidence for the actual host and release.
 - [`docs/internal-web-architecture.md`](docs/internal-web-architecture.md): web capabilities and security contract
 - [`docs/internal-web-operations-handoff.md`](docs/internal-web-operations-handoff.md): operator ownership and runbook handoff
 - [`docs/research-data-dictionary.md`](docs/research-data-dictionary.md): generated canonical dataset field semantics and ownership
+- [`docs/research-standard-authority.md`](docs/research-standard-authority.md): strict observation-to-hypothesis manifest, admission, lifecycle, and package binding
 - [`docs/strategy-development.md`](docs/strategy-development.md): strategy package authoring, validation, isolation, and retirement
 - [`docs/monorepo-iterations.md`](docs/monorepo-iterations.md): consolidation record and remaining gates
 - [`docs/release-checklist.md`](docs/release-checklist.md): release and promotion evidence checklist

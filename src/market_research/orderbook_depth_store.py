@@ -46,22 +46,6 @@ class OrderbookDepthLevel:
             evidence_name="orderbook_depth",
         )
 
-    def as_db_tuple(
-        self,
-    ) -> tuple[int, str, str, int, float, float, float, float, str, float | None]:
-        return (
-            self.ts,
-            self.pair,
-            self.side,
-            self.level_index,
-            self.price,
-            self.size,
-            self.cumulative_size,
-            self.cumulative_notional,
-            self.source,
-            self.observed_at_epoch_sec,
-        )
-
 
 @dataclass(frozen=True)
 class OrderbookDepthSnapshot:
@@ -155,40 +139,6 @@ def build_orderbook_depth_snapshot(
         source=str(source).strip(),
         observed_at_epoch_sec=observed,
     )
-
-
-def upsert_orderbook_depth_snapshot(
-    conn: sqlite3.Connection, snapshot: OrderbookDepthSnapshot
-) -> int:
-    validated = build_orderbook_depth_snapshot(
-        ts=snapshot.ts,
-        pair=snapshot.pair,
-        bid_levels=[(level.price, level.size) for level in snapshot.bids],
-        ask_levels=[(level.price, level.size) for level in snapshot.asks],
-        source=snapshot.source,
-        observed_at_epoch_sec=snapshot.observed_at_epoch_sec,
-    )
-    conn.execute(
-        """
-        DELETE FROM orderbook_depth_levels
-        WHERE ts=? AND pair=? AND source=?
-        """,
-        (validated.ts, validated.pair, validated.source),
-    )
-    count = 0
-    for level in validated.all_levels():
-        cur = conn.execute(
-            """
-            INSERT INTO orderbook_depth_levels(
-                ts, pair, side, level_index, price, size,
-                cumulative_size, cumulative_notional, source, observed_at_epoch_sec
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            level.as_db_tuple(),
-        )
-        count += int(cur.rowcount or 0)
-    return count
 
 
 def load_orderbook_depth_snapshot_after_or_equal(

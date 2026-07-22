@@ -125,6 +125,62 @@ def _stable_provenance(_repository: Path) -> RepositoryProvenance:
     return RepositoryProvenance(commit="b" * 40, dirty_diff_sha256="c" * 64)
 
 
+def test_runner_targets_only_full_criteria_and_pass_blockers(tmp_path: Path) -> None:
+    manifest_path, repository = _runner_fixture(tmp_path, criterion_count=1)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    full = manifest["criteria"][0]
+    full["id"] = "S1-C01"
+    full["current_assessment"] = {"status": "FULL"}
+    partial = {
+        "id": "S1-C02",
+        "current_assessment": {"status": "PARTIAL"},
+    }
+    pass_blocker = {
+        "id": "B-01",
+        "current_status": "PASS",
+        "evidence": json.loads(json.dumps(full["evidence"])),
+    }
+    pass_blocker["evidence"]["commands"][0]["id"] = "B-01-verification"
+    pass_blocker["evidence"]["receipts"][0].update(
+        {
+            "command_id": "B-01-verification",
+            "path": "receipts/B-01.json",
+        }
+    )
+    manifest["criteria"] = [full, partial]
+    manifest["blockers"] = [
+        pass_blocker,
+        {"id": "B-02", "current_status": "FAIL"},
+    ]
+    manifest["schema_version"] = 2
+    manifest["canonical_source"] = {
+        "sha256": "a" * 64,
+        "blocker_count": 19,
+    }
+
+    commands = platform_completeness._prepare_evidence_commands(
+        manifest=manifest,
+        repository_root=repository,
+        evidence_root=tmp_path / "evidence",
+    )
+
+    assert [(item.subject, item.command_id) for item in commands] == [
+        ("S1-C01", "X-01-verification"),
+        ("B-01", "B-01-verification"),
+    ]
+    resolved = platform_completeness._resolved_manifest_payload(
+        manifest=manifest,
+        receipt_hashes={
+            ("S1-C01", "X-01-verification"): "d" * 64,
+            ("B-01", "B-01-verification"): "e" * 64,
+        },
+    )
+    assert resolved["criteria"][0]["evidence"]["receipts"][0]["sha256"] == ("d" * 64)
+    assert "evidence" not in resolved["criteria"][1]
+    assert resolved["blockers"][0]["evidence"]["receipts"][0]["sha256"] == ("e" * 64)
+    assert "evidence" not in resolved["blockers"][1]
+
+
 def test_repository_provenance_binds_tracked_deletion_with_explicit_sentinel(
     tmp_path: Path,
 ) -> None:
@@ -244,10 +300,15 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
             kwargs["env"]["DJANGO_SETTINGS_MODULE"]
             == "market_research_web.settings_test"
         )
-        assert (
-            kwargs["env"]["INTERNAL_WEB_SECRET_KEY"]
-            == "test-only-not-for-production-0123456789abcdef"
+        assert "INTERNAL_WEB_SECRET_KEY" not in kwargs["env"]
+        assert "RUNNER_TEST_TOKEN" not in kwargs["env"]
+        assert set(kwargs["env"]) <= (
+            set(platform_completeness._SAFE_INHERITED_ENVIRONMENT_KEYS)
+            | set(platform_completeness._DETERMINISTIC_ENVIRONMENT)
+            | {"PYTHONPYCACHEPREFIX", "TEMP", "TMP", "TMPDIR"}
         )
+        assert not Path(kwargs["env"]["TMPDIR"]).is_relative_to(evidence_root)
+        assert Path(kwargs["env"]["TMPDIR"]).is_dir()
         return subprocess.CompletedProcess(
             command,
             0,
@@ -278,6 +339,16 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
         json.loads((evidence_root / f"receipts/X-0{number}.json").read_text())
         for number in (1, 2)
     ]
+    assert all(receipt["schema_version"] == 2 for receipt in receipts)
+    assert all(
+        set(receipt)
+        == set(platform_completeness._REPOSITORY_VERIFICATION_RECEIPT_FIELDS)
+        for receipt in receipts
+    )
+    assert all(
+        "RUNNER_TEST_TOKEN" in receipt["secret_environment_keys_removed"]
+        for receipt in receipts
+    )
     assert receipts[0]["command_group_id"] == receipts[1]["command_group_id"]
     stdout = (evidence_root / receipts[0]["stdout_path"]).read_text()
     stderr = (evidence_root / receipts[0]["stderr_path"]).read_text()
@@ -286,12 +357,11 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
     ledger = json.loads(result.ledger_json.read_text(encoding="utf-8"))
     assert ledger["execution_policy"]["shell"] is False
     assert ledger["execution_policy"]["unique_command_count"] == 1
+    assert "INTERNAL_WEB_SECRET_KEY" not in ledger["execution_policy"]["environment"]
+    assert "RUNNER_TEST_TOKEN" not in ledger["execution_policy"]["environment"]
     assert (
-        ledger["execution_policy"]["environment"]["INTERNAL_WEB_SECRET_KEY"]
-        == "<redacted>"
-    )
-    assert (
-        ledger["execution_policy"]["environment"]["RUNNER_TEST_TOKEN"] == "<redacted>"
+        "RUNNER_TEST_TOKEN"
+        in ledger["execution_policy"]["secret_environment_keys_removed"]
     )
     assert (
         ledger["execution_policy"]["environment"]["DJANGO_SETTINGS_MODULE"]
@@ -313,6 +383,172 @@ def test_runner_groups_commands_redacts_secrets_and_emits_valid_bundle(
     assert "receipt_stdout_hash_mismatch" in {
         finding.code for finding in tampered.findings
     }
+
+
+def test_runner_receipt_is_invalidated_by_current_checkout_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, repository = _runner_fixture(tmp_path)
+    evidence_root = tmp_path / "evidence"
+    current = [_stable_provenance(repository)]
+    provenance_calls = 0
+
+    def changing_provenance(_repository: Path) -> RepositoryProvenance:
+        nonlocal provenance_calls
+        provenance_calls += 1
+        return current[0]
+
+    def passed(
+        command: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, stdout=b"2 passed\n", stderr=b"")
+
+    monkeypatch.setattr(
+        platform_completeness, "_repository_provenance", changing_provenance
+    )
+    monkeypatch.setattr(platform_completeness.subprocess, "run", passed)
+    result = run_manifest_evidence(
+        manifest_path,
+        repository_root=repository,
+        evidence_root=evidence_root,
+        timeout_seconds=1.0,
+    )
+
+    assert result.complete is True
+    assert provenance_calls == 3
+    current[0] = RepositoryProvenance(
+        commit=current[0].commit,
+        dirty_diff_sha256="d" * 64,
+    )
+    stale = evaluate_manifest(
+        result.resolved_manifest,
+        repository_root=repository,
+        evidence_root=evidence_root,
+    )
+
+    assert provenance_calls == 4
+    assert stale.complete is False
+    assert "repository_receipt_dirty_diff_mismatch" in {
+        finding.code for finding in stale.findings
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("remove_stdout_path", "repository_receipt_fields_mismatch"),
+        ("wrong_group", "repository_receipt_group_mismatch"),
+        ("ineligible", "repository_receipt_ineligible"),
+        ("disqualified", "repository_receipt_disqualified"),
+        ("downgrade_kind", "repository_verification_receipt_required"),
+    ],
+)
+def test_repository_verification_receipt_schema_fails_closed_on_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected_code: str,
+) -> None:
+    manifest_path, repository = _runner_fixture(tmp_path, criterion_count=1)
+    evidence_root = tmp_path / "evidence"
+    monkeypatch.setattr(
+        platform_completeness, "_repository_provenance", _stable_provenance
+    )
+
+    def passed(
+        command: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, stdout=b"1 passed\n", stderr=b"")
+
+    monkeypatch.setattr(platform_completeness.subprocess, "run", passed)
+    result = run_manifest_evidence(
+        manifest_path,
+        repository_root=repository,
+        evidence_root=evidence_root,
+        timeout_seconds=1.0,
+    )
+    receipt_path = evidence_root / "receipts" / "X-01.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if mutation == "remove_stdout_path":
+        receipt.pop("stdout_path")
+    elif mutation == "wrong_group":
+        receipt["command_group_id"] = "0" * 24
+    elif mutation == "ineligible":
+        receipt["evidence_eligible"] = False
+    elif mutation == "downgrade_kind":
+        receipt["kind"] = "test"
+        receipt["schema_version"] = 1
+    else:
+        receipt["disqualifying_outcomes"] = ["pytest_skipped"]
+    _write_json(receipt_path, receipt)
+    resolved = json.loads(result.resolved_manifest.read_text(encoding="utf-8"))
+    resolved["criteria"][0]["evidence"]["receipts"][0]["sha256"] = sha256_path(
+        receipt_path
+    )
+    _write_json(result.resolved_manifest, resolved)
+
+    evaluation = evaluate_manifest(
+        result.resolved_manifest,
+        repository_root=repository,
+        evidence_root=evidence_root,
+    )
+
+    assert evaluation.complete is False
+    assert expected_code in {finding.code for finding in evaluation.findings}
+
+
+def test_evidence_writer_rejects_parent_and_leaf_symlinks(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir(mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (evidence_root / "logs").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(EvidenceRunError, match="evidence parent is unsafe"):
+        platform_completeness._atomic_write_evidence(
+            evidence_root / "logs" / "command.log",
+            b"safe\n",
+            evidence_root=evidence_root,
+        )
+    assert list(outside.iterdir()) == []
+
+    (evidence_root / "logs").unlink()
+    receipts = evidence_root / "receipts"
+    receipts.mkdir(mode=0o700)
+    outside_file = outside / "protected.txt"
+    outside_file.write_bytes(b"protected\n")
+    (receipts / "X-01.json").symlink_to(outside_file)
+    with pytest.raises(EvidenceRunError, match="existing evidence file is unsafe"):
+        platform_completeness._atomic_write_evidence(
+            receipts / "X-01.json",
+            b"replacement\n",
+            evidence_root=evidence_root,
+        )
+    assert outside_file.read_bytes() == b"protected\n"
+
+
+def test_evidence_writer_create_or_verify_is_atomic_and_immutable(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir(mode=0o700)
+    target = evidence_root / "receipts" / "X-01.json"
+
+    platform_completeness._atomic_write_evidence(
+        target, b"receipt\n", evidence_root=evidence_root
+    )
+    platform_completeness._atomic_write_evidence(
+        target, b"receipt\n", evidence_root=evidence_root
+    )
+
+    assert target.read_bytes() == b"receipt\n"
+    assert target.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(EvidenceRunError, match="content differs"):
+        platform_completeness._atomic_write_evidence(
+            target, b"changed\n", evidence_root=evidence_root
+        )
+    assert target.read_bytes() == b"receipt\n"
 
 
 @pytest.mark.parametrize(

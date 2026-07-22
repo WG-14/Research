@@ -42,6 +42,7 @@ from market_research.research.derivatives.options import (
     simulate_option_lifecycle,
     standard_option_robustness_cases,
 )
+from tests.test_options_derivative_research import _settlement_input
 
 
 NOW = "2026-01-02T12:00:30+00:00"
@@ -127,9 +128,7 @@ def _quote(
     )
 
 
-def _valuation(
-    contract: OptionContract, quote: OptionQuote
-) -> ValuationInputSnapshot:
+def _valuation(contract: OptionContract, quote: OptionQuote) -> ValuationInputSnapshot:
     availability = quote.availability
     return ValuationInputSnapshot(
         valuation_input_id=f"valuation.{contract.contract_id}",
@@ -159,9 +158,7 @@ def _fill_and_position(
         contract=contract,
         quote=quote,
         side=(
-            TransactionSide.BUY
-            if side is PositionSide.LONG
-            else TransactionSide.SELL
+            TransactionSide.BUY if side is PositionSide.LONG else TransactionSide.SELL
         ),
         quantity=Decimal("1"),
         filled_at=NOW,
@@ -173,12 +170,8 @@ def _fill_and_position(
 
 
 def _robustness_input() -> OptionRobustnessInput:
-    euro_long = _contract(
-        "euro_call_100_near", strike="100", expiration_at=NEAR_EXPIRY
-    )
-    euro_short = _contract(
-        "euro_call_110_far", strike="110", expiration_at=FAR_EXPIRY
-    )
+    euro_long = _contract("euro_call_100_near", strike="100", expiration_at=NEAR_EXPIRY)
+    euro_short = _contract("euro_call_110_far", strike="110", expiration_at=FAR_EXPIRY)
     american_long = _contract(
         "american_call_80_near",
         strike="80",
@@ -251,15 +244,9 @@ def _robustness_input() -> OptionRobustnessInput:
         quality_results=quality,
     )
     fill_position_rows = (
-        _fill_and_position(
-            euro_long, euro_long_quote, side=PositionSide.LONG
-        ),
-        _fill_and_position(
-            euro_short, euro_short_quote, side=PositionSide.SHORT
-        ),
-        _fill_and_position(
-            american_long, american_long_quote, side=PositionSide.LONG
-        ),
+        _fill_and_position(euro_long, euro_long_quote, side=PositionSide.LONG),
+        _fill_and_position(euro_short, euro_short_quote, side=PositionSide.SHORT),
+        _fill_and_position(american_long, american_long_quote, side=PositionSide.LONG),
         _fill_and_position(
             american_short, american_short_quote, side=PositionSide.SHORT
         ),
@@ -273,17 +260,12 @@ def _robustness_input() -> OptionRobustnessInput:
     )
     reference_model = BlackScholesModel(model_version="iv_reference_v1")
     comparison_model = BlackScholesModel(model_version="iv_conservative_v1")
-    base_iv = tuple(
-        reference_model.implied_volatility(item) for item in valuations
-    )
+    base_iv = tuple(reference_model.implied_volatility(item) for item in valuations)
     comparison_iv = tuple(
-        comparison_model.implied_volatility(item, item.quote.ask)
-        for item in valuations
+        comparison_model.implied_volatility(item, item.quote.ask) for item in valuations
     )
     assert all(item.success and item.volatility is not None for item in base_iv)
-    assert all(
-        item.success and item.volatility is not None for item in comparison_iv
-    )
+    assert all(item.success and item.volatility is not None for item in comparison_iv)
     greeks = tuple(
         reference_model.greeks(item, iv.volatility)
         for item, iv in zip(valuations, base_iv, strict=True)
@@ -335,9 +317,7 @@ def _robustness_input() -> OptionRobustnessInput:
         mark_option_position(
             position,
             quote=value_input.quote,
-            theoretical_price=reference_model.price(
-                value_input, iv.volatility
-            ),
+            theoretical_price=reference_model.price(value_input, iv.volatility),
             theoretical_input_hash=value_input.content_hash,
             marked_at=NOW,
         )
@@ -359,7 +339,9 @@ def _robustness_input() -> OptionRobustnessInput:
                 position,
                 event_id=f"lifecycle.{position.position_id}",
                 event_at=NOW,
-                settlement_spot=Decimal("100"),
+                settlement_input=_settlement_input(
+                    position.contract, "100", settlement_at=NOW
+                ),
                 early_exercise_decision=decision,
             )
         )
@@ -396,9 +378,7 @@ def _robustness_input() -> OptionRobustnessInput:
         run_type=RunType.ROBUSTNESS,
         chain_snapshot=chain,
         positions=positions,
-        priced_position_ids=tuple(
-            item.position_id for item in priced_positions
-        ),
+        priced_position_ids=tuple(item.position_id for item in priced_positions),
         valuation_inputs=valuations,
         base_iv_results=base_iv,
         comparison_iv_results=comparison_iv,
@@ -444,9 +424,7 @@ def test_complete_option_robustness_suite_executes_all_twenty_dimensions() -> No
     )
 
     assert len(executions) == 20
-    assert {item.dimension for item in executions} == set(
-        OptionRobustnessDimension
-    )
+    assert {item.dimension for item in executions} == set(OptionRobustnessDimension)
     assert summary.content_hash == repeated_summary.content_hash
     assert tuple(item.content_hash for item in executions) == tuple(
         item.content_hash for item in repeated
@@ -467,15 +445,11 @@ def test_required_option_stress_variants_and_tail_evidence_are_materialized() ->
     by_dimension = {item.dimension: item for item in executions}
     spread_ids = {
         item.metric_id
-        for item in by_dimension[
-            OptionRobustnessDimension.BID_ASK_COST
-        ].metrics
+        for item in by_dimension[OptionRobustnessDimension.BID_ASK_COST].metrics
     }
     selection_ids = {
         item.metric_id
-        for item in by_dimension[
-            OptionRobustnessDimension.CHAIN_SELECTION
-        ].metrics
+        for item in by_dimension[OptionRobustnessDimension.CHAIN_SELECTION].metrics
     }
 
     assert spread_ids == {"spread.1", "spread.1.5", "spread.2"}
@@ -490,15 +464,11 @@ def test_required_option_stress_variants_and_tail_evidence_are_materialized() ->
     ].derived_artifact_hashes
     assert any(
         item.metric_id == "rare_loss.total" and item.value > 0
-        for item in by_dimension[
-            OptionRobustnessDimension.SHORT_RARE_LOSS
-        ].metrics
+        for item in by_dimension[OptionRobustnessDimension.SHORT_RARE_LOSS].metrics
     )
     assert any(
         item.metric_id == "lifecycle.assignment.count" and item.value == 1
-        for item in by_dimension[
-            OptionRobustnessDimension.EXERCISE_ASSIGNMENT
-        ].metrics
+        for item in by_dimension[OptionRobustnessDimension.EXERCISE_ASSIGNMENT].metrics
     )
 
 

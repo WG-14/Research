@@ -39,6 +39,11 @@ _ZERO = Decimal("0")
 _ONE = Decimal("1")
 
 
+def _require_schema_version(value: int) -> None:
+    if value != DERIVATIVE_RESEARCH_SCHEMA_VERSION:
+        raise DerivativeResearchError("option_schema_version_unsupported")
+
+
 def _computed_decimal(value: float) -> Decimal:
     if not math.isfinite(value):
         raise DerivativeResearchError("option_computation_non_finite")
@@ -65,7 +70,14 @@ def _require_enum(value: object, enum_type: type[StrEnum], field_name: str) -> N
 
 
 def _time_years(start: str, end: str) -> Decimal:
-    seconds = Decimal(str((parse_timestamp(end, "option.time_end") - parse_timestamp(start, "option.time_start")).total_seconds()))
+    seconds = Decimal(
+        str(
+            (
+                parse_timestamp(end, "option.time_end")
+                - parse_timestamp(start, "option.time_start")
+            ).total_seconds()
+        )
+    )
     return max(_ZERO, seconds / _SECONDS_PER_YEAR)
 
 
@@ -185,6 +197,7 @@ class OptionContract:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(self.contract_id, "option_contract.contract_id")
         require_stable_id(self.underlying_id, "option_contract.underlying_id")
         _require_enum(self.option_type, OptionType, "option_contract.option_type")
@@ -228,7 +241,9 @@ class OptionContract:
             for item in self.bermudan_exercise_at
         )
         if self.exercise_style is ExerciseStyle.BERMUDAN:
-            if not bermudan or any(not listing <= item <= expiration for item in bermudan):
+            if not bermudan or any(
+                not listing <= item <= expiration for item in bermudan
+            ):
                 raise DerivativeResearchError("bermudan_exercise_schedule_invalid")
             if tuple(sorted(bermudan)) != bermudan or len(set(bermudan)) != len(
                 bermudan
@@ -330,6 +345,7 @@ class OptionQuote:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(self.quote_id, "option_quote.quote_id")
         require_stable_id(self.contract_id, "option_quote.contract_id")
         if not isinstance(self.availability, AvailabilityTimes):
@@ -337,15 +353,9 @@ class OptionQuote:
         as_of = parse_timestamp(self.as_of, "option_quote.as_of")
         if not self.availability.known_at(self.as_of):
             raise DerivativeResearchError("option_quote_not_known_at_as_of")
-        bid = _optional_decimal(
-            self.bid, "option_quote.bid", non_negative=True
-        )
-        ask = _optional_decimal(
-            self.ask, "option_quote.ask", non_negative=True
-        )
-        last = _optional_decimal(
-            self.last, "option_quote.last", non_negative=True
-        )
+        bid = _optional_decimal(self.bid, "option_quote.bid", non_negative=True)
+        ask = _optional_decimal(self.ask, "option_quote.ask", non_negative=True)
+        last = _optional_decimal(self.last, "option_quote.last", non_negative=True)
         bid_size = exact_decimal(self.bid_size, "option_quote.bid_size")
         ask_size = exact_decimal(self.ask_size, "option_quote.ask_size")
         max_spread = exact_decimal(
@@ -370,7 +380,9 @@ class OptionQuote:
         object.__setattr__(self, "bid_size", bid_size)
         object.__setattr__(self, "ask_size", ask_size)
         object.__setattr__(self, "max_spread_ratio", max_spread)
-        age = (as_of - parse_timestamp(self.availability.event_at, "quote.event_at")).total_seconds()
+        age = (
+            as_of - parse_timestamp(self.availability.event_at, "quote.event_at")
+        ).total_seconds()
         if bid is None or ask is None:
             state = QuoteState.NO_QUOTE
         elif bid > ask:
@@ -475,11 +487,12 @@ class OptionChainSnapshot:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        require_stable_id(
-            self.chain_snapshot_id, "option_chain.chain_snapshot_id"
-        )
+        _require_schema_version(self.schema_version)
+        require_stable_id(self.chain_snapshot_id, "option_chain.chain_snapshot_id")
         require_stable_id(self.underlying_id, "option_chain.underlying_id")
-        parse_timestamp(self.knowledge_time, "option_chain.knowledge_time")
+        knowledge_time = parse_timestamp(
+            self.knowledge_time, "option_chain.knowledge_time"
+        )
         underlying_price = exact_decimal(
             self.underlying_price, "option_chain.underlying_price", positive=True
         )
@@ -508,8 +521,15 @@ class OptionChainSnapshot:
             raise DerivativeResearchError("option_chain_quote_duplicate")
         if set(quote_ids) != set(contract_ids):
             raise DerivativeResearchError("option_chain_quote_coverage_mismatch")
-        if any(not item.availability.known_at(self.knowledge_time) for item in self.quotes):
+        if any(
+            not item.availability.known_at(self.knowledge_time) for item in self.quotes
+        ):
             raise DerivativeResearchError("option_chain_quote_future_knowledge")
+        if any(
+            parse_timestamp(item.as_of, "option_quote.as_of") > knowledge_time
+            for item in self.quotes
+        ):
+            raise DerivativeResearchError("option_chain_quote_future_as_of")
         if not self.source_manifest_hashes:
             raise DerivativeResearchError("option_chain_source_manifest_required")
         for value in self.source_manifest_hashes:
@@ -561,7 +581,9 @@ class OptionChainSnapshot:
             if quote.state is not QuoteState.NORMAL:
                 continue
             selected.append(contract)
-        return tuple(sorted(selected, key=lambda item: (item.expiration_at, item.strike)))
+        return tuple(
+            sorted(selected, key=lambda item: (item.expiration_at, item.strike))
+        )
 
     def admit(self, run_type: RunType) -> None:
         if run_type in {RunType.CONFIRMATORY, RunType.PROSPECTIVE}:
@@ -632,6 +654,162 @@ def _normal_pdf(value: float) -> float:
     return math.exp(-0.5 * value * value) / math.sqrt(2.0 * math.pi)
 
 
+@dataclass(frozen=True, slots=True)
+class BlackScholesIVSemanticResult:
+    """Deterministic numerical result shared by runtime and persisted verification."""
+
+    failure: IVFailure
+    volatility: Decimal | None
+    iterations: int
+    lower_price_bound: Decimal
+    upper_price_bound: Decimal
+    model_price: Decimal | None
+    residual: Decimal | None
+
+
+def _black_scholes_price_float(
+    *,
+    option_type: OptionType,
+    spot: float,
+    strike: float,
+    risk_free_rate: float,
+    dividend_yield: float,
+    time_years: float,
+    volatility: float,
+) -> float:
+    if time_years <= 0:
+        return (
+            max(spot - strike, 0.0)
+            if option_type is OptionType.CALL
+            else max(strike - spot, 0.0)
+        )
+    root_time = math.sqrt(time_years)
+    d1 = (
+        math.log(spot / strike)
+        + (risk_free_rate - dividend_yield + 0.5 * volatility * volatility) * time_years
+    ) / (volatility * root_time)
+    d2 = d1 - volatility * root_time
+    if option_type is OptionType.CALL:
+        return spot * math.exp(-dividend_yield * time_years) * _normal_cdf(
+            d1
+        ) - strike * math.exp(-risk_free_rate * time_years) * _normal_cdf(d2)
+    return strike * math.exp(-risk_free_rate * time_years) * _normal_cdf(
+        -d2
+    ) - spot * math.exp(-dividend_yield * time_years) * _normal_cdf(-d1)
+
+
+def _black_scholes_arbitrage_bounds(
+    *,
+    option_type: OptionType,
+    spot: Decimal,
+    strike: Decimal,
+    risk_free_rate: Decimal,
+    dividend_yield: Decimal,
+    time_years: Decimal,
+) -> tuple[Decimal, Decimal]:
+    time = float(time_years)
+    discounted_spot = float(spot) * math.exp(-float(dividend_yield) * time)
+    discounted_strike = float(strike) * math.exp(-float(risk_free_rate) * time)
+    if option_type is OptionType.CALL:
+        lower = max(0.0, discounted_spot - discounted_strike)
+        upper = discounted_spot
+    else:
+        lower = max(0.0, discounted_strike - discounted_spot)
+        upper = discounted_strike
+    return _computed_decimal(lower), _computed_decimal(upper)
+
+
+def solve_black_scholes_implied_volatility(
+    *,
+    option_type: OptionType,
+    spot: Decimal,
+    strike: Decimal,
+    risk_free_rate: Decimal,
+    dividend_yield: Decimal,
+    time_years: Decimal,
+    market_price: Decimal,
+    minimum_volatility: Decimal,
+    maximum_volatility: Decimal,
+    price_tolerance: Decimal,
+    maximum_iterations: int,
+) -> BlackScholesIVSemanticResult:
+    """Run the canonical bisection solver from primitive immutable inputs."""
+
+    time = float(time_years)
+    lower, upper = _black_scholes_arbitrage_bounds(
+        option_type=option_type,
+        spot=spot,
+        strike=strike,
+        risk_free_rate=risk_free_rate,
+        dividend_yield=dividend_yield,
+        time_years=time_years,
+    )
+    if market_price < lower - price_tolerance or market_price > upper + price_tolerance:
+        return BlackScholesIVSemanticResult(
+            failure=IVFailure.OUTSIDE_ARBITRAGE_BOUNDS,
+            volatility=None,
+            iterations=0,
+            lower_price_bound=lower,
+            upper_price_bound=upper,
+            model_price=None,
+            residual=None,
+        )
+    low = float(minimum_volatility)
+    high = float(maximum_volatility)
+    target = float(market_price)
+
+    def model_price(volatility: float) -> float:
+        return _black_scholes_price_float(
+            option_type=option_type,
+            spot=float(spot),
+            strike=float(strike),
+            risk_free_rate=float(risk_free_rate),
+            dividend_yield=float(dividend_yield),
+            time_years=time,
+            volatility=volatility,
+        )
+
+    if model_price(high) + float(price_tolerance) < target:
+        return BlackScholesIVSemanticResult(
+            failure=IVFailure.NO_SOLUTION,
+            volatility=None,
+            iterations=0,
+            lower_price_bound=lower,
+            upper_price_bound=upper,
+            model_price=None,
+            residual=None,
+        )
+    iterations = 0
+    while iterations < maximum_iterations:
+        iterations += 1
+        midpoint = (low + high) / 2.0
+        computed = model_price(midpoint)
+        difference = computed - target
+        if abs(difference) <= float(price_tolerance):
+            return BlackScholesIVSemanticResult(
+                failure=IVFailure.NONE,
+                volatility=_computed_decimal(midpoint),
+                iterations=iterations,
+                lower_price_bound=lower,
+                upper_price_bound=upper,
+                model_price=_computed_decimal(computed),
+                residual=_computed_decimal(abs(difference)),
+            )
+        if difference > 0:
+            high = midpoint
+        else:
+            low = midpoint
+    return BlackScholesIVSemanticResult(
+        failure=IVFailure.NO_SOLUTION,
+        volatility=None,
+        iterations=iterations,
+        lower_price_bound=lower,
+        upper_price_bound=upper,
+        model_price=None,
+        residual=None,
+    )
+
+
 def _arbitrage_bounds(
     contract: OptionContract,
     *,
@@ -640,18 +818,14 @@ def _arbitrage_bounds(
     dividend_yield: Decimal,
     valuation_at: str,
 ) -> tuple[Decimal, Decimal]:
-    time = float(_time_years(valuation_at, contract.expiration_at))
-    discounted_spot = float(spot) * math.exp(-float(dividend_yield) * time)
-    discounted_strike = float(contract.strike) * math.exp(
-        -float(risk_free_rate) * time
+    return _black_scholes_arbitrage_bounds(
+        option_type=contract.option_type,
+        spot=spot,
+        strike=contract.strike,
+        risk_free_rate=risk_free_rate,
+        dividend_yield=dividend_yield,
+        time_years=_time_years(valuation_at, contract.expiration_at),
     )
-    if contract.option_type is OptionType.CALL:
-        lower = max(0.0, discounted_spot - discounted_strike)
-        upper = discounted_spot
-    else:
-        lower = max(0.0, discounted_strike - discounted_spot)
-        upper = discounted_strike
-    return _computed_decimal(lower), _computed_decimal(upper)
 
 
 def evaluate_option_chain_quality(
@@ -721,9 +895,9 @@ def evaluate_option_chain_quality(
         )
         if midpoint < lower - tolerance or midpoint > upper + tolerance:
             bound_violations.append(contract.contract_id)
-        usable.setdefault(
-            (contract.expiration_at, contract.option_type), []
-        ).append((contract, midpoint))
+        usable.setdefault((contract.expiration_at, contract.option_type), []).append(
+            (contract, midpoint)
+        )
     results.append(
         QualityResult(
             check_id="option.theoretical_bounds",
@@ -768,18 +942,14 @@ def evaluate_option_chain_quality(
             QualityResult(
                 check_id="option.strike_monotonicity",
                 check_version="1",
-                decision=QualityDecision.FAILED
-                if monotonic
-                else QualityDecision.PASS,
+                decision=QualityDecision.FAILED if monotonic else QualityDecision.PASS,
                 affected_ids=tuple(sorted(set(monotonic))),
                 diagnostics=("strike_monotonicity_violation",) if monotonic else (),
             ),
             QualityResult(
                 check_id="option.strike_convexity",
                 check_version="1",
-                decision=QualityDecision.FAILED
-                if convexity
-                else QualityDecision.PASS,
+                decision=QualityDecision.FAILED if convexity else QualityDecision.PASS,
                 affected_ids=tuple(sorted(set(convexity))),
                 diagnostics=("strike_convexity_violation",) if convexity else (),
             ),
@@ -799,7 +969,9 @@ def evaluate_option_chain_quality(
         call, call_price = sides[OptionType.CALL]
         put, put_price = sides[OptionType.PUT]
         time = float(_time_years(snapshot.knowledge_time, expiry))
-        expected = float(snapshot.underlying_price) * math.exp(-float(dividend) * time) - float(call.strike) * math.exp(-float(rate) * time)
+        expected = float(snapshot.underlying_price) * math.exp(
+            -float(dividend) * time
+        ) - float(call.strike) * math.exp(-float(rate) * time)
         if abs(float(call_price - put_price) - expected) > float(tolerance):
             parity_violations.extend((call.contract_id, put.contract_id))
     results.append(
@@ -839,6 +1011,7 @@ class ValuationInputSnapshot:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(
             self.valuation_input_id, "option_valuation_input.valuation_input_id"
         )
@@ -851,6 +1024,8 @@ class ValuationInputSnapshot:
         valuation = parse_timestamp(
             self.valuation_at, "option_valuation_input.valuation_at"
         )
+        if valuation != parse_timestamp(self.quote.as_of, "option_quote.as_of"):
+            raise DerivativeResearchError("option_valuation_quote_time_mismatch")
         if valuation > parse_timestamp(
             self.contract.expiration_at, "option_contract.expiration_at"
         ):
@@ -895,13 +1070,17 @@ class ValuationInputSnapshot:
         if any(not item.known_at(self.valuation_at) for item in availabilities):
             raise DerivativeResearchError("option_valuation_input_future_knowledge")
         processed = [item.available_at for item in availabilities]
-        if (max(processed) - min(processed)).total_seconds() > self.maximum_alignment_seconds:
+        if (
+            max(processed) - min(processed)
+        ).total_seconds() > self.maximum_alignment_seconds:
             raise DerivativeResearchError("option_valuation_inputs_not_time_aligned")
         event_times = [
             parse_timestamp(item.event_at, "option_valuation_input.event_at")
             for item in availabilities
         ]
-        if (max(event_times) - min(event_times)).total_seconds() > self.maximum_alignment_seconds:
+        if (
+            max(event_times) - min(event_times)
+        ).total_seconds() > self.maximum_alignment_seconds:
             raise DerivativeResearchError("option_valuation_events_not_time_aligned")
         time = float(_time_years(self.valuation_at, self.contract.expiration_at))
         implied_forward = float(spot) * math.exp(float(rate - dividend) * time)
@@ -988,7 +1167,11 @@ class ImpliedVolatilityResult:
         if self.iterations < 0:
             raise DerivativeResearchError("option_iv_iterations_invalid")
         if self.success:
-            if volatility is None or volatility <= 0 or self.failure is not IVFailure.NONE:
+            if (
+                volatility is None
+                or volatility <= 0
+                or self.failure is not IVFailure.NONE
+            ):
                 raise DerivativeResearchError("option_iv_success_contract_invalid")
         elif volatility is not None or self.failure is IVFailure.NONE:
             raise DerivativeResearchError("option_iv_failure_contract_invalid")
@@ -1088,6 +1271,7 @@ class BlackScholesModel:
     maximum_volatility: Decimal = Decimal("5")
     price_tolerance: Decimal = Decimal("0.00000001")
     maximum_iterations: int = 200
+    content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         require_stable_id(self.model_version, "option_model.model_version")
@@ -1107,10 +1291,25 @@ class BlackScholesModel:
         object.__setattr__(self, "minimum_volatility", minimum)
         object.__setattr__(self, "maximum_volatility", maximum)
         object.__setattr__(self, "price_tolerance", tolerance)
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(self.identity_payload(), label="option_valuation_model"),
+        )
 
-    def price(
-        self, inputs: ValuationInputSnapshot, volatility: Decimal
-    ) -> Decimal:
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "model_version": self.model_version,
+            "minimum_volatility": decimal_text(self.minimum_volatility),
+            "maximum_volatility": decimal_text(self.maximum_volatility),
+            "price_tolerance": decimal_text(self.price_tolerance),
+            "maximum_iterations": self.maximum_iterations,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        return {**self.identity_payload(), "content_hash": self.content_hash}
+
+    def price(self, inputs: ValuationInputSnapshot, volatility: Decimal) -> Decimal:
         if inputs.contract.exercise_style is not ExerciseStyle.EUROPEAN:
             raise DerivativeResearchError("black_scholes_requires_european_option")
         sigma = exact_decimal(volatility, "option_model.volatility", positive=True)
@@ -1118,31 +1317,15 @@ class BlackScholesModel:
 
     def _price_float(self, inputs: ValuationInputSnapshot, sigma: float) -> float:
         contract = inputs.contract
-        spot = float(inputs.spot_price)
-        strike = float(contract.strike)
-        rate = float(inputs.risk_free_rate)
-        dividend = float(inputs.dividend_yield)
-        time = float(inputs.time_to_expiry_years)
-        if time <= 0:
-            intrinsic = (
-                max(spot - strike, 0.0)
-                if contract.option_type is OptionType.CALL
-                else max(strike - spot, 0.0)
-            )
-            return intrinsic
-        root_time = math.sqrt(time)
-        d1 = (
-            math.log(spot / strike)
-            + (rate - dividend + 0.5 * sigma * sigma) * time
-        ) / (sigma * root_time)
-        d2 = d1 - sigma * root_time
-        if contract.option_type is OptionType.CALL:
-            return spot * math.exp(-dividend * time) * _normal_cdf(d1) - strike * math.exp(
-                -rate * time
-            ) * _normal_cdf(d2)
-        return strike * math.exp(-rate * time) * _normal_cdf(-d2) - spot * math.exp(
-            -dividend * time
-        ) * _normal_cdf(-d1)
+        return _black_scholes_price_float(
+            option_type=contract.option_type,
+            spot=float(inputs.spot_price),
+            strike=float(contract.strike),
+            risk_free_rate=float(inputs.risk_free_rate),
+            dividend_yield=float(inputs.dividend_yield),
+            time_years=float(inputs.time_to_expiry_years),
+            volatility=sigma,
+        )
 
     def implied_volatility(
         self,
@@ -1175,61 +1358,49 @@ class BlackScholesModel:
             return self._iv_failure(inputs, IVFailure.INVALID_INPUT, selected)
         if inputs.contract.exercise_style is not ExerciseStyle.EUROPEAN:
             return self._iv_failure(inputs, IVFailure.INVALID_INPUT, selected)
-        lower, upper = _arbitrage_bounds(
-            inputs.contract,
+        semantic = solve_black_scholes_implied_volatility(
+            option_type=inputs.contract.option_type,
             spot=inputs.spot_price,
+            strike=inputs.contract.strike,
             risk_free_rate=inputs.risk_free_rate,
             dividend_yield=inputs.dividend_yield,
-            valuation_at=inputs.valuation_at,
+            time_years=inputs.time_to_expiry_years,
+            market_price=selected,
+            minimum_volatility=self.minimum_volatility,
+            maximum_volatility=self.maximum_volatility,
+            price_tolerance=self.price_tolerance,
+            maximum_iterations=self.maximum_iterations,
         )
-        if selected < lower - self.price_tolerance or selected > upper + self.price_tolerance:
+        if semantic.failure is IVFailure.OUTSIDE_ARBITRAGE_BOUNDS:
             return self._iv_failure(
                 inputs,
                 IVFailure.OUTSIDE_ARBITRAGE_BOUNDS,
                 selected,
-                lower=lower,
-                upper=upper,
+                lower=semantic.lower_price_bound,
+                upper=semantic.upper_price_bound,
             )
-        low = float(self.minimum_volatility)
-        high = float(self.maximum_volatility)
-        target = float(selected)
-        if self._price_float(inputs, high) + float(self.price_tolerance) < target:
+        if semantic.failure is IVFailure.NO_SOLUTION:
             return self._iv_failure(
                 inputs,
                 IVFailure.NO_SOLUTION,
                 selected,
-                lower=lower,
-                upper=upper,
+                lower=semantic.lower_price_bound,
+                upper=semantic.upper_price_bound,
+                iterations=semantic.iterations,
             )
-        iterations = 0
-        while iterations < self.maximum_iterations:
-            iterations += 1
-            midpoint = (low + high) / 2.0
-            difference = self._price_float(inputs, midpoint) - target
-            if abs(difference) <= float(self.price_tolerance):
-                return ImpliedVolatilityResult(
-                    contract_id=inputs.contract.contract_id,
-                    valuation_input_hash=inputs.content_hash,
-                    model_version=self.model_version,
-                    success=True,
-                    volatility=_computed_decimal(midpoint),
-                    failure=IVFailure.NONE,
-                    iterations=iterations,
-                    market_price=selected,
-                    lower_price_bound=lower,
-                    upper_price_bound=upper,
-                )
-            if difference > 0:
-                high = midpoint
-            else:
-                low = midpoint
-        return self._iv_failure(
-            inputs,
-            IVFailure.NO_SOLUTION,
-            selected,
-            lower=lower,
-            upper=upper,
-            iterations=iterations,
+        if semantic.volatility is None:
+            raise DerivativeResearchError("option_iv_solver_success_missing_volatility")
+        return ImpliedVolatilityResult(
+            contract_id=inputs.contract.contract_id,
+            valuation_input_hash=inputs.content_hash,
+            model_version=self.model_version,
+            success=True,
+            volatility=semantic.volatility,
+            failure=IVFailure.NONE,
+            iterations=semantic.iterations,
+            market_price=selected,
+            lower_price_bound=semantic.lower_price_bound,
+            upper_price_bound=semantic.upper_price_bound,
         )
 
     def _iv_failure(
@@ -1272,8 +1443,7 @@ class BlackScholesModel:
         dividend = float(inputs.dividend_yield)
         root_time = math.sqrt(time)
         d1 = (
-            math.log(spot / strike)
-            + (rate - dividend + sigma * sigma / 2.0) * time
+            math.log(spot / strike) + (rate - dividend + sigma * sigma / 2.0) * time
         ) / (sigma * root_time)
         d2 = d1 - sigma * root_time
         discounted_spot = math.exp(-dividend * time)
@@ -1367,6 +1537,7 @@ class VolatilitySurface:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(self.surface_id, "option_surface.surface_id")
         require_stable_id(self.underlying_id, "option_surface.underlying_id")
         as_of = parse_timestamp(self.as_of, "option_surface.as_of")
@@ -1390,7 +1561,9 @@ class VolatilitySurface:
         object.__setattr__(
             self,
             "points",
-            tuple(sorted(self.points, key=lambda item: (item.expiration_at, item.strike))),
+            tuple(
+                sorted(self.points, key=lambda item: (item.expiration_at, item.strike))
+            ),
         )
         object.__setattr__(
             self,
@@ -1402,9 +1575,7 @@ class VolatilitySurface:
     def model_version(self) -> str:
         return self.points[0].model_version
 
-    def _strike_interpolation(
-        self, expiration_at: str, strike: Decimal
-    ) -> Decimal:
+    def _strike_interpolation(self, expiration_at: str, strike: Decimal) -> Decimal:
         rows = [item for item in self.points if item.expiration_at == expiration_at]
         if not rows:
             raise DerivativeResearchError("option_surface_expiration_missing")
@@ -1414,7 +1585,9 @@ class VolatilitySurface:
         if exact is not None:
             return exact.implied_volatility
         if target < ordered[0].strike or target > ordered[-1].strike:
-            raise DerivativeResearchError("option_surface_strike_extrapolation_forbidden")
+            raise DerivativeResearchError(
+                "option_surface_strike_extrapolation_forbidden"
+            )
         for left, right in zip(ordered, ordered[1:], strict=False):
             if left.strike < target < right.strike:
                 weight = (target - left.strike) / (right.strike - left.strike)
@@ -1510,9 +1683,7 @@ def evaluate_volatility_surface_quality(
         QualityResult(
             check_id="option.surface_calendar_arbitrage",
             check_version="1",
-            decision=QualityDecision.FAILED
-            if violations
-            else QualityDecision.PASS,
+            decision=QualityDecision.FAILED if violations else QualityDecision.PASS,
             affected_ids=tuple(sorted(set(violations))),
             diagnostics=("decreasing_total_variance",) if violations else (),
         ),
@@ -1632,6 +1803,7 @@ class OptionFeatureSnapshot:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(
             self.feature_snapshot_id, "option_feature.feature_snapshot_id"
         )
@@ -1645,7 +1817,13 @@ class OptionFeatureSnapshot:
         _require_enum(
             self.liquidity_state, QuoteState, "option_feature.liquidity_state"
         )
-        for name in ("moneyness", "skew", "term_slope", "parity_residual", "spread_ratio"):
+        for name in (
+            "moneyness",
+            "skew",
+            "term_slope",
+            "parity_residual",
+            "spread_ratio",
+        ):
             value = getattr(self, name)
             parsed = _optional_decimal(value, f"option_feature.{name}")
             if name == "moneyness" and parsed is None:
@@ -1713,6 +1891,7 @@ class OptionFill:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(self.fill_id, "option_fill.fill_id")
         if not isinstance(self.contract, OptionContract):
             raise DerivativeResearchError("option_fill_contract_required")
@@ -1754,9 +1933,7 @@ class OptionFill:
         object.__setattr__(self, "price", price)
         object.__setattr__(self, "fee", fee)
         gross = _ZERO if price is None else price * filled * self.contract.multiplier
-        cash_flow = (
-            -gross - fee if self.side is TransactionSide.BUY else gross - fee
-        )
+        cash_flow = -gross - fee if self.side is TransactionSide.BUY else gross - fee
         object.__setattr__(self, "cash_flow", cash_flow)
         object.__setattr__(
             self,
@@ -1855,6 +2032,20 @@ def simulate_option_fill(
         )
     if fill_time < parse_timestamp(quote.as_of, "option_quote.as_of"):
         raise DerivativeResearchError("option_fill_before_quote_as_of")
+    quote_execution_age = (
+        fill_time - parse_timestamp(quote.as_of, "option_quote.as_of")
+    ).total_seconds()
+    if quote_execution_age > quote.stale_after_seconds:
+        return _failed_option_fill(
+            fill_id=fill_id,
+            contract=contract,
+            quote=quote,
+            side=side,
+            requested_quantity=requested,
+            filled_at=filled_at,
+            status=FillStatus.FAILED,
+            failure_code="quote_stale_at_fill",
+        )
     try:
         base_price = quote.executable_price(side, allow_illiquid=allow_illiquid)
     except DerivativeResearchError:
@@ -1883,7 +2074,11 @@ def simulate_option_fill(
             status=FillStatus.UNFILLED,
             failure_code="insufficient_displayed_liquidity",
         )
-    if isinstance(slippage_ticks, bool) or not isinstance(slippage_ticks, int) or slippage_ticks < 0:
+    if (
+        isinstance(slippage_ticks, bool)
+        or not isinstance(slippage_ticks, int)
+        or slippage_ticks < 0
+    ):
         raise DerivativeResearchError("option_fill_slippage_ticks_invalid")
     adjustment = contract.price_tick * slippage_ticks
     execution_price = (
@@ -2063,9 +2258,7 @@ def mark_option_position(
         raise DerivativeResearchError("option_mark_quote_contract_mismatch")
     if not quote.availability.known_at(marked_at):
         raise DerivativeResearchError("option_mark_quote_future_knowledge")
-    theoretical = exact_decimal(
-        theoretical_price, "option_mark.theoretical_price"
-    )
+    theoretical = exact_decimal(theoretical_price, "option_mark.theoretical_price")
     if theoretical < 0:
         raise DerivativeResearchError("option_mark_theoretical_price_invalid")
     sign = _signed(position.side)
@@ -2083,9 +2276,7 @@ def mark_option_position(
         )
     except DerivativeResearchError:
         liquidation = None
-    signed_liquidation = (
-        sign * liquidation * scale if liquidation is not None else None
-    )
+    signed_liquidation = sign * liquidation * scale if liquidation is not None else None
     liquidation_pnl = (
         position.entry_cash_flow + signed_liquidation
         if signed_liquidation is not None
@@ -2107,6 +2298,67 @@ def mark_option_position(
 
 
 @dataclass(frozen=True, slots=True)
+class OptionSettlementInput:
+    """Immutable point-in-time observation used for exercise or expiry.
+
+    A lifecycle event must not accept a caller-supplied scalar spot price.  The
+    observation therefore carries all five availability clocks and the source
+    manifest binding needed to prove that it belonged to the admitted dataset
+    and was knowable when the event was evaluated.
+    """
+
+    settlement_input_id: str
+    contract_id: str
+    settlement_at: str
+    availability: AvailabilityTimes
+    spot_price: Decimal
+    source_manifest_hash: str
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        require_stable_id(
+            self.settlement_input_id, "option_settlement_input.settlement_input_id"
+        )
+        require_stable_id(self.contract_id, "option_settlement_input.contract_id")
+        parse_timestamp(self.settlement_at, "option_settlement_input.settlement_at")
+        if not isinstance(self.availability, AvailabilityTimes):
+            raise DerivativeResearchError(
+                "option_settlement_input_availability_required"
+            )
+        if self.settlement_at != self.availability.event_at:
+            raise DerivativeResearchError("option_settlement_input_event_time_mismatch")
+        spot = exact_decimal(
+            self.spot_price, "option_settlement_input.spot_price", positive=True
+        )
+        object.__setattr__(self, "spot_price", spot)
+        require_hash(
+            self.source_manifest_hash, "option_settlement_input.source_manifest_hash"
+        )
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(self.identity_payload(), label="option_settlement_input"),
+        )
+
+    def require_known_at(self, as_of: str) -> None:
+        if not self.availability.known_at(as_of):
+            raise DerivativeResearchError("option_settlement_input_future_knowledge")
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "settlement_input_id": self.settlement_input_id,
+            "contract_id": self.contract_id,
+            "settlement_at": self.settlement_at,
+            "availability": self.availability.as_dict(),
+            "spot_price": decimal_text(self.spot_price),
+            "source_manifest_hash": self.source_manifest_hash,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        return {**self.identity_payload(), "content_hash": self.content_hash}
+
+
+@dataclass(frozen=True, slots=True)
 class EarlyExerciseDecision:
     contract_id: str
     evaluated_at: str
@@ -2116,6 +2368,7 @@ class EarlyExerciseDecision:
     continuation_value: Decimal
     transaction_cost: Decimal
     reason: str
+    content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         require_stable_id(self.contract_id, "option_exercise.contract_id")
@@ -2128,6 +2381,28 @@ class EarlyExerciseDecision:
         require_stable_id(self.reason, "option_exercise.reason")
         if self.exercise and not self.permitted:
             raise DerivativeResearchError("option_exercise_not_permitted")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                self.identity_payload(), label="option_early_exercise_decision"
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "contract_id": self.contract_id,
+            "evaluated_at": self.evaluated_at,
+            "permitted": self.permitted,
+            "exercise": self.exercise,
+            "intrinsic_value": decimal_text(self.intrinsic_value),
+            "continuation_value": decimal_text(self.continuation_value),
+            "transaction_cost": decimal_text(self.transaction_cost),
+            "reason": self.reason,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        return {**self.identity_payload(), "content_hash": self.content_hash}
 
 
 def evaluate_early_exercise(
@@ -2189,23 +2464,34 @@ class OptionLifecycleEvent:
     contract_id: str
     position_id: str
     occurred_at: str
-    settlement_spot: Decimal
+    settlement_input: OptionSettlementInput
+    exercise_fraction: Decimal
     exercised_quantity: Decimal
     intrinsic_value_per_unit: Decimal
     cash_delta: Decimal
     deliverable_quantity_delta: Decimal
     deliverable_asset_id: str | None
     source_position_hash: str
+    early_exercise_decision: EarlyExerciseDecision | None = None
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         require_stable_id(self.event_id, "option_lifecycle.event_id")
-        _require_enum(self.event_type, LifecycleEventType, "option_lifecycle.event_type")
+        _require_enum(
+            self.event_type, LifecycleEventType, "option_lifecycle.event_type"
+        )
         require_stable_id(self.contract_id, "option_lifecycle.contract_id")
         require_stable_id(self.position_id, "option_lifecycle.position_id")
         parse_timestamp(self.occurred_at, "option_lifecycle.occurred_at")
+        if not isinstance(self.settlement_input, OptionSettlementInput):
+            raise DerivativeResearchError("option_lifecycle_settlement_input_required")
+        if self.settlement_input.contract_id != self.contract_id:
+            raise DerivativeResearchError(
+                "option_lifecycle_settlement_contract_mismatch"
+            )
+        self.settlement_input.require_known_at(self.occurred_at)
         for name in (
-            "settlement_spot",
+            "exercise_fraction",
             "exercised_quantity",
             "intrinsic_value_per_unit",
             "cash_delta",
@@ -2213,13 +2499,24 @@ class OptionLifecycleEvent:
         ):
             parsed = exact_decimal(getattr(self, name), f"option_lifecycle.{name}")
             object.__setattr__(self, name, parsed)
-        if self.settlement_spot <= 0 or self.exercised_quantity < 0 or self.intrinsic_value_per_unit < 0:
+        if (
+            self.exercise_fraction < 0
+            or self.exercise_fraction > 1
+            or self.exercised_quantity < 0
+            or self.intrinsic_value_per_unit < 0
+        ):
             raise DerivativeResearchError("option_lifecycle_value_invalid")
         if self.deliverable_asset_id is not None:
             require_stable_id(
                 self.deliverable_asset_id, "option_lifecycle.deliverable_asset_id"
             )
         require_hash(self.source_position_hash, "option_lifecycle.position_hash")
+        if self.early_exercise_decision is not None and not isinstance(
+            self.early_exercise_decision, EarlyExerciseDecision
+        ):
+            raise DerivativeResearchError(
+                "option_lifecycle_early_exercise_decision_invalid"
+            )
         object.__setattr__(
             self,
             "content_hash",
@@ -2233,15 +2530,20 @@ class OptionLifecycleEvent:
             "contract_id": self.contract_id,
             "position_id": self.position_id,
             "occurred_at": self.occurred_at,
-            "settlement_spot": decimal_text(self.settlement_spot),
+            "settlement_input": self.settlement_input.as_dict(),
+            "settlement_spot": decimal_text(self.settlement_input.spot_price),
+            "exercise_fraction": decimal_text(self.exercise_fraction),
             "exercised_quantity": decimal_text(self.exercised_quantity),
             "intrinsic_value_per_unit": decimal_text(self.intrinsic_value_per_unit),
             "cash_delta": decimal_text(self.cash_delta),
-            "deliverable_quantity_delta": decimal_text(
-                self.deliverable_quantity_delta
-            ),
+            "deliverable_quantity_delta": decimal_text(self.deliverable_quantity_delta),
             "deliverable_asset_id": self.deliverable_asset_id,
             "source_position_hash": self.source_position_hash,
+            "early_exercise_decision": (
+                None
+                if self.early_exercise_decision is None
+                else self.early_exercise_decision.as_dict()
+            ),
         }
 
 
@@ -2250,26 +2552,59 @@ def simulate_option_lifecycle(
     *,
     event_id: str,
     event_at: str,
-    settlement_spot: Decimal,
+    settlement_input: OptionSettlementInput,
     exercise_fraction: Decimal = Decimal("1"),
     early_exercise_decision: EarlyExerciseDecision | None = None,
 ) -> OptionLifecycleEvent:
     contract = position.contract
     instant = parse_timestamp(event_at, "option_lifecycle.event_at")
     expiry = parse_timestamp(contract.expiration_at, "option_contract.expiration_at")
-    spot = exact_decimal(
-        settlement_spot, "option_lifecycle.settlement_spot", positive=True
+    if not isinstance(settlement_input, OptionSettlementInput):
+        raise DerivativeResearchError("option_lifecycle_settlement_input_required")
+    if settlement_input.contract_id != contract.contract_id:
+        raise DerivativeResearchError("option_lifecycle_settlement_contract_mismatch")
+    settlement_instant = parse_timestamp(
+        settlement_input.settlement_at, "option_settlement_input.settlement_at"
     )
-    fraction = exact_decimal(
-        exercise_fraction, "option_lifecycle.exercise_fraction"
-    )
+    if settlement_instant > instant:
+        raise DerivativeResearchError("option_lifecycle_settlement_after_event")
+    settlement_input.require_known_at(event_at)
+    spot = settlement_input.spot_price
+    fraction = exact_decimal(exercise_fraction, "option_lifecycle.exercise_fraction")
     if fraction < 0 or fraction > 1:
         raise DerivativeResearchError("option_lifecycle_exercise_fraction_invalid")
     if instant < expiry:
+        if settlement_instant != instant:
+            raise DerivativeResearchError(
+                "option_lifecycle_early_settlement_time_mismatch"
+            )
         if early_exercise_decision is None or not early_exercise_decision.exercise:
-            raise DerivativeResearchError("option_lifecycle_early_exercise_not_approved")
+            raise DerivativeResearchError(
+                "option_lifecycle_early_exercise_not_approved"
+            )
         if early_exercise_decision.contract_id != contract.contract_id:
             raise DerivativeResearchError("option_lifecycle_exercise_contract_mismatch")
+        if early_exercise_decision.evaluated_at != event_at:
+            raise DerivativeResearchError("option_lifecycle_exercise_time_mismatch")
+        expected_decision = evaluate_early_exercise(
+            contract,
+            evaluated_at=event_at,
+            spot_price=spot,
+            continuation_value=early_exercise_decision.continuation_value,
+            transaction_cost=early_exercise_decision.transaction_cost,
+        )
+        if early_exercise_decision != expected_decision:
+            raise DerivativeResearchError("option_lifecycle_exercise_decision_forged")
+    elif early_exercise_decision is not None:
+        raise DerivativeResearchError("option_lifecycle_expiry_decision_forbidden")
+    else:
+        scheduled_settlement = parse_timestamp(
+            contract.settlement_at, "option_contract.settlement_at"
+        )
+        if not expiry <= settlement_instant <= scheduled_settlement:
+            raise DerivativeResearchError(
+                "option_lifecycle_expiry_settlement_time_invalid"
+            )
     intrinsic = (
         max(_ZERO, spot - contract.strike)
         if contract.option_type is OptionType.CALL
@@ -2305,13 +2640,15 @@ def simulate_option_lifecycle(
         contract_id=contract.contract_id,
         position_id=position.position_id,
         occurred_at=event_at,
-        settlement_spot=spot,
+        settlement_input=settlement_input,
+        exercise_fraction=fraction,
         exercised_quantity=exercised,
         intrinsic_value_per_unit=intrinsic,
         cash_delta=cash_delta,
         deliverable_quantity_delta=deliverable_delta,
         deliverable_asset_id=deliverable_id,
         source_position_hash=position.content_hash,
+        early_exercise_decision=early_exercise_decision,
     )
 
 
@@ -2411,10 +2748,14 @@ class MultiLegExecutionResult:
     def __post_init__(self) -> None:
         require_stable_id(self.group_id, "option_multileg_result.group_id")
         require_hash(self.order_hash, "option_multileg_result.order_hash")
-        _require_enum(self.policy, MultiLegExecutionPolicy, "option_multileg_result.policy")
+        _require_enum(
+            self.policy, MultiLegExecutionPolicy, "option_multileg_result.policy"
+        )
         _require_enum(self.state, MultiLegState, "option_multileg_result.state")
         opened = parse_timestamp(self.opened_at, "option_multileg_result.opened_at")
-        finished = parse_timestamp(self.finished_at, "option_multileg_result.finished_at")
+        finished = parse_timestamp(
+            self.finished_at, "option_multileg_result.finished_at"
+        )
         if finished < opened:
             raise DerivativeResearchError("option_multileg_result_time_order_invalid")
         net = exact_decimal(self.net_cash_flow, "option_multileg_result.net_cash_flow")
@@ -2441,11 +2782,13 @@ class MultiLegExecutionResult:
             "order_hash": self.order_hash,
             "policy": self.policy.value,
             "state": self.state.value,
-            "attempted_fill_hashes": [item.content_hash for item in self.attempted_fills],
-            "committed_fill_hashes": [item.content_hash for item in self.committed_fills],
-            "legging_exposure_contract_ids": list(
-                self.legging_exposure_contract_ids
-            ),
+            "attempted_fill_hashes": [
+                item.content_hash for item in self.attempted_fills
+            ],
+            "committed_fill_hashes": [
+                item.content_hash for item in self.committed_fills
+            ],
+            "legging_exposure_contract_ids": list(self.legging_exposure_contract_ids),
             "net_cash_flow": decimal_text(self.net_cash_flow),
             "opened_at": self.opened_at,
             "finished_at": self.finished_at,
@@ -2460,6 +2803,8 @@ def execute_multi_leg_order(
     fill_times: Mapping[str, str],
     participation_rates: Mapping[str, Decimal] | None = None,
     fee_per_contract: Decimal = Decimal("0"),
+    slippage_ticks: int = 0,
+    allow_illiquid: bool = False,
 ) -> MultiLegExecutionResult:
     """Execute an atomic simultaneous group or an explicitly legged sequence."""
 
@@ -2480,7 +2825,9 @@ def execute_multi_leg_order(
                 filled_at=fill_at,
                 participation_rate=participation.get(leg.leg_id, _ONE),
                 fee_per_contract=fee_per_contract,
+                slippage_ticks=slippage_ticks,
                 allow_partial=order.allow_partial,
+                allow_illiquid=allow_illiquid,
             )
         )
     timestamps = [
@@ -2495,12 +2842,20 @@ def execute_multi_leg_order(
     )
     legging: tuple[str, ...]
     if order.policy is MultiLegExecutionPolicy.SIMULTANEOUS:
-        committed = tuple(attempts) if fully_filled and time_skew <= order.maximum_leg_time_skew_seconds else ()
+        committed = (
+            tuple(attempts)
+            if fully_filled and time_skew <= order.maximum_leg_time_skew_seconds
+            else ()
+        )
         state = MultiLegState.FILLED if committed else MultiLegState.FAILED
-        failure = None if committed else (
-            "simultaneous_time_skew"
-            if time_skew > order.maximum_leg_time_skew_seconds
-            else "simultaneous_atomic_fill_failed"
+        failure = (
+            None
+            if committed
+            else (
+                "simultaneous_time_skew"
+                if time_skew > order.maximum_leg_time_skew_seconds
+                else "simultaneous_atomic_fill_failed"
+            )
         )
         legging = ()
     else:
@@ -2512,9 +2867,17 @@ def execute_multi_leg_order(
             if committed
             else MultiLegState.FAILED
         )
-        failure = "sequential_no_leg_filled" if not committed else None
-        legging = () if fully_filled else tuple(
-            item.contract.contract_id for item in committed
+        failure = (
+            "sequential_no_leg_filled"
+            if not committed
+            else "sequential_partial_fill_forbidden"
+            if not fully_filled and not order.allow_partial
+            else None
+        )
+        legging = (
+            ()
+            if fully_filled
+            else tuple(item.contract.contract_id for item in committed)
         )
     return MultiLegExecutionResult(
         group_id=order.group_id,
@@ -2613,9 +2976,7 @@ def net_option_greeks(
         vega=aggregate("vega"),
         theta_per_year=aggregate("theta_per_year"),
         rho=aggregate("rho"),
-        expiry_mismatch=len(
-            {position.contract.expiration_at for position in positions}
-        )
+        expiry_mismatch=len({position.contract.expiration_at for position in positions})
         > 1,
     )
 
@@ -2669,7 +3030,9 @@ def analyze_option_payoff(
     )
     if spots[0] < 0:
         raise DerivativeResearchError("option_payoff_terminal_spot_negative")
-    points = tuple(PayoffPoint(item, option_expiry_payoff(positions, item)) for item in spots)
+    points = tuple(
+        PayoffPoint(item, option_expiry_payoff(positions, item)) for item in spots
+    )
     break_evens: list[Decimal] = []
     for left, right in zip(points, points[1:], strict=False):
         if left.profit_loss == 0:
@@ -2680,9 +3043,7 @@ def analyze_option_payoff(
             break_evens.append(left.underlying_price + span * weight)
     high_tail_slope = sum(
         (
-            _signed(position.side)
-            * position.quantity
-            * position.contract.multiplier
+            _signed(position.side) * position.quantity * position.contract.multiplier
             for position in positions
             if position.contract.option_type is OptionType.CALL
         ),
@@ -2724,18 +3085,26 @@ def option_capital_requirement(
         positive=True,
     )
     scenario_spots = sorted(
-        {_ZERO, reference, reference * multiple, *(item.contract.strike for item in positions)}
+        {
+            _ZERO,
+            reference,
+            reference * multiple,
+            *(item.contract.strike for item in positions),
+        }
     )
     losses = [(spot, option_expiry_payoff(positions, spot)) for spot in scenario_spots]
     worst_spot, worst_pnl = min(losses, key=lambda item: item[1])
-    unbounded = sum(
-        (
-            _signed(item.side) * item.quantity * item.contract.multiplier
-            for item in positions
-            if item.contract.option_type is OptionType.CALL
-        ),
-        _ZERO,
-    ) < 0
+    unbounded = (
+        sum(
+            (
+                _signed(item.side) * item.quantity * item.contract.multiplier
+                for item in positions
+                if item.contract.option_type is OptionType.CALL
+            ),
+            _ZERO,
+        )
+        < 0
+    )
     return OptionCapitalRequirement(
         stressed_capital=max(_ZERO, -worst_pnl),
         worst_scenario_spot=worst_spot,
@@ -2848,9 +3217,7 @@ class OptionStressResult:
                             "stressed_liquidation_value": decimal_text(
                                 item.stressed_liquidation_value
                             ),
-                            "profit_loss_change": decimal_text(
-                                item.profit_loss_change
-                            ),
+                            "profit_loss_change": decimal_text(item.profit_loss_change),
                         }
                         for item in self.leg_results
                     ],
@@ -2890,8 +3257,7 @@ def stress_option_portfolio(
         base_price = pricing_model.price(inputs, base_vol)
         time = max(
             0.0,
-            float(inputs.time_to_expiry_years)
-            - scenario.days_forward / 365.25,
+            float(inputs.time_to_expiry_years) - scenario.days_forward / 365.25,
         )
         spot = float(inputs.spot_price * (_ONE + scenario.spot_shock_ratio))
         strike = float(position.contract.strike)
@@ -2907,25 +3273,20 @@ def stress_option_portfolio(
         else:
             root_time = math.sqrt(time)
             d1 = (
-                math.log(spot / strike)
-                + (rate - dividend + sigma * sigma / 2.0) * time
+                math.log(spot / strike) + (rate - dividend + sigma * sigma / 2.0) * time
             ) / (sigma * root_time)
             d2 = d1 - sigma * root_time
             if position.contract.option_type is OptionType.CALL:
-                stressed_price_float = spot * math.exp(
-                    -dividend * time
-                ) * _normal_cdf(d1) - strike * math.exp(-rate * time) * _normal_cdf(d2)
+                stressed_price_float = spot * math.exp(-dividend * time) * _normal_cdf(
+                    d1
+                ) - strike * math.exp(-rate * time) * _normal_cdf(d2)
             else:
                 stressed_price_float = strike * math.exp(-rate * time) * _normal_cdf(
                     -d2
                 ) - spot * math.exp(-dividend * time) * _normal_cdf(-d1)
         stressed_price = _computed_decimal(stressed_price_float)
         spread = inputs.quote.spread_width or _ZERO
-        liquidity_penalty = (
-            spread
-            * scenario.liquidity_spread_multiplier
-            / Decimal("2")
-        )
+        liquidity_penalty = spread * scenario.liquidity_spread_multiplier / Decimal("2")
         liquidation_price = (
             max(_ZERO, stressed_price - liquidity_penalty)
             if position.side is PositionSide.LONG
@@ -2948,9 +3309,7 @@ def stress_option_portfolio(
         input_hashes.append(inputs.content_hash)
     base_total = sum((item.base_signed_value for item in legs), _ZERO)
     stressed_total = sum((item.stressed_signed_value for item in legs), _ZERO)
-    liquidation_total = sum(
-        (item.stressed_liquidation_value for item in legs), _ZERO
-    )
+    liquidation_total = sum((item.stressed_liquidation_value for item in legs), _ZERO)
     return OptionStressResult(
         scenario_hash=scenario.content_hash,
         position_hashes=tuple(item.content_hash for item in positions),
@@ -3085,9 +3444,7 @@ class OptionRobustnessPolicy:
             object.__setattr__(
                 self,
                 name,
-                exact_decimal(
-                    getattr(self, name), f"option_robustness_policy.{name}"
-                ),
+                exact_decimal(getattr(self, name), f"option_robustness_policy.{name}"),
             )
         if set(self.spread_multipliers) != {
             Decimal("1"),
@@ -3121,9 +3478,7 @@ class OptionRobustnessPolicy:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(
-                self.identity_payload(), label="option_robustness_policy"
-            ),
+            sha256_prefixed(self.identity_payload(), label="option_robustness_policy"),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -3152,15 +3507,11 @@ class OptionRobustnessPolicy:
             "skew_shift": decimal_text(self.skew_shift),
             "spot_gap_ratio": decimal_text(self.spot_gap_ratio),
             "iv_gap": decimal_text(self.iv_gap),
-            "expiry_spread_multiplier": decimal_text(
-                self.expiry_spread_multiplier
-            ),
+            "expiry_spread_multiplier": decimal_text(self.expiry_spread_multiplier),
             "delta_target": decimal_text(self.delta_target),
             "moneyness_tolerance": decimal_text(self.moneyness_tolerance),
             "rare_event_probability": decimal_text(self.rare_event_probability),
-            "zero_bid_recovery_ratio": decimal_text(
-                self.zero_bid_recovery_ratio
-            ),
+            "zero_bid_recovery_ratio": decimal_text(self.zero_bid_recovery_ratio),
             "partial_fill_haircut": decimal_text(self.partial_fill_haircut),
         }
 
@@ -3184,9 +3535,7 @@ class OptionRobustnessCase:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(
-                self.identity_payload(), label="option_robustness_case"
-            ),
+            sha256_prefixed(self.identity_payload(), label="option_robustness_case"),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -3259,31 +3608,22 @@ class OptionRobustnessInput:
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _require_schema_version(self.schema_version)
         require_stable_id(
             self.robustness_input_id,
             "option_robustness_input.robustness_input_id",
         )
-        _require_enum(
-            self.run_type, RunType, "option_robustness_input.run_type"
-        )
+        _require_enum(self.run_type, RunType, "option_robustness_input.run_type")
         if self.run_type is not RunType.ROBUSTNESS:
-            raise DerivativeResearchError(
-                "option_robustness_input_run_type_required"
-            )
+            raise DerivativeResearchError("option_robustness_input_run_type_required")
         if not isinstance(self.chain_snapshot, OptionChainSnapshot):
-            raise DerivativeResearchError(
-                "option_robustness_input_chain_required"
-            )
+            raise DerivativeResearchError("option_robustness_input_chain_required")
         if not isinstance(self.base_surface, VolatilitySurface) or not isinstance(
             self.comparison_surface, VolatilitySurface
         ):
-            raise DerivativeResearchError(
-                "option_robustness_input_surfaces_required"
-            )
+            raise DerivativeResearchError("option_robustness_input_surfaces_required")
         if not self.positions or not self.priced_position_ids:
-            raise DerivativeResearchError(
-                "option_robustness_input_positions_required"
-            )
+            raise DerivativeResearchError("option_robustness_input_positions_required")
         sequence_keys: tuple[tuple[str, Sequence[object], object], ...] = (
             ("positions", self.positions, lambda item: item.position_id),
             (
@@ -3331,13 +3671,10 @@ class OptionRobustnessInput:
                 "option_robustness_input_priced_position_duplicate"
             )
         for position_id in self.priced_position_ids:
-            require_stable_id(
-                position_id, "option_robustness_input.priced_position_id"
-            )
+            require_stable_id(position_id, "option_robustness_input.priced_position_id")
         positions_by_id = {item.position_id: item for item in self.positions}
         priced_positions = tuple(
-            positions_by_id.get(position_id)
-            for position_id in self.priced_position_ids
+            positions_by_id.get(position_id) for position_id in self.priced_position_ids
         )
         if any(item is None for item in priced_positions):
             raise DerivativeResearchError(
@@ -3371,12 +3708,13 @@ class OptionRobustnessInput:
         chain_contracts = {
             item.contract_id: item for item in self.chain_snapshot.contracts
         }
-        chain_quotes = {
-            item.contract_id: item for item in self.chain_snapshot.quotes
-        }
+        chain_quotes = {item.contract_id: item for item in self.chain_snapshot.quotes}
         for position in self.positions:
             contract = chain_contracts.get(position.contract.contract_id)
-            if contract is None or contract.content_hash != position.contract.content_hash:
+            if (
+                contract is None
+                or contract.content_hash != position.contract.content_hash
+            ):
                 raise DerivativeResearchError(
                     "option_robustness_input_position_chain_mismatch"
                 )
@@ -3420,9 +3758,7 @@ class OptionRobustnessInput:
                     "option_robustness_input_valuation_chain_mismatch"
                 )
         base_iv = {item.contract_id: item for item in self.base_iv_results}
-        comparison_iv = {
-            item.contract_id: item for item in self.comparison_iv_results
-        }
+        comparison_iv = {item.contract_id: item for item in self.comparison_iv_results}
         greek_by_contract = {item.contract_id: item for item in self.greeks}
         if (
             set(base_iv) != priced_contract_ids
@@ -3467,13 +3803,11 @@ class OptionRobustnessInput:
             self.base_surface.source_chain_hash != self.chain_snapshot.content_hash
             or self.comparison_surface.source_chain_hash
             != self.chain_snapshot.content_hash
-            or self.base_surface.underlying_id
-            != self.chain_snapshot.underlying_id
+            or self.base_surface.underlying_id != self.chain_snapshot.underlying_id
             or self.comparison_surface.underlying_id
             != self.chain_snapshot.underlying_id
             or self.base_surface.as_of != self.chain_snapshot.knowledge_time
-            or self.comparison_surface.as_of
-            != self.chain_snapshot.knowledge_time
+            or self.comparison_surface.as_of != self.chain_snapshot.knowledge_time
             or self.base_surface.interpolation_version
             == self.comparison_surface.interpolation_version
         ):
@@ -3520,9 +3854,7 @@ class OptionRobustnessInput:
                 or mark.signed_liquidation_value is None
                 or mark.liquidation_pnl is None
             ):
-                raise DerivativeResearchError(
-                    "option_robustness_input_mark_mismatch"
-                )
+                raise DerivativeResearchError("option_robustness_input_mark_mismatch")
         if not self.lifecycle_events:
             raise DerivativeResearchError(
                 "option_robustness_input_lifecycle_evidence_required"
@@ -3561,8 +3893,7 @@ class OptionRobustnessInput:
                 "option_robustness_input_multileg_coverage_mismatch"
             )
         if not any(
-            item.state is MultiLegState.PARTIAL
-            for item in self.multileg_results
+            item.state is MultiLegState.PARTIAL for item in self.multileg_results
         ):
             raise DerivativeResearchError(
                 "option_robustness_input_partial_multileg_required"
@@ -3607,9 +3938,7 @@ class OptionRobustnessInput:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(
-                self.identity_payload(), label="option_robustness_input"
-            ),
+            sha256_prefixed(self.identity_payload(), label="option_robustness_input"),
         )
 
     @property
@@ -3640,12 +3969,8 @@ class OptionRobustnessInput:
             "chain_snapshot": self.chain_snapshot.as_dict(),
             "positions": [_position_payload(item) for item in self.positions],
             "priced_position_ids": list(self.priced_position_ids),
-            "valuation_inputs": [
-                item.as_dict() for item in self.valuation_inputs
-            ],
-            "base_iv_results": [
-                item.as_dict() for item in self.base_iv_results
-            ],
+            "valuation_inputs": [item.as_dict() for item in self.valuation_inputs],
+            "base_iv_results": [item.as_dict() for item in self.base_iv_results],
             "comparison_iv_results": [
                 item.as_dict() for item in self.comparison_iv_results
             ],
@@ -3657,9 +3982,7 @@ class OptionRobustnessInput:
             "lifecycle_events": [
                 _lifecycle_payload(item) for item in self.lifecycle_events
             ],
-            "multileg_orders": [
-                _order_payload(item) for item in self.multileg_orders
-            ],
+            "multileg_orders": [_order_payload(item) for item in self.multileg_orders],
             "multileg_results": [
                 _multileg_payload(item) for item in self.multileg_results
             ],
@@ -3684,13 +4007,9 @@ class OptionRobustnessMetric:
             exact_decimal(self.value, "option_robustness_metric.value"),
         )
         if len(self.contract_ids) != len(set(self.contract_ids)):
-            raise DerivativeResearchError(
-                "option_robustness_metric_contract_duplicate"
-            )
+            raise DerivativeResearchError("option_robustness_metric_contract_duplicate")
         for contract_id in self.contract_ids:
-            require_stable_id(
-                contract_id, "option_robustness_metric.contract_id"
-            )
+            require_stable_id(contract_id, "option_robustness_metric.contract_id")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -3733,9 +4052,7 @@ class OptionRobustnessExecution:
         if len(self.evidence_hashes) != len(set(self.evidence_hashes)) or len(
             self.derived_artifact_hashes
         ) != len(set(self.derived_artifact_hashes)):
-            raise DerivativeResearchError(
-                "option_robustness_execution_hash_duplicate"
-            )
+            raise DerivativeResearchError("option_robustness_execution_hash_duplicate")
         metric_ids = [item.metric_id for item in self.metrics]
         if len(metric_ids) != len(set(metric_ids)):
             raise DerivativeResearchError(
@@ -3824,9 +4141,7 @@ class OptionRobustnessSummary:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(
-                self.identity_payload(), label="option_robustness_summary"
-            ),
+            sha256_prefixed(self.identity_payload(), label="option_robustness_summary"),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -3851,9 +4166,7 @@ def _robustness_maps(
 ]:
     positions_by_id = {item.position_id: item for item in inputs.positions}
     priced = tuple(positions_by_id[item] for item in inputs.priced_position_ids)
-    valuation = {
-        item.contract.contract_id: item for item in inputs.valuation_inputs
-    }
+    valuation = {item.contract.contract_id: item for item in inputs.valuation_inputs}
     base = {
         item.contract_id: item.volatility
         for item in inputs.base_iv_results
@@ -3920,9 +4233,7 @@ def _metric(
 def _required_liquidation_value(mark: OptionMark) -> Decimal:
     value = mark.signed_liquidation_value
     if value is None:
-        raise DerivativeResearchError(
-            "option_robustness_liquidation_value_missing"
-        )
+        raise DerivativeResearchError("option_robustness_liquidation_value_missing")
     return value
 
 
@@ -3937,9 +4248,7 @@ def execute_option_robustness_case(
     ):
         raise DerivativeResearchError("option_robustness_typed_inputs_required")
     priced, valuation, base_vols, comparison_vols = _robustness_maps(inputs)
-    quotes = {
-        item.contract_id: item for item in inputs.chain_snapshot.quotes
-    }
+    quotes = {item.contract_id: item for item in inputs.chain_snapshot.quotes}
     marks = {item.position_id: item for item in inputs.marks}
     metrics: list[OptionRobustnessMetric] = []
     derived: list[str] = []
@@ -4032,7 +4341,9 @@ def execute_option_robustness_case(
                 _ZERO,
             )
             values.append(value)
-            metrics.append(_metric(f"{label}.{threshold}.count", len(accepted), "count"))
+            metrics.append(
+                _metric(f"{label}.{threshold}.count", len(accepted), "count")
+            )
             metrics.append(_metric(f"{label}.{threshold}.value", value, "currency"))
 
         for volume_threshold in case.policy.volume_thresholds:
@@ -4084,10 +4395,7 @@ def execute_option_robustness_case(
                 ],
             )
         baseline = sum(
-            (
-                _required_liquidation_value(marks[item.position_id])
-                for item in priced
-            ),
+            (_required_liquidation_value(marks[item.position_id]) for item in priced),
             _ZERO,
         )
         worst = min(values)
@@ -4208,8 +4516,7 @@ def execute_option_robustness_case(
         ]
         greek_map = {item.contract_id: item for item in inputs.greeks}
         delta_distance = min(
-            abs(abs(item.delta) - case.policy.delta_target)
-            for item in inputs.greeks
+            abs(abs(item.delta) - case.policy.delta_target) for item in inputs.greeks
         )
         delta_selected = [
             contract_id
@@ -4235,7 +4542,9 @@ def execute_option_robustness_case(
             ("expiry", expiry),
         )
         for label, selected in selections:
-            metrics.append(_metric(f"selection.{label}.count", len(selected), "count", selected))
+            metrics.append(
+                _metric(f"selection.{label}.count", len(selected), "count", selected)
+            )
         baseline = Decimal(len(normal_contracts))
         worst = Decimal(min(len(item) for _label, item in selections))
     elif dimension in {
@@ -4257,9 +4566,17 @@ def execute_option_robustness_case(
             )
             grouped[key] = grouped.get(key, _ZERO) + mark.liquidation_pnl
             grouped_ids.setdefault(key, []).append(position.contract.contract_id)
-        prefix = "expiry" if dimension is OptionRobustnessDimension.EXPIRY_CONCENTRATION else "strike"
+        prefix = (
+            "expiry"
+            if dimension is OptionRobustnessDimension.EXPIRY_CONCENTRATION
+            else "strike"
+        )
         for index, key in enumerate(sorted(grouped)):
-            metrics.append(_metric(f"{prefix}.{index}.pnl", grouped[key], "currency", grouped_ids[key]))
+            metrics.append(
+                _metric(
+                    f"{prefix}.{index}.pnl", grouped[key], "currency", grouped_ids[key]
+                )
+            )
         total_absolute = sum((abs(item) for item in grouped.values()), _ZERO)
         concentration = (
             max(abs(item) for item in grouped.values()) / total_absolute
@@ -4272,9 +4589,7 @@ def execute_option_robustness_case(
     elif dimension is OptionRobustnessDimension.EXTREME_VOLATILITY:
         values = []
         for volatility in case.policy.extreme_volatilities:
-            volatilities = {
-                item.contract.contract_id: volatility for item in priced
-            }
+            volatilities = {item.contract.contract_id: volatility for item in priced}
             result = _run_robustness_stress(
                 inputs,
                 case,
@@ -4324,8 +4639,7 @@ def execute_option_robustness_case(
         stressed = _ZERO
         for position in priced:
             shift = case.policy.skew_shift * (
-                position.contract.strike / inputs.chain_snapshot.underlying_price
-                - _ONE
+                position.contract.strike / inputs.chain_snapshot.underlying_price - _ONE
             )
             result = _run_robustness_stress(
                 inputs,
@@ -4391,15 +4705,21 @@ def execute_option_robustness_case(
             )
         )
     elif dimension is OptionRobustnessDimension.EXPIRY_LIQUIDITY_LOSS:
-        base_result = _run_robustness_stress(inputs, case, suffix="expiry_liquidity.base")
+        base_result = _run_robustness_stress(
+            inputs, case, suffix="expiry_liquidity.base"
+        )
         derived.append(base_result.content_hash)
         baseline = base_result.total_stressed_liquidation_value
         stressed = _ZERO
         for position in priced:
             value_input = valuation[position.contract.contract_id]
             seconds = (
-                parse_timestamp(position.contract.expiration_at, "option_contract.expiration_at")
-                - parse_timestamp(value_input.valuation_at, "option_valuation_input.valuation_at")
+                parse_timestamp(
+                    position.contract.expiration_at, "option_contract.expiration_at"
+                )
+                - parse_timestamp(
+                    value_input.valuation_at, "option_valuation_input.valuation_at"
+                )
             ).total_seconds()
             days_forward = max(0, math.ceil(seconds / 86400))
             result = _run_robustness_stress(
@@ -4426,14 +4746,11 @@ def execute_option_robustness_case(
         for position in priced:
             mark = marks[position.position_id]
             if mark.signed_liquidation_value is None:
-                raise DerivativeResearchError(
-                    "option_robustness_zero_bid_mark_missing"
-                )
+                raise DerivativeResearchError("option_robustness_zero_bid_mark_missing")
             base_value += mark.signed_liquidation_value
             if position.side is PositionSide.LONG:
                 zero_bid_value += (
-                    mark.signed_liquidation_value
-                    * case.policy.zero_bid_recovery_ratio
+                    mark.signed_liquidation_value * case.policy.zero_bid_recovery_ratio
                 )
                 affected.append(position.contract.contract_id)
             else:
@@ -4443,7 +4760,9 @@ def execute_option_robustness_case(
             (
                 _metric("zero_bid.base", base_value, "currency"),
                 _metric("zero_bid.liquidation", zero_bid_value, "currency", affected),
-                _metric("zero_bid.loss", zero_bid_value - base_value, "currency", affected),
+                _metric(
+                    "zero_bid.loss", zero_bid_value - base_value, "currency", affected
+                ),
             )
         )
     elif dimension is OptionRobustnessDimension.MULTILEG_PARTIAL_FILL:
@@ -4460,32 +4779,21 @@ def execute_option_robustness_case(
         for multileg_result in partial:
             baseline += multileg_result.net_cash_flow
             exposed_notional = sum(
-                (
-                    abs(fill.cash_flow)
-                    for fill in multileg_result.committed_fills
-                ),
+                (abs(fill.cash_flow) for fill in multileg_result.committed_fills),
                 _ZERO,
             )
             stressed += multileg_result.net_cash_flow - (
                 exposed_notional * case.policy.partial_fill_haircut
             )
             total_requested += sum(
-                (
-                    fill.requested_quantity
-                    for fill in multileg_result.attempted_fills
-                ),
+                (fill.requested_quantity for fill in multileg_result.attempted_fills),
                 _ZERO,
             )
             total_filled += sum(
-                (
-                    fill.filled_quantity
-                    for fill in multileg_result.attempted_fills
-                ),
+                (fill.filled_quantity for fill in multileg_result.attempted_fills),
                 _ZERO,
             )
-            exposed_contracts.extend(
-                multileg_result.legging_exposure_contract_ids
-            )
+            exposed_contracts.extend(multileg_result.legging_exposure_contract_ids)
         fill_ratio = total_filled / total_requested if total_requested > 0 else _ZERO
         worst = min(baseline, stressed)
         metrics.extend(
@@ -4493,7 +4801,9 @@ def execute_option_robustness_case(
                 _metric("multileg.partial.count", len(partial), "count"),
                 _metric("multileg.fill_ratio", fill_ratio, "ratio"),
                 _metric("multileg.base_cash", baseline, "currency"),
-                _metric("multileg.haircut_cash", stressed, "currency", exposed_contracts),
+                _metric(
+                    "multileg.haircut_cash", stressed, "currency", exposed_contracts
+                ),
             )
         )
     elif dimension is OptionRobustnessDimension.PAYOFF_TAIL_RISK:
@@ -4502,14 +4812,16 @@ def execute_option_robustness_case(
         )
         for index, point in enumerate(analysis.points):
             metrics.append(
-                _metric(
-                    f"payoff.tail.{index}", point.profit_loss, "currency"
-                )
+                _metric(f"payoff.tail.{index}", point.profit_loss, "currency")
             )
         metrics.extend(
             (
-                _metric("payoff.unbounded_loss", int(analysis.unbounded_loss), "boolean"),
-                _metric("payoff.unbounded_profit", int(analysis.unbounded_profit), "boolean"),
+                _metric(
+                    "payoff.unbounded_loss", int(analysis.unbounded_loss), "boolean"
+                ),
+                _metric(
+                    "payoff.unbounded_profit", int(analysis.unbounded_profit), "boolean"
+                ),
             )
         )
         payoff_hash = sha256_prefixed(
@@ -4532,8 +4844,7 @@ def execute_option_robustness_case(
             (
                 item.profit_loss
                 for item in analysis.points
-                if item.underlying_price
-                == inputs.chain_snapshot.underlying_price
+                if item.underlying_price == inputs.chain_snapshot.underlying_price
             ),
             option_expiry_payoff(
                 inputs.positions, inputs.chain_snapshot.underlying_price
@@ -4545,9 +4856,7 @@ def execute_option_robustness_case(
             item for item in inputs.positions if item.side is PositionSide.SHORT
         ]
         if not short_positions:
-            raise DerivativeResearchError(
-                "option_robustness_short_positions_required"
-            )
+            raise DerivativeResearchError("option_robustness_short_positions_required")
         total_loss = _ZERO
         baseline = sum((item.entry_cash_flow for item in short_positions), _ZERO)
         for position in short_positions:
@@ -4576,8 +4885,12 @@ def execute_option_robustness_case(
         metrics.extend(
             (
                 _metric("rare_loss.total", total_loss, "currency"),
-                _metric("rare_loss.weighted", weighted, "probability_weighted_currency"),
-                _metric("rare_loss.probability", case.policy.rare_event_probability, "ratio"),
+                _metric(
+                    "rare_loss.weighted", weighted, "probability_weighted_currency"
+                ),
+                _metric(
+                    "rare_loss.probability", case.policy.rare_event_probability, "ratio"
+                ),
             )
         )
         worst = -total_loss
@@ -4618,9 +4931,7 @@ def run_option_robustness_suite(
         )
     policy_hashes = {item.policy.content_hash for item in cases}
     if len(policy_hashes) != 1:
-        raise DerivativeResearchError(
-            "option_robustness_suite_policy_mismatch"
-        )
+        raise DerivativeResearchError("option_robustness_suite_policy_mismatch")
     ordered_cases = tuple(sorted(cases, key=lambda item: item.dimension.value))
     executions = tuple(
         execute_option_robustness_case(inputs, item) for item in ordered_cases
@@ -4686,7 +4997,9 @@ class OptionProspectiveProtocol:
         object.__setattr__(
             self,
             "content_hash",
-            sha256_prefixed(self.identity_payload(), label="option_prospective_protocol"),
+            sha256_prefixed(
+                self.identity_payload(), label="option_prospective_protocol"
+            ),
         )
 
     def identity_payload(self) -> dict[str, object]:
@@ -4729,7 +5042,9 @@ class OptionProspectiveObservation:
         predicted_at = parse_timestamp(
             self.prediction_made_at, "option_observation.prediction_made_at"
         )
-        observed_at = parse_timestamp(self.observed_at, "option_observation.observed_at")
+        observed_at = parse_timestamp(
+            self.observed_at, "option_observation.observed_at"
+        )
         if predicted_at >= observed_at:
             raise DerivativeResearchError("option_observation_not_prospective")
         predicted = exact_decimal(
@@ -4852,7 +5167,9 @@ def evaluate_option_prospective(
         for item in observations
     ):
         raise DerivativeResearchError("option_evaluation_observation_outside_window")
-    errors = [item.absolute_error for item in observations if item.absolute_error is not None]
+    errors = [
+        item.absolute_error for item in observations if item.absolute_error is not None
+    ]
     valid = len(errors)
     invalid = len(observations) - valid
     mean_error = sum(errors, _ZERO) / valid if valid else None

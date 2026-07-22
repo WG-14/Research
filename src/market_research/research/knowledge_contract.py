@@ -33,6 +33,11 @@ _RECORD_TYPES = frozenset(
         "decision",
         "ai_advisory",
         "ai_advisory_review",
+        "research_standard_observation",
+        "research_standard_question",
+        "research_standard_mechanism",
+        "research_standard_hypothesis",
+        "research_standard_binding",
     }
 )
 _NOTE_TYPES = frozenset(
@@ -88,6 +93,8 @@ class InternalHypothesisRelationType(StrEnum):
     CONTEXTUALIZES = "CONTEXTUALIZES"
     EXTENDS = "EXTENDS"
     REPLICATION_TARGET = "REPLICATION_TARGET"
+
+
 _RISK_SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 _APPROVER_TYPES = frozenset({"human", "policy"})
 RESEARCH_NOTE_AUTHORITY_SUBJECT_TYPES = frozenset(
@@ -360,9 +367,7 @@ class LiteratureSpec:
                     "literature.unattempted_reproduction_evidence_forbidden"
                 )
         elif not self.reproduction_evidence_hashes:
-            raise KnowledgeContractError(
-                "literature.reproduction_evidence_required"
-            )
+            raise KnowledgeContractError("literature.reproduction_evidence_required")
         if not self.internal_hypothesis_relations:
             raise KnowledgeContractError(
                 "literature.internal_hypothesis_relations_required"
@@ -370,9 +375,7 @@ class LiteratureSpec:
         relation_refs = tuple(
             item.hypothesis_ref for item in self.internal_hypothesis_relations
         )
-        _require_unique_refs(
-            relation_refs, "literature.internal_hypothesis_relations"
-        )
+        _require_unique_refs(relation_refs, "literature.internal_hypothesis_relations")
         _require_unique_refs(
             (*self.references, *relation_refs), "literature.all_references"
         )
@@ -404,9 +407,7 @@ class LiteratureSpec:
             "accessed_at": self.accessed_at,
             "key_claims": list(self.key_claims),
             "reproduction_status": self.reproduction_status.value,
-            "reproduction_evidence_hashes": list(
-                self.reproduction_evidence_hashes
-            ),
+            "reproduction_evidence_hashes": list(self.reproduction_evidence_hashes),
             "internal_hypothesis_relations": [
                 item.as_dict() for item in self.internal_hypothesis_relations
             ],
@@ -957,9 +958,7 @@ def literature_spec_from_dict(value: object) -> LiteratureSpec:
         "title": _strict_text(payload["title"], "literature.title"),
         "citation": _strict_text(payload["citation"], "literature.citation"),
         "actor_id": _strict_text(payload["actor_id"], "literature.actor_id"),
-        "recorded_at": _strict_text(
-            payload["recorded_at"], "literature.recorded_at"
-        ),
+        "recorded_at": _strict_text(payload["recorded_at"], "literature.recorded_at"),
         "references": references,
     }
     if schema_version == 1:
@@ -1030,9 +1029,7 @@ def literature_spec_from_dict(value: object) -> LiteratureSpec:
     return LiteratureSpec(
         **common_values,  # type: ignore[arg-type]
         source=source,
-        published_at=_strict_text(
-            payload["published_at"], "literature.published_at"
-        ),
+        published_at=_strict_text(payload["published_at"], "literature.published_at"),
         accessed_at=_strict_text(payload["accessed_at"], "literature.accessed_at"),
         key_claims=tuple(
             _strict_text(item, "literature.key_claim")
@@ -1080,9 +1077,7 @@ def hypothesis_outcome_spec_from_dict(value: object) -> HypothesisOutcomeSpec:
     raw_classification = payload.get("failure_classification")
     return HypothesisOutcomeSpec(
         schema_version=schema_version,
-        outcome_id=_strict_text(
-            payload["outcome_id"], "hypothesis_outcome.outcome_id"
-        ),
+        outcome_id=_strict_text(payload["outcome_id"], "hypothesis_outcome.outcome_id"),
         version=_strict_text(payload["version"], "hypothesis_outcome.version"),
         hypothesis_ref=_strict_knowledge_ref(
             payload["hypothesis_ref"], "hypothesis_outcome.hypothesis_ref"
@@ -1090,17 +1085,11 @@ def hypothesis_outcome_spec_from_dict(value: object) -> HypothesisOutcomeSpec:
         question_ref=(
             None
             if raw_question is None
-            else _strict_knowledge_ref(
-                raw_question, "hypothesis_outcome.question_ref"
-            )
+            else _strict_knowledge_ref(raw_question, "hypothesis_outcome.question_ref")
         ),
         outcome=_strict_text(payload["outcome"], "hypothesis_outcome.outcome"),
-        rationale=_strict_text(
-            payload["rationale"], "hypothesis_outcome.rationale"
-        ),
-        actor_id=_strict_text(
-            payload["actor_id"], "hypothesis_outcome.actor_id"
-        ),
+        rationale=_strict_text(payload["rationale"], "hypothesis_outcome.rationale"),
+        actor_id=_strict_text(payload["actor_id"], "hypothesis_outcome.actor_id"),
         recorded_at=_strict_text(
             payload["recorded_at"], "hypothesis_outcome.recorded_at"
         ),
@@ -1218,9 +1207,7 @@ def _require_timestamp(value: str, context: str) -> datetime:
 
 
 def _strict_mapping(value: object, context: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise KnowledgeContractError(f"{context}_object_required")
     return value
 
@@ -1264,9 +1251,7 @@ def _strict_knowledge_ref(value: object, context: str) -> KnowledgeRef:
     )
 
 
-def _strict_enum[T: StrEnum](
-    enum_type: type[T], value: object, context: str
-) -> T:
+def _strict_enum[T: StrEnum](enum_type: type[T], value: object, context: str) -> T:
     raw = _strict_text(value, context)
     try:
         return enum_type(raw)

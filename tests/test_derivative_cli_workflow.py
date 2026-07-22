@@ -218,12 +218,47 @@ def test_bundle_parser_rejects_tamper_unknown_and_forbidden_fields(
         DerivativeEvidenceBundle.load(bundle_path, _manager(tmp_path / "state"))
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "accountId",
+        "account-id",
+        "brokerAPIKey",
+        "liveApproval",
+        "order-router",
+        "privateExchange",
+        "network-market-data-collection",
+    ),
+)
+def test_bundle_parser_rejects_forbidden_field_aliases(
+    tmp_path: Path, field_name: str
+) -> None:
+    payload = _bundle(DerivativeProductKind.MULTI_LEG, tmp_path).as_dict()
+    supporting = payload["supporting_evidence"]
+    assert isinstance(supporting, list)
+    row = supporting[0]
+    assert isinstance(row, dict)
+    evidence = row["payload"]
+    assert isinstance(evidence, dict)
+    evidence[field_name] = "forbidden"
+    bundle_path = tmp_path / f"forbidden-{field_name}.json"
+    bundle_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        DerivativeEvidenceWorkflowError,
+        match="derivative_bundle_live_field_forbidden",
+    ):
+        DerivativeEvidenceBundle.load(bundle_path, _manager(tmp_path / "state"))
+
+
 def test_derivative_commands_are_catalogued_as_cli_only() -> None:
     capabilities = capability_registry()
     for command in (
         "research-derivative-register",
         "research-derivative-replay",
         "research-derivative-diff",
+        "research-derivative-execute",
+        "research-derivative-reproduce",
     ):
         assert capabilities[command].cli_command == command
         assert capabilities[command].gui_policy is GuiPolicy.CLI_ONLY

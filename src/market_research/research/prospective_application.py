@@ -71,9 +71,7 @@ class ProspectiveValidationApplicationService:
             to_state=HypothesisLifecycleState.PROSPECTIVE_VALIDATION.value,
             actor_id=actor_id,
             reason=reason,
-            evidence_hashes={
-                "prospective_validation_spec_hash": spec.contract_hash()
-            },
+            evidence_hashes={"prospective_validation_spec_hash": spec.contract_hash()},
             recorded_at=recorded_at,
         )
         return {

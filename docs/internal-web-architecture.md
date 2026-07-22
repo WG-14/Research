@@ -143,6 +143,8 @@ Every Research CLI command has exactly one GUI policy:
 | `research-derivative-register` | `cli_only` | Registers a complete repository-external immutable derivative evidence bundle; no generic upload surface is exposed. |
 | `research-derivative-replay` | `cli_only` | Replays a hash-bound external derivative evidence bundle without exposing paths through the GUI. |
 | `research-derivative-diff` | `cli_only` | Compares immutable derivative packages as an expert evidence diagnostic. |
+| `research-derivative-execute` | `cli_only` | Runs an allowlisted offline derivative simulation from repository-external immutable JSON; it exposes no broker or account authority. |
+| `research-derivative-reproduce` | `cli_only` | Independently reruns a typed offline request and compares execution hashes without exposing external paths through the GUI. |
 | `research.explore` | `required` | Bounded, path-free exploration of immutable research evidence with read auditing. |
 
 GUI-only exploration, list, detail, and download capabilities are bounded

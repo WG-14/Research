@@ -158,12 +158,8 @@ _HYPOTHESIS_TRANSITIONS = {
             HypothesisLifecycleState.ARCHIVED,
         }
     ),
-    HypothesisLifecycleState.CONFIRMED: frozenset(
-        {HypothesisLifecycleState.ARCHIVED}
-    ),
-    HypothesisLifecycleState.DEGRADED: frozenset(
-        {HypothesisLifecycleState.ARCHIVED}
-    ),
+    HypothesisLifecycleState.CONFIRMED: frozenset({HypothesisLifecycleState.ARCHIVED}),
+    HypothesisLifecycleState.DEGRADED: frozenset({HypothesisLifecycleState.ARCHIVED}),
     HypothesisLifecycleState.INVALIDATED: frozenset(
         {HypothesisLifecycleState.ARCHIVED}
     ),
@@ -217,12 +213,8 @@ _REQUIRED_EVIDENCE = {
     HypothesisLifecycleState.HYPOTHESIS_DEFINED.value: frozenset(
         {"hypothesis_contract_hash"}
     ),
-    HypothesisLifecycleState.STRUCTURED.value: frozenset(
-        {"hypothesis_contract_hash"}
-    ),
-    HypothesisLifecycleState.PREREGISTERED.value: frozenset(
-        {"preregistration_hash"}
-    ),
+    HypothesisLifecycleState.STRUCTURED.value: frozenset({"hypothesis_contract_hash"}),
+    HypothesisLifecycleState.PREREGISTERED.value: frozenset({"preregistration_hash"}),
     HypothesisLifecycleState.VALIDATING.value: frozenset({"validation_manifest_hash"}),
     HypothesisLifecycleState.VALIDATED.value: frozenset(
         {"validation_decision_hash", "validation_report_hash"}
@@ -756,9 +748,7 @@ def approve_strategy_candidate(
             != final_holdout_confirmation_hash
         ):
             raise GovernanceError("strategy_approval_holdout_evidence_mismatch")
-        hypothesis_defined = _latest_hypothesis_contract_row(
-            rows, hypothesis_subject
-        )
+        hypothesis_defined = _latest_hypothesis_contract_row(rows, hypothesis_subject)
         if (
             hypothesis_defined is None
             or (hypothesis_defined.get("evidence_hashes") or {}).get(

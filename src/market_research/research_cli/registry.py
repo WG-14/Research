@@ -200,6 +200,19 @@ def _derivative_diff(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--right-version", required=True)
 
 
+def _derivative_execute(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--out", required=True)
+
+
+def _derivative_reproduce(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--expected", required=True)
+    parser.add_argument("--reproduction-id", required=True)
+    parser.add_argument("--verified-at", required=True)
+    parser.add_argument("--out", required=True)
+
+
 def _call_existing(
     command: str, args: argparse.Namespace, context: ResearchAppContext
 ) -> int:
@@ -320,6 +333,16 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
         "research-derivative-diff",
         _derivative_diff,
         "compare two hash-verified derivative research packages",
+    ),
+    (
+        "research-derivative-execute",
+        _derivative_execute,
+        "execute one typed offline futures, option, or multi-leg study request",
+    ),
+    (
+        "research-derivative-reproduce",
+        _derivative_reproduce,
+        "rerun a typed derivative request and compare its immutable execution",
     ),
 )
 

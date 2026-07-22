@@ -210,9 +210,7 @@ def _validate_receipt_contract(env: Mapping[str, str], group_gid: int) -> None:
     if _absolute(env, "RESEARCH_OPS_PREFLIGHT_RECEIPT") != _PREFLIGHT_RECEIPT:
         raise PreflightError("preflight_receipt_path_invalid")
     _bounded_integer(env, "RESEARCH_OPS_PREFLIGHT_MAX_AGE_SECONDS", 300, 172800)
-    _bounded_integer(
-        env, "RESEARCH_OPS_JOB_EXECUTION_TIMEOUT_SECONDS", 30, 86400
-    )
+    _bounded_integer(env, "RESEARCH_OPS_JOB_EXECUTION_TIMEOUT_SECONDS", 30, 86400)
     _bounded_integer(env, "RESEARCH_OPS_JOB_CHILD_MEMORY_LIMIT_MB", 256, 32768)
     _bounded_integer(
         env, "RESEARCH_OPS_JOB_CHILD_OUTPUT_LIMIT_BYTES", 1048576, 1073741824

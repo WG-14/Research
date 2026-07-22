@@ -49,9 +49,7 @@ def publish_source_archive(
     os.close(fd)
     staging = Path(staging_name)
     try:
-        with zipfile.ZipFile(
-            staging, "w", compression=zipfile.ZIP_STORED
-        ) as archive:
+        with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_STORED) as archive:
             for logical_path, source_path in rows:
                 info = zipfile.ZipInfo(logical_path, date_time=_FIXED_ZIP_DATE)
                 info.compress_type = zipfile.ZIP_STORED
@@ -159,7 +157,9 @@ def _source_rows(project_root: Path) -> list[tuple[str, Path]]:
         for name in _ARCHIVE_ROOT_FILES
         if (project_root / name).is_file()
     )
-    unique = sorted(set(candidates), key=lambda path: path.relative_to(project_root).as_posix())
+    unique = sorted(
+        set(candidates), key=lambda path: path.relative_to(project_root).as_posix()
+    )
     return [(path.relative_to(project_root).as_posix(), path) for path in unique]
 
 

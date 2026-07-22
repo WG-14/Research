@@ -565,8 +565,32 @@ def _workflow(
         futures_margin_ref = support.add("margin_policy_registry", f"margin-{slug}")
     else:
         option_chain_ref = chain_ref
-        implied_volatility_ref = support.add("iv_model_registry", f"iv-{slug}")
-        greeks_ref = support.add("greeks_model_registry", f"greeks-{slug}")
+        valuation_model = simulation_payload["valuation_model"]
+        assert isinstance(valuation_model, dict)
+        valuation_model_hash = valuation_model["content_hash"]
+        assert isinstance(valuation_model_hash, str)
+        implied_volatility_ref = support.add_payload(
+            "iv_model_registry",
+            f"iv-{slug}",
+            {
+                "schema_version": 2,
+                "artifact_type": "derivative_option_valuation_model_authority",
+                "role": "IMPLIED_VOLATILITY",
+                "valuation_model": valuation_model,
+                "valuation_model_hash": valuation_model_hash,
+            },
+        )
+        greeks_ref = support.add_payload(
+            "greeks_model_registry",
+            f"greeks-{slug}",
+            {
+                "schema_version": 2,
+                "artifact_type": "derivative_option_valuation_model_authority",
+                "role": "GREEKS",
+                "valuation_model": valuation_model,
+                "valuation_model_hash": valuation_model_hash,
+            },
+        )
         volatility_surface_ref = support.add(
             "surface_model_registry", f"surface-{slug}"
         )
@@ -594,15 +618,27 @@ def _workflow(
         tail_risk_ref=tail_risk_ref,
     )
 
+    observation_datasets = simulation_payload.get("lifecycle_dataset_snapshots", [])
+    assert isinstance(observation_datasets, list)
+    observation_hashes = tuple(
+        str(item["content_hash"])
+        for item in observation_datasets
+        if isinstance(item, dict)
+    )
     experiment_run = DerivativeExperimentRun(
         run_id=f"run-{slug}",
         experiment_spec_hash=experiment_spec.content_hash,
         dataset_snapshot_hash=dataset.content_hash,
         started_at="2026-03-03T00:00:00+00:00",
-        finished_at="2026-03-03T02:00:00+00:00",
+        finished_at=(
+            "2026-07-03T00:00:00+00:00"
+            if observation_hashes
+            else "2026-03-03T02:00:00+00:00"
+        ),
         status="SUCCEEDED",
         event_stream_hash=simulation.event_stream_hash,
         result_artifact_hash=simulation.content_hash,
+        observation_dataset_snapshot_hashes=observation_hashes,
     )
     risk = _risk_evidence(
         product_kind=product_kind,
@@ -616,7 +652,7 @@ def _workflow(
         dataset_snapshot_ref=EvidenceRef(
             "derivative_dataset_snapshot",
             dataset.snapshot_id,
-            "1",
+            str(dataset.schema_version),
             dataset.content_hash,
         ),
         chain_snapshot_refs=(chain_ref,),
@@ -624,13 +660,13 @@ def _workflow(
         experiment_spec_ref=EvidenceRef(
             "derivative_experiment_spec",
             experiment_spec.experiment_id,
-            "1",
+            str(experiment_spec.schema_version),
             experiment_spec.content_hash,
         ),
         experiment_run_ref=EvidenceRef(
             "derivative_experiment_run",
             experiment_run.run_id,
-            "1",
+            str(experiment_run.schema_version),
             experiment_run.content_hash,
         ),
     )
@@ -1046,6 +1082,41 @@ def test_common_dataset_experiment_run_flows_to_replayable_package(
     )
 
 
+@pytest.mark.parametrize("model_ref_name", ("implied_volatility_ref", "greeks_ref"))
+def test_option_model_authorities_bind_the_exact_frozen_valuation_model(
+    tmp_path: Path, model_ref_name: str
+) -> None:
+    workflow = _workflow(DerivativeProductKind.OPTION, tmp_path)
+    ref = getattr(workflow.package.models, model_ref_name)
+    assert isinstance(ref, EvidenceRef)
+    supporting = dict(workflow.supporting)
+    changed = deepcopy(supporting[ref])
+    model = changed["valuation_model"]
+    assert isinstance(model, dict)
+    model["model_version"] = "different_black_scholes_version"
+    model["content_hash"] = sha256_prefixed(
+        {key: value for key, value in model.items() if key != "content_hash"},
+        label="option_valuation_model",
+    )
+    changed["valuation_model_hash"] = model["content_hash"]
+    supporting[ref] = changed
+
+    with pytest.raises(
+        DerivativeEvidenceError, match="valuation_model_spec_binding_mismatch"
+    ):
+        DerivativeEvidenceRegistry(_manager(tmp_path)).register(
+            workflow.package,
+            dataset=workflow.dataset,
+            experiment_spec=workflow.experiment_spec,
+            experiment_run=workflow.experiment_run,
+            decision=workflow.decision,
+            robustness=workflow.robustness,
+            prospective=workflow.prospective,
+            conclusion=workflow.conclusion,
+            supporting_evidence=supporting,
+        )
+
+
 def test_register_rejects_monitoring_bound_to_another_prospective_dataset(
     tmp_path: Path,
 ) -> None:
@@ -1362,7 +1433,22 @@ def test_product_discriminator_rejects_incomplete_model_refs(
 
 @pytest.mark.parametrize(
     "field_name",
-    ("live_approval", "account_id", "deployment_target", "capital_allocation"),
+    (
+        "live_approval",
+        "liveApproval",
+        "live-approval",
+        "account_id",
+        "accountId",
+        "account-id",
+        "deployment_target",
+        "deploymentTarget",
+        "capital_allocation",
+        "capital-allocation",
+        "brokerAPIKey",
+        "orderRouter",
+        "private-exchange",
+        "networkMarketDataCollection",
+    ),
 )
 def test_package_parser_rejects_live_authority_fields(
     tmp_path: Path, field_name: str
@@ -1373,6 +1459,37 @@ def test_package_parser_rejects_live_authority_fields(
         DerivativeEvidenceError, match="derivative_package_live_field_forbidden"
     ):
         DerivativeResearchPackageManifest.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "forbidden_argument",
+    (
+        "--liveAccount",
+        "--live-account",
+        "--submitOrder",
+        "--submit-order",
+        "--orderRouter",
+        "--private-exchange",
+        "--networkMarketData",
+    ),
+)
+def test_package_reproduction_command_rejects_forbidden_value_aliases(
+    tmp_path: Path, forbidden_argument: str
+) -> None:
+    package = _workflow(DerivativeProductKind.FUTURE, tmp_path).package
+
+    with pytest.raises(
+        DerivativeEvidenceError,
+        match="package_reproduction_command_not_research_only",
+    ):
+        replace(
+            package,
+            reproduction_command=(
+                "market-research",
+                "research-derivative-replay",
+                forbidden_argument,
+            ),
+        )
 
 
 def test_missing_supporting_ref_fails_before_any_publication(tmp_path: Path) -> None:

@@ -275,8 +275,7 @@ def _ts(value: str) -> int:
 
 def _snapshot(manifest, *timestamps: str) -> DatasetSnapshot:
     candles = tuple(
-        Candle(_ts(value), 100.0, 101.0, 99.0, 100.0, 1.0)
-        for value in timestamps
+        Candle(_ts(value), 100.0, 101.0, 99.0, 100.0, 1.0) for value in timestamps
     )
     options = {
         "domain_contracts": {
@@ -353,13 +352,12 @@ def test_selection_consumes_holiday_early_close_halt_and_resume_authorities() ->
         slippage_bps=10,
     )
     assert run.candle_count == 2
-    assert run.point_in_time_decision_stream_hash == evidence[
-        "decision_stream_hash"
-    ]
+    assert run.point_in_time_decision_stream_hash == evidence["decision_stream_hash"]
     assert len(run.point_in_time_decision_evidence) == len(snapshot.candles)
-    assert run.execution_event_summary[
-        "point_in_time_authority_binding_hash"
-    ] == evidence["authority_binding_hash"]
+    assert (
+        run.execution_event_summary["point_in_time_authority_binding_hash"]
+        == evidence["authority_binding_hash"]
+    )
 
 
 def test_inactive_history_is_kept_before_end_and_delisting_is_fail_closed() -> None:
@@ -411,8 +409,9 @@ def test_future_corrections_and_future_action_suffix_do_not_change_prior_row() -
         manifest=extended, snapshot=extended_snapshot
     )
     assert base_evidence["rows"] == extended_evidence["rows"]
-    assert base_evidence["authority_binding_hash"] != (
-        extended_evidence["authority_binding_hash"]
+    assert (
+        base_evidence["authority_binding_hash"]
+        != (extended_evidence["authority_binding_hash"])
     )
 
     later_snapshot = _snapshot(extended, "2026-09-02T14:00:00+00:00")
@@ -452,12 +451,15 @@ def test_known_future_effective_action_correction_supersedes_old_version() -> No
         expected_instrument_id="inst_btc_internal_0001",
     )
 
-    assert action_set.latest_effective_and_known(
-        as_of="2026-08-15T00:00:00+00:00"
-    ) == ()
-    assert action_set.latest_effective_and_known(
-        as_of="2026-09-02T00:00:00+00:00"
-    )[0].event_version_id == "cav_selection_corrected_0001_v2"
+    assert (
+        action_set.latest_effective_and_known(as_of="2026-08-15T00:00:00+00:00") == ()
+    )
+    assert (
+        action_set.latest_effective_and_known(as_of="2026-09-02T00:00:00+00:00")[
+            0
+        ].event_version_id
+        == "cav_selection_corrected_0001_v2"
+    )
 
 
 def test_validation_scope_rejects_missing_authority_and_source_tamper(
@@ -475,9 +477,12 @@ def test_validation_scope_rejects_missing_authority_and_source_tamper(
         classification="validated_candidate",
     )
     binding = require_point_in_time_scope(manifest, verify_source_content=True)
-    assert binding["authorities"]["source_content_verification"][
-        "point_in_time_universe"
-    ]["status"] == "VERIFIED"
+    assert (
+        binding["authorities"]["source_content_verification"]["point_in_time_universe"][
+            "status"
+        ]
+        == "VERIFIED"
+    )
     evidence = build_point_in_time_decision_evidence(
         manifest=manifest,
         snapshot=_snapshot(manifest, "2026-07-02T14:00:00+00:00"),
@@ -486,7 +491,9 @@ def test_validation_scope_rejects_missing_authority_and_source_tamper(
 
     missing = copy.copy(manifest)
     missing.market_calendar = None
-    with pytest.raises(PointInTimeSelectionError, match="scope_missing:market_calendar"):
+    with pytest.raises(
+        PointInTimeSelectionError, match="scope_missing:market_calendar"
+    ):
         require_point_in_time_scope(missing, verify_source_content=True)
 
     universe_source.write_bytes(b"tampered")

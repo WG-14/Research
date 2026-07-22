@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -11,6 +12,7 @@ from market_research.research.derivatives.common import (
     InstrumentKind,
 )
 from market_research.research.derivatives.options import (
+    BlackScholesModel,
     OptionRobustnessInput,
     OptionRobustnessPolicy,
     run_option_robustness_suite,
@@ -87,11 +89,20 @@ def _robustness_simulation() -> tuple[
             item.contract_id for item in inputs.chain_snapshot.contracts
         ),
     )
+    dataset = replace(
+        dataset,
+        knowledge_time=inputs.chain_snapshot.knowledge_time,
+        period_end=inputs.chain_snapshot.knowledge_time,
+    )
+    valuation_model = BlackScholesModel(
+        model_version=inputs.base_iv_results[0].model_version
+    )
     spec = _spec(
         dataset,
         simulation_policy_hash=policy.content_hash,
         cost_model_hash=policy.cost_model_hash,
         fill_model_hash=policy.fill_model_hash,
+        valuation_model_hash=valuation_model.content_hash,
     )
     simulation = DerivativeSimulationEvidence.from_option(
         simulation_id="simulation.option.robustness.risk",
@@ -99,6 +110,7 @@ def _robustness_simulation() -> tuple[
         experiment_spec=spec,
         chain=inputs.chain_snapshot,
         execution_policy=policy,
+        valuation_model=valuation_model,
         orders=orders,
         fills=fills,
         positions=positions,

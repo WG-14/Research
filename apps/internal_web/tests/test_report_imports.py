@@ -11,10 +11,12 @@ from django.contrib.auth.models import Group
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.urls import NoReverseMatch, reverse
 
-from market_research.paths import ResearchPathManager
+from market_research.application.platform_contracts import (
+    ResearchPathManager,
+    ResearchSettings,
+)
 from market_research.research.hashing import content_hash_payload, sha256_prefixed
 from market_research.research.research_decision_report import REPORT_SECTIONS
-from market_research.settings import ResearchSettings
 from portal.models import ImportedDecisionReport, WebAuditEvent
 from portal.report_imports import (
     HistoricalReportImportConflict,

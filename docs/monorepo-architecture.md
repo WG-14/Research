@@ -28,6 +28,14 @@ manifest validation, strategy composition, backtest/walk-forward/statistical
 validation, governance evidence, reports, and the offline CLI. It exposes
 framework-neutral contracts under `market_research.application`.
 
+`market_research.application.platform_contracts` is the narrow shared facade
+for repository-external path settings and crash-safe publication primitives.
+Web and Operations do not import `market_research.paths`,
+`market_research.settings`, or `market_research.storage_io` directly. The
+module paths in `architecture-boundaries.json` are executable exact
+allowlists. A listed package module does not authorize its descendants; the
+architecture tests reject both undeclared imports and stale allowlist entries.
+
 It does not own:
 
 - Django, sessions, browser authorization, or HTTP views;

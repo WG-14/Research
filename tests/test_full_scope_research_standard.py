@@ -71,7 +71,9 @@ def _hypothesis(*, version: int = 1, parent: tuple[str, ...] = ()) -> Hypothesis
     )
 
 
-def test_complete_observation_question_and_hypothesis_contracts_are_hash_bound() -> None:
+def test_complete_observation_question_and_hypothesis_contracts_are_hash_bound() -> (
+    None
+):
     observation = Observation(
         observation_id="obs_basis_001",
         version=1,

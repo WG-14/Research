@@ -4,6 +4,8 @@
 기준 — 연구 한정 · 현물·선물·옵션 전 범위 평가판”**만을 기준으로 한
 지속 평가 기록이다. 기준 원문의 SHA-256은
 `13ab8fbd3c37a3095ca9fd2c69818c4cb7d5f85fdf96f9f27fedb626ba17d635`이며,
+실행 지시문 SHA-256은
+`26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`다.
 실행 가능한 431행 기준과 19개 차단 조건은
 `docs/research-platform-full-scope-evaluation-matrix.json`에 있다.
 
@@ -462,7 +464,7 @@ prospective 평가보다 앞선 conclusion, package보다 앞선 replay receipt,
   `DerivativeKnowledgeEvidenceArchive`는 outcome·문헌·결정의 append-only
   registry prefix proof를 exact conclusion hash와 package에 연결한다.
 
-### 5회차 최종 재진단
+### 5회차 재진단
 
 | 단계 | Core | Spot | Futures | Options | Multi-Leg |
 | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -499,24 +501,256 @@ Derivatives Portfolio 3.00, Derivatives Risk 4.00이다. 상향한 행은
 시간이 경과한 옵션 chain·quote age·rate/dividend·IV/Greeks·surface/skew·
 liquidity·exercise/assignment·동시 multi-leg 전향 관측 증거가 없다.
 
-### 차단 조건 최종 판정
+### 5회차 차단 조건 판정
 
 - B-01~B-03, B-05~B-19: PASS(E4).
 - B-04: **FAIL(E0)**. 저장 graph, risk projection, provenance와 chronology를
   다시 검증하지만 raw 외부 dataset에서 simulator를 독립 환경으로 재실행하지
   않는다. 실제 경과 prospective window와 외부 attestation도 없다.
 
+## 반복 6 — 연구 표준·배포 경계·불변 입력 권위
+
+평가일: 2026-07-22. 5회차 이후 전체 431행을 다시 조사한 결과, 연구 표준
+객체는 구현되어 있었지만 manifest, validation, strategy package와 지식 registry가
+하나의 binding authority를 강제하지 않았고 Web/Operations가 Research 내부 경로를
+직접 참조할 여지가 있었다. 또한 orderbook 저장소의 production 모듈에 test fixture
+쓰기 함수가 남아 immutable external input 경계를 흐렸다.
+
+### 회차 진단과 근본 원인
+
+- 표면 증상: 연구 표준이 일부 소비 경로에서 선택적이었고, adapter import 계약은
+  넓은 prefix였으며 test-only 데이터 쓰기가 production namespace에 있었다.
+- 상위 원인: “공개 application contract”와 “연구 입력은 외부에서 준비된다”는
+  규칙이 문서상 경계였을 뿐 exact executable allowlist와 단일 binding 객체로
+  표현되지 않았다.
+- 해결 방향: 공통 `ResearchStandardBinding`, 공유 `InstrumentKind`, 좁은
+  `platform_contracts.py`를 실제 소비 경로에 연결하고 fixture writer를 test로 옮겼다.
+
+### 구현·검증 기록
+
+- `experiment_manifest.py`, `validation_pipeline.py`, `strategy_package.py`,
+  `knowledge_registry.py`, `study_lifecycle.py`가 같은 연구 표준 binding/hash를
+  소비하도록 연결했다.
+- Web/Operations는 `application/platform_contracts.py`의 공개 계약을 통해서만
+  Research 설정·경로·상태를 사용하고 WSGI도 Web 계약을 경유한다.
+- top/depth orderbook의 production upsert writer를 제거하고 fixture 생성 책임을
+  테스트로 이동했다.
+- 이 회차의 변경은 관련 권위 경로의 E4 근거를 강화했지만 독립 E5를 만들지
+  않으므로 모든 행을 재평가하되 점수는 유지했다. 최종 merged checkout의
+  full-suite·build·lint·typecheck receipt는 10회차 검증 전까지 확정하지 않았다.
+
+### 회차 종료 판정
+
+- FULL: 0/431, PARTIAL: 431/431.
+- B-04는 외부 E5가 없어 계속 FAIL이다.
+- 다음 회차 이유: 파생상품 도메인 함수는 풍부했지만 하나의 production
+  application/CLI가 사전등록부터 실제 실행·재실행까지 조정하지 않았다.
+
+## 반복 7 — 파생상품 application·CLI·결정론적 재실행
+
+평가일: 2026-07-22. 손으로 조립한 domain fixture와 저장 graph 검증만으로는
+사용자가 실행할 수 있는 파생상품 연구 흐름을 증명하지 못한다는 문제를 다시
+확인했다.
+
+### 회차 진단과 근본 원인
+
+- 표면 증상: 선물·옵션·멀티레그의 계약과 ledger는 있었지만 dataset admission,
+  preregistration, 명령, simulation evidence와 Run을 한 서비스가 조정하지 않았다.
+- 상위 원인: domain 계산과 evidence registry 사이에 typed application boundary가
+  없고 기존 CLI는 저장 graph register/replay만 노출했다.
+- 해결 방향: 상품별 immutable request를 실제 domain 함수에 전달하는 application
+  service, strict allowlisted codec, execute/reproduce CLI를 하나의 권위로 추가했다.
+
+### 구현·검증 기록
+
+- `derivatives/application.py`가 Futures·Option·Multi-Leg 요청을 admit하고 실제
+  order/fill/ledger/lifecycle를 실행해 `DerivativeSimulationEvidence`와 immutable
+  `ExperimentRun`을 만든다.
+- `derivatives/application_codec.py`와 CLI 명령은 repository-external bounded JSON만
+  읽고 duplicate/unknown/live-authority/float/비정규 Decimal을 거부한다. 출력은
+  atomic create-or-verify이며 동일 요청의 재실행 결과 hash를 비교한다.
+- 정상 실행뿐 아니라 구조화된 FAILED Run과 재현 mismatch가 typed 결과로 남는다.
+- 이 회차에서 17개 S4 후보 행의 production 소비 근거는 추가됐지만, 다음 회차의
+  시간·범위·모델·결제·실패 adversarial 검토 전에는 3점을 유지했다. 최종 merged
+  checkout focused/full 검증은 아직 확정하지 않았다.
+
+### 회차 종료 판정
+
+- FULL: 0/431, PARTIAL: 431/431.
+- B-19는 실행 가능한 합성 Spot/Futures/Options/Multi-Leg E4 경로로 PASS를
+  유지한다. B-04는 local 재실행이 생겼어도 독립 환경의 실제 E5가 없어 FAIL이다.
+- 다음 회차 이유: 정상 application 경로가 새로 생긴 만큼 범위 치환, 시간 역전,
+  모델 바꿔치기와 실패 성공 오인 가능성을 공격적으로 재검토해야 했다.
+
+## 반복 8 — P0 시간·범위·모델·결제·실패 경로 폐쇄
+
+평가일: 2026-07-22. 독립 공격 검토에서 정상 테스트만으로 드러나지 않던 다섯
+종류의 구조적 우회가 확인됐다.
+
+### 회차 진단과 근본 원인
+
+- 선물 ledger가 내부적으로 `failed=True`여도 application이 성공 Run을 만들 수
+  있었다.
+- confirmatory run의 preregistration 시간과 최초 dataset access 순서가 명시적으로
+  결속되지 않았고, 질문·가설의 대상과 다른 contract/market으로 실행할 수 있었다.
+- 옵션 평가 모델은 계산에는 쓰였지만 `ExperimentSpec`과 evidence identity에
+  content hash로 고정되지 않았다.
+- 옵션 만기·조기행사는 출처 없는 `settlement_spot`과 이미 계산된 decision을
+  신뢰해 PIT 결제값 및 정책 재계산을 우회할 수 있었다.
+- CLI execution failure는 종료 코드만 남기고 immutable failure artifact를
+  출판하지 않을 수 있었다.
+
+### 구조적 해결과 검증 기록
+
+- `ResearchPreregistration.preregistered_at`, spec freeze, first access와 모든
+  command/event 시간을 같은 chronology로 강제하고 market/target/dataset kind와
+  chain universe를 질문·가설 범위에 결속했다.
+- `BlackScholesModel.content_hash`를 `DerivativeExperimentSpec`과 simulation
+  evidence에 고정하고 model payload를 재검산한다.
+- `OptionSettlementInput`은 contract, event/available times, external source manifest,
+  settlement spot과 content hash를 보유한다. lifecycle은 dataset membership와
+  knowledge time을 확인하고 early-exercise decision을 입력에서 다시 계산한다.
+- failed futures ledger는 즉시 FAILED Run으로 전환한다. CLI도 request hash,
+  failed Run, failure code와 message hash만 가진 bounded immutable failure artifact를
+  원자적으로 출판한다.
+- 이 공격 경로가 닫힌 local E4 근거에 한해 `S4-C01`, `S4-C02`, `S4-C06`,
+  `S4-O01`~`S4-O05`, `S4-O07`, `S4-O11`, `S4-O12`, `S4-O14`,
+  `S4-OM01`~`S4-OM05`의 17행을 3→4로 상향했다. score 5와 FULL은 실제 외부
+  E5가 없으므로 부여하지 않았다.
+
+### 회차 종료 판정
+
+- FULL: 0/431, PARTIAL: 431/431.
+- 점수 분포: 4점 225행, 3점 194행, 2점 12행.
+- B-04: **FAIL(E4)**. local deterministic rerun과 공격 테스트는 E4지만 실제
+  외부 DatasetSnapshot/Run의 독립 환경 E5가 없다.
+- 다음 회차 이유: 새 권위가 도입된 뒤 repository 전체에서 경계와 evidence
+  runner가 우회될 수 없는지 정적 guard를 넓혀야 했다.
+
+## 반복 9 — 연구 전용 guard·증거 runner·CI 경계 정리
+
+평가일: 2026-07-22. 새 application 자체가 안전하더라도 정적 경계 검사가 일부
+source root만 보거나 넓은 package prefix를 허용하면 후속 변경이 우회 경로를
+다시 만들 수 있다는 회귀 위험을 확인했다.
+
+### 회차 진단과 근본 원인
+
+- capability guard의 초기 범위가 주요 세 source root에 집중되어 scripts,
+  deployment, container/systemd 지원 파일의 금지 기능 회귀를 완전히 포착하지
+  못했다.
+- adapter architecture test는 공개 application package의 넓은 prefix를 허용해
+  문서에 적힌 exact contract file 목록보다 큰 surface를 통과시킬 수 있었다.
+- completeness evidence runner는 PARTIAL/FAIL 행까지 실행 대상으로 요구해 현재
+  fail-closed matrix에서 실행 가능한 증거 대상과 평가 대상이 어긋났다.
+
+### 구조적 해결과 검증 기록
+
+- research-only guard를 production Python, scripts와 Operations deployment 지원
+  surface까지 확대하고 연구 시스템 운영에 필요한 좁은 예외만 명시했다.
+- `architecture-boundaries.json`의 `public_adapter_contracts`와 소비 모듈 목록을
+  exact allowlist로 검사한다.
+- evidence runner는 FULL criterion과 PASS blocker만 실행·receipt 결속 대상으로
+  선택하며 PARTIAL/FAIL 행은 denominator에 남기되 성공 증거를 요구하지 않는다.
+- 현재 첨부 실행 지시문의 실제 SHA-256
+  `26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`를
+  matrix, evaluator와 계약 테스트에 동일하게 결속했다.
+- 이 회차에서는 점수를 올리지 않았다. full-suite, build, 전체 lint/typecheck와
+  외부 receipt는 10회차의 최종 검증 담당이 실행하기 전까지 `pending`으로 남겼다.
+
+### 회차 종료 판정
+
+- FULL: 0/431, PARTIAL: 431/431.
+- B-01~B-03, B-05~B-19는 local E4 PASS, B-04는 E4 FAIL이다.
+- 다음 회차 이유: 최대 10회 지시에 따라 모든 431행의 최종 상태와 문서·도구의
+  정합성을 다시 산출해야 했다.
+
+## 반복 10 — 최종 로컬 재진단
+
+평가일: 2026-07-22. 원문 431개 기준과 19개 차단 조건을 모두 다시 평가했다.
+이 회차는 외부 E5를 합성하거나 과거 5회차 검증 결과를 현재 checkout의 새
+receipt처럼 재사용하지 않는다.
+
+### 10회차 엄격 재진단
+
+| 단계 | Core | Spot | Futures | Options | Multi-Leg |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4 | 4 | 4 | 4 | 3 |
+| 2 | 4 | 3 | 3 | 3 | 3 |
+| 3 | 3 | 4 | 3 | 3 | 2 |
+| 4 | 3 | 4 | 4 | 3 | 3 |
+| 5 | 4 | 4 | 4 | 4 | 4 |
+| 6 | 4 | 3 | 3 | 2 | 2 |
+| 7 | 3 | 3 | 3 | 3 | 3 |
+
+17개 행의 부분 상향은 Stage 4 Core/Options/Multi-Leg에 남은 다른 3점 항목을
+해소하지 않으므로 보수적인 단계별 정수 등급과 약한 축 58.8은 유지했다.
+criterion 평균 기반 가중 점수는 정확히 `69.871885204524/100`이고 표시값은
+69.87다. 이는 rubric의 약한 축 점수를 대체하지 않는다.
+
+| 점수/판정 | 행 수 |
+| --- | ---: |
+| 4 / PARTIAL | 225 |
+| 3 / PARTIAL | 194 |
+| 2 / PARTIAL | 12 |
+| 5 / FULL | 0 |
+| GAP | 0 |
+
+범위별 평균은 Core 3.68, Spot 3.20, Futures 3.45, Options 3.28,
+Derivatives Portfolio 3.00, Derivatives Risk 4.00이다. 431개
+`assessment_history`와 19개 blocker history는 모두 정확히 1~10회차를 가진다.
+
+### 최종 공격 검토에서 추가 폐쇄한 경로
+
+- 선물 chain의 개별 quote/lifecycle source를 chain manifest와 dataset raw
+  manifest에 교차 결속하고, lifecycle·settlement quote의 PIT 시각과 실제 chain
+  membership을 application과 저장 evidence 양쪽에서 재검산한다.
+- 옵션 chain의 quote `as_of`가 knowledge time보다 미래이면 거부한다. 행사·배정·
+  만기 입력은 동결 Spec과 분리된 사후 immutable observation dataset을 이벤트별로
+  선택하고 Run/evidence에만 결속한다.
+- 저장 IV는 quote midpoint, 무차익 경계, solver tolerance·iteration·residual로
+  다시 역산하며 Greeks도 그 결과로 재계산한다. 멀티레그는 미체결을 포함한 모든
+  attempted fill과 participation rate를 보존해 부분체결·실패·legging을 재구성한다.
+- 사전등록 시각의 자기진술 필드를 제거하고 canonical `ResearchTransition`의
+  content hash와 기록시각을 유일한 chronology 권위로 사용한다. legacy/rich 가설의
+  mechanism, 조건, 비교대상과 반증 기준도 결정적으로 교차 검증한다.
+- completeness report는 criterion 평균 69.87과 rubric 약한 축 58.8을 구분한다.
+  약한 축 점수는 1~7단계 점수에서 evaluator가 다시 계산하며, PASS blocker의 E4
+  검증 경로와 외부 receipt binding을 matrix에 명시한다.
+
+이 보강은 기존에 4점으로 올린 행의 local E4 신뢰도를 강화하지만 외부 E5를
+새로 만들지 않으므로 점수 분포와 보수적 약한 축 등급은 올리지 않았다.
+
+### 검증 상태와 회차 종료 판정
+
+- 파생상품 application/evidence/연구표준 focused: `180 passed`; 경계·matrix·
+  보안 evidence runner focused: `75 passed`.
+- 현재 checkout collection: `1280 tests collected`. 단 한 번의 전체 pytest는
+  `1243 passed, 37 failed`였고, 실패는 전부 런처가 고정 `PYTHONHASHSEED`를
+  내보내지 않은 문제 31건과 실행 sandbox가 AF_UNIX/forkserver/namespace를
+  금지한 문제 6건이었다. 런처를 수정한 뒤 보고된 selector만 재실행해 각각
+  `31 passed`, 승인된 비샌드박스에서 `6 passed`를 확인했다. 새 런처 회귀
+  selector도 `1 passed`다. 정책에 따라 두 번째 전체 pytest는 실행하지 않았다.
+- 전체 Ruff, strict mypy(Core 222/Web 50/Operations 20), compile, docs, lock,
+  wheel·sdist 6개 build와 runtime artifact 검사는 모두 통과했다.
+- completeness gate는 FULL 0/431과 B-04 때문에 계속 fail-closed여야 한다.
+- FULL: 0/431, PARTIAL: 431/431. 의미 판정상 실패 blocker는 B-04 하나이고,
+  source matrix만 평가하면 나머지 18개도 외부 receipt hash 부재로 열린다.
+- 10회 반복 한도에 도달했다. 남은 문제는 외부 E5, 실제 경과 prospective
+  option 관측과 실제 운영 증거로서 repository 내부 합성으로 해소하지 않는다.
+
 ## 최종 보고서
 
 ### 1. 최종 결론
 
-- 수행 반복: 5회(최초 진단 포함).
+- 수행 반복: 10회(최초 진단 포함).
 - 최종 등급: **D, 58.8/100**(약한 축 기준; B-04 D 상한도 적용).
+- criterion 평균 기반 가중 점수: **69.871885204524/100**. 이 값은 약한 축과
+  blocker 상한을 적용한 최종 등급이 아니다.
 - 완전 충족: **0/431**. 이 기준은 5점과 필요한 E4/E5를 동시에 요구하므로
   합성 local E4를 FULL로 바꾸지 않았다.
 - 부분 충족: **431/431**. 미구현 GAP은 0행이지만 외부 E5와 상품별 실제
   관측 근거가 남아 있다.
-- criterion별 exact 최종 판정, 코드·테스트 근거와 1~5회차 이력은 canonical
+- criterion별 exact 최종 판정, 코드·테스트 근거와 1~10회차 이력은 canonical
   `research-platform-full-scope-evaluation-matrix.json`에 모두 보존했다.
 
 ### 2. 평가기준별 최종 상태
@@ -524,14 +758,16 @@ liquidity·exercise/assignment·동시 multi-leg 전향 관측 증거가 없다.
 431행을 문서 본문에 중복 복사하지 않고 canonical matrix를 단일 기준점으로
 사용한다. 주요 최종 상태는 다음과 같다.
 
-- Core: 연구 표준, typed manifest/dataset, validation, 14개 monitoring,
-  knowledge v2와 불변 package graph는 E4이나 독립 E5는 없다.
+- Core: 연구 표준 binding, typed manifest/dataset, validation, 14개 monitoring,
+  knowledge v2, 불변 package graph와 preregistration chronology는 E4이나 독립
+  E5는 없다.
 - Spot: 기존 PIT corporate action/universe에 ETF index/NAV/iNAV가 추가됐지만
   실제 전체 holdings·기업행위·tracking-error 역사는 없다.
-- Futures: 계약·chain·roll·정산·margin·12 stress·simulation/package 경로는
-  E4이며 실제 rate/carry/settlement/spec-history dataset과 E5가 없다.
+- Futures: 계약·chain·roll·정산·margin·12 stress·application/CLI/reproduction/
+  package 경로는 E4이며 실제 rate/carry/settlement/spec-history dataset과 E5가 없다.
 - Options/Multi-Leg: chain·quote state·IV/Greeks/surface·lifecycle·부분체결·
-  20 stress는 E4이나 `S6-O01`~`S6-O12` 실제 전향 관측이 부족하다.
+  20 stress, valuation-model hash와 PIT settlement input은 E4이나
+  `S6-O01`~`S6-O12` 실제 전향 관측이 부족하다.
 - Risk/Portfolio: 20개 typed risk metric과 cross-product exposure가 있으나
   관측 sample이 없는 지표는 의도적으로 unavailable이며 실제 시장 E5가 없다.
 - Governance/Knowledge: 실패·문헌·결정 archive는 package-bound E4이고,
@@ -548,6 +784,10 @@ liquidity·exercise/assignment·동시 multi-leg 전향 관측 증거가 없다.
   monitoring/knowledge/conclusion 전체 graph로 확장했다.
 - “hash가 맞으면 의미도 맞다”는 가정을 제거하고 nested 재계산, 시간 순서,
   duplicate-key와 substitution 음성 검증을 추가했다.
+- domain 계산과 evidence 사이의 빈 공간을 typed application/strict codec/CLI로
+  채우고 실패도 immutable FAILED Run과 bounded artifact로 보존했다.
+- 문서성 adapter 경계를 exact allowlist와 repository-wide research-only guard로
+  바꾸고 evidence runner의 실행 대상을 FULL/PASS로 정렬했다.
 
 ### 4. 주요 변경 사항
 
@@ -558,15 +798,16 @@ liquidity·exercise/assignment·동시 multi-leg 전향 관측 증거가 없다.
 - Core 확장: `research_standard.py`, `etf_nav_contract.py`, knowledge contract/
   registry v2와 manifest/snapshot/PIT/package 소비 경로.
 - CLI: repository-external derivative register/replay/diff. Internal Web에는
-  path/upload 권한을 주지 않고 CLI-only policy로 고정했다.
+  path/upload 권한을 주지 않고 CLI-only policy로 고정했다. 추가 execute/reproduce
+  명령도 strict codec과 atomic output만 사용한다.
 - 평가 장치: 현재 rubric hash, 431 criteria, 19 blockers, 모든 회차 이력을
   fail-closed evaluator와 architecture/completeness tests에 결속했다.
 - 금지된 네트워크 수집, 계정, 주문, 실거래 authority는 추가하지 않았다.
 
 ### 5. 검증 결과
 
-최종 검증은 focused → collection → distribution별 단일 full suite 순서를
-지켰다.
+1~5회차의 아래 결과는 당시 checkout의 역사적 receipt다. 6~10회차 변경이 합쳐진
+현재 checkout의 최종 검증 결과로 재사용하지 않는다.
 
 - 5회차 기능·경계 focused 묶음: `87 passed in 15.99s`.
 - collection: Core 1,166, Internal Web 194, Operations 137.
@@ -586,10 +827,26 @@ liquidity·exercise/assignment·동시 multi-leg 전향 관측 증거가 없다.
   않고 동일 소스의 임시 clean Git snapshot에서 공식 release builder를 실행해
   세 distribution의 wheel·sdist 6개와 release manifest 검증을 성공했다.
 - `uv lock --check`, `git diff --check`: 통과.
-- completeness report write/check는 모두 exit 1을 반환했다. 이는 오류가 아니라
-  B-04와 0/431 receipt-verified 상태 때문에 기대되는 fail-closed 결과다.
-  evaluator의 criterion 평균 기반 declared score는 68.96이지만, rubric의
-  약한 축 최종 등급은 58.8(D)이며 이를 최종 판정으로 사용한다.
+- 현재 파생상품 application/evidence/연구표준 focused: `180 passed`.
+- 현재 경계·matrix·evidence-runner 보안 focused: `75 passed`.
+- collection: `1280 tests collected`.
+- 단 한 번의 전체 pytest: `1243 passed, 37 failed in 1696.35s`. 37건은 제품
+  assertion 회귀가 아니라 전체 런처의 미고정 `PYTHONHASHSEED` 31건과 도구
+  sandbox의 AF_UNIX/forkserver/namespace 권한 6건이었다. `full_suite.sh`에
+  결정론 환경을 고정하고 보고된 selector만 재실행해 `31 passed in 767.47s`,
+  승인된 비샌드박스에서 `6 passed in 14.53s`를 확인했다. 런처 회귀 테스트도
+  `1 passed`이며 정책상 두 번째 broad suite는 실행하지 않았다.
+- Ruff: 전체 source/test surface 통과.
+- strict mypy: Core 222, Web 50, Operations 20 source files 통과.
+- compileall, dataset dictionary, internal-web generated contract,
+  documentation checker, `uv lock --check --offline`, `git diff --check`: 통과.
+- 현재 소스에서 세 distribution의 wheel·sdist 6개 build 성공. repository-local
+  runtime artifact 검사는 통과했다.
+- dependency audit: 알려진 취약점 없음.
+- 현재 completeness report는 의도적으로 `INCOMPLETE`, strict weak-axis
+  `58.80/100`, criterion 평균 `69.87/100`, `0/431`, findings 450이다. source
+  matrix에는 18개 local PASS blocker의 외부 receipt hash가 아직 없고 B-04는
+  독립 E5 부재로 FAIL이므로 completion gate를 통과시켜서는 안 된다.
 
 ### 6. 남은 문제
 

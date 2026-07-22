@@ -293,11 +293,7 @@ class CorporateActionSet:
                 latest_known[item.event_id] = item
         return tuple(
             sorted(
-                (
-                    item
-                    for item in latest_known.values()
-                    if item.is_effective_at(as_of)
-                ),
+                (item for item in latest_known.values() if item.is_effective_at(as_of)),
                 key=lambda item: (item.effective_at, item.event_id, item.version),
             )
         )

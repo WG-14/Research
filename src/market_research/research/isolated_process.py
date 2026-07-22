@@ -165,10 +165,7 @@ def run_isolated_command(
                 while process.poll() is None:
                     if poll_callback is not None:
                         poll_callback()
-                    if (
-                        cancellation_requested is not None
-                        and cancellation_requested()
-                    ):
+                    if cancellation_requested is not None and cancellation_requested():
                         cancelled = True
                         _terminate_process_group(process)
                         break

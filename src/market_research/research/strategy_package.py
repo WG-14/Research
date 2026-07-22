@@ -31,6 +31,11 @@ from .strategy_compiler import (
     validate_compiled_strategy_contract,
 )
 from .strategy_contract import is_sha256_hash
+from .research_standard import (
+    ResearchStandardError,
+    has_research_standard_binding_evidence,
+    parse_research_standard_binding,
+)
 from .validation_pipeline import (
     resolve_bound_selected_candidate,
     validate_validated_research_result,
@@ -172,11 +177,10 @@ def _complete_semantic_contract(
                 raise StrategyPackageError(
                     "strategy_package_etf_nav_evidence_incomplete"
                 )
-            if (
-                etf_nav_evidence.get("instrument_id")
-                != instrument_evidence.get("instrument_id")
-                or etf_nav_evidence.get("currency")
-                != instrument_evidence.get("trading_currency")
+            if etf_nav_evidence.get("instrument_id") != instrument_evidence.get(
+                "instrument_id"
+            ) or etf_nav_evidence.get("currency") != instrument_evidence.get(
+                "trading_currency"
             ):
                 raise StrategyPackageError(
                     "strategy_package_etf_nav_evidence_scope_mismatch"
@@ -198,6 +202,7 @@ def _complete_semantic_contract(
         confirmation=confirmation,
         selected_id=selected_id,
     )
+    research_standard_contract = _research_standard_package_contract(report)
     return {
         "hypothesis": hypothesis,
         "hypothesis_contract_hash": parsed_hypothesis.contract_hash(),
@@ -208,6 +213,7 @@ def _complete_semantic_contract(
         "observation_refs": [
             item.as_dict() for item in parsed_hypothesis.observation_refs
         ],
+        **research_standard_contract,
         "target_asset": target_asset,
         "strategy_spec": strategy_spec,
         "feature_definitions": features,
@@ -251,6 +257,48 @@ def _complete_semantic_contract(
             "statistical": list(report.get("statistical_evidence_limitations") or []),
             "stress": _stress_limitations(merged),
         },
+    }
+
+
+def _research_standard_package_contract(
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    marker = report.get("research_standard_binding_schema_version")
+    raw_binding = report.get("research_standard_binding")
+    if marker is None and raw_binding is None:
+        if has_research_standard_binding_evidence(report):
+            raise StrategyPackageError(
+                "strategy_package_research_standard_binding_stripped"
+            )
+        return {}
+    if marker != 2 or not isinstance(raw_binding, dict):
+        raise StrategyPackageError("strategy_package_research_standard_invalid")
+    try:
+        binding = parse_research_standard_binding(raw_binding)
+    except (ResearchStandardError, ValueError) as exc:
+        raise StrategyPackageError(
+            "strategy_package_research_standard_invalid"
+        ) from exc
+    lineage = report.get("research_standard_lineage")
+    if (
+        report.get("research_standard_binding_hash") != binding.content_hash
+        or report.get("hypothesis_contract_hash")
+        != binding.legacy_hypothesis_contract_hash
+        or not isinstance(lineage, dict)
+        or lineage.get("binding_hash") != binding.content_hash
+        or lineage.get("object_hashes") != binding.lineage_hashes()
+    ):
+        raise StrategyPackageError(
+            "strategy_package_research_standard_binding_mismatch"
+        )
+    return {
+        "research_standard_binding_schema_version": 2,
+        "research_standard_binding": binding.as_dict(),
+        "research_standard_binding_hash": binding.content_hash,
+        "research_standard_lineage": dict(lineage),
+        "research_standard_preregistration_evidence_hash": (
+            binding.preregistration_evidence_hash
+        ),
     }
 
 

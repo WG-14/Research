@@ -320,21 +320,15 @@ def test_executor_runs_all_twelve_declared_stress_kinds_deterministically() -> N
     assert {item.result.diagnostics[1] for item in executions} == {
         item.value for item in FuturesStressKind
     }
-    by_kind = {
-        item.result.diagnostics[1]: item.result for item in executions
-    }
+    by_kind = {item.result.diagnostics[1]: item.result for item in executions}
     assert by_kind[FuturesStressKind.MARGIN_INCREASE.value].margin_call_count == 1
-    assert (
-        by_kind[FuturesStressKind.PRICE_LIMIT_NO_EXIT.value].blocked_exit_count
-        == 1
-    )
+    assert by_kind[FuturesStressKind.PRICE_LIMIT_NO_EXIT.value].blocked_exit_count == 1
     assert (
         by_kind[FuturesStressKind.NEAR_EXPIRY_EXCLUSION.value].stressed_equity
         < by_kind[FuturesStressKind.NEAR_EXPIRY_EXCLUSION.value].baseline_equity
     )
     assert all(
-        result.stressed_equity <= result.baseline_equity
-        for result in by_kind.values()
+        result.stressed_equity <= result.baseline_equity for result in by_kind.values()
     )
 
 
@@ -346,9 +340,7 @@ def test_stress_results_are_bound_to_case_inputs_and_scenario_hashes() -> None:
         roll_policy,
         continuous_policy,
     )
-    execution = run_futures_stress_case(
-        case, inputs, execution_id="execution.curve"
-    )
+    execution = run_futures_stress_case(case, inputs, execution_id="execution.curve")
     changed_case = replace(case, scalar=Decimal("3"))
     changed = run_futures_stress_case(
         changed_case, inputs, execution_id="execution.curve.changed"
@@ -380,9 +372,7 @@ def test_executor_fails_closed_on_policy_pit_and_kind_specific_evidence() -> Non
         DerivativeResearchError,
         match="futures_stress_required_policy_hash_missing",
     ):
-        run_futures_stress_case(
-            unbound, inputs, execution_id="execution.unbound"
-        )
+        run_futures_stress_case(unbound, inputs, execution_id="execution.unbound")
 
     with pytest.raises(
         DerivativeResearchError,
@@ -418,9 +408,7 @@ def test_executor_fails_closed_on_policy_pit_and_kind_specific_evidence() -> Non
         DerivativeResearchError,
         match="futures_stress_scalar_below_baseline",
     ):
-        run_futures_stress_case(
-            low_scalar, inputs, execution_id="execution.low.scalar"
-        )
+        run_futures_stress_case(low_scalar, inputs, execution_id="execution.low.scalar")
 
 
 def test_price_limit_direction_and_spread_execution_are_not_inferred() -> None:

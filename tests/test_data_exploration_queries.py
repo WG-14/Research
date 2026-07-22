@@ -112,10 +112,7 @@ def test_dataset_query_is_time_filterable_and_path_free(tmp_path: Path) -> None:
     assert "open REAL" not in body
     assert query_dataset_artifacts(manager=manager, as_of_ts="120000") == ()
     assert (
-        query_dataset_artifacts(
-            manager=manager, known_at="2026-01-01T00:00:00Z"
-        )
-        == ()
+        query_dataset_artifacts(manager=manager, known_at="2026-01-01T00:00:00Z") == ()
     )
 
 
@@ -158,17 +155,16 @@ def test_dataset_detail_verifies_snapshot_and_exposes_metadata_lineage(
         "end_ts": 60_000,
     }
     assert len(technical["revision_history"]) == 2
-    assert technical["raw_cleaned_comparison"][
-        "raw_to_cleaned_content_changed"
-    ] is True
+    assert technical["raw_cleaned_comparison"]["raw_to_cleaned_content_changed"] is True
     assert [row["layer"] for row in technical["lineage"]] == [
         "raw",
         "cleaned",
         "standardized",
     ]
-    assert technical["point_in_time"]["provider_policies"][0][
-        "point_in_time_policy"
-    ] == "event_available_received_processed_times"
+    assert (
+        technical["point_in_time"]["provider_policies"][0]["point_in_time_policy"]
+        == "event_available_received_processed_times"
+    )
     assert technical["feature_input_contract"]["feature_values_exposed"] is False
     body = str(record.as_dict())
     assert str(tmp_path) not in body
@@ -228,9 +224,12 @@ def test_feature_authority_query_is_versioned_hash_bound_and_value_free() -> Non
     )
     assert "calculator" not in str(detail.as_dict())
     assert "feature_values" not in str(detail.as_dict())
-    assert query_feature_definitions(
-        registry=registry, strategy="SMA_WITH_FILTER", feature_id=close.logical_id
-    )[0].logical_id == close.logical_id
+    assert (
+        query_feature_definitions(
+            registry=registry, strategy="SMA_WITH_FILTER", feature_id=close.logical_id
+        )[0].logical_id
+        == close.logical_id
+    )
 
 
 @pytest.mark.parametrize(

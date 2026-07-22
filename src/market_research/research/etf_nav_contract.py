@@ -149,36 +149,34 @@ class EtfNavRecordVersion:
         )
         processed = _timestamp(self.processed_at, "etf_nav.record.processed_at")
         if not (
-            valuation
-            <= published
-            <= provider_received
-            <= system_received
-            <= processed
+            valuation <= published <= provider_received <= system_received <= processed
         ):
             raise EtfNavContractError("etf_nav.record.time_order_invalid")
         _require_currency(self.currency, "etf_nav.record.currency")
         _require_positive_decimal(self.nav_per_share, "etf_nav.record.nav_per_share")
         if self.market_price_ref.instrument_id != self.instrument_id:
-            raise EtfNavContractError(
-                "etf_nav.record.market_price_instrument_mismatch"
+            raise EtfNavContractError("etf_nav.record.market_price_instrument_mismatch")
+        if (
+            _timestamp(
+                self.market_price_ref.valuation_at,
+                "etf_nav.market_price_ref.valuation_at",
             )
-        if _timestamp(
-            self.market_price_ref.valuation_at,
-            "etf_nav.market_price_ref.valuation_at",
-        ) != valuation:
+            != valuation
+        ):
             raise EtfNavContractError("etf_nav.record.market_price_time_misaligned")
-        if _timestamp(
-            self.market_price_ref.available_at,
-            "etf_nav.market_price_ref.available_at",
-        ) > system_received:
+        if (
+            _timestamp(
+                self.market_price_ref.available_at,
+                "etf_nav.market_price_ref.available_at",
+            )
+            > system_received
+        ):
             raise EtfNavContractError(
                 "etf_nav.record.market_price_not_available_when_received"
             )
         if self.market_price_ref.currency != self.currency:
             raise EtfNavContractError("etf_nav.record.market_price_currency_mismatch")
-        _require_hash(
-            self.source_content_hash, "etf_nav.record.source_content_hash"
-        )
+        _require_hash(self.source_content_hash, "etf_nav.record.source_content_hash")
         if self.revision == 1:
             if self.supersedes_version_id is not None:
                 raise EtfNavContractError(
@@ -196,9 +194,7 @@ class EtfNavRecordVersion:
                     "etf_nav.record.supersedes_version_id_required"
                 )
             if not self.correction_reason or not self.correction_reason.strip():
-                raise EtfNavContractError(
-                    "etf_nav.record.correction_reason_required"
-                )
+                raise EtfNavContractError("etf_nav.record.correction_reason_required")
 
     @property
     def premium_discount(self) -> Decimal:
@@ -238,9 +234,9 @@ class EtfNavRecordVersion:
         return sha256_prefixed(self.as_dict(), label="etf_nav_record_version")
 
     def is_known_at(self, known_at: str) -> bool:
-        return _timestamp(self.processed_at, "etf_nav.record.processed_at") <= _timestamp(
-            known_at, "etf_nav.known_at"
-        )
+        return _timestamp(
+            self.processed_at, "etf_nav.record.processed_at"
+        ) <= _timestamp(known_at, "etf_nav.known_at")
 
     def evidence(self) -> dict[str, object]:
         return {
@@ -310,10 +306,7 @@ class EtfNavHistory:
                 raise EtfNavContractError("etf_nav.record.instrument_mismatch")
             if item.underlying_index_id != self.underlying_index_id:
                 raise EtfNavContractError("etf_nav.record.underlying_index_mismatch")
-            if (
-                item.underlying_index_content_hash
-                != self.underlying_index_content_hash
-            ):
+            if item.underlying_index_content_hash != self.underlying_index_content_hash:
                 raise EtfNavContractError(
                     "etf_nav.record.underlying_index_hash_mismatch"
                 )
@@ -343,9 +336,7 @@ class EtfNavHistory:
             if [item.revision for item in versions] != list(
                 range(1, len(versions) + 1)
             ):
-                raise EtfNavContractError(
-                    "etf_nav.record.revisions_must_be_contiguous"
-                )
+                raise EtfNavContractError("etf_nav.record.revisions_must_be_contiguous")
             first = versions[0]
             for index, item in enumerate(versions[1:], start=1):
                 previous = versions[index - 1]
@@ -353,9 +344,7 @@ class EtfNavHistory:
                     raise EtfNavContractError("etf_nav.record.revision_chain_broken")
                 if (
                     item.nav_type != first.nav_type
-                    or _timestamp(
-                        item.valuation_at, "etf_nav.record.valuation_at"
-                    )
+                    or _timestamp(item.valuation_at, "etf_nav.record.valuation_at")
                     != _timestamp(first.valuation_at, "etf_nav.record.valuation_at")
                     or item.instrument_id != first.instrument_id
                     or item.underlying_index_id != first.underlying_index_id
@@ -434,10 +423,10 @@ class EtfNavHistory:
             for item in self.versions_as_known(known_at=known_at)
             if item.nav_type == nav_type
             and (
-                _timestamp(item.valuation_at, "etf_nav.record.valuation_at")
-                == target
+                _timestamp(item.valuation_at, "etf_nav.record.valuation_at") == target
                 if target is not None
-                else _timestamp(item.valuation_at, "etf_nav.record.valuation_at") <= known
+                else _timestamp(item.valuation_at, "etf_nav.record.valuation_at")
+                <= known
             )
         ]
         if not candidates:
@@ -521,7 +510,9 @@ def parse_etf_nav_history(value: object) -> EtfNavHistory:
     if not isinstance(records, list):
         raise EtfNavContractError("etf_nav.records_must_be_array")
     return EtfNavHistory(
-        schema_version=_integer(payload.get("schema_version"), "etf_nav.schema_version"),
+        schema_version=_integer(
+            payload.get("schema_version"), "etf_nav.schema_version"
+        ),
         authority_id=_text(payload.get("authority_id"), "etf_nav.authority_id"),
         authority_version_id=_text(
             payload.get("authority_version_id"), "etf_nav.authority_version_id"
@@ -621,9 +612,7 @@ def _parse_record(value: object) -> EtfNavRecordVersion:
         nav_per_share=_decimal(
             payload.get("nav_per_share"), "etf_nav.records[].nav_per_share"
         ),
-        market_price_ref=_parse_market_price_reference(
-            payload.get("market_price_ref")
-        ),
+        market_price_ref=_parse_market_price_reference(payload.get("market_price_ref")),
         source_content_hash=_text(
             payload.get("source_content_hash"),
             "etf_nav.records[].source_content_hash",
@@ -699,13 +688,9 @@ def _require_absolute_source_uri(value: str) -> None:
     elif not parsed.scheme:
         path = Path(value)
     else:
-        raise EtfNavContractError(
-            "etf_nav.source_uri_must_be_absolute_local_artifact"
-        )
+        raise EtfNavContractError("etf_nav.source_uri_must_be_absolute_local_artifact")
     if not path.is_absolute():
-        raise EtfNavContractError(
-            "etf_nav.source_uri_must_be_absolute_local_artifact"
-        )
+        raise EtfNavContractError("etf_nav.source_uri_must_be_absolute_local_artifact")
     if ResearchPathManager.is_within(path, _PROJECT_ROOT):
         raise EtfNavContractError("etf_nav.source_uri_must_be_repository_external")
 

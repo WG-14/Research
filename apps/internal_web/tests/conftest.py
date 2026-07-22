@@ -10,8 +10,10 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 
-from market_research.paths import ResearchPathManager
-from market_research.settings import ResearchSettings
+from market_research.application.platform_contracts import (
+    ResearchPathManager,
+    ResearchSettings,
+)
 from portal.models import ManifestUpload
 
 

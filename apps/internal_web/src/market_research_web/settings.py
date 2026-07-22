@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from market_research.paths import ResearchPathManager
-from market_research.settings import ResearchSettings
+from market_research.application.platform_contracts import (
+    ResearchPathManager,
+    ResearchSettings,
+)
 
 from .database import build_database_settings
 

@@ -12,12 +12,17 @@ from __future__ import annotations
 
 import argparse
 import copy
+import errno
 import hashlib
 import json
+import math
 import os
 import re
+import secrets
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,7 +45,7 @@ _FULL_SCOPE_RUBRIC_SHA256 = (
     "13ab8fbd3c37a3095ca9fd2c69818c4cb7d5f85fdf96f9f27fedb626ba17d635"
 )
 _FULL_SCOPE_INSTRUCTION_SHA256 = (
-    "25ddd87c30dce17b5c22c24096b5d8642375dc58570f8fa2dcbb67ce34a19396"
+    "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
 )
 _FULL_SCOPE_CRITERION_COUNT = 431
 _FULL_SCOPE_EXPLICIT_COUNT = 268
@@ -54,6 +59,7 @@ _FULL_SCOPE_SCOPES = {
     "DERIVATIVES_PORTFOLIO",
     "DERIVATIVES_RISK",
 }
+_FULL_SCOPE_STAGE_WEIGHTS = {1: 12, 2: 18, 3: 12, 4: 22, 5: 16, 6: 10, 7: 10}
 _EVIDENCE_RANK = {"E0": 0, "E1": 1, "E2": 2, "E3": 3, "E4": 4, "E5": 5}
 _FORBIDDEN_SELF_EVIDENCE = {
     "docs/research-platform-completeness-review.md",
@@ -127,17 +133,50 @@ _SECRET_ENVIRONMENT_MARKERS = (
 _DETERMINISTIC_ENVIRONMENT = {
     "BLIS_NUM_THREADS": "1",
     "DJANGO_SETTINGS_MODULE": "market_research_web.settings_test",
-    "INTERNAL_WEB_SECRET_KEY": "test-only-not-for-production-0123456789abcdef",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
     "MKL_NUM_THREADS": "1",
     "NUMEXPR_NUM_THREADS": "1",
     "OMP_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
     "PYTHONHASHSEED": "0",
     "PYTHONDONTWRITEBYTECODE": "1",
+    "TZ": "UTC",
     "VECLIB_MAXIMUM_THREADS": "1",
 }
 _EXTERNAL_ATTESTATION_SCOPE = "site_or_organization"
 _REPOSITORY_TRACKED_DELETION_SENTINEL = b"platform-completeness:tracked-file-deleted:v1"
+_REPOSITORY_VERIFICATION_RECEIPT_SCHEMA_VERSION = 2
+_REPOSITORY_VERIFICATION_RECEIPT_FIELDS = frozenset(
+    {
+        "argv",
+        "command_group_id",
+        "command_id",
+        "criterion_id",
+        "dirty_diff_sha256",
+        "disqualifying_outcomes",
+        "duration_seconds",
+        "evidence_eligible",
+        "evidence_level",
+        "exit_code",
+        "finished_at",
+        "kind",
+        "path_hashes",
+        "redacted_environment_sha256",
+        "repository_commit",
+        "rubric_sha256",
+        "schema_version",
+        "secret_environment_keys_removed",
+        "source_manifest_sha256",
+        "started_at",
+        "stderr_path",
+        "stderr_sha256",
+        "stdout_path",
+        "stdout_sha256",
+        "timed_out",
+    }
+)
+_SAFE_INHERITED_ENVIRONMENT_KEYS = frozenset({"PATH"})
 _PYTEST_PASS_RE = re.compile(r"\b[1-9][0-9]*\s+passed\b", re.IGNORECASE)
 _PYTEST_ZERO_RE = re.compile(
     r"\b(?:no tests ran|collected\s+0\s+items?)\b", re.IGNORECASE
@@ -182,6 +221,7 @@ class Evaluation:
     verified_criteria: int
     criteria: tuple[CriterionResult, ...]
     findings: tuple[Finding, ...]
+    strict_score: float | None = None
 
     @property
     def complete(self) -> bool:
@@ -291,13 +331,17 @@ def _safe_relative(root: Path, raw: object) -> Path | None:
 
 
 def _valid_timestamp(raw: object) -> bool:
+    return _parse_timestamp(raw) is not None
+
+
+def _parse_timestamp(raw: object) -> datetime | None:
     if not isinstance(raw, str) or not raw:
-        return False
+        return None
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        return False
-    return parsed.tzinfo is not None
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _string_list(raw: object) -> list[str] | None:
@@ -383,6 +427,7 @@ def _receipt_log_findings(
     command_id: str,
     receipt: dict[str, Any],
     evidence_root: Path,
+    required: bool = False,
 ) -> list[Finding]:
     """Validate optional runner log bindings without invalidating legacy receipts."""
 
@@ -393,7 +438,7 @@ def _receipt_log_findings(
         raw_path = receipt.get(path_field)
         expected_hash = receipt.get(hash_field)
         if raw_path is None:
-            if stream == "stderr" and expected_hash is not None:
+            if required or (stream == "stderr" and expected_hash is not None):
                 findings.append(
                     Finding(subject, f"receipt_{path_field}_missing", command_id)
                 )
@@ -421,6 +466,153 @@ def _receipt_log_findings(
                     subject,
                     f"receipt_{stream}_hash_mismatch",
                     f"{raw_path}: expected {expected_hash}, got {actual_hash}",
+                )
+            )
+    return findings
+
+
+def _repository_verification_receipt_findings(
+    *,
+    subject: str,
+    command_id: str,
+    command_argv: list[str],
+    receipt: dict[str, Any],
+    repository_root: Path,
+    evidence_root: Path,
+    provenance_cache: dict[str, RepositoryProvenance],
+) -> list[Finding]:
+    """Validate the exact receipt emitted by the allowlisted local runner."""
+
+    findings: list[Finding] = []
+    actual_fields = frozenset(receipt)
+    if actual_fields != _REPOSITORY_VERIFICATION_RECEIPT_FIELDS:
+        missing = sorted(_REPOSITORY_VERIFICATION_RECEIPT_FIELDS - actual_fields)
+        unexpected = sorted(actual_fields - _REPOSITORY_VERIFICATION_RECEIPT_FIELDS)
+        findings.append(
+            Finding(
+                subject,
+                "repository_receipt_fields_mismatch",
+                f"{command_id}: missing={missing!r}, unexpected={unexpected!r}",
+            )
+        )
+
+    expected_group_id = _command_group_id(tuple(command_argv))
+    if receipt.get("command_group_id") != expected_group_id:
+        findings.append(
+            Finding(
+                subject,
+                "repository_receipt_group_mismatch",
+                f"{command_id}: expected {expected_group_id}",
+            )
+        )
+    if receipt.get("evidence_eligible") is not True:
+        findings.append(Finding(subject, "repository_receipt_ineligible", command_id))
+    if receipt.get("disqualifying_outcomes") != []:
+        findings.append(
+            Finding(
+                subject,
+                "repository_receipt_disqualified",
+                f"{command_id}: {receipt.get('disqualifying_outcomes')!r}",
+            )
+        )
+    if receipt.get("timed_out") is not False:
+        findings.append(Finding(subject, "repository_receipt_timed_out", command_id))
+    exit_code = receipt.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        findings.append(Finding(subject, "repository_receipt_exit_invalid", command_id))
+    duration = receipt.get("duration_seconds")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, int | float)
+        or not math.isfinite(float(duration))
+        or duration < 0
+    ):
+        findings.append(
+            Finding(subject, "repository_receipt_duration_invalid", command_id)
+        )
+
+    started_at = _parse_timestamp(receipt.get("started_at"))
+    finished_at = _parse_timestamp(receipt.get("finished_at"))
+    if started_at is not None and finished_at is not None and finished_at < started_at:
+        findings.append(
+            Finding(subject, "repository_receipt_time_order_invalid", command_id)
+        )
+
+    for field in ("source_manifest_sha256", "redacted_environment_sha256"):
+        value = receipt.get(field)
+        if not isinstance(value, str) or not _HASH_RE.fullmatch(value):
+            findings.append(
+                Finding(subject, f"repository_receipt_{field}_invalid", command_id)
+            )
+    removed_keys = receipt.get("secret_environment_keys_removed")
+    if (
+        not isinstance(removed_keys, list)
+        or removed_keys != sorted(set(removed_keys))
+        or not all(
+            isinstance(key, str) and key and _is_secret_environment_key(key)
+            for key in removed_keys
+        )
+    ):
+        findings.append(
+            Finding(
+                subject,
+                "repository_receipt_removed_secret_keys_invalid",
+                command_id,
+            )
+        )
+
+    expected_log_paths = {
+        "stdout_path": f"logs/{expected_group_id}.stdout.log",
+        "stderr_path": f"logs/{expected_group_id}.stderr.log",
+    }
+    for field, expected_path in expected_log_paths.items():
+        if receipt.get(field) != expected_path:
+            findings.append(
+                Finding(
+                    subject,
+                    f"repository_receipt_{field}_mismatch",
+                    f"{command_id}: expected {expected_path}",
+                )
+            )
+    findings.extend(
+        _receipt_log_findings(
+            subject=subject,
+            command_id=command_id,
+            receipt=receipt,
+            evidence_root=evidence_root,
+            required=True,
+        )
+    )
+
+    cache_key = str(repository_root.resolve())
+    try:
+        current = provenance_cache.get(cache_key)
+        if current is None:
+            current = _repository_provenance(repository_root)
+            provenance_cache[cache_key] = current
+    except (OSError, EvidenceRunError) as exc:
+        findings.append(
+            Finding(
+                subject,
+                "repository_receipt_provenance_unavailable",
+                f"{command_id}: {exc}",
+            )
+        )
+    else:
+        if receipt.get("repository_commit") != current.commit:
+            findings.append(
+                Finding(
+                    subject,
+                    "repository_receipt_commit_mismatch",
+                    f"{command_id}: current {current.commit}",
+                )
+            )
+        if receipt.get("dirty_diff_sha256") != current.dirty_diff_sha256:
+            findings.append(
+                Finding(
+                    subject,
+                    "repository_receipt_dirty_diff_mismatch",
+                    f"{command_id}: current {current.dirty_diff_sha256}",
                 )
             )
     return findings
@@ -521,6 +713,8 @@ def _evidence_findings(
     rubric_sha256: str,
     repository_root: Path,
     evidence_root: Path | None,
+    provenance_cache: dict[str, RepositoryProvenance],
+    require_repository_verification: bool = False,
 ) -> tuple[list[Finding], str]:
     findings: list[Finding] = []
     if not isinstance(evidence, dict):
@@ -699,8 +893,30 @@ def _evidence_findings(
             receipt_finding_start = len(findings)
             receipt_level = receipt.get("evidence_level")
             receipt_paths = receipt.get("path_hashes")
+            repository_verification = receipt.get("kind") == "repository_verification"
+            runner_command = command_map[command_id][0] in {
+                ".venv/bin/pytest",
+                "scripts/platform",
+            }
+            if (
+                receipt_level != "E5"
+                and (require_repository_verification or runner_command)
+                and not repository_verification
+            ):
+                findings.append(
+                    Finding(
+                        subject,
+                        "repository_verification_receipt_required",
+                        command_id,
+                    )
+                )
             candidate_level: str | None = None
-            if receipt.get("schema_version") != 1:
+            expected_schema_version = (
+                _REPOSITORY_VERIFICATION_RECEIPT_SCHEMA_VERSION
+                if repository_verification
+                else 1
+            )
+            if receipt.get("schema_version") != expected_schema_version:
                 findings.append(Finding(subject, "receipt_schema_invalid", command_id))
             if receipt.get("criterion_id") != subject:
                 findings.append(
@@ -761,7 +977,19 @@ def _evidence_findings(
                     findings.append(
                         Finding(subject, f"receipt_{field}_invalid", command_id)
                     )
-            if evidence_root is not None:
+            if repository_verification and evidence_root is not None:
+                findings.extend(
+                    _repository_verification_receipt_findings(
+                        subject=subject,
+                        command_id=command_id,
+                        command_argv=command_map[command_id],
+                        receipt=receipt,
+                        repository_root=repository_root,
+                        evidence_root=evidence_root,
+                        provenance_cache=provenance_cache,
+                    )
+                )
+            elif evidence_root is not None:
                 findings.extend(
                     _receipt_log_findings(
                         subject=subject,
@@ -791,6 +1019,7 @@ def _evaluate_research_only_matrix(
     manifest_hash: str,
     repository_root: Path,
     evidence_root: Path | None,
+    provenance_cache: dict[str, RepositoryProvenance],
 ) -> Evaluation:
     """Evaluate the canonical 215-row research-only rubric matrix.
 
@@ -1023,6 +1252,8 @@ def _evaluate_research_only_matrix(
             rubric_sha256=rubric_hash,
             repository_root=repository_root,
             evidence_root=evidence_root,
+            provenance_cache=provenance_cache,
+            require_repository_verification=True,
         )
         if status == "FULL":
             local.extend(evidence_findings)
@@ -1134,6 +1365,8 @@ def _evaluate_research_only_matrix(
                 rubric_sha256=rubric_hash,
                 repository_root=repository_root,
                 evidence_root=evidence_root,
+                provenance_cache=provenance_cache,
+                require_repository_verification=True,
             )
             findings.extend(blocker_evidence_findings)
     if len(blocker_ids) != len(set(blocker_ids)):
@@ -1176,6 +1409,7 @@ def _evaluate_full_scope_matrix(
     manifest_hash: str,
     repository_root: Path,
     evidence_root: Path | None,
+    provenance_cache: dict[str, RepositoryProvenance],
 ) -> Evaluation:
     """Fail closed on the current Spot/Futures/Options 431-row rubric.
 
@@ -1187,6 +1421,7 @@ def _evaluate_full_scope_matrix(
 
     findings: list[Finding] = []
     matrix_assessment = manifest.get("assessment")
+    strict_score: float | None = None
     if not isinstance(matrix_assessment, dict):
         findings.append(Finding("manifest", "assessment_missing", "required"))
     else:
@@ -1197,6 +1432,59 @@ def _evaluate_full_scope_matrix(
                     "manifest",
                     "assessment_stale",
                     f"current re-assessment iteration required, got {iteration!r}",
+                )
+            )
+        raw_stage_scores = matrix_assessment.get("strict_axis_stage_scores")
+        expected_stage_keys = {str(stage) for stage in _FULL_SCOPE_STAGE_WEIGHTS}
+        if not isinstance(raw_stage_scores, dict) or set(raw_stage_scores) != (
+            expected_stage_keys
+        ):
+            findings.append(
+                Finding(
+                    "manifest",
+                    "strict_axis_stage_scores_invalid",
+                    repr(raw_stage_scores),
+                )
+            )
+        else:
+            parsed_stage_scores: dict[int, int] = {}
+            for stage_text, raw_score in raw_stage_scores.items():
+                if (
+                    isinstance(raw_score, bool)
+                    or not isinstance(raw_score, int)
+                    or not 0 <= raw_score <= 5
+                ):
+                    findings.append(
+                        Finding(
+                            "manifest",
+                            "strict_axis_stage_score_invalid",
+                            f"stage {stage_text}: {raw_score!r}",
+                        )
+                    )
+                    continue
+                parsed_stage_scores[int(stage_text)] = raw_score
+            if len(parsed_stage_scores) == len(_FULL_SCOPE_STAGE_WEIGHTS):
+                strict_score = round(
+                    sum(
+                        parsed_stage_scores[stage]
+                        / 5
+                        * _FULL_SCOPE_STAGE_WEIGHTS[stage]
+                        for stage in _FULL_SCOPE_STAGE_WEIGHTS
+                    ),
+                    12,
+                )
+        raw_strict_score = matrix_assessment.get("strict_axis_score")
+        if (
+            isinstance(raw_strict_score, bool)
+            or not isinstance(raw_strict_score, int | float)
+            or strict_score is None
+            or float(raw_strict_score) != strict_score
+        ):
+            findings.append(
+                Finding(
+                    "manifest",
+                    "strict_axis_score_mismatch",
+                    f"declared {raw_strict_score!r}, calculated {strict_score!r}",
                 )
             )
     canonical = manifest.get("canonical_source")
@@ -1301,7 +1589,9 @@ def _evaluate_full_scope_matrix(
             local.append(Finding(criterion_id, "criterion_stage_invalid", repr(stage)))
             stage = 0
         elif not isinstance(weight, int) or weight <= 0:
-            local.append(Finding(criterion_id, "criterion_weight_invalid", repr(weight)))
+            local.append(
+                Finding(criterion_id, "criterion_weight_invalid", repr(weight))
+            )
         elif stage in stage_weights and stage_weights[stage] != weight:
             local.append(
                 Finding(criterion_id, "criterion_weight_inconsistent", repr(weight))
@@ -1310,9 +1600,7 @@ def _evaluate_full_scope_matrix(
             stage_weights[stage] = weight
         scope = raw.get("scope")
         if scope not in _FULL_SCOPE_SCOPES:
-            local.append(
-                Finding(criterion_id, "criterion_scope_invalid", repr(scope))
-            )
+            local.append(Finding(criterion_id, "criterion_scope_invalid", repr(scope)))
             scope = "unknown"
         expected_scope = _full_scope_for_criterion_id(criterion_id)
         if scope != "unknown" and scope != expected_scope:
@@ -1329,12 +1617,11 @@ def _evaluate_full_scope_matrix(
             "ideal_state",
             "completion_condition",
         ):
-            if not isinstance(raw.get(field_name), str) or not str(
-                raw.get(field_name)
-            ).strip():
-                local.append(
-                    Finding(criterion_id, f"{field_name}_missing", field_name)
-                )
+            if (
+                not isinstance(raw.get(field_name), str)
+                or not str(raw.get(field_name)).strip()
+            ):
+                local.append(Finding(criterion_id, f"{field_name}_missing", field_name))
         for field_name in (
             "inspection_targets",
             "objective_evidence",
@@ -1347,9 +1634,7 @@ def _evaluate_full_scope_matrix(
                 or not value
                 or not all(isinstance(item, str) and item for item in value)
             ):
-                local.append(
-                    Finding(criterion_id, f"{field_name}_invalid", field_name)
-                )
+                local.append(Finding(criterion_id, f"{field_name}_invalid", field_name))
         assessment = raw.get("current_assessment")
         if not isinstance(assessment, dict):
             assessment = raw.get("baseline_assessment")
@@ -1396,7 +1681,9 @@ def _evaluate_full_scope_matrix(
                 stage_scores[stage].append(score)
         status = assessment.get("status")
         if status not in {"FULL", "PARTIAL", "GAP", "UNDETERMINED"}:
-            local.append(Finding(criterion_id, "criterion_status_invalid", repr(status)))
+            local.append(
+                Finding(criterion_id, "criterion_status_invalid", repr(status))
+            )
         elif status != "FULL":
             local.append(Finding(criterion_id, "criterion_not_full", str(status)))
         if status == "FULL" and numeric_score != 5:
@@ -1435,6 +1722,8 @@ def _evaluate_full_scope_matrix(
                 rubric_sha256=rubric_hash,
                 repository_root=repository_root,
                 evidence_root=evidence_root,
+                provenance_cache=provenance_cache,
+                require_repository_verification=True,
             )
             local.extend(evidence_findings)
             projected = _criterion_report_bindings(raw.get("evidence"))
@@ -1471,9 +1760,7 @@ def _evaluate_full_scope_matrix(
     for stage, weight in stage_weights.items():
         values = stage_scores[stage]
         if not values:
-            findings.append(
-                Finding(f"S{stage}", "stage_score_missing", "no criteria")
-            )
+            findings.append(Finding(f"S{stage}", "stage_score_missing", "no criteria"))
             continue
         declared_score += (sum(values) / len(values)) / 5.0 * weight
 
@@ -1491,10 +1778,10 @@ def _evaluate_full_scope_matrix(
             findings.append(Finding("manifest", "blocker_invalid", repr(blocker)))
             continue
         blocker_id = blocker.get("id")
-        if not isinstance(blocker_id, str) or not re.fullmatch(r"B-[0-9]{2}", blocker_id):
-            findings.append(
-                Finding("manifest", "blocker_id_invalid", repr(blocker_id))
-            )
+        if not isinstance(blocker_id, str) or not re.fullmatch(
+            r"B-[0-9]{2}", blocker_id
+        ):
+            findings.append(Finding("manifest", "blocker_id_invalid", repr(blocker_id)))
             continue
         blocker_ids.append(blocker_id)
         status = blocker.get("current_status")
@@ -1530,14 +1817,14 @@ def _evaluate_full_scope_matrix(
                 rubric_sha256=rubric_hash,
                 repository_root=repository_root,
                 evidence_root=evidence_root,
+                provenance_cache=provenance_cache,
+                require_repository_verification=True,
             )
             findings.extend(blocker_findings)
     if blocker_ids != [
         f"B-{number:02d}" for number in range(1, _FULL_SCOPE_BLOCKER_COUNT + 1)
     ]:
-        findings.append(
-            Finding("manifest", "blocker_ids_mismatch", repr(blocker_ids))
-        )
+        findings.append(Finding("manifest", "blocker_ids_mismatch", repr(blocker_ids)))
 
     return Evaluation(
         manifest_sha256=manifest_hash,
@@ -1547,6 +1834,7 @@ def _evaluate_full_scope_matrix(
         verified_criteria=sum(item.complete for item in criterion_results),
         criteria=tuple(criterion_results),
         findings=tuple(sorted(set(findings))),
+        strict_score=strict_score,
     )
 
 
@@ -1564,6 +1852,7 @@ def evaluate_manifest(
     if not isinstance(manifest, dict):
         raise ValueError("manifest root must be an object")
 
+    provenance_cache: dict[str, RepositoryProvenance] = {}
     canonical = manifest.get("canonical_source")
     if (
         manifest.get("schema_version") == 2
@@ -1575,6 +1864,7 @@ def evaluate_manifest(
             manifest_hash=manifest_hash,
             repository_root=repository_root,
             evidence_root=evidence_root,
+            provenance_cache=provenance_cache,
         )
 
     if "canonical_source" in manifest and "decision_policy" in manifest:
@@ -1583,6 +1873,7 @@ def evaluate_manifest(
             manifest_hash=manifest_hash,
             repository_root=repository_root,
             evidence_root=evidence_root,
+            provenance_cache=provenance_cache,
         )
 
     findings: list[Finding] = []
@@ -1773,6 +2064,7 @@ def evaluate_manifest(
             rubric_sha256=rubric_hash,
             repository_root=repository_root,
             evidence_root=evidence_root,
+            provenance_cache=provenance_cache,
         )
         findings.extend(evidence_findings)
         local_findings = tuple(sorted(set(findings[start:])))
@@ -1870,6 +2162,7 @@ def evaluate_manifest(
             rubric_sha256=rubric_hash,
             repository_root=repository_root,
             evidence_root=evidence_root,
+            provenance_cache=provenance_cache,
         )
         findings.extend(blocker_findings)
     expected_blockers = policy.get("blocker_ids")
@@ -1982,8 +2275,18 @@ def render_report(evaluation: Evaluation) -> str:
             finding.subject
             for finding in evaluation.findings
             if re.fullmatch(r"B-[0-9]{2}", finding.subject)
-            and finding.code == "blocker_not_cleared"
         }
+    )
+    score_lines = (
+        [f"- Strict declared score: **{evaluation.declared_score:.2f}/100**"]
+        if evaluation.strict_score is None
+        else [
+            f"- Final strict weak-axis score: **{evaluation.strict_score:.2f}/100**",
+            (
+                "- Criterion-average declared score: "
+                f"**{evaluation.declared_score:.2f}/100**"
+            ),
+        ]
     )
     lines = [
         "# Platform completeness gate status",
@@ -1991,7 +2294,7 @@ def render_report(evaluation: Evaluation) -> str:
         "<!-- Generated by tools/platform_completeness.py; do not edit manually. -->",
         "",
         f"- Status: **{status}**",
-        f"- Strict declared score: **{evaluation.declared_score:.2f}/100**",
+        *score_lines,
         (
             "- Receipt-verified criteria: "
             f"**{evaluation.verified_criteria}/{evaluation.expected_criteria}**"
@@ -2091,12 +2394,146 @@ def _atomic_write(path: Path, payload: str) -> None:
     os.replace(temporary, path)
 
 
-def _atomic_write_evidence(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_bytes(payload)
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+def _write_all(file_descriptor: int, payload: bytes) -> None:
+    remaining = memoryview(payload)
+    while remaining:
+        written = os.write(file_descriptor, remaining)
+        if written <= 0:
+            raise EvidenceRunError("evidence write made no progress")
+        remaining = remaining[written:]
+
+
+def _verify_existing_evidence_file(
+    *, parent_descriptor: int, leaf: str, payload: bytes
+) -> None:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        descriptor = os.open(leaf, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise EvidenceRunError(f"existing evidence file is unsafe: {leaf}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+            or metadata.st_size != len(payload)
+            or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
+        ):
+            raise EvidenceRunError(f"existing evidence file is unsafe: {leaf}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        if b"".join(chunks) != payload:
+            raise EvidenceRunError(f"existing evidence file content differs: {leaf}")
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_evidence(path: Path, payload: bytes, *, evidence_root: Path) -> None:
+    """Create or verify an evidence file without following attacker-made links."""
+
+    root = Path(os.path.abspath(evidence_root))
+    candidate = Path(os.path.abspath(path))
+    if not root.is_absolute() or not candidate.is_absolute():
+        raise EvidenceRunError("evidence paths must be absolute")
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise EvidenceRunError("evidence file escaped the evidence root") from exc
+    parts = relative.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise EvidenceRunError("evidence file path is unsafe")
+
+    directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    temporary_name: str | None = None
+    try:
+        root_descriptor = os.open(root, directory_flags)
+        descriptors.append(root_descriptor)
+        root_metadata = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise EvidenceRunError("evidence root is not a directory")
+        parent_descriptor = root_descriptor
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=parent_descriptor)
+            except FileExistsError:
+                pass
+            try:
+                child_descriptor = os.open(
+                    part, directory_flags, dir_fd=parent_descriptor
+                )
+            except OSError as exc:
+                raise EvidenceRunError(
+                    f"evidence parent is unsafe: {relative.parent}"
+                ) from exc
+            descriptors.append(child_descriptor)
+            parent_descriptor = child_descriptor
+
+        leaf = parts[-1]
+        temporary_name = f".{leaf}.tmp-{secrets.token_hex(16)}"
+        temporary_flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+        try:
+            temporary_descriptor = os.open(
+                temporary_name,
+                temporary_flags,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            raise EvidenceRunError(
+                f"could not exclusively create evidence temporary: {leaf}"
+            ) from exc
+        try:
+            os.fchmod(temporary_descriptor, 0o600)
+            _write_all(temporary_descriptor, payload)
+            os.fsync(temporary_descriptor)
+        finally:
+            os.close(temporary_descriptor)
+
+        try:
+            os.link(
+                temporary_name,
+                leaf,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            _verify_existing_evidence_file(
+                parent_descriptor=parent_descriptor,
+                leaf=leaf,
+                payload=payload,
+            )
+        os.unlink(temporary_name, dir_fd=parent_descriptor)
+        temporary_name = None
+        os.fsync(parent_descriptor)
+
+        try:
+            current_root = os.stat(root, follow_symlinks=False)
+        except OSError as exc:
+            raise EvidenceRunError("evidence root changed during write") from exc
+        if (
+            current_root.st_dev != root_metadata.st_dev
+            or current_root.st_ino != root_metadata.st_ino
+            or not stat.S_ISDIR(current_root.st_mode)
+        ):
+            raise EvidenceRunError("evidence root changed during write")
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise EvidenceRunError("evidence path contains a symbolic link") from exc
+        raise
+    finally:
+        if temporary_name is not None and descriptors:
+            try:
+                os.unlink(temporary_name, dir_fd=descriptors[-1])
+            except FileNotFoundError:
+                pass
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -2177,6 +2614,13 @@ def validate_evidence_argv(argv: tuple[str, ...], *, repository_root: Path) -> N
 
 
 def _subject_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    canonical = manifest.get("canonical_source")
+    full_scope = (
+        manifest.get("schema_version") == 2
+        and isinstance(canonical, dict)
+        and canonical.get("blocker_count") == _FULL_SCOPE_BLOCKER_COUNT
+    )
+    research_only = "canonical_source" in manifest and "decision_policy" in manifest
     rows: list[dict[str, Any]] = []
     for section in ("criteria", "blockers"):
         raw_rows = manifest.get(section)
@@ -2185,6 +2629,27 @@ def _subject_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         for row in raw_rows:
             if not isinstance(row, dict):
                 raise EvidenceRunError(f"manifest {section} contains a non-object")
+            if section == "criteria" and full_scope:
+                assessment = row.get("current_assessment")
+                if not isinstance(assessment, dict):
+                    assessment = row.get("baseline_assessment")
+                if (
+                    not isinstance(assessment, dict)
+                    or assessment.get("status") != "FULL"
+                ):
+                    continue
+            elif section == "criteria" and research_only:
+                if row.get("current_status") != "FULL":
+                    continue
+            elif section == "blockers" and full_scope:
+                status = row.get("current_status")
+                if status is None:
+                    status = row.get("baseline_status")
+                if status != "PASS":
+                    continue
+            elif section == "blockers" and research_only:
+                if row.get("current_status") != "PASS":
+                    continue
             rows.append(row)
     return rows
 
@@ -2386,25 +2851,35 @@ def _is_secret_environment_key(name: str) -> bool:
     )
 
 
-def _execution_environment(evidence_root: Path) -> dict[str, str]:
+def _execution_environment(
+    temporary_root: Path,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    removed_secret_keys = tuple(
+        sorted(key for key in os.environ if _is_secret_environment_key(key))
+    )
     environment = {
         key: value
         for key, value in os.environ.items()
-        if key not in _DANGEROUS_ENVIRONMENT_KEYS
+        if key in _SAFE_INHERITED_ENVIRONMENT_KEYS
+        and key not in _DANGEROUS_ENVIRONMENT_KEYS
+        and not _is_secret_environment_key(key)
     }
+    environment.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     environment.update(_DETERMINISTIC_ENVIRONMENT)
-    temporary_root = evidence_root / "tmp"
     temporary_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     environment["TMPDIR"] = str(temporary_root)
+    environment["TEMP"] = str(temporary_root)
+    environment["TMP"] = str(temporary_root)
     environment["PYTHONPYCACHEPREFIX"] = str(temporary_root / "pycache")
-    return environment
+    if any(_is_secret_environment_key(key) for key in environment):
+        raise EvidenceRunError("secret-marked environment key reached evidence command")
+    return environment, removed_secret_keys
 
 
 def _redacted_environment(environment: dict[str, str]) -> dict[str, str]:
-    return {
-        key: "<redacted>" if _is_secret_environment_key(key) else value
-        for key, value in sorted(environment.items())
-    }
+    if any(_is_secret_environment_key(key) for key in environment):
+        raise EvidenceRunError("secret-marked environment key reached evidence ledger")
+    return dict(sorted(environment.items()))
 
 
 def _as_bytes(value: bytes | str | None) -> bytes:
@@ -2415,14 +2890,10 @@ def _as_bytes(value: bytes | str | None) -> bytes:
     return value.encode("utf-8", errors="replace")
 
 
-def _redact_log(payload: bytes, environment: dict[str, str]) -> bytes:
+def _redact_log(payload: bytes, secret_values: tuple[str, ...]) -> bytes:
     text_payload = payload.decode("utf-8", errors="replace")
     secrets = sorted(
-        {
-            value
-            for key, value in environment.items()
-            if _is_secret_environment_key(key) and len(value) >= 4
-        },
+        {value for value in secret_values if len(value) >= 4},
         key=len,
         reverse=True,
     )
@@ -2472,6 +2943,7 @@ def _execute_evidence_command(
     repository_root: Path,
     evidence_root: Path,
     environment: dict[str, str],
+    secret_values_to_redact: tuple[str, ...],
     timeout_seconds: float,
 ) -> CommandExecution:
     group_id = _command_group_id(argv)
@@ -2502,15 +2974,23 @@ def _execute_evidence_command(
         stderr = f"evidence command launch failed: {exc}\n".encode("utf-8")
     duration = time.monotonic() - started
     finished_at = _utc_now()
-    stdout_payload = _redact_log(stdout, environment)
-    stderr_payload = _redact_log(stderr, environment)
+    stdout_payload = _redact_log(stdout, secret_values_to_redact)
+    stderr_payload = _redact_log(stderr, secret_values_to_redact)
     disqualifying_outcomes = _disqualifying_test_outcomes(
         argv, stdout_payload, stderr_payload
     )
     stdout_relative = f"logs/{group_id}.stdout.log"
     stderr_relative = f"logs/{group_id}.stderr.log"
-    _atomic_write_evidence(evidence_root / stdout_relative, stdout_payload)
-    _atomic_write_evidence(evidence_root / stderr_relative, stderr_payload)
+    _atomic_write_evidence(
+        evidence_root / stdout_relative,
+        stdout_payload,
+        evidence_root=evidence_root,
+    )
+    _atomic_write_evidence(
+        evidence_root / stderr_relative,
+        stderr_payload,
+        evidence_root=evidence_root,
+    )
     return CommandExecution(
         group_id=group_id,
         argv=argv,
@@ -2631,22 +3111,28 @@ def run_manifest_evidence(
     before = _repository_provenance(repository)
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(output_root, 0o700)
-    environment = _execution_environment(output_root)
-    redacted_environment = _redacted_environment(environment)
-    environment_hash = sha256_bytes(_json_bytes(redacted_environment))
-
     grouped: dict[tuple[str, ...], list[EvidenceCommand]] = {}
     for command in commands:
         grouped.setdefault(command.argv, []).append(command)
     executions: dict[tuple[str, ...], CommandExecution] = {}
-    for argv in grouped:
-        executions[argv] = _execute_evidence_command(
-            argv=argv,
-            repository_root=repository,
-            evidence_root=output_root,
-            environment=environment,
-            timeout_seconds=timeout_seconds,
+    with tempfile.TemporaryDirectory(
+        prefix="market-research-completeness-command-"
+    ) as command_temporary:
+        environment, removed_secret_keys = _execution_environment(
+            Path(command_temporary)
         )
+        secret_values_to_redact = tuple(os.environ[key] for key in removed_secret_keys)
+        redacted_environment = _redacted_environment(environment)
+        environment_hash = sha256_bytes(_json_bytes(redacted_environment))
+        for argv in grouped:
+            executions[argv] = _execute_evidence_command(
+                argv=argv,
+                repository_root=repository,
+                evidence_root=output_root,
+                environment=environment,
+                secret_values_to_redact=secret_values_to_redact,
+                timeout_seconds=timeout_seconds,
+            )
 
     runner_findings: list[Finding] = []
     for execution in executions.values():
@@ -2681,7 +3167,7 @@ def run_manifest_evidence(
                     Finding(command.subject, "evidence_changed_during_run", relative)
                 )
         receipt = {
-            "schema_version": 1,
+            "schema_version": _REPOSITORY_VERIFICATION_RECEIPT_SCHEMA_VERSION,
             "criterion_id": command.subject,
             "rubric_sha256": rubric_hash,
             "command_id": command.command_id,
@@ -2704,14 +3190,12 @@ def run_manifest_evidence(
             "stderr_path": execution.stderr_path,
             "stderr_sha256": execution.stderr_sha256,
             "redacted_environment_sha256": environment_hash,
-            "secret_environment_keys_redacted": sorted(
-                key for key in environment if _is_secret_environment_key(key)
-            ),
+            "secret_environment_keys_removed": list(removed_secret_keys),
             "path_hashes": current_path_hashes,
         }
         receipt_payload = _json_bytes(receipt)
         receipt_path = output_root / command.receipt_path
-        _atomic_write_evidence(receipt_path, receipt_payload)
+        _atomic_write_evidence(receipt_path, receipt_payload, evidence_root=output_root)
         receipt_hash = sha256_bytes(receipt_payload)
         receipt_hashes[(command.subject, command.command_id)] = receipt_hash
         receipt_hashes_by_path[command.receipt_path] = receipt_hash
@@ -2721,7 +3205,9 @@ def run_manifest_evidence(
         receipt_hashes=receipt_hashes,
     )
     resolved_path = output_root / "resolved-manifest.json"
-    _atomic_write_evidence(resolved_path, _json_bytes(resolved_payload))
+    _atomic_write_evidence(
+        resolved_path, _json_bytes(resolved_payload), evidence_root=output_root
+    )
     evaluation = evaluate_manifest(
         resolved_path,
         repository_root=repository,
@@ -2771,7 +3257,14 @@ def run_manifest_evidence(
             "command_count": len(commands),
             "unique_command_count": len(grouped),
             "maximum_issued_evidence_level": "E4",
-            "removed_environment_keys": sorted(_DANGEROUS_ENVIRONMENT_KEYS),
+            "removed_environment_keys": sorted(
+                key
+                for key in os.environ
+                if key not in _SAFE_INHERITED_ENVIRONMENT_KEYS
+                or key in _DANGEROUS_ENVIRONMENT_KEYS
+                or _is_secret_environment_key(key)
+            ),
+            "secret_environment_keys_removed": list(removed_secret_keys),
             "environment": redacted_environment,
             "redacted_environment_sha256": environment_hash,
         },
@@ -2809,10 +3302,11 @@ def run_manifest_evidence(
     }
     ledger_json = output_root / "validation-ledger.json"
     ledger_markdown = output_root / "validation-ledger.md"
-    _atomic_write_evidence(ledger_json, _json_bytes(ledger))
+    _atomic_write_evidence(ledger_json, _json_bytes(ledger), evidence_root=output_root)
     _atomic_write_evidence(
         ledger_markdown,
         _render_ledger_markdown(ledger).encode("utf-8"),
+        evidence_root=output_root,
     )
     return EvidenceRun(
         evidence_root=output_root,

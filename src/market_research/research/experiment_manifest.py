@@ -34,6 +34,12 @@ from .hypothesis_contract import (
     parse_hypothesis_spec,
     validate_hypothesis_lineage_target,
 )
+from .research_standard import (
+    ResearchStandardBinding,
+    ResearchStandardError,
+    parse_research_standard_binding,
+    validate_compatibility_hypothesis_binding,
+)
 from .instrument_contract import (
     InstrumentContractError,
     InstrumentMaster,
@@ -975,6 +981,7 @@ class ExperimentManifest:
     experiment_id: str
     hypothesis: str
     hypothesis_spec: HypothesisSpec | None
+    research_standard_binding: ResearchStandardBinding | None
     strategy_name: str
     strategy_version: str | None
     market: str
@@ -1050,6 +1057,10 @@ class ExperimentManifest:
         }
         if self.hypothesis_spec is not None:
             payload["hypothesis_spec"] = self.hypothesis_spec.as_dict()
+        if self.research_standard_binding is not None:
+            payload["research_standard_binding"] = (
+                self.research_standard_binding.as_dict()
+            )
         if self.benchmark_suite is not None:
             payload["benchmark_suite"] = self.benchmark_suite.as_dict()
         if self.strategy_version is not None:
@@ -1211,6 +1222,7 @@ def parse_manifest(
         "experiment_id",
         "hypothesis",
         "hypothesis_spec",
+        "research_standard_binding",
         "strategy_name",
         "strategy_version",
         "market",
@@ -1253,6 +1265,14 @@ def parse_manifest(
             else None
         )
     except ValueError as exc:
+        raise ManifestValidationError(str(exc)) from exc
+    try:
+        research_standard_binding = (
+            parse_research_standard_binding(payload["research_standard_binding"])
+            if payload.get("research_standard_binding") is not None
+            else None
+        )
+    except (ResearchStandardError, ValueError) as exc:
         raise ManifestValidationError(str(exc)) from exc
     strategy_name = _required_str(payload, "strategy_name")
     strategy_version = _optional_non_empty_str(
@@ -1302,6 +1322,28 @@ def parse_manifest(
         if etf_nav.currency != instrument.trading_currency:
             raise ManifestValidationError("etf_nav_currency_mismatch")
     interval = _required_str(payload, "interval")
+    if research_standard_binding is not None:
+        if hypothesis_spec is None or hypothesis_spec.schema_version != 2:
+            raise ManifestValidationError(
+                "research_standard_binding requires hypothesis_spec schema_version 2"
+            )
+        try:
+            validate_compatibility_hypothesis_binding(
+                research_standard_binding,
+                hypothesis_spec,
+                manifest_hypothesis=hypothesis,
+                market=market,
+            )
+        except ResearchStandardError as exc:
+            raise ManifestValidationError(str(exc)) from exc
+        target_kinds = {
+            item.value
+            for item in research_standard_binding.research_question.target_instrument_types
+        }
+        if instrument.asset_type.upper() not in target_kinds:
+            raise ManifestValidationError(
+                "research_standard_binding target instrument type mismatch"
+            )
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
     parameter_space = _parse_parameter_space(payload.get("parameter_space"))
@@ -1486,6 +1528,7 @@ def parse_manifest(
         experiment_id=experiment_id,
         hypothesis=hypothesis,
         hypothesis_spec=hypothesis_spec,
+        research_standard_binding=research_standard_binding,
         strategy_name=strategy_name,
         strategy_version=strategy_version,
         market=market,

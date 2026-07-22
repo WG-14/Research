@@ -254,8 +254,7 @@ def test_expiry_concentration_is_per_currency_and_has_explicit_basis(
         positions=mixed_positions,
     )
     by_currency = {
-        item.currency: item
-        for item in snapshot.expiry_concentration_by_currency
+        item.currency: item for item in snapshot.expiry_concentration_by_currency
     }
 
     usd = by_currency["USD"]

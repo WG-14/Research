@@ -916,15 +916,24 @@ def test_final_manifest_preserves_reviewed_intra_candle_path_semantics() -> None
     package, _, _, _ = _build_package(base)
     payload = package.as_dict()
 
-    assert payload["source_package"]["signal_calculation_timing"][
-        "intra_candle_path_required"
-    ] is False
-    assert payload["assumptions"]["point_in_time_and_signal_timing"][
-        "intra_candle_path_required"
-    ] is False
-    assert payload["limitations"]["known_limitations"]["data"][
-        "intra_candle_path_available"
-    ] is False
+    assert (
+        payload["source_package"]["signal_calculation_timing"][
+            "intra_candle_path_required"
+        ]
+        is False
+    )
+    assert (
+        payload["assumptions"]["point_in_time_and_signal_timing"][
+            "intra_candle_path_required"
+        ]
+        is False
+    )
+    assert (
+        payload["limitations"]["known_limitations"]["data"][
+            "intra_candle_path_available"
+        ]
+        is False
+    )
     assert package.refs.source_package.content_hash == base["content_hash"]
 
 

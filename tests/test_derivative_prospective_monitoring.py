@@ -301,7 +301,9 @@ def test_float_nonfinite_and_untyped_metric_shapes_are_rejected() -> None:
         replace(spec.drift_rules[0], method=DriftMethod.ABSOLUTE_MAX)
 
 
-def test_round_trip_rejects_nested_value_dimension_decision_and_hash_tampering() -> None:
+def test_round_trip_rejects_nested_value_dimension_decision_and_hash_tampering() -> (
+    None
+):
     spec = _spec()
     artifact = evaluate_prospective_monitoring(
         spec,

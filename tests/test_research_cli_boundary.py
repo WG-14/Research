@@ -49,6 +49,8 @@ RESEARCH_COMMANDS = {
     "research-derivative-register",
     "research-derivative-replay",
     "research-derivative-diff",
+    "research-derivative-execute",
+    "research-derivative-reproduce",
 }
 
 FORBIDDEN_OPERATIONAL_COMMANDS = {

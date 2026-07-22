@@ -47,6 +47,12 @@ from .strategy_registry import StrategyRegistry
 from .research_decision_report import build_research_decision_report
 from .report_writer import candidate_evidence_hash_inputs, summarize_report_candidate
 from .research_classification import requires_candidate_validation
+from .research_standard import (
+    ResearchStandardError,
+    has_research_standard_binding_evidence,
+    parse_research_standard_binding,
+    research_standard_version_matches,
+)
 from .study_lifecycle import StudyLifecycleError, admit_study_validation
 
 
@@ -328,6 +334,7 @@ def validate_validated_research_result(
     if not validation_bound:
         reasons.append("validated_research_result_classification_invalid")
     reasons.extend(_validated_hypothesis_lineage_reasons(report))
+    reasons.extend(_validated_research_standard_binding_reasons(report))
     # A terminal schema-3 result always requires schema-2 hypothesis lineage,
     # so its pre-validation admission is part of the same non-optional
     # authority contract.  Treating an absent marker as legacy would permit a
@@ -503,6 +510,69 @@ def _validated_hypothesis_lineage_reasons(report: dict[str, Any]) -> list[str]:
         or report.get("hypothesis_version") != spec.version
     ):
         reasons.append("validated_research_result_hypothesis_identity_mismatch")
+    return reasons
+
+
+def _validated_research_standard_binding_reasons(
+    report: dict[str, Any],
+) -> list[str]:
+    marker = report.get("research_standard_binding_schema_version")
+    raw_binding = report.get("research_standard_binding")
+    if marker is None and raw_binding is None:
+        if has_research_standard_binding_evidence(report):
+            return ["validated_research_result_research_standard_binding_stripped"]
+        return []
+    if marker != 2 or not isinstance(raw_binding, dict):
+        return ["validated_research_result_research_standard_binding_invalid"]
+    try:
+        binding = parse_research_standard_binding(raw_binding)
+    except (ResearchStandardError, ValueError):
+        return ["validated_research_result_research_standard_binding_invalid"]
+    reasons: list[str] = []
+    if report.get("research_standard_binding_hash") != binding.content_hash:
+        reasons.append(
+            "validated_research_result_research_standard_binding_hash_mismatch"
+        )
+    if (
+        report.get("hypothesis_id") != binding.hypothesis_version.hypothesis_id
+        or not research_standard_version_matches(
+            report.get("hypothesis_version"), binding.hypothesis_version.version
+        )
+        or report.get("hypothesis_contract_hash")
+        != binding.legacy_hypothesis_contract_hash
+    ):
+        reasons.append("validated_research_result_research_standard_identity_mismatch")
+    lineage = report.get("research_standard_lineage")
+    if not isinstance(lineage, dict) or (
+        lineage.get("binding_hash") != binding.content_hash
+        or lineage.get("object_hashes") != binding.lineage_hashes()
+    ):
+        reasons.append("validated_research_result_research_standard_lineage_mismatch")
+    admission = report.get("validation_admission")
+    admission_payload = (
+        admission.get("payload") if isinstance(admission, dict) else None
+    )
+    component_hashes = (
+        admission_payload.get("component_hashes")
+        if isinstance(admission_payload, dict)
+        else None
+    )
+    if not isinstance(component_hashes, dict) or component_hashes.get(
+        "research_standard_binding"
+    ) != sha256_prefixed(binding.as_dict()):
+        reasons.append("validated_research_result_research_standard_admission_mismatch")
+    expected_ref = {
+        "record_type": "research_standard_binding",
+        "logical_id": binding.hypothesis_version.hypothesis_id,
+        "version": str(binding.hypothesis_version.version),
+        "record_hash": sha256_prefixed(binding.as_dict()),
+    }
+    if not isinstance(admission, dict) or expected_ref not in admission.get(
+        "outbound_refs", []
+    ):
+        reasons.append(
+            "validated_research_result_research_standard_admission_ref_mismatch"
+        )
     return reasons
 
 
@@ -870,6 +940,10 @@ def run_research_validation(
                 ],
             }
         )
+    if manifest.research_standard_binding is not None:
+        reproduction_binding_material["research_standard_binding_hash"] = (
+            manifest.research_standard_binding.content_hash
+        )
     reproduction_binding = {
         **reproduction_binding_material,
         "content_hash": sha256_prefixed(
@@ -963,6 +1037,27 @@ def run_research_validation(
                     "admission_row_hash"
                 ],
                 "validation_admission": validation_admission["admission"],
+            }
+        )
+    if manifest.research_standard_binding is not None:
+        if validation_admission is None:
+            raise ValidationRunError("research_standard_validation_admission_missing")
+        standard_lineage = validation_admission.get("research_standard_lineage")
+        if not isinstance(standard_lineage, dict):
+            raise ValidationRunError("research_standard_registry_lineage_missing")
+        summary.update(
+            {
+                "research_standard_binding_schema_version": 2,
+                "research_standard_binding": (
+                    manifest.research_standard_binding.as_dict()
+                ),
+                "research_standard_binding_hash": (
+                    manifest.research_standard_binding.content_hash
+                ),
+                "research_standard_lineage": standard_lineage,
+                "research_standard_preregistration_evidence_hash": (
+                    manifest.research_standard_binding.preregistration_evidence_hash
+                ),
             }
         )
     decision_report = build_research_decision_report(

@@ -214,9 +214,7 @@ class ResearchApplicationService:
         canonical_target = self.paths.report_path(
             "research", experiment_id, "strategy_package.json"
         )
-        targets = tuple(
-            dict.fromkeys((target.absolute(), canonical_target.absolute()))
-        )
+        targets = tuple(dict.fromkeys((target.absolute(), canonical_target.absolute())))
         publication_target = target
         try:
             expected = (

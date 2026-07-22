@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,8 @@ from research_operations.backup import (
 )
 from research_operations.health import CheckResult, HealthSnapshot
 from research_operations.metrics import render_prometheus
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _rsa_key_pair(directory: Path, name: str) -> tuple[Path, Path]:
@@ -91,6 +94,41 @@ def test_liveness_is_constant_and_does_not_read_dependencies(monkeypatch):
     )
     assert response["status"] == "200 OK"
     assert body == b'{"status":"UP"}'
+
+
+def test_real_web_wsgi_entrypoint_loads_through_operations_facade(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "DJANGO_SETTINGS_MODULE": "market_research_web.settings_test",
+            "INTERNAL_WEB_SECRET_KEY": "operations-facade-test-only",
+            "RESEARCH_DATA_ROOT": str(external / "datasets"),
+            "RESEARCH_ARTIFACT_ROOT": str(external / "artifacts"),
+            "RESEARCH_REPORT_ROOT": str(external / "reports"),
+            "RESEARCH_CACHE_ROOT": str(external / "cache"),
+            "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH": str(
+                external / "registry" / "experiment-identities.jsonl"
+            ),
+        }
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from research_operations.runtime import _research_web_application; "
+            "application = _research_web_application(); assert callable(application)",
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_release_configuration_requires_production_web_security() -> None:

@@ -46,6 +46,14 @@ def execute_research_command(
             command=command, args=args, context=context
         )
 
+    if command in {
+        "research-derivative-execute",
+        "research-derivative-reproduce",
+    }:
+        return _execute_derivative_application_command(
+            command=command, args=args, context=context
+        )
+
     from market_research.research import cli
 
     lifecycle_commands = {
@@ -303,6 +311,179 @@ def _execute_derivative_evidence_command(
         context.printer(json.dumps(difference, ensure_ascii=False, sort_keys=True))
         return 0
     raise ValueError(f"unsupported derivative evidence command: {command}")
+
+
+def _execute_derivative_application_command(
+    *,
+    command: str,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+) -> int:
+    from market_research.research.derivatives.application import (
+        DerivativeApplicationError,
+        DerivativeResearchApplicationService,
+        DerivativeStudyExecution,
+        FuturesStudyRequest,
+        MultiLegStudyRequest,
+        OptionStudyRequest,
+        ReproductionStatus,
+    )
+    from market_research.research.derivatives.application_codec import (
+        DerivativeApplicationFailureArtifact,
+        DerivativeApplicationCodecError,
+        EXECUTION_TYPES,
+        REQUEST_TYPES,
+        load_derivative_application_transport,
+        write_derivative_application_transport,
+    )
+
+    request_transport = load_derivative_application_transport(
+        context.paths,
+        args.request,
+        expected_types=REQUEST_TYPES,
+    )
+    request = request_transport.payload
+    service = DerivativeResearchApplicationService()
+
+    if command == "research-derivative-execute":
+        try:
+            if isinstance(request, FuturesStudyRequest):
+                execution = service.run_futures(request)
+            elif isinstance(request, OptionStudyRequest):
+                execution = service.run_option(request)
+            elif isinstance(request, MultiLegStudyRequest):
+                execution = service.run_multi_leg(request)
+            else:  # pragma: no cover - narrowed by the codec before dispatch
+                raise DerivativeApplicationCodecError(
+                    "derivative_application_request_type_unsupported"
+                )
+        except DerivativeApplicationError as exc:
+            failure_code = exc.failed_run.failure_code
+            if failure_code is None:  # pragma: no cover - Run validates this invariant
+                raise DerivativeApplicationCodecError(
+                    "derivative_application_failure_code_required"
+                ) from exc
+            failure = DerivativeApplicationFailureArtifact(
+                request_transport_hash=request_transport.content_hash,
+                failed_run=exc.failed_run,
+                failure_result=exc.failure_result,
+                failure_code=failure_code,
+                message_sha256=exc.failure_result.message_sha256,
+            )
+            output_transport = write_derivative_application_transport(
+                context.paths,
+                args.out,
+                failure,
+                bindings={"request_transport_hash": request_transport.content_hash},
+            )
+            context.run_result_hash = output_transport.content_hash
+            context.printer(
+                json.dumps(
+                    {
+                        "status": "FAILED",
+                        "request_transport_hash": request_transport.content_hash,
+                        "failure_transport_hash": output_transport.content_hash,
+                        "failed_run_hash": exc.failed_run.content_hash,
+                        "failure_code": failure_code,
+                        "message_sha256": failure.message_sha256,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 1
+        output_transport = write_derivative_application_transport(
+            context.paths,
+            args.out,
+            execution,
+            bindings={"request_transport_hash": request_transport.content_hash},
+        )
+        context.run_result_hash = output_transport.content_hash
+        context.printer(
+            json.dumps(
+                {
+                    "status": execution.run.status,
+                    "request_transport_hash": request_transport.content_hash,
+                    "execution_transport_hash": output_transport.content_hash,
+                    "simulation_hash": execution.simulation.content_hash,
+                    "run_hash": execution.run.content_hash,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if command == "research-derivative-reproduce":
+        expected_transport = load_derivative_application_transport(
+            context.paths,
+            args.expected,
+            expected_types=EXECUTION_TYPES,
+        )
+        expected_binding = (("request_transport_hash", request_transport.content_hash),)
+        if expected_transport.bindings != expected_binding:
+            raise DerivativeApplicationCodecError(
+                "derivative_application_expected_request_binding_mismatch"
+            )
+        expected = expected_transport.payload
+        if not isinstance(expected, DerivativeStudyExecution):  # pragma: no cover
+            raise DerivativeApplicationCodecError(
+                "derivative_application_expected_execution_required"
+            )
+        if isinstance(request, FuturesStudyRequest):
+            receipt = service.reproduce_futures(
+                request,
+                expected,
+                reproduction_id=args.reproduction_id,
+                verified_at=args.verified_at,
+            )
+        elif isinstance(request, OptionStudyRequest):
+            receipt = service.reproduce_option(
+                request,
+                expected,
+                reproduction_id=args.reproduction_id,
+                verified_at=args.verified_at,
+            )
+        elif isinstance(request, MultiLegStudyRequest):
+            receipt = service.reproduce_multi_leg(
+                request,
+                expected,
+                reproduction_id=args.reproduction_id,
+                verified_at=args.verified_at,
+            )
+        else:  # pragma: no cover - narrowed by the codec before dispatch
+            raise DerivativeApplicationCodecError(
+                "derivative_application_request_type_unsupported"
+            )
+        output_transport = write_derivative_application_transport(
+            context.paths,
+            args.out,
+            receipt,
+            bindings={
+                "request_transport_hash": request_transport.content_hash,
+                "expected_execution_transport_hash": expected_transport.content_hash,
+            },
+        )
+        context.run_result_hash = output_transport.content_hash
+        context.printer(
+            json.dumps(
+                {
+                    "status": receipt.status.value,
+                    "request_transport_hash": request_transport.content_hash,
+                    "expected_execution_transport_hash": (
+                        expected_transport.content_hash
+                    ),
+                    "reproduction_transport_hash": output_transport.content_hash,
+                    "receipt_hash": receipt.content_hash,
+                    "mismatch_fields": list(receipt.mismatch_fields),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0 if receipt.status is ReproductionStatus.PASS else 1
+
+    raise ValueError(f"unsupported derivative application command: {command}")
 
 
 def _application_service(context: ResearchAppContext) -> ResearchApplicationService:

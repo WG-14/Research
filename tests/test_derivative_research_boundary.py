@@ -5,9 +5,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DERIVATIVE_ROOT = (
-    PROJECT_ROOT / "src" / "market_research" / "research" / "derivatives"
-)
+DERIVATIVE_ROOT = PROJECT_ROOT / "src" / "market_research" / "research" / "derivatives"
 FORBIDDEN_IMPORT_ROOTS = {
     "aiohttp",
     "ccxt",
@@ -54,7 +52,9 @@ def test_derivative_research_has_no_network_live_or_operational_import_path() ->
     assert violations == []
 
 
-def test_derivative_research_never_references_the_separate_operation_repository() -> None:
+def test_derivative_research_never_references_the_separate_operation_repository() -> (
+    None
+):
     forbidden = "/home/vorac/work/" + "Operation"
     offenders = [
         path.name

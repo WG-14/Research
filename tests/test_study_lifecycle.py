@@ -19,7 +19,10 @@ from market_research.research.governance import (
     validate_governance_registry,
     validate_strategy_approval,
 )
-from market_research.research.hashing import report_content_hash_payload, sha256_prefixed
+from market_research.research.hashing import (
+    report_content_hash_payload,
+    sha256_prefixed,
+)
 from market_research.research.hypothesis_contract import parse_hypothesis_spec
 from market_research.research.knowledge_registry import (
     freeze_validation_admission,
@@ -202,8 +205,9 @@ def test_admission_aligns_standard_states_with_evidence_decisions_and_cas(
         row.get("decision_record_hash") and row.get("decision_registry_row_hash")
         for row in rows[1:]
     )
-    assert rows[-2]["evidence_hashes"]["preregistration_hash"] == (
-        admission["admission_record_hash"]
+    assert (
+        rows[-2]["evidence_hashes"]["preregistration_hash"]
+        == (admission["admission_record_hash"])
     )
     original_counts = (
         validate_governance_registry(manager)["row_count"],
@@ -271,9 +275,10 @@ def test_terminal_result_automatically_publishes_decision_outcome_and_state(
     assert publication.decision_row is not None
     assert publication.decision_row["payload"]["decision"] == expected_state
     assert publication.transition_row is not None
-    assert publication.transition_row["evidence_hashes"][
-        "validation_report_hash"
-    ] == report["content_hash"]
+    assert (
+        publication.transition_row["evidence_hashes"]["validation_report_hash"]
+        == report["content_hash"]
+    )
     decisions = query_validation_decisions(
         manager=manager,
         hypothesis_id=manifest.hypothesis_spec.hypothesis_id,
@@ -284,8 +289,7 @@ def test_terminal_result_automatically_publishes_decision_outcome_and_state(
         manager=manager,
         record_type="hypothesis_outcome",
         logical_id=(
-            "outcome:validation-result:"
-            f"{manifest.experiment_id}:RUN-study-001"
+            f"outcome:validation-result:{manifest.experiment_id}:RUN-study-001"
         ),
         version="1",
     )
@@ -343,9 +347,7 @@ def test_execution_failure_is_inconclusive_and_replay_is_immutable(
     )
     assert publication.state == "INCONCLUSIVE"
     assert publication.decision_row is not None
-    assert publication.decision_row["payload"]["failure_type"] == (
-        "execution_failure"
-    )
+    assert publication.decision_row["payload"]["failure_type"] == ("execution_failure")
     assert "synthetic execution detail" not in str(publication.decision_row)
     original_counts = (
         validate_governance_registry(manager)["row_count"],
@@ -436,29 +438,33 @@ def test_validated_standard_state_remains_compatible_with_research_approval(
         decided_at="2026-01-04T00:00:00+00:00",
     )
 
-    assert validate_strategy_approval(
-        approval,
-        source_report_hash=report["content_hash"],
-        selected_candidate_id="candidate-a",
-        final_holdout_confirmation_hash=_hash("3"),
-        hypothesis_id=manifest.hypothesis_spec.hypothesis_id,
-        hypothesis_version=manifest.hypothesis_spec.version,
-        hypothesis_contract_hash=manifest.hypothesis_spec.contract_hash(),
-        strategy_name="noop_baseline",
-        strategy_version="v1",
-        strategy_plugin_contract_hash=_hash("a"),
-        effective_strategy_parameters_hash=_hash("b"),
-        expected_registry_path=governance_registry_path(manager),
-        manager=manager,
-    ) == []
+    assert (
+        validate_strategy_approval(
+            approval,
+            source_report_hash=report["content_hash"],
+            selected_candidate_id="candidate-a",
+            final_holdout_confirmation_hash=_hash("3"),
+            hypothesis_id=manifest.hypothesis_spec.hypothesis_id,
+            hypothesis_version=manifest.hypothesis_spec.version,
+            hypothesis_contract_hash=manifest.hypothesis_spec.contract_hash(),
+            strategy_name="noop_baseline",
+            strategy_version="v1",
+            strategy_plugin_contract_hash=_hash("a"),
+            effective_strategy_parameters_hash=_hash("b"),
+            expected_registry_path=governance_registry_path(manager),
+            manager=manager,
+        )
+        == []
+    )
     validated_row = next(
         row
         for row in load_governance_rows(governance_registry_path(manager))
         if row.get("subject_id") == hypothesis.subject_id
         and row.get("to_state") == "VALIDATED"
     )
-    assert approval["hypothesis_supported_transition_row_hash"] == (
-        validated_row["row_hash"]
+    assert (
+        approval["hypothesis_supported_transition_row_hash"]
+        == (validated_row["row_hash"])
     )
 
 
@@ -496,16 +502,22 @@ def test_posthoc_condition_requires_a_new_hypothesis_version_and_reference(
 
     assert ref.logical_id == original.hypothesis_id
     assert ref.version == "2.0.0"
-    assert get_knowledge_record(
-        manager=manager,
-        record_type="hypothesis",
-        logical_id=original.hypothesis_id,
-        version=original.version,
-    )["record_hash"] == original.contract_hash()
-    assert get_knowledge_record(
-        manager=manager,
-        record_type="hypothesis",
-        logical_id=followup.hypothesis_id,
-        version=followup.version,
-    )["record_hash"] == followup.contract_hash()
+    assert (
+        get_knowledge_record(
+            manager=manager,
+            record_type="hypothesis",
+            logical_id=original.hypothesis_id,
+            version=original.version,
+        )["record_hash"]
+        == original.contract_hash()
+    )
+    assert (
+        get_knowledge_record(
+            manager=manager,
+            record_type="hypothesis",
+            logical_id=followup.hypothesis_id,
+            version=followup.version,
+        )["record_hash"]
+        == followup.contract_hash()
+    )
     assert validate_knowledge_registry(manager)["status"] == "PASS"

@@ -47,9 +47,7 @@ def require_point_in_time_scope(
     than silently completed with a current-survivor or continuous-market default.
     """
 
-    validation_bound = requires_candidate_validation(
-        manifest.research_classification
-    )
+    validation_bound = requires_candidate_validation(manifest.research_classification)
     present = {
         "instrument": manifest.instrument.source == "manifest",
         "corporate_actions": manifest.instrument.source == "manifest",
@@ -73,9 +71,7 @@ def require_point_in_time_scope(
     universe = manifest.universe
     calendar = manifest.market_calendar
     assert universe is not None and calendar is not None
-    if universe.universe_id not in {
-        item.universe_id for item in universe.memberships
-    }:
+    if universe.universe_id not in {item.universe_id for item in universe.memberships}:
         raise PointInTimeSelectionError("point_in_time_universe_identity_mismatch")
     if manifest.corporate_action_set.instrument_id != manifest.instrument.instrument_id:
         raise PointInTimeSelectionError(
@@ -128,7 +124,8 @@ def require_point_in_time_scope(
                 item.contract_hash() for item in manifest.corporate_action_set.events
             ],
             "event_source_content_hashes": [
-                item.source_content_hash for item in manifest.corporate_action_set.events
+                item.source_content_hash
+                for item in manifest.corporate_action_set.events
             ],
             "adjustment_policy_id": manifest.corporate_action_policy.policy_id,
             "adjustment_policy_hash": (
@@ -152,9 +149,7 @@ def build_point_in_time_decision_evidence(
 ) -> dict[str, object] | None:
     """Evaluate and hash one eligibility decision for every source candle."""
 
-    validation_bound = requires_candidate_validation(
-        manifest.research_classification
-    )
+    validation_bound = requires_candidate_validation(manifest.research_classification)
     scope = require_point_in_time_scope(
         manifest, verify_source_content=validation_bound
     )
@@ -273,9 +268,7 @@ def verify_point_in_time_decision_evidence(
         expected_row_hash = row.get("row_hash")
         row_payload = dict(row)
         row_payload.pop("row_hash", None)
-        calculated = sha256_prefixed(
-            row_payload, label="point_in_time_decision_row"
-        )
+        calculated = sha256_prefixed(row_payload, label="point_in_time_decision_row")
         if expected_row_hash != calculated:
             raise PointInTimeSelectionError("point_in_time_decision_row_hash_mismatch")
         calculated_hashes.append(calculated)
@@ -284,9 +277,10 @@ def verify_point_in_time_decision_evidence(
     if evidence.get("decision_stream_hash") != _row_stream_hash(calculated_hashes):
         raise PointInTimeSelectionError("point_in_time_decision_stream_hash_mismatch")
     selected_count = sum(bool(item.get("selected")) for item in rows)
-    if evidence.get("selected_candle_count") != selected_count or evidence.get(
-        "excluded_candle_count"
-    ) != len(rows) - selected_count:
+    if (
+        evidence.get("selected_candle_count") != selected_count
+        or evidence.get("excluded_candle_count") != len(rows) - selected_count
+    ):
         raise PointInTimeSelectionError("point_in_time_decision_count_mismatch")
     return evidence
 
@@ -314,9 +308,7 @@ def point_in_time_execution_snapshot(
     if snapshot.top_of_book_quotes and len(snapshot.top_of_book_quotes) != len(
         snapshot.candles
     ):
-        raise PointInTimeSelectionError(
-            "point_in_time_top_of_book_alignment_mismatch"
-        )
+        raise PointInTimeSelectionError("point_in_time_top_of_book_alignment_mismatch")
     selected_ts = {int(snapshot.candles[index].ts) for index in indexes}
     aligned_quotes = (
         tuple(snapshot.top_of_book_quotes[index] for index in indexes)
@@ -355,9 +347,9 @@ def _decision_row(
     decision_instant = datetime.fromtimestamp(
         decision_knowledge_ts / 1000.0, tz=timezone.utc
     )
-    effective_local_date = decision_instant.astimezone(
-        ZoneInfo(calendar.timezone_name)
-    ).date().isoformat()
+    effective_local_date = (
+        decision_instant.astimezone(ZoneInfo(calendar.timezone_name)).date().isoformat()
+    )
     reasons: list[str] = []
 
     known_memberships = tuple(
@@ -434,9 +426,7 @@ def _decision_row(
     if etf_nav is not None:
         etf_nav_records = {}
         for nav_type in ("official_nav", "inav"):
-            record = etf_nav.latest_known_at(
-                known_at=knowledge_at, nav_type=nav_type
-            )
+            record = etf_nav.latest_known_at(known_at=knowledge_at, nav_type=nav_type)
             etf_nav_records[nav_type] = (
                 record.evidence() if record is not None else None
             )
@@ -496,9 +486,7 @@ def _decision_row(
         "selected": not reasons,
         "reasons": sorted(reasons),
     }
-    payload["row_hash"] = sha256_prefixed(
-        payload, label="point_in_time_decision_row"
-    )
+    payload["row_hash"] = sha256_prefixed(payload, label="point_in_time_decision_row")
     return payload
 
 
@@ -554,9 +542,7 @@ def _verify_snapshot_domain_bindings(
         (
             "point_in_time_universe",
             "universe_contract_hash",
-            authorities.get("point_in_time_universe", {}).get(
-                "universe_contract_hash"
-            ),
+            authorities.get("point_in_time_universe", {}).get("universe_contract_hash"),
         ),
         (
             "market_calendar",
@@ -604,9 +590,7 @@ def _verify_local_authority_source(
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     actual_hash = f"sha256:{digest}"
     if actual_hash != expected_hash:
-        raise PointInTimeSelectionError(
-            f"{authority}_source_content_hash_mismatch"
-        )
+        raise PointInTimeSelectionError(f"{authority}_source_content_hash_mismatch")
     return {
         "status": "VERIFIED",
         "source_uri": source_uri,

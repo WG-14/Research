@@ -243,7 +243,14 @@ def _research_web_application() -> WSGIApplication:
             os.environ.setdefault(
                 "DJANGO_SETTINGS_MODULE", "market_research_web.settings"
             )
-            from market_research_web.wsgi import application
+            import django
+
+            django.setup()
+            from market_research_web.operations_contract import (
+                get_web_wsgi_application,
+            )
+
+            application = get_web_wsgi_application()
 
             def invoke_django(
                 environ: Mapping[str, Any],

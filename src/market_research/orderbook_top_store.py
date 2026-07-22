@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import sqlite3
 from dataclasses import dataclass
 
 from .market_knowledge_time import validated_observed_at_ms
@@ -37,17 +36,6 @@ class OrderbookTopSnapshot:
             event_ts=self.ts,
             observed_at_epoch_sec=self.observed_at_epoch_sec,
             evidence_name="orderbook_top",
-        )
-
-    def as_db_tuple(self) -> tuple[int, str, float, float, float, str, float | None]:
-        return (
-            self.ts,
-            self.pair,
-            self.bid_price,
-            self.ask_price,
-            self.spread_bps,
-            self.source,
-            self.observed_at_epoch_sec,
         )
 
 
@@ -112,29 +100,6 @@ def snapshot_from_best_quote(
         source=quote.source or ORDERBOOK_TOP_SOURCE,
         observed_at_epoch_sec=quote.observed_at_epoch_sec,
     )
-
-
-def upsert_orderbook_top_snapshot(
-    conn: sqlite3.Connection, snapshot: OrderbookTopSnapshot
-) -> int:
-    validated = build_orderbook_top_snapshot(
-        ts=snapshot.ts,
-        pair=snapshot.pair,
-        bid_price=snapshot.bid_price,
-        ask_price=snapshot.ask_price,
-        source=snapshot.source,
-        observed_at_epoch_sec=snapshot.observed_at_epoch_sec,
-    )
-    cur = conn.execute(
-        """
-        INSERT OR REPLACE INTO orderbook_top_snapshots(
-            ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        validated.as_db_tuple(),
-    )
-    return int(cur.rowcount or 0)
 
 
 def _validate_bid_ask(*, bid: float, ask: float) -> None:

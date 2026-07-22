@@ -232,7 +232,8 @@ def build_source_catalog(
         "approved_at": approved_at,
         "approved_by": approved_by,
         "entries": sorted(
-            (dict(item) for item in entries), key=lambda item: str(item.get("provider_id"))
+            (dict(item) for item in entries),
+            key=lambda item: str(item.get("provider_id")),
         ),
     }
     payload["catalog_hash"] = source_catalog_hash(payload)
@@ -276,9 +277,7 @@ def _parse_entry(value: object) -> SourceCatalogEntry:
         ),
         revision_policy=_text(value.get("revision_policy"), "revision_policy"),
         license_id=_text(value.get("license_id"), "license_id"),
-        research_use_terms=_text(
-            value.get("research_use_terms"), "research_use_terms"
-        ),
+        research_use_terms=_text(value.get("research_use_terms"), "research_use_terms"),
         redistribution_allowed=redistribution,
         quality_level=_text(value.get("quality_level"), "quality_level"),
         preparation_boundary=_text(

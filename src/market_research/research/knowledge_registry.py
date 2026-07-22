@@ -44,6 +44,14 @@ from .point_in_time_selection import (
     require_point_in_time_scope,
 )
 from .research_classification import requires_candidate_validation
+from .research_standard import (
+    HypothesisVersion,
+    ResearchStandardBinding,
+    ResearchStandardError,
+    parse_hypothesis_version,
+    validate_compatibility_hypothesis_binding,
+    verify_hypothesis_successor,
+)
 
 
 KNOWLEDGE_REGISTRY_SCHEMA_VERSION = 1
@@ -74,9 +82,7 @@ class KnowledgeRegistryProof:
             if not isinstance(raw, Mapping) or any(
                 not isinstance(key, str) for key in raw
             ):
-                raise KnowledgeRegistryError(
-                    f"knowledge_proof_row_invalid:{index}"
-                )
+                raise KnowledgeRegistryError(f"knowledge_proof_row_invalid:{index}")
             normalized.append(deepcopy(dict(raw)))
         _validate_knowledge_proof_material(
             target_ref=self.target_ref,
@@ -290,9 +296,12 @@ def verify_knowledge_registry_external_evidence(
     }
     if set(payload) != expected:
         raise KnowledgeRegistryError("knowledge_external_evidence_fields_invalid")
-    if _proof_integer(
-        payload["schema_version"], "knowledge_external_evidence.schema_version"
-    ) != 1:
+    if (
+        _proof_integer(
+            payload["schema_version"], "knowledge_external_evidence.schema_version"
+        )
+        != 1
+    ):
         raise KnowledgeRegistryError("knowledge_external_evidence_schema_unsupported")
     if payload["artifact_type"] != "knowledge_registry_external_evidence":
         raise KnowledgeRegistryError(
@@ -547,12 +556,41 @@ def publish_manifest_lineage(
     *,
     manager: ResearchPathManager,
     hypothesis: HypothesisSpec,
+    research_standard_binding: ResearchStandardBinding | None = None,
 ) -> dict[str, Any]:
     """Atomically publish the complete inline observation/question lineage."""
 
-    descriptors = _lineage_descriptors(hypothesis)
+    if research_standard_binding is not None:
+        _require_compatible_research_standard_lineage(
+            hypothesis=hypothesis,
+            binding=research_standard_binding,
+        )
+    lineage_descriptors = _lineage_descriptors(hypothesis)
+    standard_descriptors = (
+        _research_standard_descriptors(
+            research_standard_binding,
+            parent_refs=_research_standard_parent_refs(
+                manager=manager,
+                binding=research_standard_binding,
+            ),
+        )
+        if research_standard_binding is not None
+        else ()
+    )
+    descriptors = (*lineage_descriptors, *standard_descriptors)
     rows = _publish_descriptors(manager=manager, descriptors=descriptors)
-    return _lineage_publication(rows=rows, descriptors=descriptors, manager=manager)
+    publication = _lineage_publication(
+        rows=rows, descriptors=lineage_descriptors, manager=manager
+    )
+    if research_standard_binding is not None:
+        publication["research_standard_lineage"] = (
+            _research_standard_lineage_publication(
+                rows=rows,
+                descriptors=standard_descriptors,
+                binding=research_standard_binding,
+            )
+        )
+    return publication
 
 
 def freeze_validation_admission(
@@ -609,17 +647,56 @@ def freeze_validation_admission(
         frozen_at=timestamp,
         external_registration_evidence_hash=hypothesis.registration_evidence_hash,
     )
+    lineage_descriptors = _lineage_descriptors(hypothesis)
+    standard_binding = getattr(manifest, "research_standard_binding", None)
+    if standard_binding is not None and not isinstance(
+        standard_binding, ResearchStandardBinding
+    ):
+        raise KnowledgeRegistryError("validation_admission_research_standard_invalid")
+    if standard_binding is not None:
+        _require_compatible_research_standard_lineage(
+            hypothesis=hypothesis,
+            binding=standard_binding,
+        )
+    standard_descriptors = (
+        _research_standard_descriptors(
+            standard_binding,
+            parent_refs=_research_standard_parent_refs(
+                manager=manager,
+                binding=standard_binding,
+            ),
+        )
+        if standard_binding is not None
+        else ()
+    )
+    preregistration_descriptor = _preregistration_descriptor(
+        preregistration,
+        research_standard_ref=(
+            _research_standard_binding_ref(standard_binding)
+            if standard_binding is not None
+            else None
+        ),
+    )
     descriptors = (
-        *_lineage_descriptors(hypothesis),
-        _preregistration_descriptor(preregistration),
+        *lineage_descriptors,
+        *standard_descriptors,
+        preregistration_descriptor,
     )
     rows = _publish_descriptors(manager=manager, descriptors=descriptors)
     publication = _lineage_publication(
         rows=rows,
-        descriptors=descriptors[:-1],
+        descriptors=lineage_descriptors,
         manager=manager,
     )
-    admission_row = rows[descriptors[-1].key]
+    if standard_binding is not None:
+        publication["research_standard_lineage"] = (
+            _research_standard_lineage_publication(
+                rows=rows,
+                descriptors=standard_descriptors,
+                binding=standard_binding,
+            )
+        )
+    admission_row = rows[preregistration_descriptor.key]
     return {
         **publication,
         "admission": deepcopy(admission_row),
@@ -675,6 +752,23 @@ def require_validation_admission(
         raise KnowledgeRegistryError("validation_admission_hypothesis_ref_mismatch")
     if payload.get("component_hashes") != _manifest_component_hashes(manifest):
         raise KnowledgeRegistryError("validation_admission_component_hash_mismatch")
+    standard_binding = getattr(manifest, "research_standard_binding", None)
+    if standard_binding is not None:
+        if not isinstance(standard_binding, ResearchStandardBinding):
+            raise KnowledgeRegistryError(
+                "validation_admission_research_standard_invalid"
+            )
+        expected_standard_ref = _research_standard_binding_ref(
+            standard_binding
+        ).as_dict()
+        if expected_standard_ref not in row.get("outbound_refs", []):
+            raise KnowledgeRegistryError(
+                "validation_admission_research_standard_ref_mismatch"
+            )
+        _require_research_standard_parent_lineage(
+            manager=manager,
+            binding=standard_binding,
+        )
     if expected_row_hash is not None and row.get("row_hash") != expected_row_hash:
         raise KnowledgeRegistryError("validation_admission_row_hash_mismatch")
     return row
@@ -1163,19 +1257,261 @@ def _hypothesis_descriptor(
     )
 
 
-def _preregistration_descriptor(record: PreregistrationRecord) -> _Descriptor:
+def _preregistration_descriptor(
+    record: PreregistrationRecord,
+    *,
+    research_standard_ref: KnowledgeRef | None = None,
+) -> _Descriptor:
     return _Descriptor(
         record_type="preregistration",
         logical_id=record.registration_id,
         version=record.version,
         record_hash=record.contract_hash(),
         payload=record.as_dict(),
-        outbound_refs=(record.hypothesis_ref,),
+        outbound_refs=(
+            record.hypothesis_ref,
+            *((research_standard_ref,) if research_standard_ref is not None else ()),
+        ),
         actor_id=record.actor_id,
         recorded_at=record.frozen_at,
         allow_implicit_cas=True,
         volatile_replay_fields=("frozen_at",),
     )
+
+
+def _research_standard_descriptors(
+    binding: ResearchStandardBinding,
+    *,
+    parent_refs: tuple[KnowledgeRef, ...],
+) -> tuple[_Descriptor, ...]:
+    observation_descriptors: list[_Descriptor] = []
+    observation_refs: list[KnowledgeRef] = []
+    for observation in binding.observations:
+        payload = {**observation.as_dict(), "content_hash": observation.content_hash}
+        ref = KnowledgeRef(
+            "research_standard_observation",
+            observation.observation_id,
+            str(observation.version),
+            sha256_prefixed(payload),
+        )
+        observation_refs.append(ref)
+        observation_descriptors.append(
+            _Descriptor(
+                record_type=ref.record_type,
+                logical_id=ref.logical_id,
+                version=ref.version,
+                record_hash=ref.record_hash,
+                payload=payload,
+                outbound_refs=(),
+                actor_id=observation.created_by,
+                recorded_at=observation.recorded_at,
+                allow_implicit_cas=True,
+            )
+        )
+    question = binding.research_question
+    question_payload = {
+        **question.as_dict(),
+        "content_hash": question.content_hash,
+    }
+    question_ref = KnowledgeRef(
+        "research_standard_question",
+        question.research_question_id,
+        str(question.version),
+        sha256_prefixed(question_payload),
+    )
+    question_descriptor = _Descriptor(
+        record_type=question_ref.record_type,
+        logical_id=question_ref.logical_id,
+        version=question_ref.version,
+        record_hash=question_ref.record_hash,
+        payload=question_payload,
+        outbound_refs=tuple(observation_refs),
+        actor_id=question.created_by,
+        recorded_at=question.created_at,
+        allow_implicit_cas=True,
+    )
+    mechanism = binding.mechanism
+    mechanism_payload = {
+        **mechanism.as_dict(),
+        "content_hash": mechanism.content_hash,
+    }
+    mechanism_ref = KnowledgeRef(
+        "research_standard_mechanism",
+        mechanism.mechanism_id,
+        str(mechanism.version),
+        sha256_prefixed(mechanism_payload),
+    )
+    mechanism_descriptor = _Descriptor(
+        record_type=mechanism_ref.record_type,
+        logical_id=mechanism_ref.logical_id,
+        version=mechanism_ref.version,
+        record_hash=mechanism_ref.record_hash,
+        payload=mechanism_payload,
+        outbound_refs=(),
+        actor_id=binding.hypothesis_version.created_by,
+        recorded_at=binding.hypothesis_version.created_at,
+        allow_implicit_cas=True,
+        volatile_replay_fields=("recorded_at",),
+    )
+    hypothesis = binding.hypothesis_version
+    hypothesis_payload = hypothesis.as_dict()
+    hypothesis_ref = _research_standard_hypothesis_ref(binding)
+    hypothesis_descriptor = _Descriptor(
+        record_type=hypothesis_ref.record_type,
+        logical_id=hypothesis_ref.logical_id,
+        version=hypothesis_ref.version,
+        record_hash=hypothesis_ref.record_hash,
+        payload=hypothesis_payload,
+        outbound_refs=(question_ref, mechanism_ref, *parent_refs),
+        actor_id=hypothesis.created_by,
+        recorded_at=hypothesis.created_at,
+        allow_implicit_cas=True,
+    )
+    binding_payload = binding.as_dict()
+    binding_ref = _research_standard_binding_ref(binding)
+    binding_descriptor = _Descriptor(
+        record_type=binding_ref.record_type,
+        logical_id=binding_ref.logical_id,
+        version=binding_ref.version,
+        record_hash=binding_ref.record_hash,
+        payload=binding_payload,
+        outbound_refs=(
+            *observation_refs,
+            question_ref,
+            mechanism_ref,
+            hypothesis_ref,
+        ),
+        actor_id=hypothesis.created_by,
+        recorded_at=hypothesis.created_at,
+        allow_implicit_cas=True,
+    )
+    return (
+        *observation_descriptors,
+        question_descriptor,
+        mechanism_descriptor,
+        hypothesis_descriptor,
+        binding_descriptor,
+    )
+
+
+def _research_standard_binding_ref(
+    binding: ResearchStandardBinding,
+) -> KnowledgeRef:
+    return KnowledgeRef(
+        "research_standard_binding",
+        binding.hypothesis_version.hypothesis_id,
+        str(binding.hypothesis_version.version),
+        sha256_prefixed(binding.as_dict()),
+    )
+
+
+def _research_standard_hypothesis_ref(
+    binding: ResearchStandardBinding,
+) -> KnowledgeRef:
+    hypothesis = binding.hypothesis_version
+    return KnowledgeRef(
+        "research_standard_hypothesis",
+        hypothesis.hypothesis_id,
+        str(hypothesis.version),
+        sha256_prefixed(hypothesis.as_dict()),
+    )
+
+
+def _research_standard_parent_refs(
+    *,
+    manager: ResearchPathManager,
+    binding: ResearchStandardBinding,
+) -> tuple[KnowledgeRef, ...]:
+    """Resolve every declared parent to a previously published version row."""
+
+    rows = _validated_rows(manager)
+    parent_hashes = binding.hypothesis_version.parent_version_hashes
+    refs: list[KnowledgeRef] = []
+    for parent_hash in parent_hashes:
+        matches = [
+            row
+            for row in rows
+            if row.get("record_type") == "research_standard_hypothesis"
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("content_hash") == parent_hash
+        ]
+        if not matches:
+            raise KnowledgeRegistryError(
+                "research_standard_hypothesis_parent_unpublished"
+            )
+        if len(matches) != 1:
+            raise KnowledgeRegistryError(
+                "research_standard_hypothesis_parent_ambiguous"
+            )
+        row = matches[0]
+        refs.append(
+            KnowledgeRef(
+                "research_standard_hypothesis",
+                str(row["logical_id"]),
+                str(row["version"]),
+                str(row["record_hash"]),
+            )
+        )
+    _require_research_standard_successor(
+        prior_rows=rows,
+        successor=binding.hypothesis_version,
+    )
+    return tuple(refs)
+
+
+def _require_research_standard_parent_lineage(
+    *,
+    manager: ResearchPathManager,
+    binding: ResearchStandardBinding,
+) -> None:
+    expected_parent_refs = _research_standard_parent_refs(
+        manager=manager,
+        binding=binding,
+    )
+    hypothesis_ref = _research_standard_hypothesis_ref(binding)
+    row = get_knowledge_record(
+        manager=manager,
+        record_type=hypothesis_ref.record_type,
+        logical_id=hypothesis_ref.logical_id,
+        version=hypothesis_ref.version,
+    )
+    if row.get("record_hash") != hypothesis_ref.record_hash:
+        raise KnowledgeRegistryError(
+            "validation_admission_research_standard_hypothesis_mismatch"
+        )
+    actual_parent_refs = [
+        ref
+        for ref in row.get("outbound_refs", [])
+        if isinstance(ref, dict)
+        and ref.get("record_type") == "research_standard_hypothesis"
+    ]
+    if actual_parent_refs != [ref.as_dict() for ref in expected_parent_refs]:
+        raise KnowledgeRegistryError(
+            "validation_admission_research_standard_parent_lineage_mismatch"
+        )
+
+
+def _research_standard_lineage_publication(
+    *,
+    rows: Mapping[tuple[str, str, str], dict[str, Any]],
+    descriptors: tuple[_Descriptor, ...],
+    binding: ResearchStandardBinding,
+) -> dict[str, Any]:
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for descriptor in descriptors:
+        by_type.setdefault(descriptor.record_type, []).append(
+            deepcopy(rows[descriptor.key])
+        )
+    return {
+        "schema_version": binding.schema_version,
+        "binding_hash": binding.content_hash,
+        "object_hashes": binding.lineage_hashes(),
+        "binding": by_type["research_standard_binding"][0],
+        "hypothesis_version": by_type["research_standard_hypothesis"][0],
+        "research_question": by_type["research_standard_question"][0],
+        "mechanism": by_type["research_standard_mechanism"][0],
+        "observations": by_type["research_standard_observation"],
+    }
 
 
 def _lineage_publication(
@@ -1241,7 +1577,10 @@ def _manifest_component_hashes(manifest: Any) -> dict[str, str]:
             "corporate_action_set": canonical.get("corporate_action_set"),
             "corporate_action_policy": canonical.get("corporate_action_policy"),
         }
-    if canonical.get("universe") is not None or canonical.get("market_calendar") is not None:
+    if (
+        canonical.get("universe") is not None
+        or canonical.get("market_calendar") is not None
+    ):
         component_material["point_in_time_scope"] = {
             "universe": canonical.get("universe"),
             "market_calendar": canonical.get("market_calendar"),
@@ -1250,6 +1589,10 @@ def _manifest_component_hashes(manifest: Any) -> dict[str, str]:
                 "latest_corporate_action_effective_and_observed_fail_closed_v1"
             ),
         }
+    if canonical.get("research_standard_binding") is not None:
+        component_material["research_standard_binding"] = canonical.get(
+            "research_standard_binding"
+        )
     hashes = {
         name: sha256_prefixed(value) for name, value in component_material.items()
     }
@@ -1321,6 +1664,12 @@ def _semantic_reasons(rows: list[dict[str, Any]]) -> list[str]:
                 raise KnowledgeRegistryError("actor_id_required")
             if key[0] == "decision":
                 _validate_decision_payload(payload)
+            if key[0] == "research_standard_hypothesis":
+                _validate_research_standard_hypothesis_parent_refs(
+                    payload=payload,
+                    refs=[ref.as_dict() for ref in parsed_refs],
+                    prior_rows=list(seen.values()),
+                )
             if key[0] == "literature":
                 literature = literature_spec_from_dict(payload)
                 if literature.as_dict() != payload:
@@ -1585,6 +1934,127 @@ def _require_resolved_refs(
             )
 
 
+def _validate_research_standard_hypothesis_parent_refs(
+    *,
+    payload: Mapping[str, Any],
+    refs: list[dict[str, Any]],
+    prior_rows: list[dict[str, Any]],
+) -> None:
+    successor = _parse_registry_hypothesis_version(payload)
+    _require_research_standard_successor(
+        prior_rows=prior_rows,
+        successor=successor,
+    )
+    parent_hashes = payload.get("parent_version_hashes")
+    if not isinstance(parent_hashes, list) or any(
+        not isinstance(value, str) for value in parent_hashes
+    ):
+        raise KnowledgeRegistryError(
+            "research_standard_hypothesis_parent_hashes_invalid"
+        )
+    identity_payload = {
+        key: value for key, value in payload.items() if key != "content_hash"
+    }
+    if payload.get("content_hash") != sha256_prefixed(
+        identity_payload,
+        label="hypothesis_version_v2",
+    ):
+        raise KnowledgeRegistryError(
+            "research_standard_hypothesis_content_hash_mismatch"
+        )
+    expected_parent_refs: list[dict[str, Any]] = []
+    for parent_hash in parent_hashes:
+        matches = [
+            row
+            for row in prior_rows
+            if row.get("record_type") == "research_standard_hypothesis"
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("content_hash") == parent_hash
+        ]
+        if len(matches) != 1:
+            raise KnowledgeRegistryError(
+                "research_standard_hypothesis_parent_unresolved"
+            )
+        parent = matches[0]
+        expected_parent_refs.append(
+            {
+                "record_type": "research_standard_hypothesis",
+                "logical_id": parent["logical_id"],
+                "version": parent["version"],
+                "record_hash": parent["record_hash"],
+            }
+        )
+    actual_parent_refs = [
+        ref for ref in refs if ref.get("record_type") == "research_standard_hypothesis"
+    ]
+    if actual_parent_refs != expected_parent_refs:
+        raise KnowledgeRegistryError(
+            "research_standard_hypothesis_parent_refs_mismatch"
+        )
+
+
+def _parse_registry_hypothesis_version(
+    payload: Mapping[str, Any],
+) -> HypothesisVersion:
+    try:
+        return parse_hypothesis_version(payload)
+    except ResearchStandardError as exc:
+        raise KnowledgeRegistryError(
+            f"research_standard_hypothesis_payload_invalid:{exc}"
+        ) from exc
+
+
+def _require_research_standard_successor(
+    *,
+    prior_rows: list[dict[str, Any]],
+    successor: HypothesisVersion,
+) -> None:
+    """Enforce same-identity continuity without blocking cross-ID derivation."""
+
+    previous_rows = [
+        row
+        for row in prior_rows
+        if row.get("record_type") == "research_standard_hypothesis"
+        and row.get("logical_id") == successor.hypothesis_id
+        and row.get("version") != str(successor.version)
+    ]
+    if not previous_rows:
+        if successor.version != 1:
+            raise KnowledgeRegistryError(
+                "hypothesis_successor_previous_version_missing"
+            )
+        return
+    previous_payload = previous_rows[-1].get("payload")
+    if not isinstance(previous_payload, Mapping):
+        raise KnowledgeRegistryError(
+            "research_standard_hypothesis_previous_payload_invalid"
+        )
+    previous = _parse_registry_hypothesis_version(previous_payload)
+    try:
+        verify_hypothesis_successor(previous, successor)
+    except ResearchStandardError as exc:
+        raise KnowledgeRegistryError(str(exc)) from exc
+
+
+def _require_compatible_research_standard_lineage(
+    *,
+    hypothesis: HypothesisSpec,
+    binding: ResearchStandardBinding,
+) -> None:
+    """Reject a publication whose rich and compatibility graphs disagree."""
+
+    market = hypothesis.observations[0].market if hypothesis.observations else ""
+    try:
+        validate_compatibility_hypothesis_binding(
+            binding,
+            hypothesis,
+            manifest_hypothesis=str(hypothesis.hypothesis_text or ""),
+            market=market,
+        )
+    except ResearchStandardError as exc:
+        raise KnowledgeRegistryError(str(exc)) from exc
+
+
 def _validated_rows(manager: ResearchPathManager) -> list[dict[str, Any]]:
     path = knowledge_registry_path(manager)
     try:
@@ -1665,17 +2135,11 @@ def _validate_knowledge_proof_material(
             frozenset(required_row_fields),
             frozenset((*required_row_fields, "authority_refs")),
         }:
-            raise KnowledgeRegistryError(
-                f"knowledge_proof_row_fields_invalid:{index}"
-            )
+            raise KnowledgeRegistryError(f"knowledge_proof_row_fields_invalid:{index}")
         if row.get("sequence") != index:
-            raise KnowledgeRegistryError(
-                f"knowledge_proof_sequence_mismatch:{index}"
-            )
+            raise KnowledgeRegistryError(f"knowledge_proof_sequence_mismatch:{index}")
         if row.get("prior_hash") != prior_hash:
-            raise KnowledgeRegistryError(
-                f"knowledge_proof_prior_hash_mismatch:{index}"
-            )
+            raise KnowledgeRegistryError(f"knowledge_proof_prior_hash_mismatch:{index}")
         material = {key: value for key, value in row.items() if key != "row_hash"}
         try:
             expected_hash = sha256_prefixed(
@@ -1685,9 +2149,7 @@ def _validate_knowledge_proof_material(
         except (TypeError, ValueError) as exc:
             raise KnowledgeRegistryError("knowledge_proof_row_not_canonical") from exc
         if row.get("row_hash") != expected_hash:
-            raise KnowledgeRegistryError(
-                f"knowledge_proof_row_hash_mismatch:{index}"
-            )
+            raise KnowledgeRegistryError(f"knowledge_proof_row_hash_mismatch:{index}")
         prior_hash = expected_hash
     if stream_hash != prior_hash:
         raise KnowledgeRegistryError("knowledge_proof_stream_hash_mismatch")
@@ -1712,9 +2174,7 @@ def _validate_knowledge_proof_material(
 
 
 def _proof_mapping(value: object, context: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise KnowledgeRegistryError(f"{context}_object_required")
     return value
 

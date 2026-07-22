@@ -30,6 +30,7 @@ from market_research.research.derivatives.options import (
     OptionPosition,
     OptionProspectiveObservation,
     OptionProspectiveProtocol,
+    OptionSettlementInput,
     OptionStressScenario,
     OptionType,
     PositionSide,
@@ -82,6 +83,30 @@ def _availability(
         provider_received_at="2026-01-02T12:00:02+00:00",
         system_received_at="2026-01-02T12:00:03+00:00",
         processed_at=processed_at,
+    )
+
+
+def _settlement_input(
+    contract: OptionContract,
+    spot_price: str,
+    *,
+    settlement_at: str,
+    source_manifest_hash: str | None = None,
+) -> OptionSettlementInput:
+    availability = AvailabilityTimes(
+        event_at=settlement_at,
+        published_at=settlement_at,
+        provider_received_at=settlement_at,
+        system_received_at=settlement_at,
+        processed_at=settlement_at,
+    )
+    return OptionSettlementInput(
+        settlement_input_id=f"settlement.{contract.contract_id}",
+        contract_id=contract.contract_id,
+        settlement_at=settlement_at,
+        availability=availability,
+        spot_price=Decimal(spot_price),
+        source_manifest_hash=source_manifest_hash or _hash("1"),
     )
 
 
@@ -206,6 +231,35 @@ def test_contract_series_identity_and_lifecycle_time_boundaries() -> None:
         replace(contract, strike=100.0)  # type: ignore[arg-type]
 
 
+def test_option_artifacts_reject_legacy_schema_v1() -> None:
+    contract = _contract("schema_v2_call")
+    quote = _quote(contract)
+    chain = OptionChainSnapshot(
+        chain_snapshot_id="chain.schema.v2",
+        underlying_id=contract.underlying_id,
+        knowledge_time=NOW,
+        underlying_price=Decimal("100"),
+        contracts=(contract,),
+        quotes=(quote,),
+        source_manifest_hashes=(_hash("1"),),
+    )
+    valuation = _inputs(contract, quote)
+    fill = simulate_option_fill(
+        fill_id="fill.schema.v2",
+        contract=contract,
+        quote=quote,
+        side=TransactionSide.BUY,
+        quantity=Decimal("1"),
+        filled_at=NOW,
+    )
+
+    for artifact in (contract, quote, chain, valuation, fill):
+        with pytest.raises(
+            DerivativeResearchError, match="option_schema_version_unsupported"
+        ):
+            replace(artifact, schema_version=1)
+
+
 @pytest.mark.parametrize(
     ("bid", "ask", "as_of", "sizes", "expected"),
     [
@@ -270,12 +324,19 @@ def test_chain_snapshot_is_point_in_time_and_quality_gates_confirmation() -> Non
     assert snapshot.contract(current.contract_id) is current
     with pytest.raises(DerivativeResearchError, match="contract_missing"):
         snapshot.contract("not_here")
+    future_quote = replace(
+        snapshot.quotes[0],
+        as_of="2026-01-02T12:00:11+00:00",
+    )
+    with pytest.raises(
+        DerivativeResearchError,
+        match="option_chain_quote_future_as_of",
+    ):
+        replace(snapshot, quotes=(future_quote,))
     failed = replace(
         snapshot,
         quality_results=(
-            QualityResult(
-                "option.chain_integrity", "1", QualityDecision.FAILED
-            ),
+            QualityResult("option.chain_integrity", "1", QualityDecision.FAILED),
         ),
     )
     failed.admit(RunType.EXPLORATORY)
@@ -283,7 +344,9 @@ def test_chain_snapshot_is_point_in_time_and_quality_gates_confirmation() -> Non
         failed.admit(RunType.CONFIRMATORY)
 
 
-def test_chain_no_arbitrage_checks_detect_bounds_monotonicity_and_crossed_quotes() -> None:
+def test_chain_no_arbitrage_checks_detect_bounds_monotonicity_and_crossed_quotes() -> (
+    None
+):
     call_90 = _contract("call_90", strike="90")
     call_100 = _contract("call_100", strike="100")
     call_110 = _contract("call_110", strike="110")
@@ -322,6 +385,7 @@ def test_valuation_inputs_require_pit_alignment_and_carry_consistency() -> None:
     with pytest.raises(DerivativeResearchError, match="not_time_aligned"):
         replace(
             inputs,
+            quote=replace(inputs.quote, as_of="2026-01-02T12:05:00+00:00"),
             valuation_at="2026-01-02T12:05:00+00:00",
             rate_availability=late,
         )
@@ -351,10 +415,42 @@ def _surface(*, far_vol: str = "0.24") -> VolatilitySurface:
     near = EXPIRY
     far = "2027-01-02T00:00:00+00:00"
     points = (
-        SurfacePoint("near_90", near, Decimal("90"), Decimal("0.25"), _hash("1"), _hash("2"), "bs_v1"),
-        SurfacePoint("near_110", near, Decimal("110"), Decimal("0.21"), _hash("3"), _hash("4"), "bs_v1"),
-        SurfacePoint("far_90", far, Decimal("90"), Decimal(far_vol), _hash("5"), _hash("6"), "bs_v1"),
-        SurfacePoint("far_110", far, Decimal("110"), Decimal(far_vol), _hash("7"), _hash("8"), "bs_v1"),
+        SurfacePoint(
+            "near_90",
+            near,
+            Decimal("90"),
+            Decimal("0.25"),
+            _hash("1"),
+            _hash("2"),
+            "bs_v1",
+        ),
+        SurfacePoint(
+            "near_110",
+            near,
+            Decimal("110"),
+            Decimal("0.21"),
+            _hash("3"),
+            _hash("4"),
+            "bs_v1",
+        ),
+        SurfacePoint(
+            "far_90",
+            far,
+            Decimal("90"),
+            Decimal(far_vol),
+            _hash("5"),
+            _hash("6"),
+            "bs_v1",
+        ),
+        SurfacePoint(
+            "far_110",
+            far,
+            Decimal("110"),
+            Decimal(far_vol),
+            _hash("7"),
+            _hash("8"),
+            "bs_v1",
+        ),
     )
     return VolatilitySurface(
         surface_id="surface.xyz.v1",
@@ -377,18 +473,24 @@ def test_surface_features_and_calendar_arbitrage_are_versioned() -> None:
         lower_strike=Decimal("90"),
         upper_strike=Decimal("110"),
     ) == Decimal("-0.002")
-    assert volatility_term_structure(
-        surface,
-        strike=Decimal("100"),
-        near_expiration_at=EXPIRY,
-        far_expiration_at="2027-01-02T00:00:00+00:00",
-    ) > 0
-    assert option_moneyness(
-        _contract(),
-        spot_price=Decimal("100"),
-        forward_price=Decimal("100"),
-        method=MoneynessMethod.LOG_FORWARD_MONEYNESS,
-    ) == 0
+    assert (
+        volatility_term_structure(
+            surface,
+            strike=Decimal("100"),
+            near_expiration_at=EXPIRY,
+            far_expiration_at="2027-01-02T00:00:00+00:00",
+        )
+        > 0
+    )
+    assert (
+        option_moneyness(
+            _contract(),
+            spot_price=Decimal("100"),
+            forward_price=Decimal("100"),
+            method=MoneynessMethod.LOG_FORWARD_MONEYNESS,
+        )
+        == 0
+    )
     with pytest.raises(DerivativeResearchError, match="extrapolation_forbidden"):
         surface.interpolate(expiration_at=EXPIRY, strike=Decimal("120"))
 
@@ -467,6 +569,23 @@ def test_single_leg_partial_fill_market_vs_theoretical_mark() -> None:
     assert no_fill.status is FillStatus.FAILED
 
 
+def test_option_fill_rejects_quote_that_became_stale_before_execution() -> None:
+    contract = _contract("stale_at_fill_call")
+    quote = _quote(contract, stale_after_seconds=60)
+
+    fill = simulate_option_fill(
+        fill_id="fill.stale.at.execution",
+        contract=contract,
+        quote=quote,
+        side=TransactionSide.BUY,
+        quantity=Decimal("1"),
+        filled_at="2026-01-02T12:01:11+00:00",
+    )
+
+    assert fill.status is FillStatus.FAILED
+    assert fill.failure_code == "quote_stale_at_fill"
+
+
 def test_early_exercise_expiry_assignment_and_physical_delivery() -> None:
     american = _contract(
         "american_call",
@@ -482,13 +601,25 @@ def test_early_exercise_expiry_assignment_and_physical_delivery() -> None:
         _position(american),
         event_id="event.american.exercise",
         event_at=decision.evaluated_at,
-        settlement_spot=Decimal("120"),
+        settlement_input=_settlement_input(
+            american, "120", settlement_at=decision.evaluated_at
+        ),
         early_exercise_decision=decision,
     )
 
     assert decision.exercise
     assert event.event_type is LifecycleEventType.EXERCISE
     assert event.cash_delta == Decimal("2000")
+    with pytest.raises(DerivativeResearchError, match="decision_forged"):
+        simulate_option_lifecycle(
+            _position(american),
+            event_id="event.american.forged",
+            event_at=decision.evaluated_at,
+            settlement_input=_settlement_input(
+                american, "120", settlement_at=decision.evaluated_at
+            ),
+            early_exercise_decision=replace(decision, intrinsic_value=Decimal("19")),
+        )
 
     physical = _contract(
         "physical_call",
@@ -498,7 +629,9 @@ def test_early_exercise_expiry_assignment_and_physical_delivery() -> None:
         _position(physical, side=PositionSide.SHORT),
         event_id="event.physical.assignment",
         event_at=physical.expiration_at,
-        settlement_spot=Decimal("110"),
+        settlement_input=_settlement_input(
+            physical, "110", settlement_at=physical.expiration_at
+        ),
     )
     assert assignment.event_type is LifecycleEventType.EXPIRY
     assert assignment.deliverable_quantity_delta == Decimal("-100")
@@ -521,6 +654,25 @@ def test_early_exercise_expiry_assignment_and_physical_delivery() -> None:
         transaction_cost=Decimal("0"),
         reason="european_before_expiry",
     )
+
+
+def test_expiry_rejects_settlement_observed_before_contract_expiration() -> None:
+    contract = _contract("stale_expiry_settlement_call")
+
+    with pytest.raises(
+        DerivativeResearchError,
+        match="option_lifecycle_expiry_settlement_time_invalid",
+    ):
+        simulate_option_lifecycle(
+            _position(contract),
+            event_id="event.expiry.stale.settlement",
+            event_at=EXPIRY,
+            settlement_input=_settlement_input(
+                contract,
+                "110",
+                settlement_at=NOW,
+            ),
+        )
 
 
 def _multi_leg_order(
@@ -591,6 +743,20 @@ def test_multi_leg_simultaneous_atomicity_and_sequential_legging() -> None:
     assert partial.state is MultiLegState.PARTIAL
     assert partial.legging_exposure_contract_ids
 
+    partial_forbidden = execute_multi_leg_order(
+        _multi_leg_order(
+            call,
+            put,
+            policy=MultiLegExecutionPolicy.SEQUENTIAL,
+            quantity="2",
+            allow_partial=False,
+        ),
+        quotes=partial_quotes,
+        fill_times={"call_leg": NOW, "put_leg": NOW},
+    )
+    assert partial_forbidden.state is MultiLegState.PARTIAL
+    assert partial_forbidden.failure_code == "sequential_partial_fill_forbidden"
+
     unwound = unwind_multi_leg_execution(
         filled,
         unwind_group_id="group.unwind",
@@ -611,9 +777,7 @@ def test_net_greeks_payoff_expiry_mismatch_and_tail_capital() -> None:
     short = _position(far_call, side=PositionSide.SHORT)
     model = BlackScholesModel()
     call_greeks = model.greeks(_inputs(call, _quote(call)), Decimal("0.2"))
-    far_greeks = model.greeks(
-        _inputs(far_call, _quote(far_call)), Decimal("0.2")
-    )
+    far_greeks = model.greeks(_inputs(far_call, _quote(far_call)), Decimal("0.2"))
     net = net_option_greeks(
         (long, short),
         {call.contract_id: call_greeks, far_call.contract_id: far_greeks},
@@ -621,9 +785,7 @@ def test_net_greeks_payoff_expiry_mismatch_and_tail_capital() -> None:
     payoff = analyze_option_payoff(
         (short,), scenario_spots=(Decimal("0"), Decimal("110"), Decimal("300"))
     )
-    capital = option_capital_requirement(
-        (short,), reference_spot=Decimal("100")
-    )
+    capital = option_capital_requirement((short,), reference_spot=Decimal("100"))
 
     assert net.expiry_mismatch
     assert payoff.unbounded_loss
@@ -693,7 +855,10 @@ def _observation(observation_id: str, observed: str) -> OptionProspectiveObserva
 
 def test_prospective_evidence_is_frozen_before_observation_and_version_bound() -> None:
     protocol = _protocol()
-    observations = (_observation("observation.one", "6.2"), _observation("observation.two", "5.8"))
+    observations = (
+        _observation("observation.one", "6.2"),
+        _observation("observation.two", "5.8"),
+    )
     evaluation = evaluate_option_prospective(
         protocol,
         observations,

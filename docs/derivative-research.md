@@ -50,6 +50,16 @@ instruction that can reach a venue.
   fills, positions, valuation inputs, IV, Greeks, marks and lifecycle events;
   multi-leg evidence additionally binds its group order and execution result.
   A package cannot substitute an arbitrary result or event-stream hash.
+- Post-freeze option exercise, assignment, and expiry observations use separate
+  immutable observation datasets selected per lifecycle command. Their hashes
+  are bound to the Run and simulation evidence, never backdated into the
+  frozen ExperimentSpec. Event/source/universe/period/availability chronology
+  is rechecked both during execution and persisted replay.
+- Persisted option evidence reruns the deterministic implied-volatility solver
+  against the bound quote midpoint, no-arbitrage bounds, tolerance, iteration
+  count, and residual before recomputing Greeks. Multi-leg evidence retains
+  every attempted fill, including unfilled legs and participation rates, then
+  reconstructs committed ordering, partial/failure state, legging, and timing.
 - Confirmatory packages require a typed `ProductChainEvidence` envelope. It
   binds the actual chain content hash, membership, source manifests and quality
   results; a failed or stale chain cannot be promoted by supplying an unrelated
@@ -98,6 +108,57 @@ scripts/platform research research-derivative-diff \
   --left-package-id future-study --left-version 1 \
   --right-package-id future-study --right-version 2
 ```
+
+## Typed simulation and reproduction CLI
+
+Derivative domain artifacts use Research Semantics schema version 2. Version 1
+experiment, Run, valuation, lifecycle, and simulation payloads are rejected
+rather than silently upgraded because v2 adds required valuation-model,
+settlement-source, chronology, and failure-result bindings. The application
+transport has its own versioned envelope; its embedded domain objects must
+still satisfy the v2 constructors.
+
+Confirmatory admission takes an immutable `ResearchTransition` into
+`PREREGISTERED`, not a caller-supplied timestamp. The transition subject and
+content hash must match the hypothesis, and its recorded time is the sole
+preregistration clock used for freeze and first-access ordering.
+
+The application transport is a self-hashed, allowlisted JSON graph. It accepts
+only the dataclasses and enums reachable from `FuturesStudyRequest`,
+`OptionStudyRequest`, or `MultiLegStudyRequest`; unknown node types, unknown or
+missing fields, duplicate JSON keys, binary floats, non-canonical decimals,
+symlinks, and live/account/deployment fields are rejected. Constructors rerun
+on decode, so domain hashes and invariants are not trusted from serialized
+computed fields. All three paths below must be absolute and outside the source
+repository.
+
+```console
+scripts/platform research research-derivative-execute \
+  --request /absolute/external/future-study-request.json \
+  --out /absolute/external/future-study-execution.json
+
+scripts/platform research research-derivative-reproduce \
+  --request /absolute/external/future-study-request.json \
+  --expected /absolute/external/future-study-execution.json \
+  --reproduction-id reproduction.future-study.1 \
+  --verified-at 2026-07-19T00:00:00+00:00 \
+  --out /absolute/external/future-study-reproduction.json
+```
+
+Execution binds the output transport to the exact request transport hash.
+Reproduction verifies that binding, reruns the real deterministic domain
+simulation, compares the Run and simulation hashes, writes an immutable PASS or
+FAIL receipt, and exits nonzero on mismatch. Output publication uses atomic
+create-or-verify semantics: an existing different artifact is never replaced.
+If domain execution fails after admission, the execute command returns `1` and
+publishes an equally immutable failure transport containing the failed Run,
+the concrete `DerivativeFailureResult` addressed by that Run, a stable failure
+code, and a hash of the bounded error message; raw exception text is not
+persisted. If a reproduction rerun now fails, it still publishes a FAIL receipt
+whose mismatch reason and reproduced failure-result hash can be compared with
+the expected successful execution.
+This is an E4 local executable reproduction path, not an E5 independent-site
+attestation.
 
 Registration atomically creates or verifies the complete reference graph.
 Evidence replay independently reparses the external bundle and compares every

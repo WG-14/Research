@@ -22,7 +22,7 @@ from market_research.application.adapter_contracts import (
     verify_hash_chained_jsonl_event,
     verify_segmented_hash_chained_jsonl_event,
 )
-from market_research.storage_io import append_jsonl
+from market_research.application.platform_contracts import append_jsonl
 
 from .models import WebAuditEvent
 from .security import sanitize_audit_details

@@ -111,9 +111,10 @@ def query_dataset_artifacts(
             manifest.start_ts <= query_as_of <= manifest.coverage_end_ts
         ):
             continue
-        if quality_status is not None and _quality_summary(manifest)[
-            "status"
-        ] != quality_status:
+        if (
+            quality_status is not None
+            and _quality_summary(manifest)["status"] != quality_status
+        ):
             continue
         selected.append(published)
     if detail_level == "technical" and len(selected) > _MAX_TECHNICAL_DATASETS:
@@ -221,7 +222,9 @@ def query_feature_definitions(
                 )
     except StrategyRegistryError as exc:
         if "unsupported_research_strategy" in str(exc):
-            raise ResearchExplorationQueryError("feature_strategy_filter_invalid") from exc
+            raise ResearchExplorationQueryError(
+                "feature_strategy_filter_invalid"
+            ) from exc
         raise ResearchExplorationQueryError("feature_registry_invalid") from exc
     return tuple(
         sorted(
@@ -267,9 +270,7 @@ def _discover_published_datasets(
     paths = sorted(
         path
         for path in root.rglob("artifact.manifest.json")
-        if not any(
-            part.startswith(".") and ".staging-" in part for part in path.parts
-        )
+        if not any(part.startswith(".") and ".staging-" in part for part in path.parts)
     )
     if len(paths) > _MAX_DISCOVERED_MANIFESTS:
         raise ResearchExplorationQueryError("dataset_registry_limit_exceeded")
@@ -280,7 +281,9 @@ def _discover_published_datasets(
         try:
             resolved.relative_to(root)
         except ValueError as exc:
-            raise ResearchExplorationQueryError("dataset_registry_outside_root") from exc
+            raise ResearchExplorationQueryError(
+                "dataset_registry_outside_root"
+            ) from exc
         try:
             manifest = load_artifact_manifest(resolved)
         except (ArtifactManifestError, OSError, ValueError) as exc:
@@ -315,9 +318,7 @@ def _dataset_record(
         "row_count": manifest.row_count,
         "artifact_manifest_hash": manifest.artifact_manifest_hash,
         "artifact_content_hash": manifest.content_hash,
-        "source_provenance_hash": (
-            manifest.source_provenance.provenance_manifest_hash
-        ),
+        "source_provenance_hash": (manifest.source_provenance.provenance_manifest_hash),
         "provider_ids": [item.provider_id for item in providers],
         "dataset_ids": [
             source.dataset_id for source in manifest.source_provenance.sources
@@ -502,7 +503,9 @@ def _quality_summary(manifest: ArtifactManifest) -> dict[str, Any]:
         source.acquisition_status for source in manifest.source_provenance.sources
     ]
     catalog_levels = [
-        manifest.source_provenance.source_catalog.resolve(source.provider_id).quality_level
+        manifest.source_provenance.source_catalog.resolve(
+            source.provider_id
+        ).quality_level
         for source in manifest.source_provenance.sources
     ]
     reasons: list[str] = []
@@ -589,7 +592,10 @@ def _raw_cleaned_comparison(lineage: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _latest_received_at(manifest: ArtifactManifest) -> datetime:
-    return max(_parse_datetime(source.received_at) for source in manifest.source_provenance.sources)
+    return max(
+        _parse_datetime(source.received_at)
+        for source in manifest.source_provenance.sources
+    )
 
 
 def _parse_datetime(value: str) -> datetime:
