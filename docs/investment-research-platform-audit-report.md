@@ -2,7 +2,7 @@
 
 기준 원문 SHA-256: `f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae`  
 실행 지시 SHA-256: `26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`  
-평가 대상: base commit `bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d` + 이 보고서에 결속된 working-tree assessment surface
+평가 대상: base commit `55316236669c0d7a0128fd081f67e7643e8a2fa6` + 이 보고서에 결속된 working-tree assessment surface
 
 ## 13.1 Executive Verdict
 
@@ -29,7 +29,7 @@
 | --- | --- |
 | 레포 이름 | market-research platform monorepo |
 | root | `/home/vorac/work/Research` |
-| commit / branch / dirty | `bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d` / `main` / true |
+| commit / branch / dirty | `55316236669c0d7a0128fd081f67e7643e8a2fa6` / `main` / true |
 | 기술 스택 | Python 3.12, uv workspace, pandas, Pydantic, Django, PostgreSQL/psycopg, SQLite |
 | 실행 진입점 | `scripts/platform`, `market-research`, Django portal, `research-ops` |
 | 테스트 | pytest, pytest-django, property/integration/boundary tests |
@@ -837,13 +837,13 @@ Final ResearchPackage sha256:814781…
   "score_cap": 84.0,
   "repository": {
     "root": "/home/vorac/work/Research",
-    "commit": "bfe1d93cbfdcaa9025e37cd1a5a40b8b4f4b773d",
+    "commit": "55316236669c0d7a0128fd081f67e7643e8a2fa6",
     "branch": "main",
     "dirty": true,
     "assessment_surface": {
       "schema_version": 2,
-      "file_count": 682,
-      "sha256": "11ca151c6ad7eae12c02170b185a161de3f64ddacd3ce0df0f9f5ec73430bbdd",
+      "file_count": 722,
+      "sha256": "5a99f090a084bb4389652afb837e6d257d55de92f58d5abaef26a5f7121052fc",
       "exclusions": [
         "directory:.git",
         "directory:.hypothesis",
@@ -1923,7 +1923,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": ".github/workflows/research-ci.yml",
-          "path_sha256": "cdfea2939d5f5c895628fdf63327ef59c7cdb16fa84717528010ba4d84c6132b",
+          "path_sha256": "e67124adafcac9d0ad1ca46d8d0cdc7a735715777ee686d09deaab185c9800a4",
           "symbol_or_lines": "same-state reproduction command in the CI contract",
           "test": "tests/test_research_reproduction_cli.py",
           "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
@@ -3622,7 +3622,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": ".github/workflows/research-ci.yml",
-          "path_sha256": "cdfea2939d5f5c895628fdf63327ef59c7cdb16fa84717528010ba4d84c6132b",
+          "path_sha256": "e67124adafcac9d0ad1ca46d8d0cdc7a735715777ee686d09deaab185c9800a4",
           "symbol_or_lines": "reproduction, boundary, and canonical audit CI jobs",
           "test": "tests/test_platform_completeness_runner.py",
           "test_sha256": "9b2386da16a3a380ea7306a76fc6e7a386b2db247de93864d950fd5b1b09474a",
@@ -4524,7 +4524,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "README.md",
-          "path_sha256": "ca8c2aeeeff8886bae0f1f7c6c3e457a9eeca3b6b79e9dbdb578afd19dcbc60b",
+          "path_sha256": "a9156947769829598d31f45a1215c8f631d0c525454054184759ed3feefd7e97",
           "symbol_or_lines": "locked setup, commands, external-root, and validation guide",
           "test": "tests/test_distribution_metadata.py",
           "test_sha256": "df094fe887e47e6abf2ed4128aa54a42ae36eda29aca8a73b7b895b34ed6af8a",

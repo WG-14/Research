@@ -276,6 +276,10 @@ jobs:
           uv run --no-sync python tools/update_reference_audit.py --check
           uv run --no-sync python tools/render_reference_audit_report.py --check
           scripts/platform verify-complete --validate-structure
+      - name: Validate the current 140-criterion multi-asset audit inventory
+        run: scripts/platform verify-multi-asset-audit --json
+      - name: Validate the final multi-asset audit result and report
+        run: scripts/platform verify-multi-asset-audit-result
       - name: Audit locked runtime dependencies
         run: |
           uv export --frozen --all-packages --no-dev --no-emit-workspace \

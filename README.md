@@ -58,6 +58,8 @@ scripts/platform compile
 scripts/platform docs-check
 scripts/platform verify-complete --help
 scripts/platform verify-product-scope --help
+scripts/platform verify-multi-asset-audit --json
+scripts/platform verify-multi-asset-audit-result
 scripts/platform audit
 scripts/platform build
 scripts/platform install-release --help
@@ -70,37 +72,37 @@ scripts/platform research --help
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
-`verify-complete` is bound to the canonical July 2026 investment-research
-platform audit by source and instruction SHA-256. It evaluates exactly 184
-A--J criteria and 12 fatal gates from the
-[canonical audit matrix](docs/investment-research-platform-audit.json). It
-fails closed when the matrix is malformed, any fatal gate fails or remains
-unverified, any Critical item is below M4, any criterion lacks verified
-evidence, or the weighted score is below 95. A narrative score never grants
-completion credit. CI uses `--validate-structure`; that option validates the
-criterion inventory without pretending that an incomplete platform is
-complete.
+`verify-multi-asset-audit` is bound to the current July 2026 spot, futures,
+options, and integrated-portfolio research rubric by source and instruction
+SHA-256. It validates exactly 140 A--N criteria, eight critical-failure gates,
+and five mandatory end-to-end scenarios in the
+[current audit matrix](docs/multi-asset-investment-research-audit-matrix.json).
+For this platform-completeness review, that matrix is the single evaluation
+authority. Its conservative baseline does not grant completion credit merely
+because a type, document, or isolated test exists.
 
-The complete human-readable findings are in the
-[canonical audit report](docs/investment-research-platform-audit-report.md),
-with the same assessment available as a
-[machine-readable result](docs/investment-research-platform-audit-result.json).
-Both outputs are regenerated deterministically and checked with the matrix in
-CI.
+The normalized, reviewable copies of the exact current
+[audit rubric](docs/multi-asset-investment-research-audit-rubric.md) and
+[execution instructions](docs/multi-asset-investment-research-audit-instructions.md)
+are hash-checked by the validator. Run the machine-readable check with:
 
-The normalized, reviewable copies of the exact
-[audit rubric](docs/investment-research-platform-audit-rubric.md) and
-[audit execution instructions](docs/investment-research-platform-audit-instructions.md)
-are hash-checked by the matrix generator. The matrix retains the SHA-256 of
-the original CRLF attachments as well as the normalized repository copies.
+```sh
+scripts/platform verify-multi-asset-audit --json
+```
 
-The older derivative/product expansion remains independently inspectable with
-`verify-product-scope`. Its
-[431-row full-scope matrix](docs/research-platform-full-scope-evaluation-matrix.json)
-and [durable review](docs/research-platform-full-scope-review.md) are retained
-as historical, product-specific evidence and are not the completion authority
-for the canonical 184-criterion audit. The 215-row matrix is earlier historical
-evidence.
+The previous 184-row A--J audit remains available through `verify-complete`,
+and the 431-row derivative/product expansion through `verify-product-scope`.
+Their matrices and reports are retained unchanged as historical evidence; they
+are not the completion authority for the current A--N review.
+
+The implemented common contracts and their fail-closed data flow are described
+in [multi-asset research contracts](docs/multi-asset-research.md).
+The conservative post-improvement assessment is available as the
+[140-criterion audit report](docs/multi-asset-investment-research-audit-report.md)
+and the corresponding
+[machine-readable result](docs/multi-asset-investment-research-audit-result.json).
+Both are generated deterministically and checked in CI with
+`verify-multi-asset-audit-result`.
 
 ## Research CLI
 

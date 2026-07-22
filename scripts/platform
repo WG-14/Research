@@ -113,7 +113,9 @@ case "${1:-}" in
     uv run --frozen --no-sync --package market-research mypy \
       --no-incremental --config-file pyproject.toml \
       tools/reference_audit.py tools/reference_audit_surface.py \
-      tools/update_reference_audit.py tools/render_reference_audit_report.py
+      tools/update_reference_audit.py tools/render_reference_audit_report.py \
+      tools/validate_multi_asset_audit_matrix.py \
+      tools/render_multi_asset_audit_report.py
     ;;
   compile)
     exec uv run --package market-research python -m compileall -q \
@@ -138,6 +140,16 @@ case "${1:-}" in
     shift
     exec uv run --frozen --no-sync --package market-research \
       python tools/platform_completeness.py "$@"
+    ;;
+  verify-multi-asset-audit)
+    shift
+    exec uv run --frozen --no-sync --package market-research \
+      python tools/validate_multi_asset_audit_matrix.py "$@"
+    ;;
+  verify-multi-asset-audit-result)
+    shift
+    exec uv run --frozen --no-sync --package market-research \
+      python tools/render_multi_asset_audit_report.py --check "$@"
     ;;
   audit)
     requirements="${TMPDIR:-/tmp}/research-platform-runtime-requirements.txt"
@@ -171,7 +183,7 @@ case "${1:-}" in
     exec uv run --frozen --package market-research market-research "$@"
     ;;
   *)
-    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|typecheck|compile|docs-check|verify-complete|verify-product-scope|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill|research}" >&2
+    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|typecheck|compile|docs-check|verify-complete|verify-product-scope|verify-multi-asset-audit|verify-multi-asset-audit-result|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill|research}" >&2
     exit 64
     ;;
 esac

@@ -1,0 +1,3323 @@
+{
+  "assessed_at": "2026-07-22",
+  "audit_id": "multi-asset-investment-research-final-2026-07-22",
+  "canonical_matrix_id": "multi-asset-investment-research-audit-2026-07-22",
+  "category_scores": {
+    "A": {
+      "complete_count": 1,
+      "criterion_count": 5,
+      "earned_atomic_points": 16,
+      "name": "전체 아키텍처 및 공통화·전문화",
+      "possible_atomic_points": 20,
+      "score_ratio": 0.8,
+      "weight": 6,
+      "weighted_score": 4.8
+    },
+    "B": {
+      "complete_count": 0,
+      "criterion_count": 9,
+      "earned_atomic_points": 26,
+      "name": "경제적 기초대상·상품 식별 및 관계 모델",
+      "possible_atomic_points": 36,
+      "score_ratio": 0.722222,
+      "weight": 6,
+      "weighted_score": 4.333333
+    },
+    "C": {
+      "complete_count": 1,
+      "criterion_count": 13,
+      "earned_atomic_points": 35,
+      "name": "데이터 계층·Point-in-Time·MarketState",
+      "possible_atomic_points": 52,
+      "score_ratio": 0.673077,
+      "weight": 12,
+      "weighted_score": 8.076923
+    },
+    "D": {
+      "complete_count": 1,
+      "criterion_count": 11,
+      "earned_atomic_points": 32,
+      "name": "현물 연구 엔진",
+      "possible_atomic_points": 44,
+      "score_ratio": 0.727273,
+      "weight": 8,
+      "weighted_score": 5.818182
+    },
+    "E": {
+      "complete_count": 2,
+      "criterion_count": 16,
+      "earned_atomic_points": 48,
+      "name": "선물 연구 엔진",
+      "possible_atomic_points": 64,
+      "score_ratio": 0.75,
+      "weight": 12,
+      "weighted_score": 9.0
+    },
+    "F": {
+      "complete_count": 3,
+      "criterion_count": 25,
+      "earned_atomic_points": 69,
+      "name": "옵션 연구 엔진",
+      "possible_atomic_points": 100,
+      "score_ratio": 0.69,
+      "weight": 16,
+      "weighted_score": 11.04
+    },
+    "G": {
+      "complete_count": 4,
+      "criterion_count": 6,
+      "earned_atomic_points": 22,
+      "name": "통합 경제적 노출 및 상품 관계",
+      "possible_atomic_points": 24,
+      "score_ratio": 0.916667,
+      "weight": 6,
+      "weighted_score": 5.5
+    },
+    "H": {
+      "complete_count": 2,
+      "criterion_count": 7,
+      "earned_atomic_points": 21,
+      "name": "가설·전략 표현·상품 선택 흐름",
+      "possible_atomic_points": 28,
+      "score_ratio": 0.75,
+      "weight": 6,
+      "weighted_score": 4.5
+    },
+    "I": {
+      "complete_count": 0,
+      "criterion_count": 7,
+      "earned_atomic_points": 18,
+      "name": "멀티레그 전략",
+      "possible_atomic_points": 28,
+      "score_ratio": 0.642857,
+      "weight": 5,
+      "weighted_score": 3.214286
+    },
+    "J": {
+      "complete_count": 2,
+      "criterion_count": 8,
+      "earned_atomic_points": 26,
+      "name": "공통 포트폴리오 회계",
+      "possible_atomic_points": 32,
+      "score_ratio": 0.8125,
+      "weight": 6,
+      "weighted_score": 4.875
+    },
+    "K": {
+      "complete_count": 0,
+      "criterion_count": 8,
+      "earned_atomic_points": 23,
+      "name": "거래비용·시장충격·유동성",
+      "possible_atomic_points": 32,
+      "score_ratio": 0.71875,
+      "weight": 5,
+      "weighted_score": 3.59375
+    },
+    "L": {
+      "complete_count": 0,
+      "criterion_count": 6,
+      "earned_atomic_points": 14,
+      "name": "공통 시나리오 및 스트레스",
+      "possible_atomic_points": 24,
+      "score_ratio": 0.583333,
+      "weight": 4,
+      "weighted_score": 2.333333
+    },
+    "M": {
+      "complete_count": 1,
+      "criterion_count": 10,
+      "earned_atomic_points": 30,
+      "name": "연구 플랫폼 경계 및 금지 구조",
+      "possible_atomic_points": 40,
+      "score_ratio": 0.75,
+      "weight": 4,
+      "weighted_score": 3.0
+    },
+    "N": {
+      "complete_count": 0,
+      "criterion_count": 9,
+      "earned_atomic_points": 24,
+      "name": "검증·재현성·연구 산출물",
+      "possible_atomic_points": 36,
+      "score_ratio": 0.666667,
+      "weight": 4,
+      "weighted_score": 2.666667
+    }
+  },
+  "complete": false,
+  "criteria": [
+    {
+      "area": "A",
+      "completion_condition": "원문 A-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 계약과 상품별 어댑터 경계가 실제 호출 경로에서 사용되지만 일부 기존 제품 모델과의 중복은 남아 있다.",
+      "id": "A-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry",
+        "docs/multi-asset-research.md::Responsibility map"
+      ],
+      "priority": "P3",
+      "remaining_gap": "기존 제품 계약과 공통 계약의 단일 권위화 및 전 호출부 migration 증거가 더 필요하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공통 연구 코어"
+    },
+    {
+      "area": "A",
+      "completion_condition": "원문 A-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 계약과 상품별 어댑터 경계가 실제 호출 경로에서 사용되지만 일부 기존 제품 모델과의 중복은 남아 있다.",
+      "id": "A-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry",
+        "docs/multi-asset-research.md::Responsibility map"
+      ],
+      "priority": "P3",
+      "remaining_gap": "기존 제품 계약과 공통 계약의 단일 권위화 및 전 호출부 migration 증거가 더 필요하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "상품별 전문 엔진"
+    },
+    {
+      "area": "A",
+      "completion_condition": "원문 A-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 계약과 상품별 어댑터 경계가 실제 호출 경로에서 사용되지만 일부 기존 제품 모델과의 중복은 남아 있다.",
+      "id": "A-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry",
+        "docs/multi-asset-research.md::Responsibility map"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "계층 방향과 의존성"
+    },
+    {
+      "area": "A",
+      "completion_condition": "원문 A-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 계약과 상품별 어댑터 경계가 실제 호출 경로에서 사용되지만 일부 기존 제품 모델과의 중복은 남아 있다.",
+      "id": "A-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry",
+        "docs/multi-asset-research.md::Responsibility map"
+      ],
+      "priority": "P3",
+      "remaining_gap": "기존 제품 계약과 공통 계약의 단일 권위화 및 전 호출부 migration 증거가 더 필요하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "구성 가능성과 대체 가능성"
+    },
+    {
+      "area": "A",
+      "completion_condition": "원문 A-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 계약과 상품별 어댑터 경계가 실제 호출 경로에서 사용되지만 일부 기존 제품 모델과의 중복은 남아 있다.",
+      "id": "A-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry",
+        "docs/multi-asset-research.md::Responsibility map"
+      ],
+      "priority": "P3",
+      "remaining_gap": "기존 제품 계약과 공통 계약의 단일 권위화 및 전 호출부 migration 증거가 더 필요하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "종단 간 연구 실행 경로"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`EconomicUnderlying`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P2",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`Issuer`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`Instrument`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`Listing`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`ContractSpecification`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`SymbolAlias`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`TradingCalendar`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`LifecycleEvent`"
+    },
+    {
+      "area": "B",
+      "completion_condition": "원문 B-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
+      "id": "B-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying/Instrument/InstrumentRelationship",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry.resolve_*"
+      ],
+      "priority": "P3",
+      "remaining_gap": "identifier mapping의 장기 revision·다시장 symbology·복합 deliverable 범위를 넓혀야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "상품 관계 그래프"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P1",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "원천 데이터 계층"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P1",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "정규화 데이터 계층"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P1",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연구 파생 데이터 계층"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P1",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "데이터 계보"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "다중 시간 의미론"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "유효시점과 지식시점의 분리"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "시점 기준 조회"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "미래정보 방지 테스트"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "스냅샷과 버전 고정"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-10의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-10",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "MarketState 구성요소"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-11의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-11",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "시간 동기화"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-12의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-12",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P1",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "일관성 검증"
+    },
+    {
+      "area": "C",
+      "completion_condition": "원문 C-13의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "원천/정규화/파생, 다섯 시계, PIT 저장소와 동기화 MarketState가 구현되었으나 공급자별 실제 데이터 계약 범위는 제한적이다.",
+      "id": "C-13",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore",
+        "src/market_research/research/multi_asset/market_state.py::MarketState"
+      ],
+      "priority": "P3",
+      "remaining_gap": "캘린더·단위 변환·provider quality adapter와 실제 스냅샷 E5 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_domain.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "불변성과 버전"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현물 상품 마스터"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P1",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "기업행위 이벤트 모델"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "기업행위의 포지션·현금 반영"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "가격 유형 분리"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "생존편향 없는 유니버스"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`UniverseMembership`"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공매도 및 대차 모델"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "대차 정보 부족 시 시나리오"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P1",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현물 연구 기능"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-10의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-10",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현물 백테스트 흐름"
+    },
+    {
+      "area": "D",
+      "completion_condition": "원문 D-11의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "PIT 유니버스, 기업행위, 배당 record-date entitlement와 대차 제약이 원장으로 연결되지만 전 종목 관행을 포괄하지 않는다.",
+      "id": "D-11",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/spot.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application"
+      ],
+      "priority": "P3",
+      "remaining_gap": "rights/merger/spinoff 전 경제조건, 실 borrow recall 경로와 전 asset convention이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_spot.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현물 불변식 테스트"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선물 계약 마스터"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "계약규격의 데이터화"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "개별 계약 데이터"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "가격 유형 분리"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "기간구조 스냅샷"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "기간구조 특징"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선물 연구 유형"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연속선물 생성 방식"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P1",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연속선물 메타데이터"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-10의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-10",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "신호와 거래 가능한 계약의 분리"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-11의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-11",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "실제 계약 선택"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-12의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-12",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "롤 엔진"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-13의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-13",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "증거금 및 담보"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-14의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-14",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "계약 수명주기"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-15의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-15",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P1",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "실물인수도·인도 옵션 확장"
+    },
+    {
+      "area": "E",
+      "completion_condition": "원문 E-16의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연속계열 신호와 실제 계약 거래가 분리되고 롤·정산·증거금이 대사되지만 인수도/CTD 범위는 제한적이다.",
+      "id": "E-16",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/futures_path.py",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement"
+      ],
+      "priority": "P3",
+      "remaining_gap": "physical delivery, notice, CTD, exchange별 margin waterfall과 roll-yield 정책의 완전성이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_futures_path.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선물 불변식 테스트"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 상품 계층"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 계약 마스터"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선물옵션 관계"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 체인 스냅샷"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 호가 필드"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 가격 품질 정책"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 데이터 품질 검사"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "정제 파이프라인"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선도가격 추정"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-10의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-10",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "내재변동성 계산"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-11의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-11",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "그릭 계산"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-12의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-12",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`OptionAnalytics`"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-13의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-13",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "변동성 표면 원시 포인트"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-14의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-14",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "변동성 표면 좌표계"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-15의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-15",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "변동성 표면 특징"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-16의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-16",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "표면 적합 및 무차익 검사"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-17의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-17",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "가격모형 라이브러리"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-18의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E5",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-18",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공통 가격모형 인터페이스"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-19의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-19",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 계약 선택"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-20의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-20",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "델타 기반 선택의 올바른 구현"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-21의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-21",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 중간경로 재평가"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-22의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-22",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "행사·배정·만기"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-23의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-23",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P1",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "미국형 옵션"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-24의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-24",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 손익 귀속"
+    },
+    {
+      "area": "F",
+      "completion_condition": "원문 F-25의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "실제 체인 선택, 정제, 모델 IV·Greek, 경로 재평가와 수명주기가 연결되지만 표면·미국형 모델 범위는 제한적이다.",
+      "id": "F-25",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/option_path.py",
+        "src/market_research/research/multi_asset/option_pricing.py::BlackScholesOptionAnalyticsFactory"
+      ],
+      "priority": "P3",
+      "remaining_gap": "무차익 표면 보정, American/exotic model library, 전 consumer의 analytics factory 강제가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_option_path.py; tests/test_multi_asset_option_pricing.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 불변식 및 검증 테스트"
+    },
+    {
+      "area": "G",
+      "completion_condition": "원문 G-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "세 상품을 동일 경제적 기초대상 안에서만 상쇄하는 공통 노출 벡터와 생산 valuation adapter가 사용된다.",
+      "id": "G-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "src/market_research/research/multi_asset/exposure.py::ProductCatalog"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_exposure_engine.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공통 포지션 표현"
+    },
+    {
+      "area": "G",
+      "completion_condition": "원문 G-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "세 상품을 동일 경제적 기초대상 안에서만 상쇄하는 공통 노출 벡터와 생산 valuation adapter가 사용된다.",
+      "id": "G-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "src/market_research/research/multi_asset/exposure.py::ProductCatalog"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_exposure_engine.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공통 노출 벡터"
+    },
+    {
+      "area": "G",
+      "completion_condition": "원문 G-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "세 상품을 동일 경제적 기초대상 안에서만 상쇄하는 공통 노출 벡터와 생산 valuation adapter가 사용된다.",
+      "id": "G-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "src/market_research/research/multi_asset/exposure.py::ProductCatalog"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_exposure_engine.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "계약 승수와 통화"
+    },
+    {
+      "area": "G",
+      "completion_condition": "원문 G-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "세 상품을 동일 경제적 기초대상 안에서만 상쇄하는 공통 노출 벡터와 생산 valuation adapter가 사용된다.",
+      "id": "G-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "src/market_research/research/multi_asset/exposure.py::ProductCatalog"
+      ],
+      "priority": "P3",
+      "remaining_gap": "고차 Greek·factor/tenor bucket과 복합 관계의 전 범위 상쇄 정책이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_exposure_engine.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "위험 중복과 상쇄"
+    },
+    {
+      "area": "G",
+      "completion_condition": "원문 G-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "세 상품을 동일 경제적 기초대상 안에서만 상쇄하는 공통 노출 벡터와 생산 valuation adapter가 사용된다.",
+      "id": "G-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "src/market_research/research/multi_asset/exposure.py::ProductCatalog"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_exposure_engine.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "시점별 노출 재평가"
+    },
+    {
+      "area": "G",
+      "completion_condition": "원문 G-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "세 상품을 동일 경제적 기초대상 안에서만 상쇄하는 공통 노출 벡터와 생산 valuation adapter가 사용된다.",
+      "id": "G-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "src/market_research/research/multi_asset/exposure.py::ProductCatalog"
+      ],
+      "priority": "P3",
+      "remaining_gap": "고차 Greek·factor/tenor bucket과 복합 관계의 전 범위 상쇄 정책이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_exposure_engine.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "통합 노출 테스트"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E5",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "경제적 가설 객체"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E5",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "예상 시장상태 또는 분포"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "P3",
+      "remaining_gap": "목표 Greek/notional을 제약 하에서 공동 최적화하고 선택 실패를 가설 반증으로 환류해야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "표현수단 후보 생성"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "P3",
+      "remaining_gap": "목표 Greek/notional을 제약 하에서 공동 최적화하고 선택 실패를 가설 반증으로 환류해야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "`Instrument Expression Engine`"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "P3",
+      "remaining_gap": "목표 Greek/notional을 제약 하에서 공동 최적화하고 선택 실패를 가설 반증으로 환류해야 한다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "표현 방식 비교 기준"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "P1",
+      "remaining_gap": "목표 Greek/notional을 제약 하에서 공동 최적화하고 선택 실패를 가설 반증으로 환류해야 한다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "계약 선택과 수량 산정"
+    },
+    {
+      "area": "H",
+      "completion_condition": "원문 H-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "가설·예상분포·표현 후보·실제 상품 선택은 분리되나 목표 Greek 기반 sizing과 제약 최적화는 부분적이다.",
+      "id": "H-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis"
+      ],
+      "priority": "P1",
+      "remaining_gap": "목표 Greek/notional을 제약 하에서 공동 최적화하고 선택 실패를 가설 반증으로 환류해야 한다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "실패 조건과 가설 반증"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P3",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "레그 기반 표현"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P3",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "레그별 선택 규칙"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P1",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "전략 수준 목표"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P3",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "체결 모드"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P1",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "레그 위험과 체결 불확실성"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P1",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "리밸런싱 및 청산"
+    },
+    {
+      "area": "I",
+      "completion_condition": "원문 I-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "레그·체결모드·부분체결 위험은 표현되지만 전략 목표와 재조정의 전체 수명주기 최적화는 부분적이다.",
+      "id": "I-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+        "src/market_research/research/derivatives/options.py::MultiLegOrder"
+      ],
+      "priority": "P3",
+      "remaining_gap": "전략 수준 목표, 비동시 체결 후 unwind, 만기별 재조정 정책의 종단간 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_expression.py; tests/test_options_stress_execution.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "멀티레그 테스트"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "통합 원장"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "P3",
+      "remaining_gap": "tax lot, 전 통화 collateral, physical delivery 및 default waterfall 회계 범위가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "복식 또는 불변식 기반 회계"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "P3",
+      "remaining_gap": "tax lot, 전 통화 collateral, physical delivery 및 default waterfall 회계 범위가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현물 회계"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "P3",
+      "remaining_gap": "tax lot, 전 통화 collateral, physical delivery 및 default waterfall 회계 범위가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선물 회계"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "P3",
+      "remaining_gap": "tax lot, 전 통화 collateral, physical delivery 및 default waterfall 회계 범위가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 회계"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "P3",
+      "remaining_gap": "tax lot, 전 통화 collateral, physical delivery 및 default waterfall 회계 범위가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현금·담보·가용자본"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E6",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "손익 대사"
+    },
+    {
+      "area": "J",
+      "completion_condition": "원문 J-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "단일 append-only 원장, 고정 외부자금 원금, PIT FX 재평가와 독립 보고 대사가 실제 원장 이력에서 계산된다.",
+      "id": "J-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation.from_ledger_projection"
+      ],
+      "priority": "P3",
+      "remaining_gap": "tax lot, 전 통화 collateral, physical delivery 및 default waterfall 회계 범위가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_accounting_reconciliation.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "회계 테스트"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공통 비용 인터페이스"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현물 비용"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "선물 비용"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 비용"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "시장충격"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "미체결과 거래 가능성"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "용량 분석"
+    },
+    {
+      "area": "K",
+      "completion_condition": "원문 K-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 비용, 제곱근 충격 calibration, 미체결과 용량 sweep이 있으나 실 order-book calibration은 없다.",
+      "id": "K-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity"
+      ],
+      "priority": "P2",
+      "remaining_gap": "실 order-book/ADV calibration과 다양한 시장 국면의 용량 외삽 검증이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_cost_capacity.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "비용 민감도"
+    },
+    {
+      "area": "L",
+      "completion_condition": "원문 L-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 충격과 다기간 경로 스트레스가 가격·FX·변동성·금리·유동성·증거금을 결합하지만 경제 제약 생성은 제한적이다.",
+      "id": "L-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathStressEngine"
+      ],
+      "priority": "P2",
+      "remaining_gap": "무차익 제약이 있는 shock 생성과 역사적/확률적 경로 calibration이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_path_scenarios.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "시장상태 충격 방식"
+    },
+    {
+      "area": "L",
+      "completion_condition": "원문 L-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 충격과 다기간 경로 스트레스가 가격·FX·변동성·금리·유동성·증거금을 결합하지만 경제 제약 생성은 제한적이다.",
+      "id": "L-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathStressEngine"
+      ],
+      "priority": "P2",
+      "remaining_gap": "무차익 제약이 있는 shock 생성과 역사적/확률적 경로 calibration이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_path_scenarios.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "지원 충격"
+    },
+    {
+      "area": "L",
+      "completion_condition": "원문 L-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 충격과 다기간 경로 스트레스가 가격·FX·변동성·금리·유동성·증거금을 결합하지만 경제 제약 생성은 제한적이다.",
+      "id": "L-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathStressEngine"
+      ],
+      "priority": "P2",
+      "remaining_gap": "무차익 제약이 있는 shock 생성과 역사적/확률적 경로 calibration이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_path_scenarios.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "복합 시나리오"
+    },
+    {
+      "area": "L",
+      "completion_condition": "원문 L-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 충격과 다기간 경로 스트레스가 가격·FX·변동성·금리·유동성·증거금을 결합하지만 경제 제약 생성은 제한적이다.",
+      "id": "L-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathStressEngine"
+      ],
+      "priority": "P2",
+      "remaining_gap": "무차익 제약이 있는 shock 생성과 역사적/확률적 경로 calibration이 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_path_scenarios.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "경제적 일관성"
+    },
+    {
+      "area": "L",
+      "completion_condition": "원문 L-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 충격과 다기간 경로 스트레스가 가격·FX·변동성·금리·유동성·증거금을 결합하지만 경제 제약 생성은 제한적이다.",
+      "id": "L-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathStressEngine"
+      ],
+      "priority": "P2",
+      "remaining_gap": "무차익 제약이 있는 shock 생성과 역사적/확률적 경로 calibration이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_path_scenarios.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "경로 의존 스트레스"
+    },
+    {
+      "area": "L",
+      "completion_condition": "원문 L-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "공통 충격과 다기간 경로 스트레스가 가격·FX·변동성·금리·유동성·증거금을 결합하지만 경제 제약 생성은 제한적이다.",
+      "id": "L-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathStressEngine"
+      ],
+      "priority": "P2",
+      "remaining_gap": "무차익 제약이 있는 shock 생성과 역사적/확률적 경로 calibration이 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_path_scenarios.py; tests/test_multi_asset_portfolio.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "스트레스 산출물"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E5",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "-",
+      "remaining_gap": "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다.",
+      "score": 4,
+      "status": "COMPLETE",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연구와 실거래 분리"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "단일 `price` 필드 남용 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연속선물 거래 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "옵션 만기 손익만 평가하는 구조 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P2",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "공급사 IV·그릭 무비판 수용 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "현재 상장종목만 사용하는 구조 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "상품별 분리 원장 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "신호와 상품 선택 혼동 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연구 가정 하드코딩 금지"
+    },
+    {
+      "area": "M",
+      "completion_condition": "원문 M-10의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "연구/실거래/운영 경계와 금지 import가 자동 검사되며 실제 주문·계정·네트워크 수집 경로는 없다.",
+      "id": "M-10",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/__init__.py",
+        "docs/multi-asset-research.md::Repository and runtime boundary"
+      ],
+      "priority": "P3",
+      "remaining_gap": "새 모듈 증가 시 동일 정적 경계 규칙을 manifest 기반으로 자동 확장할 필요가 있다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_monorepo_architecture.py; tests/test_repository_research_only_boundary.py",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "문서와 실제 구현 불일치"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-01의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-01",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P3",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "연구 실험 정의"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-02의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-02",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P3",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "실행 매니페스트"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-03의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-03",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P3",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "결정성"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-04의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-04",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P1",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "데이터·모델 카드"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-05의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-05",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P1",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "검증된 연구 패키지"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-06의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-06",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P3",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "산출물과 근거의 연결"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-07의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E4 이상 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-07",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P3",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "통계 및 강건성 검증"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-08의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-08",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P3",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 3,
+      "status": "SUBSTANTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "회귀 및 golden test"
+    },
+    {
+      "area": "N",
+      "completion_condition": "원문 N-09의 모든 필수 항목이 구현·통합되고 대표 및 실패 경로가 자동 검증되며, E5 또는 E6 증거가 보존되고 관련 치명적 게이트를 유발하는 우회 경로가 없어야 한다.",
+      "evidence_level": "E4",
+      "finding": "T-01~T-05, 반복 hash 비교, 외부 atomic 산출물과 회계 receipt가 연결되지만 완전한 model/data card 패키지는 아니다.",
+      "id": "N-09",
+      "implementation_evidence": [
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/study.py::build_validated_multi_asset_study"
+      ],
+      "priority": "P1",
+      "remaining_gap": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
+      "score": 2,
+      "status": "PARTIAL",
+      "test_execution_evidence": [
+        "tests/test_multi_asset_required_scenarios_e2e.py::test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidence",
+        "focused multi-asset: 109 passed; derivative/boundary: 232 passed"
+      ],
+      "title": "오류와 품질 플래그 전파"
+    }
+  ],
+  "critical_failures": [
+    {
+      "evidence": "typed EconomicUnderlying/Instrument/Listing/relationship registry와 교차-ID 음성 테스트",
+      "id": "CF-01",
+      "status": "PASS"
+    },
+    {
+      "evidence": "knowledge_at 기준 bitemporal 조회와 late revision 차단 테스트",
+      "id": "CF-02",
+      "status": "PASS"
+    },
+    {
+      "evidence": "continuous signal trace와 actual contract roll plan의 타입 분리 및 거부 테스트",
+      "id": "CF-03",
+      "status": "PASS"
+    },
+    {
+      "evidence": "옵션 체인→모델 analytics→경로 mark→행사/만기→원장 E2E",
+      "id": "CF-04",
+      "status": "PASS"
+    },
+    {
+      "evidence": "spot/future/option이 하나의 UnifiedPortfolioLedger와 report receipt로 대사",
+      "id": "CF-05",
+      "status": "PASS"
+    },
+    {
+      "evidence": "RAW/NORMALIZED/DERIVED layer 및 DataLineage hash binding",
+      "id": "CF-06",
+      "status": "PASS"
+    },
+    {
+      "evidence": "동일 연구 2회 object/hash 비교와 atomic create-or-verify",
+      "id": "CF-07",
+      "status": "PASS"
+    },
+    {
+      "evidence": "offline Research import/boundary tests; account/order/network 기능 없음",
+      "id": "CF-08",
+      "status": "PASS"
+    }
+  ],
+  "end_to_end_scenarios": [
+    {
+      "artifact": "hash-bound StudyScenarioEvidence + external atomic study/report",
+      "command": "pytest -q -s -p no:cacheprovider tests/test_multi_asset_required_scenarios_e2e.py",
+      "evidence_level": "E6",
+      "gap": "fixture 범위 밖 시장별 기업행위 convention",
+      "id": "T-01",
+      "name": "현물",
+      "result": "PASS",
+      "score": 4,
+      "status": "COMPLETE"
+    },
+    {
+      "artifact": "actual-contract signal/roll/settlement/ledger evidence",
+      "command": "pytest -q -s -p no:cacheprovider tests/test_multi_asset_required_scenarios_e2e.py",
+      "evidence_level": "E6",
+      "gap": "physical delivery/CTD 실데이터",
+      "id": "T-02",
+      "name": "선물",
+      "result": "PASS",
+      "score": 4,
+      "status": "COMPLETE"
+    },
+    {
+      "artifact": "factory analytics/path/lifecycle/attribution evidence",
+      "command": "pytest -q -s -p no:cacheprovider tests/test_multi_asset_required_scenarios_e2e.py",
+      "evidence_level": "E6",
+      "gap": "전 model/surface 범위",
+      "id": "T-03",
+      "name": "옵션",
+      "result": "PASS",
+      "score": 4,
+      "status": "COMPLETE"
+    },
+    {
+      "artifact": "common ledger/exposure/scenario/report reconciliation receipt",
+      "command": "pytest -q -s -p no:cacheprovider tests/test_multi_asset_required_scenarios_e2e.py",
+      "evidence_level": "E6",
+      "gap": "복수 전략 형태의 광범위한 표본",
+      "id": "T-04",
+      "name": "통합",
+      "result": "PASS",
+      "score": 4,
+      "status": "COMPLETE"
+    },
+    {
+      "artifact": "2-run object hashes and immutable publication receipt",
+      "command": "pytest -q -s -p no:cacheprovider tests/test_multi_asset_required_scenarios_e2e.py",
+      "evidence_level": "E6",
+      "gap": "독립 cold-host 재실행",
+      "id": "T-05",
+      "name": "재현성",
+      "result": "PASS",
+      "score": 4,
+      "status": "COMPLETE"
+    }
+  ],
+  "evaluated_branch": "main",
+  "evaluated_commit": "55316236669c0d7a0128fd081f67e7643e8a2fa6",
+  "failed_command_attempts": [
+    {
+      "cause": "존재하지 않는 selector를 사용한 검사 명령 오류",
+      "command": "pytest tests/test_boundary_enforcement.py",
+      "exit": "4",
+      "resolution": "실제 architecture/boundary 파일 7개를 찾아 232개 focused 회귀에 포함"
+    },
+    {
+      "cause": "존재하지 않는 selector를 사용한 검사 명령 오류",
+      "command": "pytest tests/test_option_models.py",
+      "exit": "4",
+      "resolution": "test_options_derivative_research.py와 신규 option pricing/path 테스트로 교정"
+    },
+    {
+      "cause": "독립 회계 API 전환 중 9 failure/1 setup error 및 미래 quote보다 이른 fixture settlement",
+      "command": "intermediate all multi-asset run",
+      "exit": "1",
+      "resolution": "모든 caller를 ledger factory로 migration하고 settlement 시각을 causal하게 교정; 이후 109 PASS"
+    },
+    {
+      "cause": "루트 pytest 설정이 internal-web의 DJANGO_SETTINGS_MODULE을 로드하지 않는 배포별 설정 충돌",
+      "command": "pytest --collect-only tests apps/internal_web/tests services/research_operations/tests",
+      "exit": "4",
+      "resolution": "각 distribution 자체 pyproject 설정으로 재실행하여 Core 1478, Web 198, Operations 138 collection PASS"
+    },
+    {
+      "cause": "accounting.py 1개 파일 formatting drift",
+      "command": "ruff format --check multi_asset",
+      "exit": "1",
+      "resolution": "ruff format 적용 후 check PASS"
+    },
+    {
+      "cause": "기존 테스트 전반의 structural Protocol annotation 16건까지 범위를 확장",
+      "command": "mypy --strict portfolio.py test_multi_asset_portfolio.py",
+      "exit": "1",
+      "resolution": "신규 lifecycle Protocol을 read-only property로 교정하고 production package strict mypy 및 전체 platform typecheck PASS"
+    },
+    {
+      "cause": "dynamic JSON 검증 분기의 type narrowing과 보고서 tuple loop 변수 재사용 오류 55건",
+      "command": "mypy --strict tools/validate_multi_asset_audit_matrix.py tools/render_multi_asset_audit_report.py",
+      "exit": "1",
+      "resolution": "NoReturn/TypedDict 기반 좁히기와 명시 loop 변수로 수정; 2개 도구 strict mypy PASS"
+    }
+  ],
+  "final_score": 72.751474,
+  "grade": "C",
+  "initial_score": 47.003831,
+  "iteration_count": 10,
+  "iterations": [
+    {
+      "diagnosis": "기준선 47.003831/D, CF-01·04·05 발동",
+      "exit": "공통 계약이 선행되어야 함",
+      "implementation": "140행 matrix와 fail-closed source validator",
+      "iteration": "1",
+      "root_cause": "상품별 모델에 공통 정체성·상태·원장이 없음",
+      "validation": "matrix 140/8/5 및 source hash 확인"
+    },
+    {
+      "diagnosis": "상품 ID와 시간 의미가 문자열/현재값에 의존",
+      "exit": "CF-01/02/06 구조 해소",
+      "implementation": "typed registry, bitemporal layers, immutable MarketState",
+      "iteration": "2",
+      "root_cause": "경제적 기초대상과 거래상품, valid/knowledge time의 공통 권위 부재",
+      "validation": "late revision·FX ordering·reciprocal pair 음성 테스트"
+    },
+    {
+      "diagnosis": "현물 생존편향·배당 entitlement·borrow binding 공백",
+      "exit": "지원 범위 내 현물 causal path 확보",
+      "implementation": "PIT universe, record-date entitlement, revisioned CA/borrow",
+      "iteration": "3",
+      "root_cause": "현재 book을 과거 권리와 혼용",
+      "validation": "중복 membership·late knowledge·position change 회귀 테스트"
+    },
+    {
+      "diagnosis": "연속선물 신호와 실제 roll/settlement 증거 연결 부족",
+      "exit": "CF-03 해소",
+      "implementation": "actual contract reference, curve, exposure-preserving roll, settlement reconciliation",
+      "iteration": "4",
+      "root_cause": "signal series와 tradable contract lifecycle 혼합",
+      "validation": "forged price/multiplier/quantity/time 음성 테스트"
+    },
+    {
+      "diagnosis": "옵션이 supplier Greek 또는 payoff-only 경로로 축소될 위험",
+      "exit": "CF-04 해소",
+      "implementation": "cleaner, model delta selection, pricing adapter, path attribution, lifecycle adapter",
+      "iteration": "5",
+      "root_cause": "체인·모델·경로·수명주기 증거의 단절",
+      "validation": "quote/model/time/hash/lifecycle 위조 음성 테스트"
+    },
+    {
+      "diagnosis": "가설·표현·세 상품 노출·충격의 공통 비교 부재",
+      "exit": "공통 노출 경로 확보",
+      "implementation": "expression engine, production valuation adapters, same-underlying offset, joint shock",
+      "iteration": "6",
+      "root_cause": "상품별 nominal을 경제적 기초대상 없이 합산",
+      "validation": "cross-underlying 상쇄 거부와 invariant 테스트"
+    },
+    {
+      "diagnosis": "필수 시나리오가 개별 단위 테스트로 흩어짐",
+      "exit": "CF-07 해소",
+      "implementation": "T-01~T-05 trace, repeat receipt, external atomic publisher",
+      "iteration": "7",
+      "root_cause": "data→artifact 전체 evidence binding 부재",
+      "validation": "실제 객체 2회 실행과 create-or-verify"
+    },
+    {
+      "diagnosis": "비선형 비용·용량·경로 의존 stress가 얕음",
+      "exit": "K/L 점수 승격, calibration 범위는 잔존",
+      "implementation": "calibrated square-root impact, capacity sweep, multi-step path stress",
+      "iteration": "8",
+      "root_cause": "단일 시점 선형 가정",
+      "validation": "결정적 sweep, drawdown/funding/breach hash-chain 테스트"
+    },
+    {
+      "diagnosis": "FX 순서·외부자금 current-FX·self-certified receipt 등 반례 발견",
+      "exit": "CF-05 회계 반례 해소",
+      "implementation": "canonical FX, fixed funding principal, factory-only ledger/report reconciliation",
+      "iteration": "9",
+      "root_cause": "계산 결과를 독립 원장 이력 대신 호출자 합계로 신뢰",
+      "validation": "EUR 100@1.10→1.20 = principal110/NAV120/FX P&L10 및 replace 위조 거부"
+    },
+    {
+      "diagnosis": "roll/option residual·lifecycle caller spoof·production analytics E2E 공백",
+      "exit": "P0/CF 없음; 33 PARTIAL·90 SUBSTANTIAL 때문에 최대 회차에서 엄격 NO",
+      "implementation": "roll leg 재계산, option residual policy, position-bound lifecycle, analytics factory E2E",
+      "iteration": "10",
+      "root_cause": "해시 존재만 검사하고 경제 수치를 원천 객체에서 재계산하지 않음",
+      "validation": "109 multi-asset + 232 derivative/boundary focused PASS"
+    }
+  ],
+  "schema_version": 1,
+  "score_improvement": 25.747643,
+  "status_counts": {
+    "COMPLETE": 17,
+    "PARTIAL": 33,
+    "SUBSTANTIAL": 90
+  },
+  "strict_verdict": "NO — 완전 충족 아님",
+  "summary": {
+    "category_scores": {
+      "A": {
+        "score_ratio": 0.8,
+        "weight": 6,
+        "weighted_score": 4.8
+      },
+      "B": {
+        "score_ratio": 0.722222,
+        "weight": 6,
+        "weighted_score": 4.333333
+      },
+      "C": {
+        "score_ratio": 0.673077,
+        "weight": 12,
+        "weighted_score": 8.076923
+      },
+      "D": {
+        "score_ratio": 0.727273,
+        "weight": 8,
+        "weighted_score": 5.818182
+      },
+      "E": {
+        "score_ratio": 0.75,
+        "weight": 12,
+        "weighted_score": 9.0
+      },
+      "F": {
+        "score_ratio": 0.69,
+        "weight": 16,
+        "weighted_score": 11.04
+      },
+      "G": {
+        "score_ratio": 0.916667,
+        "weight": 6,
+        "weighted_score": 5.5
+      },
+      "H": {
+        "score_ratio": 0.75,
+        "weight": 6,
+        "weighted_score": 4.5
+      },
+      "I": {
+        "score_ratio": 0.642857,
+        "weight": 5,
+        "weighted_score": 3.214286
+      },
+      "J": {
+        "score_ratio": 0.8125,
+        "weight": 6,
+        "weighted_score": 4.875
+      },
+      "K": {
+        "score_ratio": 0.71875,
+        "weight": 5,
+        "weighted_score": 3.59375
+      },
+      "L": {
+        "score_ratio": 0.583333,
+        "weight": 4,
+        "weighted_score": 2.333333
+      },
+      "M": {
+        "score_ratio": 0.75,
+        "weight": 4,
+        "weighted_score": 3.0
+      },
+      "N": {
+        "score_ratio": 0.666667,
+        "weight": 4,
+        "weighted_score": 2.666667
+      }
+    },
+    "complete": false,
+    "critical_failures": [],
+    "end_to_end_tests": {
+      "futures": "pass",
+      "multi_leg": "pass",
+      "options": "pass",
+      "reproducibility": "pass",
+      "spot": "pass"
+    },
+    "evaluated_commit": "55316236669c0d7a0128fd081f67e7643e8a2fa6",
+    "evidence_confidence": "high",
+    "grade": "C",
+    "score": 72.751474,
+    "top_p0_gaps": [],
+    "top_p1_gaps": [
+      "C-01~04 실제 provider/calendar/unit normalization 범위",
+      "D-02/D-09 전 기업행위·borrow recall convention",
+      "E-09/E-15 physical delivery·CTD·roll-yield policy",
+      "F-05~17 표면 무차익 보정과 American/exotic model 범위",
+      "H-06/I-03 목표 Greek 기반 공동 sizing",
+      "N-04/N-05 완전한 data/model card와 validated package"
+    ],
+    "unknown_required_criteria": [],
+    "working_tree_dirty": true
+  },
+  "unknown_required_criteria": [],
+  "validation_commands": [
+    {
+      "command": "scripts/platform verify-multi-asset-audit --json",
+      "result": "PASS: 140 criteria, 8 CF, 5 T inventory/source binding"
+    },
+    {
+      "command": "pytest tests/test_multi_asset_*.py",
+      "result": "PASS: 109 passed"
+    },
+    {
+      "command": "pytest derivative/futures/options/architecture focused selectors",
+      "result": "PASS: 232 passed"
+    },
+    {
+      "command": "pytest --collect-only tests apps/internal_web/tests services/research_operations/tests",
+      "result": "PASS: Core 1478 + Web 198 + Operations 138 = 1814 collected"
+    },
+    {
+      "command": "pytest tests apps/internal_web/tests services/research_operations/tests",
+      "result": "IN PROGRESS: one merged invocation is still running across the 1814-test inventory; no result has been inferred"
+    },
+    {
+      "command": "scripts/platform lint; scripts/platform typecheck",
+      "result": "PASS: ruff format 568 files, ruff check, mypy 241 + 51 + 20 + 6 source files"
+    },
+    {
+      "command": "scripts/platform compile; scripts/platform docs-check; scripts/platform build",
+      "result": "PASS: compile, docs-check, 3 wheels and 3 sdists"
+    },
+    {
+      "command": "scripts/check_repo_runtime_artifacts.sh; uv lock --check --offline",
+      "result": "PASS"
+    }
+  ],
+  "working_tree_dirty": true
+}
