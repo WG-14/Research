@@ -27,6 +27,10 @@ from market_research.research.knowledge_registry import (
     verify_decision_record,
 )
 from market_research.settings import ResearchSettings
+from tests.independent_verification_fixture import (
+    fixture_terminal_source_report,
+    publish_pass_verification,
+)
 
 
 def _manager(tmp_path: Path) -> ResearchPathManager:
@@ -45,7 +49,31 @@ def _manager(tmp_path: Path) -> ResearchPathManager:
 
 
 def _hash(char: str) -> str:
+    if char == "5":
+        return str(
+            fixture_terminal_source_report(
+                experiment_id="decision-record-fixture",
+                manifest_hash="sha256:" + "e" * 64,
+            )["content_hash"]
+        )
     return "sha256:" + char * 64
+
+
+def _verification_kwargs(manager: ResearchPathManager) -> dict[str, object]:
+    result = publish_pass_verification(
+        manager=manager,
+        verification_id="candidate-a-verification",
+        verifier_id="independent-verifier-a",
+        experiment_id="decision-record-fixture",
+        source_report_hash=_hash("5"),
+        manifest_hash=_hash("e"),
+    )
+    return {
+        "independent_verification_ref": result.ref(),
+        "experiment_id": result.experiment_id,
+        "research_version": result.research_version,
+        "originator_actor_ids": frozenset({"researcher-a"}),
+    }
 
 
 def _defined_hypothesis(manager: ResearchPathManager) -> GovernanceSubject:
@@ -127,6 +155,7 @@ def _approval(manager: ResearchPathManager, *, prohibited=frozenset()):
         reviewer_id="approver-a",
         rationale="independent evidence review passed",
         prohibited_actor_ids=prohibited,
+        **_verification_kwargs(manager),
     )
     return candidate, hypothesis, approval
 
@@ -275,6 +304,7 @@ def test_human_approval_decision_is_idempotent_verified_and_retained_on_retireme
         final_holdout_confirmation_hash=_hash("3"),
         reviewer_id="approver-a",
         rationale="independent evidence review passed",
+        **_verification_kwargs(manager),
     )
     assert replay == approval
     decision = get_knowledge_record(
@@ -288,7 +318,7 @@ def test_human_approval_decision_is_idempotent_verified_and_retained_on_retireme
         "approver_id": "approver-a",
         "role": "research_approver",
     }
-    assert decision["payload"]["proposer_ids"] == ["research-proposal-owner"]
+    assert decision["payload"]["proposer_ids"] == ["researcher-a"]
     assert (
         validate_strategy_approval(
             approval,

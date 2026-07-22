@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import Client
 from django.urls import reverse
 
@@ -21,6 +22,8 @@ from portal.api_contract import (
     ResearchResource,
     build_openapi_document,
 )
+from portal.authorization import can_access_research_package
+from portal.models import ResourceAccessGrant
 from portal.research_explorer import ResearchExplorerService
 
 
@@ -33,6 +36,7 @@ class FakeResearchExplorer:
 
     @staticmethod
     def _record(logical_id: str, *, detail_level: str) -> dict[str, Any]:
+        dataset_id = "dataset-one" if logical_id == "package-a" else "dataset-two"
         record = ExplorationRecord(
             kind="research_package",
             logical_id=logical_id,
@@ -41,14 +45,19 @@ class FakeResearchExplorer:
             summary={
                 "market": "KRW-BTC",
                 "instrument": "BTC",
-                "dataset_id": "dataset-one",
+                "dataset_id": dataset_id,
+                "dataset_snapshot_ref": {
+                    "logical_id": dataset_id,
+                    "version": "1",
+                    "content_hash": "sha256:" + "b" * 64,
+                },
                 "content_hash": "sha256:" + "a" * 64,
             },
             technical=(
                 {
                     "evidence_refs": {
                         "dataset_snapshot": {
-                            "logical_id": "dataset-one",
+                            "logical_id": dataset_id,
                             "version": "1",
                             "content_hash": "sha256:" + "b" * 64,
                         }
@@ -89,9 +98,20 @@ class FakeResearchExplorer:
         del section, version, record_type
         return self._record(logical_id, detail_level=detail_level)
 
+    @staticmethod
+    def _package_ref(package_id: str, version: str = "1") -> dict[str, str]:
+        return {
+            "authority": "research_package_registry",
+            "logical_id": package_id,
+            "version": version,
+            "content_hash": "sha256:" + "a" * 64,
+        }
+
     def package_lineage(self, *, package_id: str, version: str) -> dict[str, Any]:
         return {
-            "package_ref": {"logical_id": package_id, "version": version},
+            "package_ref": self._package_ref(package_id, version),
+            "supersedes_chain": [],
+            "direct_descendants": [],
             "evidence_refs": {"hypothesis": {"logical_id": "hypothesis-a"}},
         }
 
@@ -251,6 +271,158 @@ def test_package_lineage_diff_and_openapi_routes_are_read_only(
     assert "/api/v1/research/prospective/" in paths
     assert "/api/v1/research/packages/diff/" in paths
     assert "post" not in paths["/api/v1/research/packages/diff/"]
+
+
+def test_package_routes_require_grants_for_every_bound_dataset(
+    client: Client,
+    runner_user,
+    fake_explorer: FakeResearchExplorer,
+) -> None:
+    del fake_explorer
+    viewer = get_user_model().objects.create_user(
+        username=f"package-grant-viewer-{uuid.uuid4().hex}",
+        password="test-password",
+    )
+    viewer.groups.add(Group.objects.get(name="research_viewer"))
+    ResourceAccessGrant.objects.create(
+        principal_user=viewer,
+        resource_type=ResourceAccessGrant.ResourceType.DATASET,
+        resource_id="dataset-one",
+        access=ResourceAccessGrant.Access.VIEW,
+        granted_by=runner_user,
+        rationale="approved package dataset access",
+    )
+    client.force_login(viewer)
+
+    api_list = client.get(reverse("portal:api-research-package-list"))
+    page = ResearchListResponse.model_validate(api_list.json())
+    html_list = client.get(reverse("portal:research-explorer"))
+    html_body = html_list.content.decode("utf-8")
+
+    assert api_list.status_code == html_list.status_code == 200
+    assert page.page.count == 1
+    assert [item.logical_id for item in page.items] == ["package-a"]
+    assert "package-a" in html_body
+    assert "package-b" not in html_body
+
+    allowed_detail = client.get(
+        reverse("portal:api-research-package-detail", args=("package-a", "1"))
+    )
+    denied_detail = client.get(
+        reverse("portal:api-research-package-detail", args=("package-b", "1"))
+    )
+    allowed_lineage = client.get(
+        reverse("portal:api-research-package-lineage", args=("package-a", "1"))
+    )
+    denied_lineage = client.get(
+        reverse("portal:api-research-package-lineage", args=("package-b", "1"))
+    )
+    allowed_diff = client.get(
+        reverse("portal:api-research-package-diff"),
+        {
+            "left_package_id": "package-a",
+            "left_version": "1",
+            "right_package_id": "package-a",
+            "right_version": "1",
+        },
+    )
+    denied_diff = client.get(
+        reverse("portal:api-research-package-diff"),
+        {
+            "left_package_id": "package-a",
+            "left_version": "1",
+            "right_package_id": "package-b",
+            "right_version": "1",
+        },
+    )
+
+    assert allowed_detail.status_code == allowed_lineage.status_code == 200
+    assert allowed_diff.status_code == 200
+    for response in (denied_detail, denied_lineage, denied_diff):
+        assert response.status_code == 404
+        assert ApiErrorEnvelope.model_validate(response.json()).error.code == (
+            "RESEARCH_RESOURCE_NOT_FOUND"
+        )
+
+    denied_html_detail = client.get(
+        reverse(
+            "portal:research-explorer-detail",
+            args=("packages", "package-b", "1"),
+        )
+    )
+    denied_html_diff = client.get(
+        reverse("portal:research-explorer"),
+        {
+            "left_package_id": "package-a",
+            "left_version": "1",
+            "right_package_id": "package-b",
+            "right_version": "1",
+        },
+    )
+    assert denied_html_detail.status_code == denied_html_diff.status_code == 404
+
+
+def test_package_dataset_binding_authorization_fails_closed_on_invalid_projection(
+    runner_user,
+) -> None:
+    missing_binding = {"summary": {"market": "KRW-BTC"}, "technical": None}
+    conflicting_binding = {
+        "summary": {
+            "dataset_id": "dataset-one",
+            "dataset_snapshot_ref": {"logical_id": "dataset-two"},
+        },
+        "technical": None,
+    }
+
+    assert not can_access_research_package(runner_user, missing_binding)
+    assert not can_access_research_package(runner_user, conflicting_binding)
+
+
+def test_lineage_fails_closed_when_descendant_uses_ungranted_dataset(
+    client: Client,
+    runner_user,
+    fake_explorer: FakeResearchExplorer,
+    monkeypatch,
+) -> None:
+    viewer = get_user_model().objects.create_user(
+        username=f"mixed-lineage-viewer-{uuid.uuid4().hex}",
+        password="test-password",
+    )
+    viewer.groups.add(Group.objects.get(name="research_viewer"))
+    ResourceAccessGrant.objects.create(
+        principal_user=viewer,
+        resource_type=ResourceAccessGrant.ResourceType.DATASET,
+        resource_id="dataset-one",
+        access=ResourceAccessGrant.Access.VIEW,
+        granted_by=runner_user,
+        rationale="root package dataset only",
+    )
+
+    def mixed_lineage(*, package_id: str, version: str) -> dict[str, Any]:
+        return {
+            "package_ref": fake_explorer._package_ref(package_id, version),
+            "supersedes_chain": [],
+            "direct_descendants": [fake_explorer._package_ref("package-b")],
+            "evidence_refs": {},
+        }
+
+    monkeypatch.setattr(fake_explorer, "package_lineage", mixed_lineage)
+    client.force_login(viewer)
+
+    api_response = client.get(
+        reverse("portal:api-research-package-lineage", args=("package-a", "1"))
+    )
+    html_response = client.get(
+        reverse(
+            "portal:research-explorer-detail",
+            args=("packages", "package-a", "1"),
+        )
+    )
+
+    assert api_response.status_code == html_response.status_code == 404
+    assert ApiErrorEnvelope.model_validate(api_response.json()).error.code == (
+        "RESEARCH_RESOURCE_NOT_FOUND"
+    )
 
 
 def test_invalid_identity_and_mandatory_audit_failure_are_actionable(

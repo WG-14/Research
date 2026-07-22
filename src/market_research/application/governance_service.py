@@ -29,6 +29,9 @@ from market_research.research.hashing import (
     report_content_hash_payload,
     sha256_prefixed,
 )
+from market_research.research.independent_verification import (
+    IndependentVerificationRef,
+)
 from market_research.research.validation_pipeline import (
     ValidationRunError,
     resolve_bound_selected_candidate,
@@ -61,6 +64,8 @@ class _ApprovalEvidence:
     effective_strategy_parameters_hash: str
     source_report_hash: str
     final_holdout_confirmation_hash: str
+    experiment_id: str
+    research_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +171,14 @@ class ResearchGovernanceApplicationService:
             resolved_requirement_ids=request.resolved_requirement_ids,
             approval_request_id=request.idempotency_key,
             prohibited_actor_ids=request.prohibited_actor_ids,
+            originator_actor_ids=request.originator_actor_ids,
+            independent_verification_ref=IndependentVerificationRef(
+                verification_id=(request.independent_verification.verification_id),
+                version=request.independent_verification.version,
+                content_hash=request.independent_verification.content_hash,
+            ),
+            experiment_id=evidence.experiment_id,
+            research_version=evidence.research_version,
         )
         write_json_atomic_create_or_verify(target, approval)
         content_hash = str(approval["content_hash"])
@@ -331,6 +344,8 @@ class ResearchGovernanceApplicationService:
             ),
             source_report_hash=str(report["content_hash"]),
             final_holdout_confirmation_hash=confirmation_hash,
+            experiment_id=str(report.get("experiment_id") or ""),
+            research_version=str(report.get("manifest_hash") or ""),
         )
 
 

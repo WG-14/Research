@@ -178,6 +178,15 @@ def report_content_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in payload.items()
         if key not in REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS
     }
+    if (
+        logical_payload.get("reproduction_receipt_status") == "AVAILABLE"
+        and "reproduction_receipt_scope" not in logical_payload
+    ):
+        # A selection report is published and hashed before its receipt can be
+        # written.  The successful post-publication annotation is therefore
+        # runtime metadata.  Terminal reports carry an explicit scope and bind
+        # AVAILABLE as part of their semantic approval evidence.
+        logical_payload.pop("reproduction_receipt_status")
     return cast(dict[str, Any], logical_evidence_hash_payload(logical_payload))
 
 

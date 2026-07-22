@@ -24,6 +24,10 @@ from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import DateRange, ExperimentManifest, load_manifest
 from .hashing import sha256_prefixed
 from .intervals import interval_to_milliseconds
+from .temporal_validation import (
+    TemporalValidationError,
+    build_manifest_nested_temporal_validation_plan,
+)
 
 
 def _configured_db_path(db_path: str | Path | None) -> Path:
@@ -551,9 +555,40 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
             ),
         }
     windows = rolling_walk_forward_windows(manifest)
+    temporal_plan = None
+    if manifest.walk_forward.temporal_validation is not None:
+        try:
+            temporal_plan = build_manifest_nested_temporal_validation_plan(manifest)
+        except TemporalValidationError as exc:
+            return {
+                "required": required,
+                "available_windows": 0,
+                "expected_min_windows": manifest.walk_forward.min_windows,
+                "status": "FAIL",
+                "reasons": [f"nested_temporal_validation_invalid:{exc}"],
+                "nested_temporal_validation": {
+                    "declared": True,
+                    "status": "FAIL",
+                    "embargo_semantics": "forward_only_pre_test_exclusion",
+                    "reason": str(exc),
+                },
+                "next_action": (
+                    "correct the declared label horizon, purge, embargo, and nested "
+                    "split policy before running research"
+                ),
+            }
+        if temporal_plan is None:
+            raise RuntimeError("declared_temporal_validation_plan_missing")
+        windows = [
+            {
+                "train": DateRange(**dict(item["train"])),
+                "test": DateRange(**dict(item["test"])),
+            }
+            for item in temporal_plan.outer_windows()
+        ]
     expected = manifest.walk_forward.min_windows
     status = "PASS" if len(windows) >= expected else "FAIL"
-    return {
+    payload = {
         "required": required,
         "available_windows": len(windows),
         "expected_min_windows": expected,
@@ -565,6 +600,22 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
             else "review and correct manifest walk_forward dates only with reviewed research intent, then rerun readiness"
         ),
     }
+    payload["nested_temporal_validation"] = (
+        {
+            "declared": True,
+            "status": "PASS",
+            "embargo_semantics": "forward_only_pre_test_exclusion",
+            "plan_hash": temporal_plan.contract_hash(),
+            "outer_fold_count": len(temporal_plan.outer_folds),
+            "inner_fold_count_per_outer": (temporal_plan.config.inner_fold_count),
+        }
+        if temporal_plan is not None
+        else {
+            "declared": False,
+            "status": "NOT_DECLARED",
+        }
+    )
+    return payload
 
 
 def rolling_walk_forward_windows(

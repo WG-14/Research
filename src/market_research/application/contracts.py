@@ -244,6 +244,22 @@ class HumanReviewRequest(ApplicationRequest):
         )
 
 
+class IndependentVerificationReference(FrozenApplicationModel):
+    """Exact immutable verification result selected as approval evidence."""
+
+    verification_id: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    version: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    content_hash: Sha256
+
+
 class StrategyApprovalRequest(ApplicationRequest):
     """Hash-bound candidate approval request for the common service."""
 
@@ -256,6 +272,8 @@ class StrategyApprovalRequest(ApplicationRequest):
         default=None,
         pattern=r"^sha256:[0-9a-f]{64}$",
     )
+    independent_verification: IndependentVerificationReference
+    originator_actor_ids: frozenset[str] = Field(min_length=1)
     prohibited_actor_ids: frozenset[str] = frozenset()
 
     @field_validator(
@@ -278,9 +296,9 @@ class StrategyApprovalRequest(ApplicationRequest):
             error="human_review_resolved_requirement_ids_invalid",
         )
 
-    @field_validator("prohibited_actor_ids")
+    @field_validator("originator_actor_ids", "prohibited_actor_ids")
     @classmethod
-    def _normalize_prohibited_actor_ids(cls, values: frozenset[str]) -> frozenset[str]:
+    def _normalize_approval_actor_ids(cls, values: frozenset[str]) -> frozenset[str]:
         return frozenset(
             _normalize_unique_identifiers(
                 tuple(values),

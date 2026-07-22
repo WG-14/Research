@@ -15,6 +15,14 @@ from typing import Any, Callable, Iterator
 from market_research.paths import ResearchPathManager
 from market_research.storage_io import write_json_atomic_create_or_verify
 
+from .data_governance import (
+    DATA_GOVERNANCE_BINDING_SCHEMA_VERSION,
+    DATA_GOVERNANCE_POLICY_GOVERNED,
+    DataGovernanceError,
+    data_governance_report_binding_reasons,
+    publish_data_usage_binding_for_artifact,
+    require_data_usage_binding_for_artifact,
+)
 from .experiment_manifest import ExperimentManifest
 from .experiment_registry import (
     experiment_registry_path,
@@ -37,6 +45,7 @@ from .knowledge_registry import (
     freeze_validation_admission,
     validation_admission_binding_reasons,
 )
+from .knowledge_contract import AuthorityRef, KnowledgeContractError
 from .validation_protocol import (
     resolve_candidate_result_artifact,
     run_final_holdout_confirmation,
@@ -47,6 +56,11 @@ from .strategy_registry import StrategyRegistry
 from .research_decision_report import build_research_decision_report
 from .report_writer import candidate_evidence_hash_inputs, summarize_report_candidate
 from .research_classification import requires_candidate_validation
+from .reproduction import (
+    ReproductionContractError,
+    build_reproduction_receipt_from_fingerprint,
+    load_reproduction_receipt,
+)
 from .research_standard import (
     ResearchStandardError,
     has_research_standard_binding_evidence,
@@ -266,14 +280,27 @@ def _publish_terminal_validation_artifacts(
     decision_report: dict[str, Any],
     selected_target: Path,
     selected_candidate: dict[str, Any],
+    reproduction_receipt_target: Path | None = None,
+    reproduction_receipt: dict[str, object] | None = None,
 ) -> None:
     """Publish terminal validation projections without replacing prior evidence."""
 
-    targets = (
+    targets: tuple[tuple[Path, dict[str, Any] | dict[str, object]], ...] = (
         (selected_target, selected_candidate),
         (candidate_target, decision_report),
         (summary_target, summary),
     )
+    if reproduction_receipt_target is not None:
+        if reproduction_receipt is None:
+            raise ValidationRunError("terminal_validation_reproduction_receipt_missing")
+        targets = (
+            (reproduction_receipt_target, reproduction_receipt),
+            *targets,
+        )
+    elif reproduction_receipt is not None:
+        raise ValidationRunError(
+            "terminal_validation_reproduction_receipt_path_missing"
+        )
     with _terminal_publication_lock(candidate_target):
         serialized_by_path: dict[Path, bytes] = {}
         for path, payload in targets:
@@ -320,6 +347,14 @@ def validate_validated_research_result(
     if not isinstance(report, dict):
         return ["validated_research_result_must_be_object"]
     reasons: list[str] = []
+    report_content_hash = report.get("content_hash")
+    report_hash_valid = (
+        isinstance(report_content_hash, str)
+        and report_content_hash.startswith("sha256:")
+        and report_content_hash == sha256_prefixed(report_content_hash_payload(report))
+    )
+    if not report_hash_valid:
+        reasons.append("validated_research_result_content_hash_invalid")
     if (
         report.get("schema_version") != 3
         or report.get("artifact_type") != "validated_research_result"
@@ -333,6 +368,45 @@ def validate_validated_research_result(
         validation_bound = False
     if not validation_bound:
         reasons.append("validated_research_result_classification_invalid")
+    receipt_scope = report.get("reproduction_receipt_scope")
+    if validation_bound and receipt_scope is None:
+        reasons.append("validated_research_result_reproduction_receipt_required")
+    if receipt_scope is not None:
+        if receipt_scope != "validated_research_result":
+            reasons.append("validated_research_result_reproduction_scope_invalid")
+        receipt_path_value = report.get("reproduction_receipt_path")
+        receipt_hash = report.get("reproduction_receipt_hash")
+        if (
+            report.get("reproduction_receipt_status") != "AVAILABLE"
+            or not isinstance(receipt_path_value, str)
+            or not Path(receipt_path_value).is_absolute()
+            or not isinstance(receipt_hash, str)
+            or not receipt_hash.startswith("sha256:")
+        ):
+            reasons.append("validated_research_result_reproduction_receipt_invalid")
+        elif manager is not None:
+            expected_receipt_path = manager.report_path(
+                "research",
+                str(report.get("experiment_id") or ""),
+                "validated_research_reproduction_receipt.json",
+            ).resolve()
+            try:
+                receipt = load_reproduction_receipt(receipt_path_value)
+            except ReproductionContractError:
+                reasons.append("validated_research_result_reproduction_receipt_invalid")
+            else:
+                if (
+                    Path(receipt_path_value).resolve() != expected_receipt_path
+                    or receipt.get("receipt_content_hash") != receipt_hash
+                    or receipt.get("source_report_hash") != report.get("content_hash")
+                    or receipt.get("experiment_id") != report.get("experiment_id")
+                    or receipt.get("manifest_hash") != report.get("manifest_hash")
+                    or receipt.get("evidence_scope") != "validated_research_result"
+                    or not isinstance(receipt.get("source_evidence_binding"), dict)
+                ):
+                    reasons.append(
+                        "validated_research_result_reproduction_receipt_mismatch"
+                    )
     reasons.extend(_validated_hypothesis_lineage_reasons(report))
     reasons.extend(_validated_research_standard_binding_reasons(report))
     # A terminal schema-3 result always requires schema-2 hypothesis lineage,
@@ -345,6 +419,22 @@ def validate_validated_research_result(
     if report.get("validation_admission_binding_schema_version") != 1:
         reasons.append("validation_admission_binding_schema_invalid")
     reasons.extend(validation_admission_binding_reasons(report, manager=manager))
+    if validation_bound:
+        reasons.extend(data_governance_report_binding_reasons(report, manager=manager))
+    if manager is not None and validation_bound and report_hash_valid:
+        try:
+            require_data_usage_binding_for_artifact(
+                manager=manager,
+                source=report,
+                affected_authority_refs=(
+                    _validated_research_result_authority_ref(report),
+                ),
+                required_purpose="CONFIRMATORY_RESEARCH",
+            )
+        except (DataGovernanceError, KnowledgeContractError) as exc:
+            reasons.append(
+                "validated_research_result_data_usage_binding_invalid:" + str(exc)
+            )
     if report.get("selected_candidate_binding_schema_version") != 1:
         reasons.append(
             "validated_research_result_selected_candidate_binding_schema_invalid"
@@ -471,6 +561,18 @@ def validate_validated_research_result(
                         + str(exc)
                     )
     return sorted(set(reasons))
+
+
+def _validated_research_result_authority_ref(
+    report: dict[str, Any],
+) -> AuthorityRef:
+    return AuthorityRef(
+        authority="validated_research_result",
+        subject_type="research_report",
+        subject_id=str(report.get("experiment_id") or ""),
+        subject_version=str(report.get("manifest_hash") or ""),
+        authority_hash=str(report.get("content_hash") or ""),
+    )
 
 
 def _validated_hypothesis_lineage_reasons(report: dict[str, Any]) -> list[str]:
@@ -940,6 +1042,21 @@ def run_research_validation(
                 ],
             }
         )
+        data_governance = validation_admission.get("data_governance")
+        if isinstance(data_governance, dict):
+            reproduction_binding_material.update(
+                {
+                    "data_governance_admission_record_hash": data_governance[
+                        "admission_record_hash"
+                    ],
+                    "data_governance_admission_row_hash": data_governance[
+                        "admission_row_hash"
+                    ],
+                    "data_governance_dataset_version_hash": data_governance[
+                        "dataset_version_hash"
+                    ],
+                }
+            )
     if manifest.research_standard_binding is not None:
         reproduction_binding_material["research_standard_binding_hash"] = (
             manifest.research_standard_binding.content_hash
@@ -1039,6 +1156,30 @@ def run_research_validation(
                 "validation_admission": validation_admission["admission"],
             }
         )
+        data_governance = validation_admission.get("data_governance")
+        if isinstance(data_governance, dict):
+            summary.update(
+                {
+                    "data_governance_policy": DATA_GOVERNANCE_POLICY_GOVERNED,
+                    "data_governance_binding_schema_version": (
+                        DATA_GOVERNANCE_BINDING_SCHEMA_VERSION
+                    ),
+                    "data_governance_registry_path": data_governance["path"],
+                    "data_governance_admission_record_hash": data_governance[
+                        "admission_record_hash"
+                    ],
+                    "data_governance_admission_row_hash": data_governance[
+                        "admission_row_hash"
+                    ],
+                    "data_governance_dataset_version_hash": data_governance[
+                        "dataset_version_hash"
+                    ],
+                    "data_governance_dataset_content_hash": (
+                        data_governance["dataset_content_hash"]
+                    ),
+                    "data_governance_admission": data_governance["admission"],
+                }
+            )
     if manifest.research_standard_binding is not None:
         if validation_admission is None:
             raise ValidationRunError("research_standard_validation_admission_missing")
@@ -1086,7 +1227,106 @@ def run_research_validation(
     summary["selected_candidate_artifact_hash"] = sha256_prefixed(
         selected or {}, label="selected_candidate_artifact_hash"
     )
+    # The selection runner's receipt is bound to the pre-terminal backtest or
+    # walk-forward report.  A schema-3 result has a different approval hash,
+    # so carrying that receipt forward would make a successful reproduction
+    # unusable as approval evidence.  Publish a distinct receipt whose source
+    # hash is the terminal result itself while retaining the same executable
+    # fingerprint projection and full candidate evidence.
+    summary.pop("reproduction_receipt_path", None)
+    summary.pop("reproduction_receipt_hash", None)
+    if summary.get("reproduction_receipt_status") == "AVAILABLE":
+        summary["reproduction_receipt_scope"] = "validated_research_result"
+    else:
+        summary.pop("reproduction_receipt_scope", None)
     summary["content_hash"] = sha256_prefixed(report_content_hash_payload(summary))
+    terminal_receipt_target: Path | None = None
+    terminal_receipt: dict[str, object] | None = None
+    if summary.get("reproduction_receipt_status") == "AVAILABLE":
+        terminal_receipt_target = (
+            report_root / "validated_research_reproduction_receipt.json"
+        )
+        try:
+            selection_receipt_path = Path(
+                str(selection_report.get("reproduction_receipt_path") or "")
+            )
+            expected_selection_receipt_path = (
+                report_root / "reproduction_receipt.json"
+            ).resolve()
+            if (
+                selection_receipt_path.is_symlink()
+                or selection_receipt_path.resolve() != expected_selection_receipt_path
+            ):
+                raise ReproductionContractError(
+                    "terminal validation selection receipt path mismatch"
+                )
+            selection_receipt = load_reproduction_receipt(selection_receipt_path)
+            stable_fingerprint = selection_receipt.get("stable_fingerprint")
+            if (
+                not isinstance(stable_fingerprint, dict)
+                or selection_receipt.get("source_report_hash")
+                != selection_report.get("content_hash")
+                or selection_receipt.get("manifest_hash") != manifest.manifest_hash()
+                or selection_receipt.get("experiment_id") != manifest.experiment_id
+            ):
+                raise ReproductionContractError(
+                    "terminal validation selection receipt binding mismatch"
+                )
+            confirmation_binding = (
+                confirmation if isinstance(confirmation, dict) else {}
+            )
+            source_binding_material = {
+                "schema_version": 1,
+                "artifact_type": "validated_research_reproduction_binding",
+                "terminal_source_report_hash": summary["content_hash"],
+                "terminal_source_report_path": str(target.resolve()),
+                "manifest_hash": manifest.manifest_hash(),
+                "selection_report_hash": selection_report.get("content_hash"),
+                "selection_reproduction_receipt_hash": selection_receipt.get(
+                    "receipt_content_hash"
+                ),
+                "selection_artifact_hash": summary.get("selection_artifact_hash"),
+                "final_holdout_confirmation_hash": summary.get(
+                    "final_holdout_confirmation_hash"
+                ),
+                "final_holdout_result_hash": confirmation_binding.get(
+                    "final_holdout_result_hash"
+                ),
+                "final_holdout_query_hash": confirmation_binding.get(
+                    "final_holdout_query_hash"
+                ),
+                "final_holdout_data_hash": confirmation_binding.get(
+                    "final_holdout_data_hash"
+                ),
+                "final_holdout_fingerprint_hash": confirmation_binding.get(
+                    "final_holdout_fingerprint_hash"
+                ),
+                "final_holdout_quality_hash": confirmation_binding.get(
+                    "final_holdout_quality_hash"
+                ),
+                "reproduction_binding_hash": reproduction_binding["content_hash"],
+            }
+            source_evidence_binding = {
+                **source_binding_material,
+                "content_hash": sha256_prefixed(
+                    source_binding_material,
+                    label="validated_research_reproduction_binding",
+                ),
+            }
+            terminal_receipt = build_reproduction_receipt_from_fingerprint(
+                experiment_id=manifest.experiment_id,
+                manifest_hash=manifest.manifest_hash(),
+                source_report_hash=str(summary["content_hash"]),
+                stable_fingerprint=stable_fingerprint,
+                evidence_scope="validated_research_result",
+                source_evidence_binding=source_evidence_binding,
+            )
+        except ReproductionContractError as exc:
+            raise ValidationRunError(
+                f"terminal_validation_reproduction_receipt_failed:{exc}"
+            ) from exc
+        summary["reproduction_receipt_path"] = str(terminal_receipt_target.resolve())
+        summary["reproduction_receipt_hash"] = terminal_receipt["receipt_content_hash"]
     _publish_terminal_validation_artifacts(
         summary_target=target,
         summary=summary,
@@ -1094,5 +1334,23 @@ def run_research_validation(
         decision_report=decision_report,
         selected_target=selected_target,
         selected_candidate=selected or {},
+        reproduction_receipt_target=terminal_receipt_target,
+        reproduction_receipt=terminal_receipt,
     )
+    if requires_candidate_validation(manifest.research_classification):
+        try:
+            publish_data_usage_binding_for_artifact(
+                manager=manager,
+                source=summary,
+                affected_authority_refs=(
+                    _validated_research_result_authority_ref(summary),
+                ),
+                recorded_by="validation-pipeline",
+                recorded_at=generated_at,
+                required_purpose="CONFIRMATORY_RESEARCH",
+            )
+        except DataGovernanceError as exc:
+            raise ValidationRunError(
+                f"validation_data_usage_binding_failed:{exc}"
+            ) from exc
     return summary

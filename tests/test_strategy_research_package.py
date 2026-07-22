@@ -6,6 +6,17 @@ from pathlib import Path
 
 import pytest
 
+from market_research.research.data_governance import (
+    DATA_GOVERNANCE_BINDING_SCHEMA_VERSION,
+    DATA_GOVERNANCE_POLICY_GOVERNED,
+    data_governance_registry_path,
+    publish_data_usage_binding_for_artifact,
+)
+from market_research.research.research_package_registry import (
+    ResearchPackageRegistryError,
+    _require_source_package_data_usage_binding,
+)
+from market_research.research.knowledge_contract import AuthorityRef
 from market_research.research.strategy_package import (
     StrategyPackageError,
     build_strategy_research_package,
@@ -42,7 +53,12 @@ from market_research.research.governance import (
     approve_strategy_candidate,
 )
 from tests.test_run_lifecycle import _context
+from tests.data_governance_fixture import (
+    attach_immutable_dataset_artifact,
+    seed_confirmatory_data_governance,
+)
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
+from tests.independent_verification_fixture import publish_pass_verification
 
 
 def _result():
@@ -291,7 +307,10 @@ def _result():
 
 
 def _bind_validation_admission(report, manager):
-    if report.get("validation_admission_binding_schema_version") == 1:
+    if (
+        report.get("validation_admission_binding_schema_version") == 1
+        and report.get("data_governance_policy") == DATA_GOVERNANCE_POLICY_GOVERNED
+    ):
         return
     manifest_payload = json.loads(
         Path("examples/research/sma_filter_manifest.example.json").read_text(
@@ -300,11 +319,20 @@ def _bind_validation_admission(report, manager):
     )
     manifest_payload["experiment_id"] = "validated-candidate-fixture"
     manifest_payload["hypothesis_spec"] = report["hypothesis_spec"]
+    manifest_payload, _frozen = attach_immutable_dataset_artifact(
+        manifest_payload,
+        root=manager.data_dir(),
+    )
     manifest = parse_builtin_manifest(manifest_payload)
+    governance = seed_confirmatory_data_governance(
+        manager=manager,
+        manifest=manifest,
+    )
     admission = freeze_validation_admission(
         manager=manager,
         manifest=manifest,
         admitted_at="2026-01-01T00:00:00+00:00",
+        bind_data_governance=True,
     )
     manifest_hash = manifest.manifest_hash()
 
@@ -334,11 +362,33 @@ def _bind_validation_admission(report, manager):
         {
             "experiment_id": manifest.experiment_id,
             "manifest_hash": manifest_hash,
+            "dataset_snapshot_id": governance["dataset"].dataset_id,
+            "dataset_content_hash": governance["dataset"].content_hash,
             "validation_admission_binding_schema_version": 1,
             "knowledge_registry_path": admission["path"],
             "validation_admission_record_hash": admission["admission_record_hash"],
             "validation_admission_row_hash": admission["admission_row_hash"],
             "validation_admission": admission["admission"],
+            "data_governance_policy": DATA_GOVERNANCE_POLICY_GOVERNED,
+            "data_governance_binding_schema_version": (
+                DATA_GOVERNANCE_BINDING_SCHEMA_VERSION
+            ),
+            "data_governance_registry_path": str(
+                data_governance_registry_path(manager)
+            ),
+            "data_governance_admission_record_hash": admission["data_governance"][
+                "admission_record_hash"
+            ],
+            "data_governance_admission_row_hash": admission["data_governance"][
+                "admission_row_hash"
+            ],
+            "data_governance_dataset_version_hash": admission["data_governance"][
+                "dataset_version_hash"
+            ],
+            "data_governance_dataset_content_hash": admission["data_governance"][
+                "dataset_content_hash"
+            ],
+            "data_governance_admission": admission["data_governance"]["admission"],
         }
     )
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
@@ -468,6 +518,13 @@ def _approval(report, tmp_path):
         )
         report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
     _bind_selected_candidate_artifact(report, manager)
+    report.update(
+        {
+            "reproduction_receipt_status": "AVAILABLE",
+            "reproduction_receipt_scope": "validated_research_result",
+        }
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
     subject = GovernanceSubject(
         GovernanceSubjectType.STRATEGY_CANDIDATE, "candidate-1", "1"
     )
@@ -519,6 +576,23 @@ def _approval(report, tmp_path):
             reason=f"advance hypothesis to {target}",
             evidence_hashes=evidence,
         )
+    verification = publish_pass_verification(
+        manager=manager,
+        verification_id="strategy-package-verification",
+        verifier_id="independent-verifier-a",
+        experiment_id=str(report["experiment_id"]),
+        source_report_hash=str(report["content_hash"]),
+        manifest_hash=str(report["manifest_hash"]),
+        source_report=report,
+    )
+    report.update(
+        {
+            "reproduction_receipt_path": verification.baseline_receipt_path,
+            "reproduction_receipt_hash": verification.baseline_receipt_hash,
+        }
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    _publish_terminal_usage_binding(report, manager)
     return approve_strategy_candidate(
         manager=manager,
         subject=subject,
@@ -542,6 +616,28 @@ def _approval(report, tmp_path):
         ],
         reviewer_id="approver-a",
         rationale="human research review passed",
+        independent_verification_ref=verification.ref(),
+        experiment_id=verification.experiment_id,
+        research_version=verification.research_version,
+        originator_actor_ids=frozenset({"researcher-a"}),
+    )
+
+
+def _publish_terminal_usage_binding(report, manager):
+    return publish_data_usage_binding_for_artifact(
+        manager=manager,
+        source=report,
+        affected_authority_refs=(
+            AuthorityRef(
+                authority="validated_research_result",
+                subject_type="research_report",
+                subject_id=str(report["experiment_id"]),
+                subject_version=str(report["manifest_hash"]),
+                authority_hash=str(report["content_hash"]),
+            ),
+        ),
+        recorded_by="validation-pipeline",
+        required_purpose="CONFIRMATORY_RESEARCH",
     )
 
 
@@ -568,6 +664,20 @@ def test_package_contains_execution_and_ledger_contract_hashes(monkeypatch, tmp_
         == report["strategy_spec"]["decision_contract_version"]
     )
     assert package["risk_policy"] == report["risk_policy"]
+    verification_binding = approval["independent_verification"]
+    assert package["independent_verification_ref"] == {
+        "verification_id": verification_binding["verification_id"],
+        "version": verification_binding["version"],
+        "content_hash": verification_binding["content_hash"],
+    }
+    assert (
+        package["independent_verification_hash"] == verification_binding["content_hash"]
+    )
+    tampered = deepcopy(package)
+    tampered["independent_verification_ref"]["content_hash"] = "sha256:" + "f" * 64
+    assert tampered["content_hash"] != sha256_prefixed(
+        {key: value for key, value in tampered.items() if key != "content_hash"}
+    )
     assert (
         build_strategy_research_package(report, approval=approval, manager=manager)[
             "content_hash"
@@ -579,6 +689,83 @@ def test_package_contains_execution_and_ledger_contract_hashes(monkeypatch, tmp_
     assert declared_only["authoritative"] is False
     assert declared_only["package_authority_status"] == "DECLARED_PATH_ONLY"
     assert declared_only["package_authority_result"] == "UNVERIFIED"
+
+
+def test_package_rejects_rehashed_report_without_exact_data_usage_commit(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    report = _result()
+    approval = _approval(report, tmp_path)
+    report["known_limitations"] = ["forged post-validation limitation"]
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+    with pytest.raises(
+        StrategyPackageError,
+        match="validated_research_result_data_usage_binding_invalid:"
+        "data_usage_binding_not_found",
+    ):
+        build_strategy_research_package(
+            report,
+            approval=approval,
+            manager=_context(tmp_path).paths,
+        )
+
+
+def test_governed_source_package_requires_exact_export_usage_commit(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    report = _result()
+    approval = _approval(report, tmp_path)
+    manager = _context(tmp_path).paths
+    package = build_strategy_research_package(
+        report,
+        approval=approval,
+        manager=manager,
+    )
+
+    with pytest.raises(
+        ResearchPackageRegistryError,
+        match=(
+            "research_package_source_data_usage_binding_invalid:"
+            "data_usage_binding_not_found"
+        ),
+    ):
+        _require_source_package_data_usage_binding(
+            manager=manager,
+            source_package=package,
+            report=report,
+        )
+
+    package_ref = AuthorityRef(
+        authority="strategy_package_export",
+        subject_type="research_package",
+        subject_id=str(report["experiment_id"]),
+        subject_version=str(package["content_hash"]),
+        authority_hash=str(package["content_hash"]),
+    )
+    publish_data_usage_binding_for_artifact(
+        manager=manager,
+        source=report,
+        affected_authority_refs=(package_ref,),
+        recorded_by="approver-a",
+        required_purpose="RESEARCH_PACKAGE_EXPORT",
+    )
+    assert _require_source_package_data_usage_binding(
+        manager=manager,
+        source_package=package,
+        report=report,
+    )["payload"]["affected_authority_refs"][0]["authority"] in {
+        "knowledge_registry",
+        "strategy_package_export",
+    }
 
 
 def test_package_self_contains_complete_review_specification(monkeypatch, tmp_path):
@@ -680,6 +867,27 @@ def test_validated_result_rejects_missing_or_mismatched_lineage_binding():
     )
 
 
+def test_validated_result_rejects_stripped_terminal_reproduction_receipt(
+    tmp_path: Path,
+) -> None:
+    report = _result()
+    _approval(report, tmp_path)
+    manager = _context(tmp_path).paths
+    stripped = deepcopy(report)
+    for field in (
+        "reproduction_receipt_scope",
+        "reproduction_receipt_status",
+        "reproduction_receipt_path",
+        "reproduction_receipt_hash",
+    ):
+        stripped.pop(field, None)
+    stripped["content_hash"] = sha256_prefixed(report_content_hash_payload(stripped))
+
+    assert "validated_research_result_reproduction_receipt_required" in (
+        validate_validated_research_result(stripped, manager=manager)
+    )
+
+
 def test_package_rejects_missing_feature_definitions(monkeypatch):
     monkeypatch.setattr(
         "market_research.research.strategy_package.validate_final_selection_report",
@@ -703,6 +911,35 @@ def test_package_rejects_automatic_pass_without_human_approval(monkeypatch):
     )
     with pytest.raises(StrategyPackageError, match="strategy_approval_missing"):
         build_strategy_research_package(_result())
+
+
+@pytest.mark.parametrize(
+    ("policy", "reason"),
+    [
+        (None, "data_governance_policy_missing_or_invalid"),
+        (
+            "LEGACY_NON_GOVERNED",
+            "data_governance_legacy_non_governed_not_promotable",
+        ),
+    ],
+)
+def test_package_rejects_missing_or_legacy_data_governance_binding(
+    monkeypatch, policy, reason
+):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_final_selection_report",
+        lambda report: [],
+    )
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_strategy_approval",
+        lambda *_args, **_kwargs: [],
+    )
+    report = _result()
+    if policy is not None:
+        report["data_governance_policy"] = policy
+        report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    with pytest.raises(StrategyPackageError, match=reason):
+        build_strategy_research_package(report, approval={})
 
 
 def test_package_rejects_missing_execution_evidence(monkeypatch):

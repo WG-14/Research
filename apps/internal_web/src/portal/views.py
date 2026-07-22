@@ -34,7 +34,16 @@ from .auth_audit import (
     AuthenticationAuditUnavailable,
     terminate_session_without_signal,
 )
-from .authorization import can_access_manifest, jobs_visible_to, manifests_visible_to
+from .authorization import (
+    can_access_dataset,
+    can_access_manifest,
+    can_access_research_package,
+    can_access_research_package_lineage,
+    datasets_visible_to,
+    jobs_visible_to,
+    manifests_visible_to,
+    research_packages_visible_to,
+)
 from .audit import append_web_audit_event
 from .forms import (
     CandidateApprovalForm,
@@ -389,6 +398,10 @@ def research_explorer(request: HttpRequest) -> HttpResponse:
             filters=filters,
             detail_level="summary",
         )
+        if section == "datasets":
+            records = tuple(datasets_visible_to(request.user, records))
+        elif section == "packages":
+            records = research_packages_visible_to(request.user, records)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _research_explorer_error(request, exc)
 
@@ -427,7 +440,25 @@ def research_explorer(request: HttpRequest) -> HttpResponse:
                 ResearchExplorationQueryError("research_package_diff_invalid"),
             )
         try:
-            diff = _research_explorer_service().package_diff(**diff_values)
+            service = _research_explorer_service()
+            left = service.get_record(
+                section="packages",
+                logical_id=diff_values["left_package_id"],
+                version=diff_values["left_version"],
+                detail_level="summary",
+            )
+            right = service.get_record(
+                section="packages",
+                logical_id=diff_values["right_package_id"],
+                version=diff_values["right_version"],
+                detail_level="summary",
+            )
+            if not all(
+                can_access_research_package(request.user, record)
+                for record in (left, right)
+            ):
+                raise Http404("research_resource_not_found")
+            diff = service.package_diff(**diff_values)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return _research_explorer_error(request, exc)
         try:
@@ -486,6 +517,8 @@ def research_explorer_detail(
             request,
             ResearchExplorationQueryError("research_identity_invalid"),
         )
+    if section == "datasets" and not can_access_dataset(request.user, logical_id):
+        raise Http404("research_resource_not_found")
     try:
         service = _research_explorer_service()
         record = service.get_record(
@@ -494,11 +527,36 @@ def research_explorer_detail(
             version=version,
             detail_level="technical",
         )
-        lineage = (
-            service.package_lineage(package_id=logical_id, version=version)
-            if section == "packages"
-            else None
-        )
+        if section == "packages" and not can_access_research_package(
+            request.user, record
+        ):
+            raise Http404("research_resource_not_found")
+        lineage = None
+        if section == "packages":
+            lineage = service.package_lineage(package_id=logical_id, version=version)
+            cached_records = {(logical_id, version): record}
+
+            def load_lineage_record(
+                package_id: str, package_version: str
+            ) -> dict[str, Any]:
+                identity = (package_id, package_version)
+                if identity not in cached_records:
+                    cached_records[identity] = service.get_record(
+                        section="packages",
+                        logical_id=package_id,
+                        version=package_version,
+                        detail_level="summary",
+                    )
+                return cached_records[identity]
+
+            if not can_access_research_package_lineage(
+                request.user,
+                lineage,
+                root_id=logical_id,
+                root_version=version,
+                load_record=load_lineage_record,
+            ):
+                raise Http404("research_resource_not_found")
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _research_explorer_error(request, exc)
     try:

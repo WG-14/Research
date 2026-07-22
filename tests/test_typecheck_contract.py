@@ -51,7 +51,12 @@ def test_platform_and_ci_enforce_the_strict_type_gate() -> None:
     assert "-p market_research" in platform
     assert "-p market_research_web -p portal" in platform
     assert "-p research_operations" in platform
-    assert platform.count("--no-incremental --config-file pyproject.toml") == 3
+    assert platform.count("--no-incremental --config-file pyproject.toml") == 4
+    assert "tools/reference_audit.py tools/reference_audit_surface.py" in platform
+    assert (
+        "tools/update_reference_audit.py tools/render_reference_audit_report.py"
+        in platform
+    )
     assert "- name: Type-check all production distributions" in workflow
     assert "run: scripts/platform typecheck" in workflow
 

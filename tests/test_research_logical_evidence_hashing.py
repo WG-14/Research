@@ -115,3 +115,38 @@ def test_report_logical_hash_excludes_nested_lineage_runtime_but_keeps_evidence(
     changed_evidence = deepcopy(report)
     changed_evidence["manifest_hash"] = "sha256:" + "0" * 64
     assert report_content_hash_payload(changed_evidence) != first
+
+
+def test_report_hash_distinguishes_receipt_evidence_from_runtime_attachment() -> None:
+    report = {
+        "experiment_id": "experiment-a",
+        "manifest_hash": "sha256:" + "1" * 64,
+    }
+    baseline = report_content_hash_payload(report)
+
+    attached = {
+        **report,
+        "reproduction_receipt_status": "AVAILABLE",
+        "reproduction_receipt_path": "/external/reproduction_receipt.json",
+        "reproduction_receipt_hash": "sha256:" + "2" * 64,
+    }
+    assert report_content_hash_payload(attached) == baseline
+
+    terminal = {**attached, "reproduction_receipt_scope": "validated_research_result"}
+    assert report_content_hash_payload(terminal) != baseline
+
+    ineligible = {
+        **report,
+        "reproduction_receipt_status": "INELIGIBLE_DIRTY_SOURCE",
+        "reproduction_receipt_reason": (
+            "dirty_git_checkout_changed_contents_not_preserved"
+        ),
+    }
+    assert report_content_hash_payload(ineligible) != baseline
+    changed_reason = {
+        **ineligible,
+        "reproduction_receipt_reason": "different_reason",
+    }
+    assert report_content_hash_payload(changed_reason) != (
+        report_content_hash_payload(ineligible)
+    )

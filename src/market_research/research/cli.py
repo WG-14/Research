@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -12,6 +13,7 @@ from market_research.application import (
     ActorContext,
     GovernanceSubjectRef,
     HumanReviewRequest,
+    IndependentVerificationReference,
     ResearchGovernanceApplicationService,
     RequestedChange,
     StrategyApprovalRequest,
@@ -32,6 +34,16 @@ from .experiment_registry import (
     validate_experiment_registry_binding,
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .independent_verification import (
+    INDEPENDENT_VERIFIER_ROLE,
+    IndependentVerificationError,
+    IndependentVerificationResult,
+    bind_reproduction_result_snapshot,
+    find_independent_verification,
+    independent_code_binding_hash,
+    independent_reproduction_evidence,
+    publish_independent_verification,
+)
 from .final_selection import (
     validate_confirmation_artifact,
     validate_final_selection_report,
@@ -46,6 +58,7 @@ from .reproduction import (
     ReproductionContractError,
     compare_reproduction_fingerprints,
     load_reproduction_receipt,
+    validate_reproduction_receipt_report_binding,
 )
 from .audit_trail import validate_audit_trail_binding, verify_audit_trail
 from .return_panel import validate_return_panel_binding
@@ -58,6 +71,8 @@ from .validation_pipeline import (
 )
 from .validation_protocol import (
     ResearchValidationError,
+    resolve_candidate_result_artifact,
+    run_final_holdout_confirmation,
     run_research_backtest,
     run_research_walk_forward,
 )
@@ -190,6 +205,10 @@ def cmd_research_approve_strategy_candidate(
     reviewer_id: str,
     rationale: str,
     resolved_requirement_ids: tuple[str, ...],
+    verification_id: str,
+    verification_version: str,
+    verification_hash: str,
+    originator_ids: tuple[str, ...],
     out_path: str,
 ) -> int:
     try:
@@ -205,6 +224,13 @@ def cmd_research_approve_strategy_candidate(
                 ),
                 rationale=rationale,
                 resolved_requirement_ids=resolved_requirement_ids,
+                independent_verification=IndependentVerificationReference(
+                    verification_id=verification_id,
+                    version=verification_version,
+                    content_hash=verification_hash,
+                ),
+                originator_actor_ids=frozenset(originator_ids),
+                prohibited_actor_ids=frozenset(originator_ids),
                 output_path=out_path,
             )
         )
@@ -705,15 +731,33 @@ def cmd_research_reproduce_run(
     manifest_path: str,
     receipt_path: str,
     out_path: str | None = None,
+    verification_id: str | None = None,
+    verification_version: str | None = None,
+    verifier_id: str | None = None,
+    verifier_role: str = INDEPENDENT_VERIFIER_ROLE,
+    verified_at: str | None = None,
+    unresolved_issues: tuple[str, ...] = (),
 ) -> int:
     """Reproduce a run in three explicit, fail-closed phases."""
 
     started_at = monotonic()
     result_path: Path | None = None
     status = "REPRODUCTION_FAILED"
-    payload: dict[str, object]
+    payload: dict[str, object] = {}
+    terminal_confirmation: dict[str, Any] | None = None
     manifest = None
     receipt: dict[str, object]
+    verification_values = (verification_id, verification_version, verifier_id)
+    publish_verification = all(value is not None for value in verification_values)
+    if (
+        any(value is not None for value in verification_values)
+        and not publish_verification
+    ):
+        context.printer(
+            "[RESEARCH-REPRODUCE-RUN] error=verification id, version, and verifier "
+            "must be provided together"
+        )
+        return 2
     manifest_display_path = str(Path(manifest_path).expanduser())
     baseline_display_path = str(Path(receipt_path).expanduser())
     try:
@@ -733,7 +777,12 @@ def cmd_research_reproduce_run(
                 raise ReproductionContractError(
                     "receipt experiment_id does not match manifest"
                 )
+            independent_reproduction_evidence(
+                manager=context.paths,
+                baseline_receipt_path=receipt_path,
+            )
         except (
+            IndependentVerificationError,
             ManifestValidationError,
             ReproductionContractError,
             OSError,
@@ -821,6 +870,10 @@ def cmd_research_reproduce_run(
             )
             try:
                 reproduced_receipt = load_reproduction_receipt(reproduced_receipt_path)
+                validate_reproduction_receipt_report_binding(
+                    report=reproduced_report,
+                    receipt=reproduced_receipt,
+                )
                 reproduced_stable_fingerprint = reproduced_receipt["stable_fingerprint"]
                 if not isinstance(reproduced_stable_fingerprint, dict):
                     raise ReproductionContractError(
@@ -830,6 +883,15 @@ def cmd_research_reproduce_run(
                 raise _ReproductionExecutionError(
                     "reproduced_receipt_invalid", exc
                 ) from exc
+            if receipt.get("evidence_scope") == "validated_research_result":
+                terminal_confirmation = _run_terminal_holdout_reproduction(
+                    manifest=manifest,
+                    reproduced_report=reproduced_report,
+                    db_path=db_path,
+                    manager=isolated_paths,
+                    strategy_registry=strategy_registry,
+                    progress_callback=progress_callback,
+                )
         except _ReproductionExecutionError as wrapped:
             status = "REPRODUCTION_FAILED"
             payload = _reproduction_error_payload(
@@ -841,6 +903,26 @@ def cmd_research_reproduce_run(
                 baseline_receipt_path=baseline_display_path,
                 experiment_id=manifest.experiment_id,
             )
+            if publish_verification:
+                try:
+                    _attach_independent_verification_result(
+                        context=context,
+                        payload=payload,
+                        receipt=receipt,
+                        baseline_receipt_path=receipt_path,
+                        verification_id=str(verification_id),
+                        verification_version=str(verification_version),
+                        verifier_id=str(verifier_id),
+                        verifier_role=verifier_role,
+                        verified_at=verified_at,
+                        unresolved_issues=unresolved_issues,
+                    )
+                except IndependentVerificationError as verification_exc:
+                    payload["independent_verification_error"] = str(verification_exc)
+                    context.printer(
+                        "[RESEARCH-REPRODUCE-RUN] verification_error="
+                        f"{verification_exc}"
+                    )
             result_path = _write_reproduction_result(
                 context=context,
                 out_path=out_path,
@@ -869,6 +951,26 @@ def cmd_research_reproduce_run(
                 baseline_receipt_path=baseline_display_path,
                 experiment_id=manifest.experiment_id,
             )
+            if publish_verification:
+                try:
+                    _attach_independent_verification_result(
+                        context=context,
+                        payload=payload,
+                        receipt=receipt,
+                        baseline_receipt_path=receipt_path,
+                        verification_id=str(verification_id),
+                        verification_version=str(verification_version),
+                        verifier_id=str(verifier_id),
+                        verifier_role=verifier_role,
+                        verified_at=verified_at,
+                        unresolved_issues=unresolved_issues,
+                    )
+                except IndependentVerificationError as verification_exc:
+                    payload["independent_verification_error"] = str(verification_exc)
+                    context.printer(
+                        "[RESEARCH-REPRODUCE-RUN] verification_error="
+                        f"{verification_exc}"
+                    )
             result_path = _write_reproduction_result(
                 context=context,
                 out_path=out_path,
@@ -883,7 +985,25 @@ def cmd_research_reproduce_run(
         comparison = compare_reproduction_fingerprints(
             stable_fingerprint, reproduced_stable_fingerprint
         )
-        status = comparison.status
+        mismatches = [dict(item) for item in comparison.mismatches]
+        if receipt.get("evidence_scope") == "validated_research_result":
+            if terminal_confirmation is None:
+                mismatches.append(
+                    {
+                        "path": "terminal_holdout.confirmation",
+                        "expected": "independently reproduced confirmation",
+                        "actual": None,
+                        "kind": "missing_value",
+                    }
+                )
+            else:
+                mismatches.extend(
+                    _terminal_holdout_reproduction_mismatches(
+                        receipt=receipt,
+                        confirmation=terminal_confirmation,
+                    )
+                )
+        status = "PASS" if not mismatches else "DRIFT"
         report_path = Path(
             str(
                 (reproduced_report.get("artifact_paths") or {}).get("report_path") or ""
@@ -899,10 +1019,55 @@ def cmd_research_reproduce_run(
             "phase": "fingerprint_comparison",
             "error_code": None,
             "error": None,
-            **comparison.as_dict(),
             "reproduced_report_path": str(report_path.resolve()),
             "reproduced_receipt_path": str(reproduced_receipt_path.resolve()),
+            "reproduced_receipt_hash": str(reproduced_receipt["receipt_content_hash"]),
+            "expected_fingerprint_hash": comparison.expected_fingerprint_hash,
+            "actual_fingerprint_hash": comparison.actual_fingerprint_hash,
+            "mismatches": mismatches,
         }
+        if terminal_confirmation is not None:
+            payload.update(
+                {
+                    "reproduced_final_holdout_confirmation_path": str(
+                        Path(
+                            str(terminal_confirmation["confirmation_artifact_path"])
+                        ).resolve()
+                    ),
+                    "reproduced_final_holdout_confirmation_hash": str(
+                        terminal_confirmation["content_hash"]
+                    ),
+                    "reproduced_final_holdout_result_hash": str(
+                        terminal_confirmation["final_holdout_result_hash"]
+                    ),
+                }
+            )
+        if publish_verification:
+            try:
+                _attach_independent_verification_result(
+                    context=context,
+                    payload=payload,
+                    receipt=receipt,
+                    baseline_receipt_path=receipt_path,
+                    verification_id=str(verification_id),
+                    verification_version=str(verification_version),
+                    verifier_id=str(verifier_id),
+                    verifier_role=verifier_role,
+                    verified_at=verified_at,
+                    unresolved_issues=unresolved_issues,
+                )
+            except IndependentVerificationError as exc:
+                status = "REPRODUCTION_FAILED"
+                payload = _reproduction_error_payload(
+                    status=status,
+                    phase="independent_verification_publication",
+                    error_code="independent_verification_publication_failed",
+                    error=exc,
+                    manifest_path=manifest_display_path,
+                    baseline_receipt_path=baseline_display_path,
+                    experiment_id=manifest.experiment_id,
+                )
+                context.printer(f"[RESEARCH-REPRODUCE-RUN] error={exc}")
         result_path = _write_reproduction_result(
             context=context,
             out_path=out_path,
@@ -938,10 +1103,276 @@ def cmd_research_reproduce_run(
         )
 
 
+def _run_terminal_holdout_reproduction(
+    *,
+    manifest: Any,
+    reproduced_report: dict[str, Any],
+    db_path: Path | None,
+    manager: Any,
+    strategy_registry: Any,
+    progress_callback: Any,
+) -> dict[str, Any]:
+    """Replay the frozen candidate on holdout inside the isolated root."""
+
+    candidates: list[dict[str, Any]] = []
+    for candidate in reproduced_report.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("candidate_result_artifact_detail_policy") == "external_full":
+            candidates.append(
+                resolve_candidate_result_artifact(
+                    manager=manager,
+                    compact_candidate=candidate,
+                    expected_experiment_id=manifest.experiment_id,
+                    expected_manifest_hash=manifest.manifest_hash(),
+                    expected_dataset_snapshot_id=str(
+                        reproduced_report.get("dataset_snapshot_id") or ""
+                    ),
+                    expected_dataset_content_hash=str(
+                        reproduced_report.get("dataset_content_hash") or ""
+                    ),
+                )
+            )
+        else:
+            candidates.append(candidate)
+    selection_evidence = dict(reproduced_report)
+    selection_evidence["candidates"] = candidates
+    confirmation = run_final_holdout_confirmation(
+        manifest=manifest,
+        selection_report=selection_evidence,
+        db_path=db_path,
+        manager=manager,
+        progress_callback=progress_callback,
+        strategy_registry=strategy_registry,
+    )
+    expected_path = manager.report_path(
+        "research", manifest.experiment_id, "final_holdout_confirmation.json"
+    ).resolve()
+    actual_path = Path(str(confirmation.get("confirmation_artifact_path") or ""))
+    material = {
+        key: value
+        for key, value in confirmation.items()
+        if key not in {"content_hash", "confirmation_artifact_path"}
+    }
+    selection_artifact = selection_evidence.get("selection_artifact")
+    contract_reasons = validate_confirmation_artifact(
+        confirmation,
+        selection_artifact=(
+            selection_artifact if isinstance(selection_artifact, dict) else {}
+        ),
+    )
+    contract_reasons.extend(
+        validate_experiment_registry_binding(
+            report=confirmation,
+            require_complete=True,
+            expected_registry_path=experiment_registry_path(manager=manager),
+        )
+    )
+    if (
+        actual_path.is_symlink()
+        or actual_path.resolve() != expected_path
+        or confirmation.get("schema_version") != 2
+        or confirmation.get("artifact_type") != "final_holdout_confirmation"
+        or confirmation.get("manifest_hash") != manifest.manifest_hash()
+        or confirmation.get("content_hash")
+        != sha256_prefixed(material, label="final_holdout_confirmation")
+        or contract_reasons
+    ):
+        raise ReproductionContractError(
+            "terminal reproduction confirmation contract invalid"
+        )
+    return confirmation
+
+
+def _terminal_holdout_reproduction_mismatches(
+    *,
+    receipt: dict[str, object],
+    confirmation: dict[str, Any],
+) -> list[dict[str, object]]:
+    binding = receipt.get("source_evidence_binding")
+    if not isinstance(binding, dict):
+        raise ReproductionContractError(
+            "terminal reproduction source evidence binding missing"
+        )
+    fields = (
+        "selection_artifact_hash",
+        "final_holdout_result_hash",
+        "final_holdout_query_hash",
+        "final_holdout_data_hash",
+        "final_holdout_fingerprint_hash",
+        "final_holdout_quality_hash",
+    )
+    mismatches: list[dict[str, object]] = []
+    for field in fields:
+        expected = binding.get(field)
+        actual = confirmation.get(field)
+        if (
+            not isinstance(expected, str)
+            or not expected.startswith("sha256:")
+            or not isinstance(actual, str)
+            or not actual.startswith("sha256:")
+        ):
+            raise ReproductionContractError(
+                f"terminal reproduction {field} binding invalid"
+            )
+        if expected != actual:
+            mismatches.append(
+                {
+                    "path": f"terminal_holdout.{field}",
+                    "expected": expected,
+                    "actual": actual,
+                    "kind": "value_mismatch",
+                }
+            )
+    return mismatches
+
+
 class _ReproductionExecutionError(Exception):
     def __init__(self, error_code: str, cause: Exception) -> None:
         super().__init__(str(cause))
         self.error_code = error_code
+
+
+def _attach_independent_verification_result(
+    *,
+    context: "ResearchAppContext",
+    payload: dict[str, object],
+    receipt: dict[str, object],
+    baseline_receipt_path: str,
+    verification_id: str,
+    verification_version: str,
+    verifier_id: str,
+    verifier_role: str,
+    verified_at: str | None,
+    unresolved_issues: tuple[str, ...],
+) -> None:
+    stable = receipt.get("stable_fingerprint")
+    if not isinstance(stable, dict):
+        raise IndependentVerificationError(
+            "independent_verification_baseline_fingerprint_missing"
+        )
+    status = str(payload.get("status") or "")
+    verification_status = status if status in {"PASS", "DRIFT"} else "FAILED"
+    deltas_value = payload.get("mismatches") or []
+    if not isinstance(deltas_value, list):
+        raise IndependentVerificationError(
+            "independent_verification_comparison_delta_invalid"
+        )
+    deltas = tuple(dict(item) for item in deltas_value if isinstance(item, dict))
+    issues = tuple(str(item).strip() for item in unresolved_issues if str(item).strip())
+    if verification_status == "DRIFT" and not issues:
+        issues = tuple(
+            f"fingerprint_drift:{str(item.get('path') or 'unknown')}" for item in deltas
+        )
+    if verification_status == "FAILED" and not issues:
+        issues = (f"reproduction_failure:{payload.get('error_code') or 'unknown'}",)
+    failure_code = (
+        str(payload.get("error_code") or "reproduction_failed")
+        if verification_status == "FAILED"
+        else None
+    )
+    failure_evidence_hash = (
+        sha256_prefixed(
+            {
+                "phase": payload.get("phase"),
+                "error_code": failure_code,
+                "error": payload.get("error"),
+            },
+            label="independent_verification_failure_evidence",
+        )
+        if verification_status == "FAILED"
+        else None
+    )
+    payload.update(
+        {
+            "experiment_id": str(receipt["experiment_id"]),
+            "manifest_hash": str(receipt["manifest_hash"]),
+            "baseline_receipt_path": str(
+                Path(baseline_receipt_path).expanduser().resolve()
+            ),
+            "baseline_receipt_hash": str(receipt["receipt_content_hash"]),
+        }
+    )
+    reproduced_receipt_path = payload.get("reproduced_receipt_path")
+    reproduced_receipt_hash = payload.get("reproduced_receipt_hash")
+    payload.update(
+        independent_reproduction_evidence(
+            manager=context.paths,
+            baseline_receipt_path=baseline_receipt_path,
+            reproduced_receipt_path=(
+                str(reproduced_receipt_path)
+                if verification_status in {"PASS", "DRIFT"}
+                and reproduced_receipt_path is not None
+                else None
+            ),
+        )
+    )
+    reproduction_result_path, reproduction_result_hash = (
+        bind_reproduction_result_snapshot(
+            manager=context.paths,
+            payload=payload,
+        )
+    )
+    existing = find_independent_verification(
+        manager=context.paths,
+        verification_id=verification_id,
+        version=verification_version,
+    )
+    effective_verified_at = (
+        verified_at
+        or (existing.verified_at if existing is not None else None)
+        or datetime.now(timezone.utc).isoformat()
+    )
+    result = IndependentVerificationResult(
+        verification_id=verification_id,
+        version=verification_version,
+        verifier_id=verifier_id,
+        verifier_role=verifier_role,
+        verified_at=effective_verified_at,
+        experiment_id=str(receipt["experiment_id"]),
+        research_version=str(receipt["manifest_hash"]),
+        source_report_hash=str(receipt["source_report_hash"]),
+        manifest_hash=str(receipt["manifest_hash"]),
+        baseline_receipt_hash=str(receipt["receipt_content_hash"]),
+        baseline_receipt_path=str(Path(baseline_receipt_path).expanduser().resolve()),
+        reproduction_result_hash=reproduction_result_hash,
+        reproduction_result_path=str(reproduction_result_path),
+        reproduced_receipt_hash=(
+            str(reproduced_receipt_hash)
+            if reproduced_receipt_hash is not None
+            else None
+        ),
+        reproduced_receipt_path=(
+            str(Path(str(reproduced_receipt_path)).resolve())
+            if reproduced_receipt_path is not None
+            else None
+        ),
+        code_binding_hash=independent_code_binding_hash(stable),
+        data_binding_hash=str(stable.get("dataset_fingerprint") or ""),
+        environment_binding_hash=str(stable.get("strict_environment_hash") or ""),
+        expected_fingerprint_hash=str(
+            payload.get("expected_fingerprint_hash")
+            or stable.get("stable_fingerprint_hash")
+            or ""
+        ),
+        actual_fingerprint_hash=(
+            str(payload["actual_fingerprint_hash"])
+            if payload.get("actual_fingerprint_hash") is not None
+            else None
+        ),
+        status=verification_status,
+        comparison_deltas=deltas,
+        unresolved_issues=issues,
+        failure_code=failure_code,
+        failure_evidence_hash=failure_evidence_hash,
+    )
+    row = publish_independent_verification(manager=context.paths, result=result)
+    ref = result.ref()
+    payload["independent_verification"] = {
+        **ref.as_dict(),
+        "registry_row_hash": row["row_hash"],
+    }
+    context.run_result_hash = ref.content_hash
 
 
 def _reproduction_error_payload(

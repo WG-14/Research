@@ -6,6 +6,11 @@ from typing import Any
 
 from market_research.paths import ResearchPathManager
 
+from .data_governance import (
+    DATA_GOVERNANCE_BINDING_SCHEMA_VERSION,
+    DATA_GOVERNANCE_POLICY_GOVERNED,
+    data_governance_report_binding_reasons,
+)
 from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2, REQUIRED_FIELDS_V3
 from .execution_invariants import (
     CAUSAL_TIMELINE_VALIDATOR,
@@ -881,6 +886,29 @@ def build_strategy_research_package(
                 ),
             }
         )
+    package.update(
+        {
+            "data_governance_policy": DATA_GOVERNANCE_POLICY_GOVERNED,
+            "data_governance_binding_schema_version": (
+                DATA_GOVERNANCE_BINDING_SCHEMA_VERSION
+            ),
+            "data_governance_registry_path": report.get(
+                "data_governance_registry_path"
+            ),
+            "data_governance_admission_record_hash": report.get(
+                "data_governance_admission_record_hash"
+            ),
+            "data_governance_admission_row_hash": report.get(
+                "data_governance_admission_row_hash"
+            ),
+            "data_governance_dataset_version_hash": report.get(
+                "data_governance_dataset_version_hash"
+            ),
+            "data_governance_dataset_content_hash": report.get(
+                "data_governance_dataset_content_hash"
+            ),
+        }
+    )
     forbidden = {
         "account",
         "credential",
@@ -926,10 +954,49 @@ def build_strategy_research_package(
         raise StrategyPackageError(
             "strategy_package_research_approval_invalid:" + ",".join(approval_reasons)
         )
+    governance_reasons = data_governance_report_binding_reasons(
+        report,
+        manager=manager,
+        required_purpose="RESEARCH_PACKAGE_EXPORT",
+    )
+    if governance_reasons:
+        raise StrategyPackageError(
+            "strategy_package_data_governance_invalid:" + ",".join(governance_reasons)
+        )
     if not isinstance(approval, dict):
         raise StrategyPackageError(
             "strategy_package_research_approval_invalid:strategy_approval_missing"
         )
+    verification_binding = approval.get("independent_verification")
+    if not isinstance(verification_binding, dict):
+        raise StrategyPackageError(
+            "strategy_package_independent_verification_binding_missing"
+        )
+    verification_ref = {
+        key: verification_binding.get(key)
+        for key in ("verification_id", "version", "content_hash")
+    }
+    if (
+        not all(isinstance(value, str) and value for value in verification_ref.values())
+        or verification_binding.get("status") != "PASS"
+    ):
+        raise StrategyPackageError(
+            "strategy_package_independent_verification_binding_invalid"
+        )
+    package.update(
+        {
+            "independent_verification_ref": verification_ref,
+            "independent_verification_hash": verification_ref["content_hash"],
+            "independent_verification_registry_path": verification_binding.get(
+                "registry_path"
+            ),
+            "independent_verifier_id": verification_binding.get("verifier_id"),
+            "independent_verification_verified_at": verification_binding.get(
+                "verified_at"
+            ),
+            "independent_verification_status": verification_binding.get("status"),
+        }
+    )
     registry_reasons = validate_experiment_registry_binding(
         report=confirmation,
         require_complete=True,

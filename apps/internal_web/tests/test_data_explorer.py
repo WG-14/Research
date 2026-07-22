@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import Client
 from django.urls import reverse
 
@@ -30,6 +32,7 @@ from portal.api_contract import (
     build_openapi_document,
 )
 from portal.research_explorer import ResearchExplorerService
+from portal.models import ResourceAccessGrant
 
 
 pytestmark = pytest.mark.django_db
@@ -373,6 +376,64 @@ def test_dataset_detail_is_verified_path_free_and_read_only(
     assert "/private/datasets" not in screen_body
     assert "do-not-expose" not in screen_body
     assert client.post(response.request["PATH_INFO"]).status_code == 405
+
+
+def test_dataset_grant_filters_collection_and_denies_ungranted_detail(
+    client: Client,
+    runner_user: Any,
+    fake_data_explorer: FakeDataExplorer,
+) -> None:
+    del fake_data_explorer
+    viewer = get_user_model().objects.create_user(
+        username="dataset-grant-viewer",
+        password="test-password",
+    )
+    viewer.groups.add(Group.objects.get(name="research_viewer"))
+    client.force_login(viewer)
+
+    denied_list = client.get(reverse("portal:api-dataset-artifact-list"))
+    denied_page = ResearchListResponse.model_validate(denied_list.json())
+    denied_detail = client.get(
+        reverse(
+            "portal:api-dataset-artifact-detail",
+            args=("immutable-candle:one", "sha256:" + "a" * 64),
+        )
+    )
+
+    assert denied_list.status_code == 200
+    assert denied_page.page.count == 0
+    assert denied_detail.status_code == 404
+    assert ApiErrorEnvelope.model_validate(denied_detail.json()).error.code == (
+        "RESEARCH_RESOURCE_NOT_FOUND"
+    )
+
+    ResourceAccessGrant.objects.create(
+        principal_user=viewer,
+        resource_type=ResourceAccessGrant.ResourceType.DATASET,
+        resource_id="immutable-candle:one",
+        access=ResourceAccessGrant.Access.VIEW,
+        granted_by=runner_user,
+        rationale="approved dataset-only access",
+    )
+    allowed_list = client.get(reverse("portal:api-dataset-artifact-list"))
+    allowed_page = ResearchListResponse.model_validate(allowed_list.json())
+    allowed_detail = client.get(
+        reverse(
+            "portal:api-dataset-artifact-detail",
+            args=("immutable-candle:one", "sha256:" + "a" * 64),
+        )
+    )
+    still_denied = client.get(
+        reverse(
+            "portal:api-dataset-artifact-detail",
+            args=("immutable-candle:two", "sha256:" + "a" * 64),
+        )
+    )
+
+    assert allowed_page.page.count == 1
+    assert allowed_page.items[0].logical_id == "immutable-candle:one"
+    assert allowed_detail.status_code == 200
+    assert still_denied.status_code == 404
 
 
 def test_feature_api_and_html_data_tabs_use_stable_authorities(

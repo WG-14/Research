@@ -129,14 +129,11 @@ def test_default_matrix_records_ten_honest_reassessments() -> None:
         if blocker["current_status"] != "PASS"
     } == {"B-04"}
     pass_blockers = [
-        blocker
-        for blocker in blockers.values()
-        if blocker["current_status"] == "PASS"
+        blocker for blocker in blockers.values() if blocker["current_status"] == "PASS"
     ]
     assert len(pass_blockers) == 18
     assert all(
-        blocker["evidence"]["minimum_level"] == "E4"
-        for blocker in pass_blockers
+        blocker["evidence"]["minimum_level"] == "E4" for blocker in pass_blockers
     )
     repository_root = DEFAULT_MANIFEST.parents[1]
     assert all(
@@ -150,16 +147,20 @@ def test_default_matrix_records_ten_honest_reassessments() -> None:
         for receipt in blocker["evidence"]["receipts"]
     ]
     assert len(receipt_paths) == len(set(receipt_paths)) == 18
-    assert len(
-        {
-            tuple(command["argv"])
-            for blocker in pass_blockers
-            for command in blocker["evidence"]["commands"]
-        }
-    ) == 1
-    assert "tests/test_research_only_capability_guard.py" in blockers["B-01"][
-        "current_assessment"
-    ]["test_evidence"]
+    assert (
+        len(
+            {
+                tuple(command["argv"])
+                for blocker in pass_blockers
+                for command in blocker["evidence"]["commands"]
+            }
+        )
+        == 1
+    )
+    assert (
+        "tests/test_research_only_capability_guard.py"
+        in blockers["B-01"]["current_assessment"]["test_evidence"]
+    )
     assert "evidence" not in blockers["B-04"]
     assert [row["iteration"] for row in blockers["B-04"]["assessment_history"]] == list(
         range(1, 11)

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from market_research.paths import ResearchPathManager
+from market_research.research.datasets.contracts import DatasetArtifactRef
 from market_research.research.governance import (
     GovernanceSubject,
     GovernanceSubjectType,
@@ -39,6 +40,11 @@ from market_research.research.study_lifecycle import (
 from market_research.research.validation_decision import query_validation_decisions
 from market_research.settings import ResearchSettings
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
+from tests.data_governance_fixture import (
+    attach_immutable_dataset_artifact,
+    seed_confirmatory_data_governance,
+)
+from tests.independent_verification_fixture import publish_pass_verification
 
 
 def _manager(tmp_path: Path) -> ResearchPathManager:
@@ -68,6 +74,9 @@ class _ManifestStub:
     canonical: dict[str, Any]
     dataset: Any
     raw: dict[str, Any]
+    market: str = "KRW-BTC"
+    interval: str = "1m"
+    research_standard_binding: Any = None
 
     def canonical_payload(self) -> dict[str, Any]:
         return self.canonical
@@ -79,7 +88,7 @@ class _ManifestStub:
         return sha256_prefixed({"seed_scope": self.canonical})
 
 
-def _manifest() -> _ManifestStub:
+def _manifest(tmp_path: Path) -> _ManifestStub:
     hypothesis = parse_hypothesis_spec(hypothesis_spec_v2())
     split = {
         "train": {"start": "2025-01-01", "end": "2025-06-30"},
@@ -88,8 +97,13 @@ def _manifest() -> _ManifestStub:
     }
     canonical = {
         "experiment_id": "study-lifecycle-experiment",
+        "market": "KRW-BTC",
+        "interval": "1m",
         "hypothesis_spec": hypothesis.as_dict(),
-        "dataset": {"snapshot_id": "immutable-snapshot-1", **split},
+        "dataset": {
+            "snapshot_id": "immutable-snapshot-1",
+            **split,
+        },
         "parameter_space": {"threshold": [1, 2]},
         "acceptance_gate": {"min_trade_count": 10},
         "statistical_validation": {"seed_policy": "derived"},
@@ -103,12 +117,31 @@ def _manifest() -> _ManifestStub:
         "risk_policy": {"max_position_pct": 100},
         "research_run": {"max_workers": 1},
     }
+    canonical, frozen = attach_immutable_dataset_artifact(
+        canonical,
+        root=tmp_path,
+    )
     return _ManifestStub(
         experiment_id="study-lifecycle-experiment",
         hypothesis_spec=hypothesis,
         research_classification="validated_candidate",
         canonical=canonical,
-        dataset=SimpleNamespace(split=SimpleNamespace(as_dict=lambda: split)),
+        dataset=SimpleNamespace(
+            snapshot_id="immutable-snapshot-1",
+            source_content_hash=None,
+            source_schema_hash=None,
+            options={},
+            artifact_ref=DatasetArtifactRef(
+                artifact_manifest_uri=str(frozen["artifact_manifest_uri"]),
+                artifact_manifest_hash=str(frozen["artifact_manifest_hash"]),
+            ),
+            split=SimpleNamespace(
+                train=SimpleNamespace(**split["train"]),
+                validation=SimpleNamespace(**split["validation"]),
+                final_holdout=SimpleNamespace(**split["final_holdout"]),
+                as_dict=lambda: split,
+            ),
+        ),
         raw={},
     )
 
@@ -134,6 +167,7 @@ def _freeze_and_admit(
         "market_research.research.validation_pipeline.validate_validated_research_result",
         lambda *_args, **_kwargs: [],
     )
+    seed_confirmatory_data_governance(manager=manager, manifest=manifest)
     admission = freeze_validation_admission(
         manager=manager,
         manifest=manifest,
@@ -151,12 +185,12 @@ def _freeze_and_admit(
 
 def _report(
     admission: dict[str, Any],
+    manifest: _ManifestStub,
     *,
     result: str,
     content_hash: str,
 ) -> dict[str, Any]:
     del content_hash
-    manifest = _manifest()
     payload = {
         "schema_version": 3,
         "artifact_type": "validated_research_result",
@@ -185,7 +219,7 @@ def test_admission_aligns_standard_states_with_evidence_decisions_and_cas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    manifest = _manifest()
+    manifest = _manifest(tmp_path)
     admission = _freeze_and_admit(
         manager=manager,
         manifest=manifest,
@@ -253,7 +287,7 @@ def test_terminal_result_automatically_publishes_decision_outcome_and_state(
     hash_char: str,
 ) -> None:
     manager = _manager(tmp_path)
-    manifest = _manifest()
+    manifest = _manifest(tmp_path)
     admission = _freeze_and_admit(
         manager=manager,
         manifest=manifest,
@@ -261,6 +295,7 @@ def test_terminal_result_automatically_publishes_decision_outcome_and_state(
     )
     report = _report(
         admission,
+        manifest,
         result=terminal_result,
         content_hash=_hash(hash_char),
     )
@@ -332,7 +367,7 @@ def test_execution_failure_is_inconclusive_and_replay_is_immutable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    manifest = _manifest()
+    manifest = _manifest(tmp_path)
     _freeze_and_admit(
         manager=manager,
         manifest=manifest,
@@ -379,13 +414,18 @@ def test_validated_standard_state_remains_compatible_with_research_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    manifest = _manifest()
+    manifest = _manifest(tmp_path)
     admission = _freeze_and_admit(
         manager=manager,
         manifest=manifest,
         monkeypatch=monkeypatch,
     )
-    report = _report(admission, result="PASS", content_hash=_hash("5"))
+    report = _report(
+        admission,
+        manifest,
+        result="PASS",
+        content_hash=_hash("5"),
+    )
     complete_study_validation(
         manager=manager,
         manifest=manifest,
@@ -422,6 +462,15 @@ def test_validated_standard_state_remains_compatible_with_research_approval(
         manifest.hypothesis_spec.hypothesis_id,
         manifest.hypothesis_spec.version,
     )
+    verification = publish_pass_verification(
+        manager=manager,
+        verification_id="study-lifecycle-verification",
+        verifier_id="independent-verifier-a",
+        experiment_id=str(manifest.experiment_id),
+        source_report_hash=str(report["content_hash"]),
+        manifest_hash=str(manifest.manifest_hash()),
+        source_report=report,
+    )
     approval = approve_strategy_candidate(
         manager=manager,
         subject=candidate,
@@ -436,6 +485,10 @@ def test_validated_standard_state_remains_compatible_with_research_approval(
         reviewer_id="approver-a",
         rationale="independent review accepted the frozen research evidence",
         decided_at="2026-01-04T00:00:00+00:00",
+        independent_verification_ref=verification.ref(),
+        experiment_id=verification.experiment_id,
+        research_version=verification.research_version,
+        originator_actor_ids=frozenset({"researcher-a"}),
     )
 
     assert (

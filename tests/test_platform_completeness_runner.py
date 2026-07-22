@@ -588,6 +588,10 @@ def test_platform_exposes_exact_verify_complete_entrypoint() -> None:
     documentation = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "verify-complete)" in script
+    assert "python tools/update_reference_audit.py --check" in script
+    assert "python tools/render_reference_audit_report.py --check" in script
+    assert 'python tools/reference_audit.py "$@"' in script
+    assert "verify-product-scope)" in script
     assert 'python tools/platform_completeness.py "$@"' in script
     assert "scripts/platform verify-complete" in documentation
 

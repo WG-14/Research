@@ -24,7 +24,7 @@ def test_registry_rejects_original_relation_for_second_version(
     tmp_path: Path,
 ) -> None:
     manager = _manager(tmp_path)
-    original = _manifest_stub()
+    original = _manifest_stub(tmp_path)
     successor, binding = _successor_manifest(original)
     invalid_binding = replace(
         binding,
@@ -50,7 +50,7 @@ def test_registry_rejects_original_relation_for_second_version(
 
 def test_registry_rejects_skipped_same_id_version(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
-    original = _manifest_stub()
+    original = _manifest_stub(tmp_path)
     successor, binding = _successor_manifest(original)
     version_three_spec = replace(successor.hypothesis_spec, version="3.0.0")
     skipped_binding = replace(
@@ -77,7 +77,7 @@ def test_registry_rejects_skipped_same_id_version(tmp_path: Path) -> None:
 
 def test_registry_requires_immediately_prior_same_id_parent(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
-    original = _manifest_stub()
+    original = _manifest_stub(tmp_path)
     successor, binding = _successor_manifest(original)
     publish_manifest_lineage(
         manager=manager,
@@ -207,7 +207,7 @@ def test_public_lineage_publication_rejects_contradictory_compatibility_graph(
     tmp_path: Path,
 ) -> None:
     manager = _manager(tmp_path)
-    manifest = _manifest_stub()
+    manifest = _manifest_stub(tmp_path)
     contradictory_spec = replace(
         manifest.hypothesis_spec,
         hypothesis_text="A contradictory compatibility-only claim.",

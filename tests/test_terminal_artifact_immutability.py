@@ -261,6 +261,11 @@ def test_authoritative_package_verifies_retry_and_preserves_conflict(
         "build_strategy_research_package",
         lambda *_args, **_kwargs: dict(package_state),
     )
+    monkeypatch.setattr(
+        application_module,
+        "publish_data_usage_binding_for_artifact",
+        lambda **_kwargs: {},
+    )
     paths = SimpleNamespace(
         external_output_path=lambda value, *, label: Path(value),
         report_path=lambda *parts: tmp_path.joinpath("reports", *parts),

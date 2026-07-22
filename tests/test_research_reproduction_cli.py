@@ -11,6 +11,10 @@ from market_research.research.cli import (
     cmd_research_backtest,
     cmd_research_reproduce_run,
 )
+from market_research.research.independent_verification import (
+    IndependentVerificationRef,
+    load_independent_verification,
+)
 from market_research.research.validation_protocol import run_research_walk_forward
 from market_research.research_cli.context import ResearchAppContext
 from market_research.research_composition import builtin_strategy_registry
@@ -62,6 +66,9 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
         manifest_path=str(manifest_path),
         receipt_path=str(receipt),
         out_path=str(out),
+        verification_id="sma-success-independent-check",
+        verification_version="1",
+        verifier_id="verifier-a",
     )
 
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -69,6 +76,20 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
     assert payload["status"] == "PASS"
     assert payload["phase"] == "fingerprint_comparison"
     assert payload["mismatches"] == []
+    verification = payload["independent_verification"]
+    loaded = load_independent_verification(
+        manager=context.paths,
+        ref=IndependentVerificationRef(
+            verification_id=verification["verification_id"],
+            version=verification["version"],
+            content_hash=verification["content_hash"],
+        ),
+    )
+    assert loaded.status == "PASS"
+    assert (
+        loaded.source_report_hash
+        == json.loads(receipt.read_text(encoding="utf-8"))["source_report_hash"]
+    )
     assert "/reproductions/" in payload["reproduced_report_path"]
     assert receipt.exists()
 

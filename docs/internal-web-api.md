@@ -49,9 +49,12 @@ filesystem paths or mutate research state.
 ## Authorization and state changes
 
 Django model permission and object authorization are independent checks. The
-object policy supports immutable user or group grants scoped to a manifest,
-experiment, or strategy for view, submission, or review access. An unknown or
-unauthorized object is returned as not found to avoid identifier disclosure.
+object policy supports immutable user or group grants scoped to a dataset,
+manifest, experiment, or strategy. Dataset collections are filtered by exact
+`DATASET` grants unless the actor holds the reviewed broad-dataset permission;
+dataset detail and other unknown or unauthorized objects are returned as not
+found to avoid identifier disclosure. Prefix and wildcard dataset grants are
+not interpreted.
 
 Neither the GUI nor JSON views write job lifecycle fields directly. Submission
 uses `enqueue_research_job`, cancellation uses `request_job_cancellation`, and

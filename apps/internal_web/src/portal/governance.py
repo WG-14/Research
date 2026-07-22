@@ -14,6 +14,7 @@ from market_research.application import (
     ActorContext,
     GovernanceSubjectRef,
     HumanReviewRequest,
+    IndependentVerificationReference,
     RequestedChange,
     ResearchGovernanceApplicationService,
     StrategyApprovalRequest,
@@ -217,6 +218,7 @@ def approve_job_candidate(
         for row in context["prior_reviews"]
         if str(row.get("reviewer_id") or "") and row.get("decision") != "APPROVED"
     }
+    originator_actor_ids = _originator_actor_ids(job)
     actor = _actor(user)
     source_path = resolve_artifact_ref(job.result_ref)
     target = settings.RESEARCH_PATHS.report_path(
@@ -230,6 +232,11 @@ def approve_job_candidate(
     )
     rationale = str(cleaned_data["rationale"])
     resolved_requirement_ids = tuple(cleaned_data.get("resolved_requirement_ids") or ())
+    verification_payload = {
+        "verification_id": str(cleaned_data.get("verification_id") or ""),
+        "version": str(cleaned_data.get("verification_version") or ""),
+        "content_hash": str(cleaned_data.get("verification_hash") or ""),
+    }
     operation_payload_hash = _governance_command_hash(
         {
             "action": GovernanceDecision.Action.APPROVAL,
@@ -239,6 +246,8 @@ def approve_job_candidate(
             "rationale": rationale,
             "resolved_requirement_ids": resolved_requirement_ids,
             "reviewed_artifact_hash": job.result_hash,
+            "independent_verification": verification_payload,
+            "originator_actor_ids": sorted(originator_actor_ids),
         }
     )
     with transaction.atomic():
@@ -261,6 +270,9 @@ def approve_job_candidate(
             actor_id=actor.actor_id,
             duty=GovernanceDutyClaim.Duty.APPROVER,
         )
+        verification = IndependentVerificationReference.model_validate(
+            verification_payload
+        )
         result = ResearchGovernanceApplicationService(
             settings.RESEARCH_PATHS
         ).approve_candidate(
@@ -274,8 +286,10 @@ def approve_job_candidate(
                 resolved_requirement_ids=resolved_requirement_ids,
                 output_path=str(target),
                 expected_source_report_hash=job.result_hash,
+                independent_verification=verification,
+                originator_actor_ids=originator_actor_ids,
                 prohibited_actor_ids=(
-                    _originator_actor_ids(job) | frozenset(prior_reviewer_ids)
+                    originator_actor_ids | frozenset(prior_reviewer_ids)
                 ),
             )
         )
@@ -322,6 +336,7 @@ def approve_job_candidate(
                 "research_job_id": str(job.pk),
                 "source_result_hash": job.result_hash,
                 "approval_hash": result.content_hash,
+                "independent_verification_hash": verification.content_hash,
                 "review_row_hash": result.review_row_hash,
                 "transition_row_hash": result.transition_row_hash,
                 "subject_id": result.subject.subject_id,

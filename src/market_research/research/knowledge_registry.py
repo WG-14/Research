@@ -21,6 +21,10 @@ from .hash_chain import (
     read_hash_chained_jsonl_snapshot,
 )
 from .hashing import canonical_json_bytes, content_hash_payload, sha256_prefixed
+from .data_governance import (
+    DataGovernanceError,
+    require_confirmatory_data_governance,
+)
 from .hypothesis_contract import HypothesisSpec, ObservationSpec, ResearchQuestionSpec
 from .knowledge_contract import (
     AIAdvisoryReview,
@@ -56,6 +60,14 @@ from .research_standard import (
 
 KNOWLEDGE_REGISTRY_SCHEMA_VERSION = 1
 KNOWLEDGE_REGISTRY_HASH_LABEL = "research_knowledge_registry"
+VALIDATION_ADMISSION_GOVERNANCE_BINDING_VERSION = 1
+_VALIDATION_ADMISSION_GOVERNANCE_COMPONENTS = frozenset(
+    {
+        "data_governance_admission_record",
+        "data_governance_admission_row",
+        "data_governance_dataset_version",
+    }
+)
 
 
 class KnowledgeRegistryError(ValueError):
@@ -598,6 +610,7 @@ def freeze_validation_admission(
     manager: ResearchPathManager,
     manifest: Any,
     admitted_at: str | None = None,
+    bind_data_governance: bool = False,
 ) -> dict[str, Any]:
     """Materialize lineage and freeze the validation manifest before data access.
 
@@ -606,14 +619,27 @@ def freeze_validation_admission(
     the current manifest a canonical, queryable registry record.
     """
 
-    if requires_candidate_validation(
+    candidate_validation = requires_candidate_validation(
         getattr(manifest, "research_classification", None)
-    ):
+    )
+    data_governance_admission: dict[str, Any] | None = None
+    governance_required = candidate_validation or bind_data_governance
+    if candidate_validation:
         try:
             require_point_in_time_scope(manifest, verify_source_content=True)
         except PointInTimeSelectionError as exc:
             raise KnowledgeRegistryError(
                 f"validation_point_in_time_admission_failed:{exc}"
+            ) from exc
+    if governance_required:
+        try:
+            data_governance_admission = require_confirmatory_data_governance(
+                manager=manager,
+                manifest=manifest,
+            )
+        except DataGovernanceError as exc:
+            raise KnowledgeRegistryError(
+                f"validation_data_governance_admission_failed:{exc}"
             ) from exc
     hypothesis = getattr(manifest, "hypothesis_spec", None)
     if not isinstance(hypothesis, HypothesisSpec) or hypothesis.schema_version != 2:
@@ -622,6 +648,21 @@ def freeze_validation_admission(
         _require_timestamp(admitted_at, "validation_admission.admitted_at")
     timestamp = admitted_at or datetime.now(timezone.utc).isoformat()
     component_hashes = _manifest_component_hashes(manifest)
+    if data_governance_admission is not None:
+        component_hashes.update(
+            {
+                "data_governance_admission_record": data_governance_admission[
+                    "admission_record_hash"
+                ],
+                "data_governance_admission_row": data_governance_admission[
+                    "admission_row_hash"
+                ],
+                "data_governance_dataset_version": data_governance_admission[
+                    "dataset_version_hash"
+                ],
+            }
+        )
+        component_hashes = dict(sorted(component_hashes.items()))
     manifest_hash = str(manifest.manifest_hash())
     hypothesis_ref = KnowledgeRef(
         "hypothesis",
@@ -697,7 +738,7 @@ def freeze_validation_admission(
             )
         )
     admission_row = rows[preregistration_descriptor.key]
-    return {
+    result = {
         **publication,
         "admission": deepcopy(admission_row),
         "admission_record_hash": admission_row["record_hash"],
@@ -705,6 +746,9 @@ def freeze_validation_admission(
         "manifest_hash": manifest_hash,
         "component_hashes": component_hashes,
     }
+    if data_governance_admission is not None:
+        result["data_governance"] = deepcopy(data_governance_admission)
+    return result
 
 
 def require_validation_admission(
@@ -712,17 +756,31 @@ def require_validation_admission(
     manager: ResearchPathManager,
     manifest: Any,
     expected_row_hash: str | None = None,
+    bind_data_governance: bool = False,
 ) -> dict[str, Any]:
     """Return the exact canonical admission or fail on manifest/component drift."""
 
-    if requires_candidate_validation(
+    candidate_validation = requires_candidate_validation(
         getattr(manifest, "research_classification", None)
-    ):
+    )
+    data_governance_admission: dict[str, Any] | None = None
+    governance_required = candidate_validation or bind_data_governance
+    if candidate_validation:
         try:
             require_point_in_time_scope(manifest, verify_source_content=True)
         except PointInTimeSelectionError as exc:
             raise KnowledgeRegistryError(
                 f"validation_point_in_time_admission_failed:{exc}"
+            ) from exc
+    if governance_required:
+        try:
+            data_governance_admission = require_confirmatory_data_governance(
+                manager=manager,
+                manifest=manifest,
+            )
+        except DataGovernanceError as exc:
+            raise KnowledgeRegistryError(
+                f"validation_data_governance_admission_failed:{exc}"
             ) from exc
     validation = validate_knowledge_registry(manager)
     if validation["status"] != "PASS":
@@ -750,7 +808,28 @@ def require_validation_admission(
         raise KnowledgeRegistryError("validation_admission_manifest_hash_mismatch")
     if payload.get("hypothesis_ref") != expected_ref.as_dict():
         raise KnowledgeRegistryError("validation_admission_hypothesis_ref_mismatch")
-    if payload.get("component_hashes") != _manifest_component_hashes(manifest):
+    if governance_required and not _has_validation_governance_components(payload):
+        raise KnowledgeRegistryError(
+            "validation_admission_legacy_non_governed_v1_immutable:"
+            "issue_new_manifest_version_or_experiment_id"
+        )
+    expected_component_hashes = _manifest_component_hashes(manifest)
+    if data_governance_admission is not None:
+        expected_component_hashes.update(
+            {
+                "data_governance_admission_record": data_governance_admission[
+                    "admission_record_hash"
+                ],
+                "data_governance_admission_row": data_governance_admission[
+                    "admission_row_hash"
+                ],
+                "data_governance_dataset_version": data_governance_admission[
+                    "dataset_version_hash"
+                ],
+            }
+        )
+        expected_component_hashes = dict(sorted(expected_component_hashes.items()))
+    if payload.get("component_hashes") != expected_component_hashes:
         raise KnowledgeRegistryError("validation_admission_component_hash_mismatch")
     standard_binding = getattr(manifest, "research_standard_binding", None)
     if standard_binding is not None:
@@ -1029,6 +1108,62 @@ def verify_decision_record(
     return row
 
 
+def _validation_governance_components(
+    payload: Mapping[str, Any] | object,
+) -> dict[str, str]:
+    if not isinstance(payload, Mapping):
+        return {}
+    component_hashes = payload.get("component_hashes")
+    if not isinstance(component_hashes, Mapping):
+        return {}
+    return {
+        key: str(component_hashes[key])
+        for key in _VALIDATION_ADMISSION_GOVERNANCE_COMPONENTS
+        if isinstance(component_hashes.get(key), str)
+    }
+
+
+def _has_validation_governance_components(
+    payload: Mapping[str, Any] | object,
+) -> bool:
+    return (
+        set(_validation_governance_components(payload))
+        == _VALIDATION_ADMISSION_GOVERNANCE_COMPONENTS
+    )
+
+
+def _raise_validation_governance_identity_conflict(
+    *, existing: Mapping[str, Any], descriptor: _Descriptor
+) -> None:
+    existing_components = _validation_governance_components(existing.get("payload"))
+    incoming_components = _validation_governance_components(descriptor.payload)
+    existing_governed = (
+        set(existing_components) == _VALIDATION_ADMISSION_GOVERNANCE_COMPONENTS
+    )
+    incoming_governed = (
+        set(incoming_components) == _VALIDATION_ADMISSION_GOVERNANCE_COMPONENTS
+    )
+    migration = "issue_new_manifest_version_or_experiment_id"
+    version = VALIDATION_ADMISSION_GOVERNANCE_BINDING_VERSION
+    if incoming_governed and not existing_governed:
+        raise KnowledgeRegistryError(
+            f"validation_admission_legacy_non_governed_v{version}_immutable:{migration}"
+        )
+    if existing_governed and not incoming_governed:
+        raise KnowledgeRegistryError(
+            f"validation_admission_governance_v{version}_downgrade_forbidden:"
+            f"{migration}"
+        )
+    if (
+        existing_governed
+        and incoming_governed
+        and (existing_components != incoming_components)
+    ):
+        raise KnowledgeRegistryError(
+            f"validation_admission_governance_v{version}_identity_conflict:{migration}"
+        )
+
+
 def _publish_descriptors(
     *, manager: ResearchPathManager, descriptors: tuple[_Descriptor, ...]
 ) -> dict[tuple[str, str, str], dict[str, Any]]:
@@ -1054,6 +1189,11 @@ def _publish_descriptors(
                 if _descriptor_replays_existing(descriptor, existing):
                     published[descriptor.key] = deepcopy(existing)
                     continue
+                if descriptor.record_type == "preregistration":
+                    _raise_validation_governance_identity_conflict(
+                        existing=existing,
+                        descriptor=descriptor,
+                    )
                 raise KnowledgeRegistryError("knowledge_record_version_collision")
             previous = next(
                 (

@@ -416,6 +416,21 @@ class CandidateApprovalForm(forms.Form):
         max_length=4000,
         widget=forms.Textarea(attrs={"rows": 5}),
     )
+    verification_id = forms.RegexField(
+        label="독립 검증 ID",
+        regex=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$",
+        max_length=255,
+    )
+    verification_version = forms.RegexField(
+        label="독립 검증 버전",
+        regex=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$",
+        max_length=255,
+    )
+    verification_hash = forms.RegexField(
+        label="독립 검증 결과 hash",
+        regex=r"^sha256:[0-9a-f]{64}$",
+        max_length=71,
+    )
     resolved_requirement_ids = forms.CharField(
         label="해결한 요구사항 ID",
         required=False,

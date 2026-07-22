@@ -167,6 +167,12 @@ def _dispatch_research_command(
                 manifest_path=args.manifest,
                 receipt_path=args.receipt,
                 out_path=args.out,
+                verification_id=args.verification_id,
+                verification_version=args.verification_version,
+                verifier_id=args.verifier,
+                verifier_role=args.verifier_role,
+                verified_at=args.verified_at,
+                unresolved_issues=tuple(args.unresolved_issue),
             )
         )
     if command == "research-registry-inspect":
@@ -249,6 +255,10 @@ def _dispatch_research_command(
                 reviewer_id=args.reviewer,
                 rationale=args.rationale,
                 resolved_requirement_ids=tuple(args.resolved_requirement),
+                verification_id=args.verification_id,
+                verification_version=args.verification_version,
+                verification_hash=args.verification_hash,
+                originator_ids=tuple(args.originator),
                 out_path=args.out,
             )
         )

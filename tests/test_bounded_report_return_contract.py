@@ -20,7 +20,10 @@ from market_research.research.validation_protocol import (
     run_research_backtest,
     run_research_walk_forward,
 )
-from market_research.research.hashing import sha256_prefixed
+from market_research.research.hashing import (
+    report_content_hash_payload,
+    sha256_prefixed,
+)
 from market_research.research_composition import builtin_strategy_registry
 from tests.test_frozen_dataset_multi_split_integration import (
     frozen_manifest_and_manager,
@@ -74,6 +77,20 @@ def test_bounded_report_returns_compact_candidates_and_binds_external_full_detai
         f"{report_name}_report.json",
     )
     persisted = json.loads(persisted_path.read_text(encoding="utf-8"))
+    assert returned["schema_version"] == 2
+    assert persisted["schema_version"] == 2
+    assert persisted["content_hash"] == sha256_prefixed(
+        report_content_hash_payload(persisted),
+        label="report_content_hash",
+    )
+    derived_candidates = json.loads(
+        Path(persisted["derived_candidates_path"]).read_text(encoding="utf-8")
+    )
+    assert derived_candidates["schema_version"] == 2
+    assert persisted["derived_candidates_hash"] == sha256_prefixed(
+        report_content_hash_payload(derived_candidates),
+        label="derived_candidate_summary",
+    )
     persisted_candidate = persisted["candidates"][0]
     assert returned_candidate == persisted_candidate
 

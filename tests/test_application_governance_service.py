@@ -13,6 +13,7 @@ from market_research.application import (
     GovernanceSubjectRef,
     HumanReviewRequest,
     HumanReviewResult,
+    IndependentVerificationReference,
     RequestedChange,
     ResearchGovernanceApplicationService,
     StrategyApprovalRequest,
@@ -40,10 +41,12 @@ from market_research.research.hashing import (
     report_content_hash_payload,
     sha256_prefixed,
 )
+from tests.independent_verification_fixture import publish_pass_verification
 from tests.test_run_lifecycle import _context
 from tests.test_strategy_research_package import (
     _bind_selected_candidate_artifact,
     _bind_validation_admission,
+    _publish_terminal_usage_binding,
     _result,
 )
 
@@ -118,7 +121,9 @@ def _prepare_reviewable_candidate(manager: ResearchPathManager) -> None:
         )
 
 
-def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]:
+def _prepare_approval_report(
+    tmp_path: Path,
+) -> tuple[object, dict[str, object], IndependentVerificationReference]:
     context = _context(tmp_path)
     manager = context.paths
     report = _result()
@@ -180,6 +185,12 @@ def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]
         label="final_holdout_confirmation",
     )
     _bind_selected_candidate_artifact(report, manager)
+    report.update(
+        {
+            "reproduction_receipt_status": "AVAILABLE",
+            "reproduction_receipt_scope": "validated_research_result",
+        }
+    )
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
 
     candidate = GovernanceSubject(
@@ -252,7 +263,33 @@ def _prepare_approval_report(tmp_path: Path) -> tuple[object, dict[str, object]]
             reason=f"advance hypothesis to {target}",
             evidence_hashes=evidence,
         )
-    return context, report
+    verification_result = publish_pass_verification(
+        manager=manager,
+        verification_id="application-governance-verification",
+        verifier_id="independent-verifier-a",
+        experiment_id=str(report["experiment_id"]),
+        source_report_hash=str(report["content_hash"]),
+        manifest_hash=str(report["manifest_hash"]),
+        source_report=report,
+    )
+    report.update(
+        {
+            "reproduction_receipt_path": verification_result.baseline_receipt_path,
+            "reproduction_receipt_hash": verification_result.baseline_receipt_hash,
+        }
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    _publish_terminal_usage_binding(report, manager)
+    ref = verification_result.ref()
+    return (
+        context,
+        report,
+        IndependentVerificationReference(
+            verification_id=ref.verification_id,
+            version=ref.version,
+            content_hash=ref.content_hash,
+        ),
+    )
 
 
 def _approval_request(
@@ -260,6 +297,7 @@ def _approval_request(
     report_path: Path,
     output_path: Path,
     idempotency_key: str | None = None,
+    independent_verification: IndependentVerificationReference | None = None,
 ) -> StrategyApprovalRequest:
     return StrategyApprovalRequest(
         source_report_path=str(report_path),
@@ -272,6 +310,16 @@ def _approval_request(
         rationale="human research review passed",
         output_path=str(output_path),
         idempotency_key=idempotency_key,
+        independent_verification=(
+            independent_verification
+            or IndependentVerificationReference(
+                verification_id="unresolved-verification",
+                version="1",
+                content_hash="sha256:" + "0" * 64,
+            )
+        ),
+        originator_actor_ids=frozenset({"researcher-a"}),
+        prohibited_actor_ids=frozenset({"researcher-a"}),
     )
 
 
@@ -408,6 +456,13 @@ def test_approval_enforces_its_own_permission_before_report_access(
         ),
         rationale="review passed",
         output_path=str(tmp_path / "approval.json"),
+        independent_verification=IndependentVerificationReference(
+            verification_id="unresolved-verification",
+            version="1",
+            content_hash="sha256:" + "0" * 64,
+        ),
+        originator_actor_ids=frozenset({"researcher-a"}),
+        prohibited_actor_ids=frozenset({"researcher-a"}),
     )
 
     with pytest.raises(ApplicationAuthorizationError):
@@ -422,13 +477,14 @@ def test_identical_approval_replay_materializes_same_artifact_and_changed_intent
         "market_research.application.governance_service.validate_final_selection_report",
         lambda report: [],
     )
-    context, report = _prepare_approval_report(tmp_path)
+    context, report, verification = _prepare_approval_report(tmp_path)
     report_path = tmp_path / "validated-report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     first_output = tmp_path / "approval-1.json"
     request = _approval_request(
         report_path=report_path,
         output_path=first_output,
+        independent_verification=verification,
     )
     service = ResearchGovernanceApplicationService(context.paths)
 
@@ -467,7 +523,7 @@ def test_approval_commit_survives_projection_failure_and_exact_replay_recovers(
         "market_research.application.governance_service.validate_final_selection_report",
         lambda report: [],
     )
-    context, report = _prepare_approval_report(tmp_path)
+    context, report, verification = _prepare_approval_report(tmp_path)
     report_path = tmp_path / "validated-report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     output_path = tmp_path / "approval.json"
@@ -475,6 +531,7 @@ def test_approval_commit_survives_projection_failure_and_exact_replay_recovers(
         report_path=report_path,
         output_path=output_path,
         idempotency_key="recoverable-approval-request",
+        independent_verification=verification,
     )
     service = ResearchGovernanceApplicationService(context.paths)
     real_publish = service_module.write_json_atomic_create_or_verify
@@ -520,7 +577,7 @@ def test_approval_explicit_key_conflict_and_projection_no_clobber(
         "market_research.application.governance_service.validate_final_selection_report",
         lambda report: [],
     )
-    context, report = _prepare_approval_report(tmp_path)
+    context, report, verification = _prepare_approval_report(tmp_path)
     report_path = tmp_path / "validated-report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     output_path = tmp_path / "approval.json"
@@ -529,6 +586,7 @@ def test_approval_explicit_key_conflict_and_projection_no_clobber(
         report_path=report_path,
         output_path=output_path,
         idempotency_key="fixed-request-key",
+        independent_verification=verification,
     )
     service = ResearchGovernanceApplicationService(context.paths)
 
@@ -549,7 +607,7 @@ def test_approval_projection_rejects_symlink_path_before_governance_commit(
         "market_research.application.governance_service.validate_final_selection_report",
         lambda report: [],
     )
-    context, report = _prepare_approval_report(tmp_path)
+    context, report, verification = _prepare_approval_report(tmp_path)
     report_path = tmp_path / "validated-report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     real_target = tmp_path / "real-approval.json"
@@ -562,6 +620,7 @@ def test_approval_projection_rejects_symlink_path_before_governance_commit(
             _approval_request(
                 report_path=report_path,
                 output_path=link_target,
+                independent_verification=verification,
             )
         )
 
@@ -580,7 +639,7 @@ def test_cli_approval_adapter_preserves_success_output_and_exit_code(
         "market_research.application.governance_service.validate_final_selection_report",
         lambda report: [],
     )
-    context, report = _prepare_approval_report(tmp_path)
+    context, report, verification = _prepare_approval_report(tmp_path)
     output: list[str] = []
     context.printer = output.append
     report_path = tmp_path / "validated-report.json"
@@ -594,6 +653,10 @@ def test_cli_approval_adapter_preserves_success_output_and_exit_code(
         reviewer_id="approver-a",
         rationale="human research review passed",
         resolved_requirement_ids=(),
+        verification_id=verification.verification_id,
+        verification_version=verification.version,
+        verification_hash=verification.content_hash,
+        originator_ids=("researcher-a",),
         out_path=str(approval_path),
     )
 
@@ -603,3 +666,37 @@ def test_cli_approval_adapter_preserves_success_output_and_exit_code(
     assert output == [
         f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] content_hash={approval['content_hash']}"
     ]
+
+
+def test_cli_approval_rejects_verifier_declared_as_originator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "market_research.application.governance_service.validate_final_selection_report",
+        lambda report: [],
+    )
+    context, report, verification = _prepare_approval_report(tmp_path)
+    output: list[str] = []
+    context.printer = output.append
+    report_path = tmp_path / "validated-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    approval_path = tmp_path / "approval.json"
+
+    rc = cli.cmd_research_approve_strategy_candidate(
+        context=context,
+        result_path=str(report_path),
+        subject_version="1",
+        reviewer_id="approver-a",
+        rationale="must reject an originator acting as verifier",
+        resolved_requirement_ids=(),
+        verification_id=verification.verification_id,
+        verification_version=verification.version,
+        verification_hash=verification.content_hash,
+        originator_ids=("independent-verifier-a",),
+        out_path=str(approval_path),
+    )
+
+    assert rc == 1
+    assert not approval_path.exists()
+    assert any("independent_verifier_separation_violation" in line for line in output)

@@ -105,6 +105,14 @@ remove, or rewrite group or direct-permission assignments. RBAC seed migrations
 and isolated test fixtures may materialize reviewed roles; they are not a
 runtime grant workflow.
 
+Research exploration applies a second, object-level decision after the role
+check. Dataset access uses immutable exact-ID `DATASET` grants; collection
+responses omit ungranted records and detail routes return not found. Reviewed
+runner, reviewer, approver, and administrator roles receive the explicit
+`view_all_research_datasets` permission through a schema migration. The viewer
+role requires a dataset-specific grant, so possession of generic
+`research.view` alone does not disclose dataset identities.
+
 ## Capability and GUI policy
 
 Policy meanings are contractual:

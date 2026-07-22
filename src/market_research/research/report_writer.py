@@ -159,8 +159,6 @@ def finalize_research_report_payload(
             manager=manager,
         )
     )
-    report_payload["schema_version"] = 2
-    derived_candidates_payload["schema_version"] = 2
     report_payload["artifact_refs"] = research_artifact_refs(paths, manager=manager)
     report_payload["artifact_paths"] = research_artifact_paths(paths)
     report_payload.setdefault("artifact_hashes", {})["derived_candidates"] = (
@@ -671,6 +669,7 @@ def _reference_first_report_payload(
     candidates = list(report_payload.get("candidates", []))
     report_detail = _report_detail(report_payload)
     derived_candidates_payload = {
+        "schema_version": 2,
         "detail_policy": f"{report_detail}_bounded"
         if report_detail in {"index", "summary", "standard"}
         else "full",
@@ -679,6 +678,9 @@ def _reference_first_report_payload(
             for candidate in candidates
         ],
     }
+    # Every report path, including the bounded streaming writer, must identify
+    # its Research Semantics version in the immutable payload itself.
+    report_payload["schema_version"] = 2
     derived_candidates_hash = sha256_prefixed(
         report_content_hash_payload(derived_candidates_payload),
         label="derived_candidates_payload_hash",

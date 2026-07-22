@@ -1,0 +1,5225 @@
+# 투자 연구 전용 플랫폼 완전성 감사 — 최종 보고서
+
+기준 원문 SHA-256: `f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae`  
+실행 지시 SHA-256: `26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`  
+평가 대상: base commit `378081dcbf1caf758bb0d7981798d6a70204c7ec` + 이 보고서에 결속된 working-tree assessment surface
+
+## 13.1 Executive Verdict
+
+| 항목 | 결과 |
+| --- | --- |
+| 최종 판정 | NOT_AN_INVESTMENT_RESEARCH_PLATFORM |
+| 총점 | 71.9948/100 (raw 71.9948, cap 84) |
+| 수행한 반복 횟수 | 5 |
+| 완전 충족(VERIFIED) 판정 기준 수 | 76/184 |
+| 부분·미충족·미검증 기준 수 | 108/184 (IMPLEMENTED_NOT_VERIFIED=71, PARTIAL=27, DOCUMENTATION_ONLY=7, PLACEHOLDER=0, MISSING=2, OUT_OF_SCOPE_VIOLATION=0, UNVERIFIED_EXTERNAL=1) |
+| 치명적 결함 수 | 1 (FG-06) |
+| 미검증 치명 게이트 수 | 0 (없음) |
+| Critical 기준 통과율 | 36/72 (50.0%) |
+| 종단 간 재현 성공 여부 | same-state production E2E 2회 성공(441.41s, retained 383.12s); cold-host 증거 없음 |
+| 시점 정확성 검증 여부 | YES — PIT/revision/future-suffix 적대 테스트 |
+| 독립 검증 가능 여부 | PARTIAL — retained PASS 객체는 있으나 caller ID가 비인증 문자열이고 terminal source 검증이 얕음 |
+| 연구·실거래 경계 준수 여부 | YES |
+
+이 레포는 불변 데이터, 시점 조회, 가설과 holdout lifecycle, 결정론적 실행, 통계 검증, 리뷰와 package가 production 경로로 연결된 통합 연구 시스템이다. 이번 작업은 receipt/report hash 결속, exact terminal/package DataUsageBinding, terminal holdout 재실행, package HTML/JSON dataset 권한을 구조적으로 보강했다. production E2E는 수정 후 441.41초에 통과했고, 별도 retained run도 383.12초에 통과해 실제 manifest→validation→reproduction→verification→approval→package artifact와 hash를 외부 경로에 남겼다. 그러나 originator/verifier identity는 호출자가 제공하는 인증되지 않은 문자열이어서 FG-06의 독립 검증 주체를 신뢰할 수 없고, terminal schema-3 원천 보고서의 독립 검증기 내부 full-contract 검사와 별도 cold-host 증거도 없다. 원문의 치명 gate 우선 규칙에 따라 최종 판정은 `NOT_AN_INVESTMENT_RESEARCH_PLATFORM`이다. 시장충격·ADV·용량, ResearchProject 격리, fully nested selection도 핵심 공백이다.
+
+## 13.2 Repository Profile
+
+| 항목 | 값 |
+| --- | --- |
+| 레포 이름 | market-research platform monorepo |
+| root | `/home/vorac/work/Research` |
+| commit / branch / dirty | `378081dcbf1caf758bb0d7981798d6a70204c7ec` / `main` / true |
+| 기술 스택 | Python 3.12, uv workspace, pandas, Pydantic, Django, PostgreSQL/psycopg, SQLite |
+| 실행 진입점 | `scripts/platform`, `market-research`, Django portal, `research-ops` |
+| 테스트 | pytest, pytest-django, property/integration/boundary tests |
+| 데이터 저장 | 외부 SQLite/immutable files/JSONL; 운영 PostgreSQL |
+| 실험 추적 | append-only experiment/knowledge/governance registries |
+| 오케스트레이션 | offline validation pipeline + fenced operations workers |
+| UI/API/CLI | authenticated Django HTML/JSON API + deterministic CLI |
+| 외부 서비스 | externally prepared market datasets; 운영 DB/TLS/backup/alert |
+| 미검증 인프라 | production PostgreSQL/TLS/PKI/backup/alert 및 독립 host |
+
+## 13.3 Evidence Summary
+
+| 구성요소 | 상태 | 핵심 증거 | 실행 검증 | 주요 공백 |
+| --- | --- | --- | --- | --- |
+| A. 연구 범위와 경계 | PARTIAL | AST/import/capability guard와 3개 distribution의 단방향 경계 | 5개 기준 특정 test file, M4+ 7/8; 실제 명령 ledger는 §13.10 | 외부 독립 배포 현장 증거는 미검증 |
+| B. 데이터 정확성·시점성·품질 | PARTIAL | 불변 freeze, PIT/revision/universe, 새 governance authority | 10개 기준 특정 test file, M4+ 9/22; 실제 명령 ledger는 §13.10 | 기업행위 종단간 소비와 실공급자 E5 비교가 불완전 |
+| C. 재현성과 버전 관리 | PARTIAL | commit/data/env/parameter/seed receipt와 same-state replay | 15개 기준 특정 test file, M4+ 12/20; 실제 명령 ledger는 §13.10 | 빈 환경에서 데이터·환경·소스를 자동 복원하지 못함 |
+| D. 가설·연구 생애주기·실험 설계 | PARTIAL | 검증 가능한 가설, 사전등록, holdout lifecycle, governance admission | 10개 기준 특정 test file, M4+ 11/17; 실제 명령 ledger는 §13.10 | ResearchProject/workspace aggregate 부재 |
+| E. 백테스트·체결·비용 시뮬레이션 | PARTIAL | causal view, ledger, fee/slippage/latency/partial-fill scenarios | 16개 기준 특정 test file, M4+ 11/26; 실제 명령 ledger는 §13.10 | ADV 참여·시장충격·용량·short/funding 일반 계약 부재 |
+| F. 통계·강건성·현실성 검증 | PARTIAL | multiple testing, WRC, holdout, walk-forward, stress/concentration | 13개 기준 특정 test file, M4+ 8/25; 실제 명령 ledger는 §13.10 | fully nested selection·placebo·factor·provider sensitivity 부족 |
+| G. 독립 검증·리뷰·거버넌스 | PARTIAL | 불변 verification result, 승인 gate, 실패 보존, retained same-state E2E | 10개 기준 특정 test file, M4+ 7/16; 실제 명령 ledger는 §13.10 | originator/verifier가 인증 principal이 아니며 terminal schema-3 원천 보고서의 독립 검증이 얕음 |
+| H. 산출물·계보·지식 관리 | PARTIAL | 불변 package/evidence graph, exact governed usage commit, 실패 연구 검색 | 10개 기준 특정 test file, M4+ 3/21; 실제 명령 ledger는 §13.10 | artifact/usage 출판의 트랜잭션 원자성과 고급 지식 검색이 제한적 |
+| I. 보안·권한·감사·관측성 | PARTIAL | RBAC, dataset grants, package list/detail/diff/lineage 은닉, audit outbox/hash chain | 12개 기준 특정 test file, M4+ 4/14; 실제 명령 ledger는 §13.10 | 인증된 CLI principal·프로젝트 격리·license download·실행형 retention 정책 부족 |
+| J. 아키텍처·사용성·협업·확장성 | PARTIAL | 분리 배포, application contracts, CLI/web/ops, resource limits | 13개 기준 특정 test file, M4+ 4/15; 실제 명령 ledger는 §13.10 | 프로젝트 UI와 CPU/GPU quota, 일부 end-user workflow 부족 |
+
+## 13.4 Fatal Gate Results
+
+| 게이트 | 판정 | 확인 방법 | 증거 | 영향 | 완화 가능 | 필수 조치 |
+| --- | --- | --- | --- | --- | --- | --- |
+| FG-01 실거래 경계 위반 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py | 연구 전용 dependency/AST/capability guard와 CI 음성 테스트가 주문·계정·실거래 기능을 차단한다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-02 시점 정확성 보장 불가 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py | 지원하는 수정 가능 authority는 event/effective와 known/available 시간을 분리하고 과거 조회를 제공한다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-03 미래정보 누출 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_future_suffix_invariance.py | causal prefix view와 future-suffix invariance/knowledge-time 음성 테스트가 미래 사용을 차단한다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-04 생존편향 통제 불가 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py | PIT universe가 listing/inactive/delisted 이력을 보존하고 시뮬레이션 선택에 적용된다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-05 사용 데이터 버전 확인 불가 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py | 공식 frozen artifact, manifest, row/query/snapshot hashes가 실행과 package에 결속된다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-06 결과 재현 불가 | FAIL | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py | retained local production E2E의 same-state 재실행·비교는 PASS지만 새 환경에서 잠금 환경과 외부 immutable dataset을 자동 복원하지 않는다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 잠금 환경과 immutable dataset을 빈 외부 root에서 복원하고 별도 검증자가 수동 개입 없이 재실행한 불변 PASS 증거를 승격 gate에 결속한다. |
+| FG-07 홀드아웃 오염 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_registry_dataset_evidence.py | final holdout 예약·완료·재사용 authority가 중복 접근과 동시 사용을 차단한다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-08 추적되지 않은 수동 처리 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py | 공식 결과는 CLI/module pipeline이며 notebook/Excel/copy-paste 단계를 요구하지 않는다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-09 거래비용 전후 결과 왜곡 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py | 확정 검증은 양의 base cost와 stress를 요구하고 gross/net/cost sensitivity를 함께 보존한다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-10 독립 검증 구조 부재 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py | 검증자 identity와 terminal 결과/receipt를 결속한 append-only IndependentVerificationResult가 승인 승격 gate에 필수다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-11 공식 산출물 변경 가능 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_terminal_artifact_immutability.py | terminal/package publication은 create-or-verify 또는 append-only hash chain이며 충돌/변조 테스트가 있다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+| FG-12 부정적 결과 삭제 또는 은폐 | PASS | PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py | 실패·기각·inconclusive 결과와 전체 후보 분포를 보존하고 검색한다. | FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다. | YES | 현재 음성/회귀 증거를 유지한다. |
+
+## 13.5 Domain Scores
+
+| 영역 | 배점 | 획득 점수 | 핵심 강점 | 핵심 공백 |
+| --- | ---: | ---: | --- | --- |
+| A. 연구 범위와 경계 | 5 | 4.1324 | AST/import/capability guard와 3개 distribution의 단방향 경계 | 외부 독립 배포 현장 증거는 미검증 |
+| B. 데이터 정확성·시점성·품질 | 15 | 11.0294 | 불변 freeze, PIT/revision/universe, 새 governance authority | 기업행위 종단간 소비와 실공급자 E5 비교가 불완전 |
+| C. 재현성과 버전 관리 | 15 | 11.5561 | commit/data/env/parameter/seed receipt와 same-state replay | 빈 환경에서 데이터·환경·소스를 자동 복원하지 못함 |
+| D. 가설·연구 생애주기·실험 설계 | 10 | 7.0125 | 검증 가능한 가설, 사전등록, holdout lifecycle, governance admission | ResearchProject/workspace aggregate 부재 |
+| E. 백테스트·체결·비용 시뮬레이션 | 15 | 9.3875 | causal view, ledger, fee/slippage/latency/partial-fill scenarios | ADV 참여·시장충격·용량·short/funding 일반 계약 부재 |
+| F. 통계·강건성·현실성 검증 | 15 | 9.4138 | multiple testing, WRC, holdout, walk-forward, stress/concentration | fully nested selection·placebo·factor·provider sensitivity 부족 |
+| G. 독립 검증·리뷰·거버넌스 | 10 | 6.7222 | 불변 verification result, 승인 gate, 실패 보존, retained same-state E2E | originator/verifier가 인증 principal이 아니며 terminal schema-3 원천 보고서의 독립 검증이 얕음 |
+| H. 산출물·계보·지식 관리 | 10 | 6.4314 | 불변 package/evidence graph, exact governed usage commit, 실패 연구 검색 | artifact/usage 출판의 트랜잭션 원자성과 고급 지식 검색이 제한적 |
+| I. 보안·권한·감사·관측성 | 5 | 3.0417 | RBAC, dataset grants, package list/detail/diff/lineage 은닉, audit outbox/hash chain | 인증된 CLI principal·프로젝트 격리·license download·실행형 retention 정책 부족 |
+| J. 아키텍처·사용성·협업·확장성 | 5 | 3.2679 | 분리 배포, application contracts, CLI/web/ops, resource limits | 프로젝트 UI와 CPU/GPU quota, 일부 end-user workflow 부족 |
+
+점수는 각 영역에서 Critical=3, Major=2, Supporting=1 가중치와 M0~M5 배율을 적용한 뒤 영역 배점에 비례 환산했다. raw 합계에 원문 상한 규칙을 적용한다. 또한 원문의 특수 우선순위에 따라 FG-03 또는 FG-06이 FAIL이면 점수와 무관하게 `NOT_AN_INVESTMENT_RESEARCH_PLATFORM`으로 강등한다.
+
+## 13.6 Criterion-Level Matrix
+
+| 기준 ID | 요구 | 중요도 | 성숙도 | 판정 | 구현된 내용 | 실행 명령·검증 증거 | 누락·위험 | 수정 요구사항 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A-01 | 연구 전용 플랫폼 목적이 코드와 문서에 일관되게 정의되어 있는가 | Critical | M4 | VERIFIED | `docs/monorepo-architecture.md` — research-only scope and operational separation | `tests/test_repository_research_only_boundary.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 연구 전용 플랫폼 목적이 코드와 문서에 일관되게 정의되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| A-02 | 실거래 주문 연결이 존재하지 않는가 | Critical | M4 | VERIFIED | `src/market_research/research/strategy_package.py` — research-only package limitations and capability denial | `tests/test_research_only_capability_guard.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_only_capability_guard.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실거래 주문 연결이 존재하지 않는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| A-03 | 실시간 포지션·손익·자본 배분 기능이 분리되어 있는가 | Critical | M4 | VERIFIED | `docs/monorepo-architecture.md` — research-only scope and operational separation | `tests/test_repository_research_only_boundary.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실시간 포지션·손익·자본 배분 기능이 분리되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| A-04 | 오프라인 체결 시뮬레이션과 실거래 실행이 구조적으로 구분되는가 | Major | M4 | VERIFIED | `src/market_research/research/simulation_engine.py` — offline signal, order, fill, ledger, and cost authority | `tests/test_common_simulation_engine.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 오프라인 체결 시뮬레이션과 실거래 실행이 구조적으로 구분되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| A-05 | 실시간 페이퍼 트레이딩이 연구 플랫폼 핵심 기능으로 포함되지 않는가 | Major | M4 | VERIFIED | `docs/monorepo-architecture.md` — research-only scope and operational separation | `tests/test_repository_research_only_boundary.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실시간 페이퍼 트레이딩이 연구 플랫폼 핵심 기능으로 포함되지 않는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| A-06 | 후속 전략 계층에 넘기는 계약이 명확한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/strategy_package.py` — static downstream research package contract | `tests/test_strategy_research_package.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 정적 research package handoff는 통합되어 있으나 요구되는 liquidity/capacity estimate와 명시적 research confidence 계약이 없다. | A-06의 후속 전략 계층에 넘기는 계약이 명확한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| A-07 | 범위 밖 기능을 탐지·차단하는 아키텍처 또는 정책 검사가 있는가 | Supporting | M4 | VERIFIED | `src/market_research/research/strategy_package.py` — research-only package limitations and capability denial | `tests/test_research_only_capability_guard.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_only_capability_guard.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 범위 밖 기능을 탐지·차단하는 아키텍처 또는 정책 검사가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| A-08 | 연구 플랫폼 자체 운영과 거래 운영을 명확히 구분하는가 | Supporting | M4 | VERIFIED | `docs/architecture-boundaries.json` — distribution responsibilities and forbidden dependency edges | `tests/test_monorepo_architecture.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_monorepo_architecture.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 연구 플랫폼 자체 운영과 거래 운영을 명확히 구분하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-01 | 원천 데이터가 불변 또는 버전 상태로 보존되는가 | Critical | M4 | VERIFIED | `src/market_research/research/dataset_freeze.py` — immutable content-addressed dataset publication | `tests/test_dataset_freeze_publication.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 원천 데이터가 불변 또는 버전 상태로 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-02 | 데이터 계층이 논리적으로 분리되어 있는가 | Critical | M4 | VERIFIED | `src/market_research/research/data_plane.py` — dataset adapter, admission, and query boundaries | `tests/test_dataset_adapter_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_adapter_lifecycle.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 데이터 계층이 논리적으로 분리되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-03 | 시점 기준 데이터 모델을 지원하는가 | Critical | M4 | VERIFIED | `src/market_research/research/point_in_time_selection.py` — knowledge-time and as-of selection authority | `tests/test_point_in_time_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 시점 기준 데이터 모델을 지원하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-04 | 과거 시점 조회가 실제로 구현되어 있는가 | Critical | M4 | VERIFIED | `src/market_research/research/point_in_time_selection.py` — knowledge-time and as-of selection authority | `tests/test_point_in_time_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 과거 시점 조회가 실제로 구현되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-05 | 수정 데이터의 최초 발표값과 최종 수정값이 구분되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/dataset_snapshot.py` — revision, quality, and snapshot evidence | `tests/test_point_in_time_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 수정 데이터의 최초 발표값과 최종 수정값이 구분되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-05의 수정 데이터의 최초 발표값과 최종 수정값이 구분되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-06 | 생존편향 방지 구조가 있는가 | Critical | M4 | VERIFIED | `src/market_research/research/universe_contract.py` — point-in-time listing and investability universe | `tests/test_point_in_time_candle_selection.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 생존편향 방지 구조가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-07 | 유니버스가 각 시점 기준으로 구성되는가 | Critical | M4 | VERIFIED | `src/market_research/research/universe_contract.py` — point-in-time listing and investability universe | `tests/test_point_in_time_candle_selection.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 유니버스가 각 시점 기준으로 구성되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-08 | 기업행위가 버전 정책에 따라 처리되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/corporate_action_contract.py` — versioned corporate-action and delisting contracts | `tests/test_instrument_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 기업행위가 버전 정책에 따라 처리되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-08의 기업행위가 버전 정책에 따라 처리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-09 | 식별자와 기준정보가 장기간 일관되게 관리되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/instrument_contract.py` — instrument identity, currency, unit, and lifecycle contract | `tests/test_instrument_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 식별자와 기준정보가 장기간 일관되게 관리되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-09의 식별자와 기준정보가 장기간 일관되게 관리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-10 | 시간대와 거래일 캘린더가 명시적으로 처리되는가 | Major | M4 | VERIFIED | `src/market_research/research/market_calendar_contract.py` — timezone and trading-calendar contract | `tests/test_point_in_time_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 시간대와 거래일 캘린더가 명시적으로 처리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-11 | 통화·단위·가격 스케일이 명시적으로 관리되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/datasets/schema_dictionary.py` — typed field, unit, currency, and schema dictionary | `tests/test_dataset_schema_dictionary.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_schema_dictionary.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 통화·단위·가격 스케일이 명시적으로 관리되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-11의 통화·단위·가격 스케일이 명시적으로 관리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-12 | 데이터셋이 공식 버전 객체인가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/dataset_freeze.py` — immutable content-addressed dataset publication | `tests/test_dataset_freeze_publication.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 데이터셋이 공식 버전 객체인가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-12의 데이터셋이 공식 버전 객체인가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-13 | 실험 스냅샷이 실제 사용 행과 버전을 고정하는가 | Major | M4 | VERIFIED | `src/market_research/research/dataset_snapshot.py` — row/query/version-bound experiment snapshot | `tests/test_dataset_evidence_binding.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_evidence_binding.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실험 스냅샷이 실제 사용 행과 버전을 고정하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-14 | 데이터 계보가 양방향으로 추적되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. Exact validated-result and governed strategy-package DataUsageBinding reads reject missing, wrong, or extra artifact identities. | validated result와 governed strategy package 소비 시 artifact ID·version·content hash와 정확한 dataset usage binding을 read-side에서 재검증하지만 publication과 append-only binding 기록은 별도 쓰기라 원자적 단일 commit은 아니다. binding append 실패 뒤 남는 orphan artifact는 후속 소비에서 차단된다. | artifact publication과 exact DataUsageBinding append를 복구 가능한 단일 transaction/staging protocol로 묶고, 모든 보고 지표·package·impact consumer가 동일 resolver를 호출하도록 확장한다. |
+| B-15 | 자동 데이터 품질 검사가 존재하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/dataset_snapshot.py` — revision, quality, and snapshot evidence | `tests/test_point_in_time_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 자동 데이터 품질 검사가 존재하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-15의 자동 데이터 품질 검사가 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-16 | 데이터 품질 결과가 저장되고 연구에 연결되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 데이터 품질 결과가 저장되고 연구에 연결되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | B-16의 데이터 품질 결과가 저장되고 연구에 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-17 | 데이터 공급자 간 차이 또는 대체 공급자 비교가 가능한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 불변 ProviderComparison이 동일 의미 값 차이와 대체 판정을 보존하지만 실제 복수 공급자 현장 데이터 비교는 외부 증거가 필요하다. | 서로 독립된 실제 공급자 dataset으로 정의·값 차이, 대체 판정, 전환 이력을 실행하고 hash-bound 비교 증거를 보존한다. |
+| B-18 | 데이터 적합성 조사 워크플로가 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | DatasetSuitabilityAssessment와 명시적 사용 결정이 validation admission에 결속되었으나 독립 데이터 steward의 현장 승인은 이번 로컬 감사에서 확인하지 못했다. | 독립 data steward principal의 승인과 실제 현장 dataset 적합성 결과를 admission에 결속하고 실패·만료·재평가 경로를 검증한다. |
+| B-19 | 데이터 라이선스와 사용 제한을 표현할 수 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. Validated-result and governed package reads require the exact dataset admission and license-governance binding used at publication. | 목적·사용자·파생물 보존·반출 범위를 가진 license policy/use decision과 exact artifact usage binding이 validated result/package 소비를 차단하지만 웹 다운로드·외부 반출 entitlement와의 직접 결속은 I-09 공백으로 남는다. | license policy를 dataset grant, 다운로드, 외부 반출, 공개, 보존·삭제 결정의 공통 authorization authority로 연결하고 음성 E2E를 추가한다. |
+| B-20 | 데이터 샘플과 합성 테스트 데이터가 제공되는가 | Supporting | M4 | VERIFIED | `tests/research_noop_success_fixture.py` — deterministic synthetic SQLite dataset and manifest fixture | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 결정론적 합성 SQLite/manifest fixture와 E2E 사용은 있으나 독립 사용자의 cold replay 증거는 없다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| B-21 | 스키마 진화와 하위 호환성 정책이 있는가 | Supporting | M2 | PARTIAL | `src/market_research/research/datasets/artifact_manifest.py` — explicit schema-version and legacy rejection policy | `tests/test_dataset_manifest_migration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_manifest_migration.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 스키마 진화와 하위 호환성 정책이 있는가: 관련 코드/스키마 조각은 있으나 공식 통합 workflow와 충분한 테스트가 없다. | B-21의 스키마 진화와 하위 호환성 정책이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| B-22 | 알려진 데이터 문제 레지스트리가 있는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 문제·resolution·waiver·usage registry는 통합됐지만 issue별 workaround와 관련 waiver/resolution을 포함한 완전한 영향 view 및 원자적 publication이 부족하다. | B-22의 알려진 데이터 문제 레지스트리가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-01 | 공식 연구 결과에 코드 커밋이 고정되는가 | Critical | M4 | VERIFIED | `src/market_research/research/code_provenance.py` — commit and dirty-source provenance authority | `tests/test_code_provenance.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_code_provenance.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 공식 연구 결과에 코드 커밋이 고정되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-02 | 데이터 버전이 고정되는가 | Critical | M4 | VERIFIED | `src/market_research/research/dataset_freeze.py` — immutable content-addressed dataset publication | `tests/test_dataset_freeze_publication.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 데이터 버전이 고정되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-03 | 실행 환경이 고정되는가 | Critical | M4 | VERIFIED | `src/market_research/research/reproduction.py` — locked dependency, runtime, system, and result-environment fingerprint | `tests/test_research_reproduction.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실행 환경이 고정되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-04 | 파라미터와 설정이 완전하게 기록되는가 | Critical | M4 | VERIFIED | `src/market_research/research/experiment_manifest.py` — strict Research Semantics v2 configuration authority | `tests/test_research_semantics_v2_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_semantics_v2_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 파라미터와 설정이 완전하게 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-05 | 난수 재현성이 보장되는가 | Critical | M4 | VERIFIED | `src/market_research/research/execution_plan.py` — seed scope and deterministic execution-plan binding | `tests/test_simulation_seed_scope.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_simulation_seed_scope.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 난수 재현성이 보장되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-06 | 단일 재현 명령 또는 동등한 자동화 경로가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/cli.py` — research-reproduce-run same-state replay command | `tests/test_research_reproduction_cli.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 단일 재현 명령 또는 동등한 자동화 경로가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | C-06의 단일 재현 명령 또는 동등한 자동화 경로가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-07 | 공식 결과가 수동 노트북 상태에 의존하지 않는가 | Critical | M4 | VERIFIED | `src/market_research/research_cli/commands.py` — official non-notebook research command boundary | `tests/test_research_cli_boundary.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 공식 결과가 수동 노트북 상태에 의존하지 않는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-08 | 노트북이 탐색용과 공식 산출물 생성용으로 구분되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research_cli/commands.py` — official non-notebook research command boundary | `tests/test_research_cli_boundary.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 공식 산출물은 CLI/module 경로로 생성되지만 탐색 notebook과 공식 notebook을 구분·차단하는 실행 정책은 없다. | C-08의 노트북이 탐색용과 공식 산출물 생성용으로 구분되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-09 | 실험마다 고유 식별자가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/experiment_identity.py` — content-bound unique experiment identity | `tests/test_experiment_identity.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_identity.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 실험마다 고유 식별자가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | C-09의 실험마다 고유 식별자가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-10 | 실험 계보가 보존되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/experiment_registry.py` — append-only experiment and split-use registry | `tests/test_experiment_registry_dataset_evidence.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_registry_dataset_evidence.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 실험 계보가 보존되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | C-10의 실험 계보가 보존되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-11 | 실패 실험도 보존되는가 | Critical | M4 | VERIFIED | `src/market_research/research/run_lifecycle.py` — terminal success and failure lifecycle evidence | `tests/test_run_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_run_lifecycle.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실패 실험도 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-12 | 전체 파라미터 탐색 내역이 기록되는가 | Major | M4 | VERIFIED | `src/market_research/research/experiment_registry.py` — complete candidate-space and failed-candidate history | `tests/test_structured_experiment_completeness.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_structured_experiment_completeness.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 전체 파라미터 탐색 내역이 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-13 | 동일 입력 재실행 결과가 허용오차 내에서 일치하는가 | Major | M4 | VERIFIED | `src/market_research/research/cli.py` — research-reproduce-run same-state replay command | `tests/test_research_reproduction_cli.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 동일 입력 재실행 결과가 허용오차 내에서 일치하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-14 | 결과 비교 허용오차가 정의되어 있는가 | Major | M4 | VERIFIED | `src/market_research/research/reproduction.py` — receipt/report identity, stable-fingerprint comparison, and drift classification | `tests/test_research_reproduction.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. Rehashed reports, copied fingerprints, and receipt/report source-identity drift are rejected. | 결과 비교 허용오차가 정의되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-15 | 캐시가 재현성을 훼손하지 않는가 | Major | M2 | PARTIAL | `src/market_research/research/data_plane.py` — worker-local cache policy and content-bound key material | `tests/test_validation_pipeline_gate.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_pipeline_gate.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | worker-local cache와 content-bound key 구현은 있으나 cache invalidation 및 cache-on/off 결과 동등성 테스트가 없다. | C-15의 캐시가 재현성을 훼손하지 않는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-16 | CI에서 재현성 검사가 수행되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `.github/workflows/research-ci.yml` — same-state reproduction command in the CI contract | `tests/test_research_reproduction_cli.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | CI workflow에 same-state 재현 명령과 계약 테스트는 있으나 이번 감사에서 실제 원격 CI run receipt를 확인하지 못했고 cold restore도 FG-06으로 실패한다. | C-16의 CI에서 재현성 검사가 수행되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-17 | 공식 연구 릴리스가 버전으로 관리되는가 | Major | M4 | VERIFIED | `src/market_research/research/research_package_registry.py` — versioned immutable release and supersession registry | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 공식 연구 릴리스가 버전으로 관리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-18 | 공식 산출물이 불변 또는 내용 주소 기반으로 저장되는가 | Critical | M4 | VERIFIED | `src/market_research/research/artifact_store.py` — atomic create-or-verify content-addressed artifacts | `tests/test_terminal_artifact_immutability.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_terminal_artifact_immutability.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 공식 산출물이 불변 또는 내용 주소 기반으로 저장되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| C-19 | 비밀정보가 재현 패키지와 분리되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/execution_plan.py` — allowlisted result environment and secret exclusion | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 결과 영향 환경 allowlist와 package secret 검사는 있으나 secret을 reproduction receipt에 주입하는 직접 음성 테스트가 없다. | C-19의 비밀정보가 재현 패키지와 분리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| C-20 | 계산 비용과 자원 사용이 기록되는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/resource_planner.py` — bounded worker, memory, row, and runtime planning | `tests/test_common_engine_resource_guards.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_resource_guards.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | resource planner가 계획 상한을 강제하지만 실제 CPU·메모리·runtime·storage 사용량을 공식 결과에 함께 기록하는 종단 간 증거는 없다. | C-20의 계산 비용과 자원 사용이 기록되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-01 | 연구 프로젝트가 공식 객체로 관리되는가 | Critical | M0 | MISSING | `docs/investment-research-platform.md` — documented object model without a ResearchProject aggregate | `tests/test_full_scope_research_standard.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_research_standard.py`; ABSENCE evidence: repository inspection and the cited boundary surface found no implementation satisfying this criterion. | 고유 ID·상태·버전·소유자를 가진 ResearchProject aggregate가 없다. ResearchStandard/Hypothesis는 프로젝트 객체를 대체하지 않는다. | D-01의 연구 프로젝트가 공식 객체로 관리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-02 | 연구 의제 등록을 지원하는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_standard.py` — research question, hypothesis, mechanism, and transition authority | `tests/test_research_standard_authority_integration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_standard_authority_integration.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 연구 의제 등록을 지원하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | D-02의 연구 의제 등록을 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-03 | 가설이 검증 가능한 형태로 명세되는가 | Critical | M4 | VERIFIED | `src/market_research/research/hypothesis_contract.py` — testable hypothesis, mechanism, and falsification contract | `tests/test_hypothesis_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 가설이 검증 가능한 형태로 명세되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-04 | 경제적 메커니즘이 가설과 함께 기록되는가 | Critical | M4 | VERIFIED | `src/market_research/research/hypothesis_contract.py` — testable hypothesis, mechanism, and falsification contract | `tests/test_hypothesis_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 경제적 메커니즘이 가설과 함께 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-05 | 반증 조건이 사전에 정의되는가 | Critical | M4 | VERIFIED | `src/market_research/research/hypothesis_contract.py` — testable hypothesis, mechanism, and falsification contract | `tests/test_hypothesis_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 반증 조건이 사전에 정의되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-06 | 연구 설계 사전등록을 지원하는가 | Critical | M4 | VERIFIED | `src/market_research/research/study_lifecycle.py` — preregistration, change, holdout, and follow-up lifecycle | `tests/test_study_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 연구 설계 사전등록을 지원하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-07 | 사전등록 이후 변경 이력이 보존되는가 | Major | M2 | PARTIAL | `src/market_research/research/study_lifecycle.py` — preregistration, change, holdout, and follow-up lifecycle | `tests/test_study_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 사전등록 이후 변경 이력이 보존되는가: 관련 코드/스키마 조각은 있으나 공식 통합 workflow와 충분한 테스트가 없다. | D-07의 사전등록 이후 변경 이력이 보존되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-08 | 탐색·개발·검증·최종 홀드아웃 구간이 구분되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/split_usage_policy.py` — exploration, validation, and final-holdout access policy | `tests/test_study_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 탐색·개발·검증·최종 홀드아웃 구간이 구분되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | D-08의 탐색·개발·검증·최종 홀드아웃 구간이 구분되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-09 | 검증·홀드아웃 접근 횟수와 사용 이력이 관리되는가 | Critical | M4 | VERIFIED | `src/market_research/research/experiment_registry.py` — append-only experiment and split-use registry | `tests/test_experiment_registry_dataset_evidence.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_registry_dataset_evidence.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 검증·홀드아웃 접근 횟수와 사용 이력이 관리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-10 | 데이터 적합성 조사 결과가 연구 객체에 연결되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 확정 후보 admission이 데이터 적합성·license·미해결 critical issue를 hash로 검증하지만 이를 소유하는 ResearchProject aggregate와 독립 steward 현장 승인은 없다. | D-10의 데이터 적합성 조사 결과가 연구 객체에 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-11 | 탐색 분석이 공식 검증 결과와 구분되는가 | Major | M4 | VERIFIED | `src/market_research/research/research_classification.py` — exploratory versus confirmatory result classification | `tests/test_research_lifecycle_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_lifecycle_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 탐색 분석이 공식 검증 결과와 구분되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-12 | 신호·모델 정의가 명시적으로 버전 관리되는가 | Major | M4 | VERIFIED | `src/market_research/research/strategy_compiler.py` — versioned compiled signal, feature, and strategy contract | `tests/test_compiled_strategy_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_compiled_strategy_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 신호·모델 정의가 명시적으로 버전 관리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-13 | 연구 상태 머신이 존재하는가 | Major | M4 | VERIFIED | `src/market_research/research/research_standard.py` — research question, hypothesis, mechanism, and transition authority | `tests/test_research_standard_authority_integration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_standard_authority_integration.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 연구 상태 머신이 존재하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-14 | 상태 전환 규칙이 강제되는가 | Major | M4 | VERIFIED | `src/market_research/research/research_standard.py` — research question, hypothesis, mechanism, and transition authority | `tests/test_research_standard_authority_integration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_standard_authority_integration.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 상태 전환 규칙이 강제되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-15 | 중복·유사 연구를 찾을 수 있는가 | Major | M2 | PARTIAL | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 지식 registry는 명시적 관계와 동일 identity 충돌을 다루지만 새 연구 시작 전 의미 기반 유사 연구 탐지를 제공하지 않는다. | D-15의 중복·유사 연구를 찾을 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| D-16 | 후속 연구 과제를 등록하고 연결할 수 있는가 | Supporting | M4 | VERIFIED | `src/market_research/research/study_lifecycle.py` — preregistration, change, holdout, and follow-up lifecycle | `tests/test_study_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | post-hoc 조건을 새 가설 버전과 후속 reference로 등록하는 경로는 있으나 독립 E5 replay 증거는 없다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| D-17 | 연구 진행 상태와 리뷰 요청을 사용자에게 보여주는가 | Supporting | M4 | VERIFIED | `apps/internal_web/src/portal/views.py` — review queue, detail, decision, and progress views | `apps/internal_web/tests/test_review_workflow.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_review_workflow.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | review queue/detail과 job 진행 상태 UI가 있으나 독립 브라우저 환경에서의 E5 재생 증거는 없다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-01 | 백테스트 파이프라인 단계가 분리되어 있는가 | Critical | M4 | VERIFIED | `src/market_research/research/validation_pipeline.py` — admission, execution, validation, and terminal evidence pipeline | `tests/test_validation_pipeline_gate.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_pipeline_gate.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 백테스트 파이프라인 단계가 분리되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-02 | 미래정보 누출 방지 장치가 있는가 | Critical | M4 | VERIFIED | `src/market_research/research/causal_market_view.py` — prefix-bounded causal market observations | `tests/test_future_suffix_invariance.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_future_suffix_invariance.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 미래정보 누출 방지 장치가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-03 | 시간 정렬과 as-of join이 올바른가 | Critical | M4 | VERIFIED | `src/market_research/research/point_in_time_selection.py` — knowledge-time and as-of selection authority | `tests/test_point_in_time_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 시간 정렬과 as-of join이 올바른가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-04 | 시점별 투자 가능 유니버스를 사용하는가 | Critical | M4 | VERIFIED | `src/market_research/research/universe_contract.py` — point-in-time listing and investability universe | `tests/test_point_in_time_candle_selection.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 시점별 투자 가능 유니버스를 사용하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-05 | 상장폐지 수익률과 거래 불가능 상태를 처리하는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/corporate_action_contract.py` — versioned corporate-action and delisting contracts | `tests/test_instrument_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 상장폐지 수익률과 거래 불가능 상태를 처리하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | E-05의 상장폐지 수익률과 거래 불가능 상태를 처리하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-06 | 기업행위 조정이 백테스트와 일관되는가 | Critical | M2 | PARTIAL | `src/market_research/research/corporate_action_contract.py` — versioned corporate-action and delisting contracts | `tests/test_instrument_domain_contracts.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 기업행위 변환기는 존재하지만 공식 dataset materialization/backtest 호출 경로가 이를 소비하지 않는다. | E-06의 기업행위 조정이 백테스트와 일관되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-07 | 포트폴리오 구성 로직이 신호와 분리되는가 | Major | M4 | VERIFIED | `src/market_research/research/portfolio_view.py` — signal-independent portfolio target and position view | `tests/test_single_portfolio_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_single_portfolio_authority.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 포트폴리오 구성 로직이 신호와 분리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-08 | 리밸런싱 규칙이 명시적으로 구현되는가 | Major | M2 | PARTIAL | `src/market_research/research/portfolio_view.py` — signal-independent portfolio target and position view | `tests/test_single_portfolio_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_single_portfolio_authority.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 단일자산 intent 외의 일반 target-portfolio 리밸런싱 계약이 없다. | E-08의 리밸런싱 규칙이 명시적으로 구현되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-09 | 비용 모델이 존재하는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/execution_model/fixed_bps.py` — fee and slippage execution-cost contract | `tests/test_common_simulation_engine.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 비용 모델이 존재하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | E-09의 비용 모델이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-10 | 비용이 자산·시장·시점·유동성에 따라 달라질 수 있는가 | Major | M2 | PARTIAL | `src/market_research/research/execution_model/fixed_bps.py` — fee and slippage execution-cost contract | `tests/test_common_simulation_engine.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 고정/시나리오 비용과 depth walk는 있으나 자산·시장·유효기간별 비용 schedule 권위가 없다. | E-10의 비용이 자산·시장·시점·유동성에 따라 달라질 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-11 | 비용 시나리오를 지원하는가 | Major | M4 | VERIFIED | `src/market_research/research/stress_suite.py` — cost, latency, ablation, period, and parameter stress scenarios | `tests/test_validation_stress_suite_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 비용 시나리오를 지원하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-12 | 비용 전 성과와 비용 후 성과가 모두 산출되는가 | Critical | M4 | VERIFIED | `src/market_research/research/portfolio_ledger.py` — cash, position, turnover, and accounting ledger authority | `tests/test_portfolio_accounting_properties.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 비용 전 성과와 비용 후 성과가 모두 산출되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-13 | 체결 지연을 모델링할 수 있는가 | Major | M4 | VERIFIED | `src/market_research/research/execution_timing.py` — decision-to-order-to-fill latency timeline | `tests/test_execution_observability_timing.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_execution_observability_timing.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 체결 지연을 모델링할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-14 | 부분 체결과 유동성 한도를 모델링할 수 있는가 | Major | M4 | VERIFIED | `src/market_research/research/execution_model/depth_walk.py` — partial-fill and finite-depth execution model | `tests/test_strategy_partial_fill_feedback.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_partial_fill_feedback.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 부분 체결과 유동성 한도를 모델링할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-15 | 거래 참여율을 반영할 수 있는가 | Major | M2 | PARTIAL | `src/market_research/research/execution_model/depth_walk.py` — partial-fill and finite-depth execution model | `tests/test_strategy_partial_fill_feedback.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_partial_fill_feedback.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 거래량 대비 주문·ADV·최대 참여율을 실제 체결에 적용하는 계약이 없다. | E-15의 거래 참여율을 반영할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-16 | 시장충격 모델이 주문 크기와 유동성에 반응하는가 | Major | M1 | DOCUMENTATION_ONLY | `src/market_research/research/execution_model/base.py` — explicit supported and unavailable execution capabilities | `tests/test_unsupported_strategy_capabilities.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_unsupported_strategy_capabilities.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 주문 크기와 유동성에 반응하는 시장충격 모형이 명시적으로 unavailable이다. | E-16의 시장충격 모델이 주문 크기와 유동성에 반응하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-17 | 전략 용량 분석이 가능한가 | Major | M0 | MISSING | `src/market_research/research/execution_model/base.py` — explicit supported and unavailable execution capabilities | `tests/test_unsupported_strategy_capabilities.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_unsupported_strategy_capabilities.py`; ABSENCE evidence: repository inspection and the cited boundary surface found no implementation satisfying this criterion. | 자본 grid, 비용/미체결 curve, 손익분기 및 최대 수용 자본 분석이 없다. | E-17의 전략 용량 분석이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-18 | 공매도 현실성을 평가할 수 있는가 | Major | M1 | DOCUMENTATION_ONLY | `src/market_research/research/execution_model/base.py` — explicit supported and unavailable execution capabilities | `tests/test_unsupported_strategy_capabilities.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_unsupported_strategy_capabilities.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 공매도 locate·대차비·회수 위험을 지원하지 않는다. | E-18의 공매도 현실성을 평가할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-19 | 자금조달 비용과 현금 수익을 처리할 수 있는가 | Major | M1 | DOCUMENTATION_ONLY | `src/market_research/research/simulation_engine.py` — offline signal, order, fill, ledger, and cost authority | `tests/test_common_simulation_engine.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 현금이자 정책은 zero만 허용하며 자금조달/현금수익 모형이 없다. | E-19의 자금조달 비용과 현금 수익을 처리할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-20 | 거래정지·가격제한·거래 불가능 이벤트를 처리하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/execution_invariants.py` — halt, tradability, and execution timeline invariants | `tests/test_execution_invariant_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_execution_invariant_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 거래정지·가격제한·거래 불가능 이벤트를 처리하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | E-20의 거래정지·가격제한·거래 불가능 이벤트를 처리하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-21 | 포트폴리오 회전율을 정확히 계산하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/portfolio_ledger.py` — cash, position, turnover, and accounting ledger authority | `tests/test_portfolio_accounting_properties.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 포트폴리오 회전율을 정확히 계산하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | E-21의 포트폴리오 회전율을 정확히 계산하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-22 | 성과 귀속이 가능한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/portfolio_ledger.py` — cash, position, turnover, and accounting ledger authority | `tests/test_portfolio_accounting_properties.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 성과 귀속이 가능한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | E-22의 성과 귀속이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-23 | 여러 연구 유형을 지원하거나 확장 계약을 제공하는가 | Major | M4 | VERIFIED | `src/market_research/strategy_sdk/runtime.py` — production-path strategy extension contract | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 여러 연구 유형을 지원하거나 확장 계약을 제공하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-24 | 백테스트 엔진에 기준 테스트가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/benchmark_suite.py` — deterministic common-engine benchmark cases | `tests/test_benchmark_suite.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_benchmark_suite.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 공통 엔진 benchmark와 결정론·비용·시간 테스트는 있으나 split/dividend/delisting 회계 benchmark가 없다. | E-24의 백테스트 엔진에 기준 테스트가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| E-25 | 백테스트 결과와 회계적 포트폴리오 상태가 일치하는가 | Major | M4 | VERIFIED | `src/market_research/research/portfolio_ledger.py` — cash, position, turnover, and accounting ledger authority | `tests/test_portfolio_accounting_properties.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 백테스트 결과와 회계적 포트폴리오 상태가 일치하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| E-26 | 대규모 데이터에서 성능과 메모리 제어가 가능한가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/resource_planner.py` — bounded worker, memory, row, and runtime planning | `tests/test_common_engine_resource_guards.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_resource_guards.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | resource planner와 guard는 통합됐지만 대규모 실제 workload 및 측정된 memory envelope 검증이 없다. | E-26의 대규모 데이터에서 성능과 메모리 제어가 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-01 | 통계 검정이 연구 데이터 구조에 맞게 선택되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 통계 검정이 연구 데이터 구조에 맞게 선택되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-01의 통계 검정이 연구 데이터 구조에 맞게 선택되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-02 | 다중가설 문제를 다루는가 | Critical | M4 | VERIFIED | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 다중가설 문제를 다루는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-03 | 홀드아웃 검증이 구현되는가 | Critical | M4 | VERIFIED | `src/market_research/research/split_usage_policy.py` — exploration, validation, and final-holdout access policy | `tests/test_study_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 홀드아웃 검증이 구현되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-04 | 워크포워드 검증이 가능한가 | Major | M4 | VERIFIED | `src/market_research/research/walk_forward.py` — forward-only train and validation windows | `tests/test_frozen_dataset_walk_forward_integration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_frozen_dataset_walk_forward_integration.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 워크포워드 검증이 가능한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-05 | 중첩 교차검증이 가능한가 | Major | M2 | PARTIAL | `src/market_research/research/temporal_validation.py` — label intervals, purge, embargo, and nested fold plans | `tests/test_temporal_validation.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_temporal_validation.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 외부/내부 fold는 불변 계획으로 사전 고정되지만 내부 fold가 후보 선택을 실제로 실행하지 않아 selection_is_fully_nested=false이다. | F-05의 중첩 교차검증이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-06 | 겹치는 레이블과 시간 누출을 고려한 검증이 가능한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/temporal_validation.py` — label intervals, purge, embargo, and nested fold plans | `tests/test_temporal_validation.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_temporal_validation.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | temporal config는 선언된 일 단위 label horizon으로 purge와 forward embargo를 구성하지만 실제 target/forward-label 정의 및 표본 timestamp와 horizon을 결속하지 않는다. | F-06의 겹치는 레이블과 시간 누출을 고려한 검증이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-07 | 백테스트 과적합 위험을 평가하는가 | Major | M4 | VERIFIED | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 백테스트 과적합 위험을 평가하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-08 | 시간 강건성 검사가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/stress_suite.py` — cost, latency, ablation, period, and parameter stress scenarios | `tests/test_validation_stress_suite_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 시간 강건성 검사가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-08의 시간 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-09 | 횡단면 강건성 검사가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/cross_section_validation.py` — cross-sectional subgroup robustness | `tests/test_cross_section_validation.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_cross_section_validation.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 횡단면 강건성 검사가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-09의 횡단면 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-10 | 정의 강건성 검사가 있는가 | Critical | M2 | PARTIAL | `src/market_research/research/stress_suite.py` — cost, latency, ablation, period, and parameter stress scenarios | `tests/test_validation_stress_suite_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 파라미터와 신호 생략 외의 정의 변형 matrix가 일반 계약으로 승격되지 않았다. | F-10의 정의 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-11 | 구현 강건성 검사가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/decision_stream_perturbation.py` — alternate implementation and decision-stream perturbation | `tests/test_decision_stream_perturbation.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_decision_stream_perturbation.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 구현 강건성 검사가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-11의 구현 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-12 | 반증 실험을 지원하는가 | Critical | M2 | PARTIAL | `src/market_research/research/stress_suite.py` — cost, latency, ablation, period, and parameter stress scenarios | `tests/test_validation_stress_suite_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | placebo 날짜·label shuffle·무관 대상·대체 설명 변수를 실행하는 반증 executor가 없다. | F-12의 반증 실험을 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-13 | 결과의 특정 기간 집중도를 탐지하는가 | Major | M4 | VERIFIED | `src/market_research/research/result_concentration.py` — period, trade, and instrument concentration diagnostics | `tests/test_result_concentration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_result_concentration.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 결과의 특정 기간 집중도를 탐지하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-14 | 소수 종목 집중도를 탐지하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/result_concentration.py` — period, trade, and instrument concentration diagnostics | `tests/test_result_concentration.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_result_concentration.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 소수 종목 집중도를 탐지하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-14의 소수 종목 집중도를 탐지하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-15 | 극단 관측치 의존성을 검사하는가 | Major | M4 | VERIFIED | `src/market_research/research/return_panel.py` — return panel, outlier, and benchmark evidence | `tests/test_return_panel_benchmarks.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_return_panel_benchmarks.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 극단 관측치 의존성을 검사하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-16 | 알려진 팩터와 구조적 노출을 분석하는가 | Major | M2 | PARTIAL | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 표준 시장/규모/가치/모멘텀/산업/국가 factor exposure 회귀가 없다. | F-16의 알려진 팩터와 구조적 노출을 분석하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-17 | 통계적 유의성과 경제적 의미를 구분하는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 통계적 유의성과 경제적 의미를 구분하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-17의 통계적 유의성과 경제적 의미를 구분하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-18 | 경제적 메커니즘 검증 구조가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/hypothesis_contract.py` — testable hypothesis, mechanism, and falsification contract | `tests/test_hypothesis_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 경제적 메커니즘 검증 구조가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-18의 경제적 메커니즘 검증 구조가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-19 | 신호 감쇠 속도를 분석하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/forward_diagnostics.py` — signal horizon and decay diagnostics | `tests/test_full_scope_prospective.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_prospective.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 신호 감쇠 속도를 분석하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-19의 신호 감쇠 속도를 분석하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-20 | 거래 현실성 스트레스 테스트가 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/stress_suite.py` — cost, latency, ablation, period, and parameter stress scenarios | `tests/test_validation_stress_suite_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 거래 현실성 스트레스 테스트가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | F-20의 거래 현실성 스트레스 테스트가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-21 | 결과의 데이터 공급자 민감도를 검사할 수 있는가 | Major | M1 | DOCUMENTATION_ONLY | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 동일 의미의 공급자 대체 dataset 결과 차이를 비교하고 차단하는 gate가 없다. | F-21의 결과의 데이터 공급자 민감도를 검사할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-22 | 불확실성과 신뢰구간이 결과에 포함되는가 | Major | M4 | VERIFIED | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 불확실성과 신뢰구간이 결과에 포함되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| F-23 | 예측 모델의 캘리브레이션과 안정성을 평가할 수 있는가 | Major | M1 | DOCUMENTATION_ONLY | `src/market_research/research/statistical_selection.py` — multiple-testing, confidence, and selection authority | `tests/test_strategy_extension_production_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 예측 모델 capability에 조건부인 calibration·drift·불균형·threshold 안정성 계약이 없다. | F-23의 예측 모델의 캘리브레이션과 안정성을 평가할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-24 | 결과가 부정적인 경우에도 동일한 검증 패키지를 생성하는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/study_lifecycle.py` — PASS, FAIL, INSUFFICIENT, and execution-failure preservation | `tests/test_study_lifecycle.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 부정 결과를 보존하는 lifecycle 결정과 합성 테스트는 있으나 실제 negative run_research_validation 경로가 양성 결과와 동일한 terminal/package 증거를 생성하는 종단 간 검증은 없다. | F-24의 결과가 부정적인 경우에도 동일한 검증 패키지를 생성하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| F-25 | 검증 항목이 자동 게이트로 연결되는가 | Supporting | M4 | VERIFIED | `src/market_research/research/validation_pipeline.py` — admission, execution, validation, and terminal evidence pipeline | `tests/test_validation_pipeline_gate.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_pipeline_gate.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 검증 항목이 자동 게이트로 연결되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| G-01 | 연구자와 검증자 역할이 구분되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/independent_verification.py` — immutable verifier result, receipt/report fingerprint binding, and comparison registry | `tests/test_independent_verification.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 역할 불일치와 originator 분리는 강제하지만 CLI actor ID는 인증된 principal이 아닌 호출자 제공 문자열이라 한 운영자가 alias를 만들 수 있다. | researcher·verifier·approver ID를 호출자 문자열이 아닌 인증된 immutable principal/credential claim에서 도출하고 alias·impersonation을 차단한다. |
+| G-02 | 독립 재현 워크플로가 존재하는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/cli.py` — research-reproduce-run same-state replay command | `tests/test_research_reproduction_cli.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. The retained local production E2E reaches same-state reproduction, but it is not a cold-host restore. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence. | retained local production E2E에서 terminal 결과의 reproduce→비교→독립 판정 경로는 실행됐지만 빈 호스트에서 환경·외부 immutable dataset을 복원하지 못한다. 또한 독립 verifier 내부의 schema-3 terminal source report 검사는 schema·identity·content hash 수준에 머물고 전체 validated-result 계약 검사는 downstream governance validator에 의존한다. | 빈 호스트에서 lock 환경과 immutable dataset을 자동 복원하는 verifier workflow를 추가하고 schema-3 terminal source에 전체 validated-result validator를 직접 적용한다. |
+| G-03 | 독립 재현 결과가 공식 객체로 저장되는가 | Critical | M4 | VERIFIED | `src/market_research/research/independent_verification.py` — immutable verifier result, receipt/report fingerprint binding, and comparison registry | `tests/test_independent_verification.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. The retained local production E2E stores a hash-bound IndependentVerificationResult and registry row. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence. | retained production E2E가 IndependentVerificationResult와 append-only registry row를 실제 생성·보존하지만 독립 verifier 자체는 schema-3 terminal source report의 전체 validated-result 계약을 검증하지 않는다. 빈 호스트 E5 재현도 FG-06으로 남는다. | independent verifier가 schema-3 terminal source 전체 계약을 직접 검증하게 하고 별도 cold-host 실행의 result·registry·artifact hash를 retained evidence로 보존한다. |
+| G-04 | 재현 실패 시 검증 상태 승격이 차단되는가 | Critical | M4 | VERIFIED | `src/market_research/research/governance.py` — review, decision, separation-of-duties, and canonical reproduction-PASS approval gate | `tests/test_research_governance.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. The retained local production E2E reaches approval only through a canonical PASS result; negative gate tests cover missing, drifted, and non-independent evidence. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence. | distinct-verifier canonical PASS와 대상 hash 없이는 승격이 차단되고 retained terminal reproduce→publish→approve E2E 및 음성 테스트가 확인됐다. 다만 schema-3 terminal source의 전체 계약 검사는 independent verifier가 아니라 downstream governance validator에서 수행되며 FG-06 cold restore는 실패한다. | schema-3 terminal source 전체 계약 검증을 독립 PASS 생성 전에 강제하고 cold-host 재현 실패·drift·변조가 모든 승격 경로를 차단하는 E2E를 추가한다. |
+| G-05 | 연구 리뷰가 코드 리뷰보다 넓은 범위를 다루는가 | Critical | M4 | VERIFIED | `src/market_research/research/governance.py` — review, decision, separation-of-duties, and canonical reproduction-PASS approval gate | `tests/test_research_governance.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 연구 리뷰가 코드 리뷰보다 넓은 범위를 다루는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| G-06 | 리뷰 코멘트와 답변이 보존되는가 | Major | M4 | VERIFIED | `apps/internal_web/src/portal/governance.py` — transactional review comments and decisions | `apps/internal_web/tests/test_governance_database_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_governance_database_authority.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 리뷰 코멘트와 답변이 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| G-07 | 승인·기각 근거가 기록되는가 | Major | M4 | VERIFIED | `src/market_research/research/governance.py` — review, decision, separation-of-duties, and canonical reproduction-PASS approval gate | `tests/test_research_governance.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 승인·기각 근거가 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| G-08 | 필수 정책이 문서 또는 코드로 존재하는가 | Major | M2 | PARTIAL | `docs/research-standard-authority.md` — review roles and required research policy | `tests/test_documentation_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 필수 정책이 문서 또는 코드로 존재하는가: 관련 코드/스키마 조각은 있으나 공식 통합 workflow와 충분한 테스트가 없다. | G-08의 필수 정책이 문서 또는 코드로 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| G-09 | 정책이 단순 문서가 아니라 워크플로에 반영되는가 | Major | M4 | VERIFIED | `src/market_research/research/governance.py` — review, decision, separation-of-duties, and canonical reproduction-PASS approval gate | `tests/test_research_governance.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 정책이 단순 문서가 아니라 워크플로에 반영되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| G-10 | 기각된 연구가 보존되는가 | Critical | M4 | VERIFIED | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 기각된 연구가 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| G-11 | `Challenged`, `Superseded`, `Deprecated` 상태를 지원하는가 | Major | M2 | PARTIAL | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 대체/저하는 표현하지만 CHALLENGED와 DEPRECATED를 일관된 연구 상태로 제공하지 않는다. | G-11의 `Challenged`, `Superseded`, `Deprecated` 상태를 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| G-12 | 예외 승인에 만료·사유·승인자가 있는가 | Major | M2 | PARTIAL | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | GovernanceWaiver가 목적·사유·승인자·만료를 보존하고 admission에서 scope/expiry를 검사하지만 데이터 거버넌스에 한정되며 직접 expired/future 음성 테스트가 부족하다. | G-12의 예외 승인에 만료·사유·승인자가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| G-13 | 데이터 오류 발생 시 영향 분석 워크플로가 있는가 | Major | M2 | PARTIAL | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 데이터 문제에서 usage binding으로 영향 연구를 역조회하고 향후 admission을 차단하지만 이미 승인된 연구의 상태를 자동 전환하는 workflow가 없다. | G-13의 데이터 오류 발생 시 영향 분석 워크플로가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| G-14 | 결론의 강도가 증거 수준에 연결되는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_decision_report.py` — evidence-strength and conclusion decision record | `tests/test_research_decision_report.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_decision_report.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 결론의 강도가 증거 수준에 연결되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | G-14의 결론의 강도가 증거 수준에 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| G-15 | 역할별 책임이 문서화되어 있는가 | Supporting | M1 | DOCUMENTATION_ONLY | `docs/research-standard-authority.md` — review roles and required research policy | `tests/test_documentation_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 역할별 책임이 문서화되어 있는가: 선언 또는 제한 문서만 있으며 실행 가능한 지원이 없다. | G-15의 역할별 책임이 문서화되어 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| G-16 | CODEOWNERS·승인 규칙·권한이 역할 분리를 보조하는가 | Supporting | M2 | PARTIAL | `.github/workflows/research-ci.yml` — reproduction, boundary, and canonical audit CI jobs | `tests/test_platform_completeness_runner.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_platform_completeness_runner.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | CI와 앱 역할 권한은 있으나 CODEOWNERS·branch protection·승인 규칙이 연구자/검증자 분리를 강제한다는 실행 증거가 없다. | G-16의 CODEOWNERS·승인 규칙·권한이 역할 분리를 보조하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-01 | 최종 결과가 단일 보고서가 아니라 완전한 연구 패키지인가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/strategy_package.py` — machine-readable complete research package | `tests/test_strategy_research_package.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 최종 결과가 단일 보고서가 아니라 완전한 연구 패키지인가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-01의 최종 결과가 단일 보고서가 아니라 완전한 연구 패키지인가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-02 | 연구 요약에 핵심 정보가 포함되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_reporting.py` — human-readable Markdown and machine-readable report rendering | `tests/test_research_reporting.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reporting.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 연구 요약에 핵심 정보가 포함되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-02의 연구 요약에 핵심 정보가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-03 | 가설 문서가 포함되는가 | Critical | M4 | VERIFIED | `src/market_research/research/strategy_package.py` — machine-readable complete research package | `tests/test_strategy_research_package.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 가설 문서가 포함되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| H-04 | 데이터 매니페스트가 포함되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_package_registry.py` — immutable versioned package evidence graph | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | package는 dataset snapshot/admission hash ref를 보존하지만 추출 시점·PIT·universe·quality·license를 포함한 완전한 data manifest를 자체 포함하지 않는다. | H-04의 데이터 매니페스트가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-05 | 코드 매니페스트가 포함되는가 | Critical | M2 | PARTIAL | `src/market_research/research/research_package_registry.py` — immutable versioned package evidence graph | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | reproduction receipt ref와 recipe 일부는 있으나 repo·commit·실행 명령·환경 image·lock·seed를 한 code manifest로 포함하지 않는다. | H-05의 코드 매니페스트가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-06 | 실험 매니페스트가 포함되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_package_registry.py` — immutable versioned package evidence graph | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | experiment spec ref와 일부 parameter/cost hash는 있으나 기간·portfolio constraint·benchmark·전체 lineage를 포함한 완전한 experiment manifest가 없다. | H-06의 실험 매니페스트가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-07 | 결과 패키지가 충분한가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/strategy_package.py` — machine-readable complete research package | `tests/test_strategy_research_package.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 결과 패키지가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-07의 결과 패키지가 충분한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-08 | 검증 보고서가 포함되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/independent_verification.py` — immutable verifier result, receipt/report fingerprint binding, and comparison registry | `tests/test_independent_verification.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. The retained local production E2E binds the independent-verification object into approval and package evidence. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence. | retained E2E에서 공식 IndependentVerificationResult가 승인·패키지에 hash로 결속되지만 schema-3 terminal source 전체 계약은 independent verifier 내부에서 검증되지 않고 수정 내역을 일급 필드로 보존하는 완전한 검증 보고서도 아니다. cold-host 독립 실행은 FG-06으로 남는다. | 검증 보고서에 수정 내역을 일급 필드로 추가하고 schema-3 source 전체 계약, 발견·미해결 문제, 판정 근거를 독립 cold-host receipt와 함께 package에 결속한다. |
+| H-09 | 제한사항 문서가 포함되는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/strategy_package.py` — machine-readable complete research package | `tests/test_strategy_research_package.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | package에 제한사항 컨테이너는 있으나 표본·비용추정·시장구조·적용 불가 환경·알 수 없는 위험 범주와 비어 있지 않은 검토 내용을 필수로 강제하지 않는다. | H-09의 제한사항 문서가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-10 | 모든 산출물에 고유 ID와 버전이 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_package_registry.py` — immutable versioned package evidence graph | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 모든 산출물에 고유 ID와 버전이 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-10의 모든 산출물에 고유 ID와 버전이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-11 | 특정 보고 지표에서 원천까지 역추적 가능한가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/lineage.py` — bidirectional hash-bound execution lineage | `tests/test_execution_lineage_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_execution_lineage_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | execution intent→fill→ledger 계보는 검증되지만 특정 보고 지표에서 결과·실험·commit·parameter·snapshot·원천까지 이어지는 단일 종단 간 trace 증거는 없다. | H-11의 특정 보고 지표에서 원천까지 역추적 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-12 | 산출물 무결성을 확인할 수 있는가 | Major | M4 | VERIFIED | `src/market_research/research/artifact_store.py` — atomic create-or-verify content-addressed artifacts | `tests/test_terminal_artifact_immutability.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_terminal_artifact_immutability.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 산출물 무결성을 확인할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| H-13 | 연구 메타데이터 카탈로그가 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 연구 메타데이터 카탈로그가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-13의 연구 메타데이터 카탈로그가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-14 | 변수·특성 레지스트리가 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/feature_definition.py` — versioned feature definition and provider binding | `tests/test_feature_definition_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_feature_definition_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 변수·특성 레지스트리가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-14의 변수·특성 레지스트리가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-15 | 실패 연구와 실패 실험을 검색할 수 있는가 | Major | M4 | VERIFIED | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 실패 연구와 실패 실험을 검색할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| H-16 | 연구 간 관계를 표현할 수 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 연구 간 관계를 표현할 수 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-16의 연구 간 관계를 표현할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-17 | 지식 검색이 파일명 검색을 넘어서는가 | Major | M2 | PARTIAL | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 검색은 구조화 필터를 제공하지만 메커니즘·팩터·상충·비용 기각·재현 실패 질의를 직접 지원하지 않는다. | H-17의 지식 검색이 파일명 검색을 넘어서는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-18 | 특정 데이터 오류의 영향 연구를 역검색할 수 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | DataQualityIncident/KnownDataIssue의 impact refs와 사용 binding 역검색 API는 있으나 승인된 연구의 상태 전환 및 외부 catalog UI 통합은 없다. | H-18의 특정 데이터 오류의 영향 연구를 역검색할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-19 | 연구 중복 탐지가 가능한가 | Major | M2 | PARTIAL | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 동일 identity 충돌은 차단하지만 제목·메커니즘·데이터·가설 의미를 비교하는 사전 유사도/중복 탐지 workflow는 없다. | H-19의 연구 중복 탐지가 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-20 | 후속 연구와 미해결 질문이 지식 시스템에 축적되는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/knowledge_registry.py` — append-only research relationship and outcome registry | `tests/test_knowledge_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 후속 연구와 미해결 질문이 지식 시스템에 축적되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | H-20의 후속 연구와 미해결 질문이 지식 시스템에 축적되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| H-21 | 산출물 내보내기 형식이 기계 판독 가능하고 사람이 읽을 수 있는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_reporting.py` — human-readable Markdown and machine-readable report rendering | `tests/test_research_reporting.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reporting.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | Markdown/JSON renderer는 있으나 공식 내보내기 명령의 독립 E2E·edge 검증이 불완전하다. | H-21의 산출물 내보내기 형식이 기계 판독 가능하고 사람이 읽을 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-01 | 역할 기반 접근제어가 있는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `apps/internal_web/src/portal/authorization.py` — role and exact-resource authorization | `apps/internal_web/tests/test_resource_authorization.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_resource_authorization.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 역할 기반 접근제어가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | I-01의 역할 기반 접근제어가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-02 | 데이터셋별 접근권한을 지원하는가 | Critical | M3 | IMPLEMENTED_NOT_VERIFIED | `apps/internal_web/src/portal/authorization.py` — exact dataset grants across dataset and package list, detail, diff, and lineage views | `apps/internal_web/tests/test_research_explorer.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_research_explorer.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. HTML and JSON package list/detail/diff/lineage paths filter or deny every package whose bound dataset is not granted. | 정확 ID 기반 DATASET grant와 broad-dataset permission이 dataset explorer 및 package HTML/JSON 목록·상세·diff·lineage에서 fail-closed로 적용되지만 job 실행, 일반 연구 검색, 파일 다운로드·반출 등 모든 데이터 소비 경로의 중앙 entitlement로 통합되지는 않았다. | 동일 exact-dataset entitlement resolver를 job submit/execute, 일반 검색, download/export와 모든 package consumer에 적용하고 grant 누락·부분 lineage 누출 음성 E2E를 유지한다. |
+| I-03 | 프로젝트별 격리 또는 권한 경계가 있는가 | Critical | M2 | PARTIAL | `docs/investment-research-platform.md` — documented object model without a ResearchProject aggregate | `tests/test_full_scope_research_standard.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_research_standard.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | ResearchProject 권위와 프로젝트 단위 권한/격리 경계가 없다. | I-03의 프로젝트별 격리 또는 권한 경계가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-04 | 감사 로그가 변경 불가능하거나 충분히 보호되는가 | Critical | M4 | VERIFIED | `apps/internal_web/src/portal/audit.py` — transactional audit intent and protected event projection | `apps/internal_web/tests/test_audit_outbox.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_audit_outbox.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 감사 로그가 변경 불가능하거나 충분히 보호되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| I-05 | 비밀정보 관리가 안전한가 | Major | M4 | VERIFIED | `apps/internal_web/src/portal/security.py` — safe path, download, content, and secret controls | `apps/internal_web/tests/test_security_storage.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_security_storage.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 비밀정보 관리가 안전한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| I-06 | 외부 반출과 다운로드 통제를 지원하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `apps/internal_web/src/portal/security.py` — safe path, download, content, and secret controls | `apps/internal_web/tests/test_security_storage.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_security_storage.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 외부 반출과 다운로드 통제를 지원하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | I-06의 외부 반출과 다운로드 통제를 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-07 | 민감 데이터 마스킹이 가능한가 | Major | M4 | VERIFIED | `apps/internal_web/src/portal/security.py` — secret, path, topology, and audit-detail redaction | `apps/internal_web/tests/test_security_storage.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_security_storage.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 민감 데이터 마스킹이 가능한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| I-08 | 코드 또는 산출물 무결성 검사가 있는가 | Major | M4 | VERIFIED | `src/market_research/research/research_package_registry.py` — package, code, and artifact hash/tamper protection | `tests/test_research_package_registry.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 코드 또는 산출물 무결성 검사가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| I-09 | 데이터 라이선스가 접근 제어에 반영되는가 | Major | M2 | PARTIAL | `src/market_research/research/data_governance.py` — license, suitability, provider, issue, waiver, and exact artifact-use binding authorities | `tests/test_data_governance_authority.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 데이터 license metadata가 웹 authorization과 download 결정에 연결되지 않는다. | I-09의 데이터 라이선스가 접근 제어에 반영되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-10 | 연구 컴퓨팅 환경이 프로젝트별로 격리되는가 | Major | M2 | PARTIAL | `src/market_research/research/isolated_process.py` — subprocess and external-root execution isolation | `tests/test_strategy_process_isolation.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_process_isolation.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | strategy subprocess 격리는 있으나 ResearchProject aggregate가 없어 프로젝트별 컴퓨팅 환경·캐시·credential 격리 경계를 구현하지 못한다. | I-10의 연구 컴퓨팅 환경이 프로젝트별로 격리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-11 | 플랫폼 관측성이 존재하는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `services/research_operations/src/research_operations/metrics.py` — health, readiness, and Prometheus metrics | `services/research_operations/tests/test_operations_surface.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_operations_surface.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 플랫폼 관측성이 존재하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | I-11의 플랫폼 관측성이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-12 | 로그·메트릭·트레이스에 연구 ID와 실험 ID가 연결되는가 | Major | M2 | PARTIAL | `src/market_research/research/audit_trace_recorder.py` — research and experiment correlation in audit evidence | `tests/test_common_engine_audit_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_audit_e2e.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 감사 이벤트에는 상관 ID가 있으나 metrics/trace에 연구·실험 상관관계가 완결되지 않았다. | I-12의 로그·메트릭·트레이스에 연구 ID와 실험 ID가 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-13 | 오류 경보가 연구자 또는 플랫폼 관리자에게 전달되는가 | Supporting | M2 | UNVERIFIED_EXTERNAL | `services/research_operations/src/research_operations/alerting.py` — durable delivery, acknowledgement, and escalation | `services/research_operations/tests/test_service_alert_unit.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_service_alert_unit.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 내구성 alert delivery/ack/escalation 구현과 unit loopback은 있으나 실제 PostgreSQL 통합은 외부 테스트 DB 부재로 검증되지 않았다. | I-13의 오류 경보가 연구자 또는 플랫폼 관리자에게 전달되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| I-14 | 보존 기간과 삭제 정책이 존재하는가 | Supporting | M1 | DOCUMENTATION_ONLY | `docs/storage-layout.md` — artifact and runtime retention constraints | `tests/test_common_engine_retention.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_retention.py`; DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed. | 공식·기각·실패 연구별 보존/법적 보류 정책의 실행 계약이 없다. | I-14의 보존 기간과 삭제 정책이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-01 | 플랫폼 구성요소의 책임과 경계가 명확한가 | Critical | M4 | VERIFIED | `docs/architecture-boundaries.json` — distribution responsibilities and forbidden dependency edges | `tests/test_monorepo_architecture.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_monorepo_architecture.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 플랫폼 구성요소의 책임과 경계가 명확한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| J-02 | 연구 포털 또는 통합 제어 인터페이스가 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `apps/internal_web/src/portal/views.py` — authenticated research portal and workflow views | `apps/internal_web/tests/test_browser_e2e.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_browser_e2e.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 연구 포털 또는 통합 제어 인터페이스가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | J-02의 연구 포털 또는 통합 제어 인터페이스가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-03 | 프로젝트 작업 공간에서 핵심 객체가 연결되는가 | Major | M2 | PARTIAL | `docs/investment-research-platform.md` — documented object model without a ResearchProject aggregate | `tests/test_full_scope_research_standard.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_research_standard.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 가설·데이터·코드·실험·결과·검증·리뷰·산출물을 소유하는 프로젝트 workspace aggregate가 없다. | J-03의 프로젝트 작업 공간에서 핵심 객체가 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-04 | 실험 비교 화면 또는 동등한 비교 기능이 있는가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/research/research_reporting.py` — selected-candidate report comparison | `tests/test_application_report_comparison.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_application_report_comparison.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 선택 후보 간 보고서 비교는 제공하지만 전체 실험 분포와 실패 결과를 함께 비교하는 화면/API가 없다. | J-04의 실험 비교 화면 또는 동등한 비교 기능이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-05 | 데이터 탐색 인터페이스가 충분한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `apps/internal_web/src/portal/api_views.py` — dataset catalog, profile, and bounded exploration API | `apps/internal_web/tests/test_data_explorer.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_data_explorer.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 데이터 탐색 인터페이스가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | J-05의 데이터 탐색 인터페이스가 충분한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-06 | 리뷰 인터페이스가 충분한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `apps/internal_web/src/portal/views.py` — review queue, detail, decision, and progress views | `apps/internal_web/tests/test_review_workflow.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_review_workflow.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 리뷰 인터페이스가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | J-06의 리뷰 인터페이스가 충분한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-07 | 공통 라이브러리와 연구별 코드가 구분되는가 | Major | M4 | VERIFIED | `docs/architecture-boundaries.json` — distribution responsibilities and forbidden dependency edges | `tests/test_monorepo_architecture.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_monorepo_architecture.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 공통 라이브러리와 연구별 코드가 구분되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| J-08 | 플러그인 또는 확장 계약이 명확한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `src/market_research/strategy_sdk/runtime.py` — bounded research strategy extension contract | `tests/test_strategy_extensibility_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extensibility_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 플러그인 또는 확장 계약이 명확한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | J-08의 플러그인 또는 확장 계약이 명확한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-09 | 워크플로 오케스트레이션이 존재하는가 | Major | M2 | PARTIAL | `services/research_operations/src/research_operations/research_job_worker.py` — durable leased and supervised offline research job dispatch | `services/research_operations/tests/test_core_unit.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_core_unit.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | offline validation dispatch와 PostgreSQL lease/fencing 구현은 있으나 실제 PostgreSQL DSN 통합이 이번 로컬 감사에서 실행되지 않아 내구성 복구를 검증하지 못했다. | J-09의 워크플로 오케스트레이션이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-10 | CPU·메모리·GPU 등 계산 자원을 지정할 수 있는가 | Major | M2 | PARTIAL | `src/market_research/research/resource_planner.py` — bounded worker, memory, row, and runtime planning | `tests/test_common_engine_resource_guards.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_resource_guards.py`; PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed. | 작업자·메모리·시간 제한은 있으나 CPU quota/core와 GPU request 계약이 없다. | J-10의 CPU·메모리·GPU 등 계산 자원을 지정할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-11 | 패키지와 서비스 간 계약이 명시적이고 테스트되는가 | Major | M4 | VERIFIED | `src/market_research/application/contracts.py` — published Core application adapter contracts | `tests/test_application_contracts_and_capabilities.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_application_contracts_and_capabilities.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 패키지와 서비스 간 계약이 명시적이고 테스트되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+| J-12 | 개발자 온보딩이 재현 가능한가 | Major | M3 | IMPLEMENTED_NOT_VERIFIED | `README.md` — locked setup, commands, external-root, and validation guide | `tests/test_distribution_metadata.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_distribution_metadata.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | locked setup과 명령은 문서화됐지만 빈 환경 설치→sample data 준비→sample 실행→결과 확인을 자동화한 cold onboarding 테스트가 없고 FG-06도 남아 있다. | J-12의 개발자 온보딩이 재현 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-13 | 아키텍처 결정 기록이 있는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `docs/monorepo-iterations.md` — architecture iteration and boundary decision history | `tests/test_documentation_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 아키텍처 결정 기록이 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | J-13의 아키텍처 결정 기록이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-14 | 연구자·엔지니어·검증자 협업 흐름이 문서화되어 있는가 | Supporting | M3 | IMPLEMENTED_NOT_VERIFIED | `docs/internal-web-architecture.md` — researcher, reviewer, approver, and operator workflow | `tests/test_documentation_contract.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py`; PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. | 연구자·엔지니어·검증자 협업 흐름이 문서화되어 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. | J-14의 연구자·엔지니어·검증자 협업 흐름이 문서화되어 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다. |
+| J-15 | 단계별 구축·마이그레이션·운영 문서가 있는가 | Supporting | M4 | VERIFIED | `docs/internal-web-operations-handoff.md` — phased migration, deployment, backup, and operations handoff | `services/research_operations/tests/test_prior_release_upgrade.py`; `PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_prior_release_upgrade.py`; PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. | 단계별 구축·마이그레이션·운영 문서가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다. | 독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다. |
+
+## 13.7 Architecture Coverage Map
+
+| 이상적 구성요소 | 실제 구현 위치 | 상태 | 통합 수준 | 테스트 | 비고 |
+| --- | --- | --- | --- | --- | --- |
+| 연구 포털 | apps/internal_web/src/portal | PARTIAL | Core query/application adapter | apps/internal_web/tests/test_browser_e2e.py | 인증·RBAC·감사는 있으나 project workspace와 전 소비경로 dataset 권한은 불완전 |
+| 연구 프로젝트 관리 | 없음 | MISSING | 통합되지 않음 | 없음 | D-01/I-03/J-03 |
+| 메타데이터 카탈로그 | src/market_research/research/data_exploration_queries.py | PARTIAL | 여러 registry projection | apps/internal_web/tests/test_data_explorer.py | 통합 catalog aggregate는 없음 |
+| 데이터 원천 계층 | src/market_research/research/datasets/source_provenance.py | VERIFIED | 외부 준비 불변 입력 | tests/test_dataset_freeze_publication.py | 네트워크 수집은 의도적 범위 밖 |
+| 시점 기준 데이터 계층 | src/market_research/research/point_in_time_selection.py | VERIFIED | snapshot/admission/queries | tests/test_point_in_time_domain_contracts.py | 지원 authority 기준 |
+| 식별자·기준정보 계층 | src/market_research/research/instrument_contract.py | PARTIAL | typed instrument contracts | tests/test_instrument_domain_contracts.py | 장기 corporate master는 제한적 |
+| 데이터 품질 계층 | src/market_research/research/data_governance.py | PARTIAL | quality+issue+waiver admission+exact usage resolver | tests/test_data_governance_authority.py | missing/wrong/extra usage edge는 거부하지만 실제 steward 운영과 쓰기 원자성은 미검증 |
+| 데이터셋 레지스트리 | src/market_research/research/dataset_freeze.py | VERIFIED | content-addressed freeze | tests/test_dataset_freeze_publication.py | 외부 절대 root |
+| 변수·특성 레지스트리 | src/market_research/research/strategy_catalog.py | PARTIAL | strategy feature definitions | tests/test_strategy_package_manifest.py | 범용 feature lifecycle은 제한적 |
+| 연구 컴퓨팅 환경 | uv.lock; src/market_research/research/reproduction.py | PARTIAL | locked deterministic launcher | tests/test_research_reproduction.py | cold install capsule 없음 |
+| 워크플로 오케스트레이션 | src/market_research/research/validation_pipeline.py; services/research_operations | PARTIAL | offline pipeline+durable worker | tests/test_validation_admission_integration.py | PostgreSQL 기반 실제 worker 종단간 실행은 외부 인프라 미검증 |
+| 실험 추적 | src/market_research/research/experiment_registry.py | VERIFIED | append-only identity/lifecycle | tests/test_experiment_registry_dataset_evidence.py | project parent/change lineage 제한 |
+| 백테스트 엔진 | src/market_research/research/validation_protocol.py | VERIFIED | supported strategy workflow | tests/test_strategy_extension_production_e2e.py | exact 4 strategies |
+| 체결·비용 시뮬레이터 | src/market_research/research/simulation_engine.py | VERIFIED | offline execution ledger | tests/test_common_simulation_engine.py | impact/capacity 미지원 |
+| 통계 검증 엔진 | src/market_research/research/statistical_selection.py | VERIFIED | selection/multiple testing | tests/test_strategy_extension_production_e2e.py | advanced diagnostics 일부 없음 |
+| 강건성 검증 엔진 | src/market_research/research/stress_suite.py | VERIFIED | cost/latency/ablation/regime | tests/test_validation_stress_suite_contract.py | placebo/factor/provider 부족 |
+| 독립 재현 워크플로 | src/market_research/research/independent_verification.py | PARTIAL | verifier object+approval gate+retained PASS receipt | tests/test_independent_verification.py | FG-06: caller-supplied originator/verifier ID; terminal schema-3 source full validation과 cold-host proof 부재 |
+| 연구 리뷰 워크플로 | src/market_research/research/governance.py; apps/internal_web/src/portal/governance.py | PARTIAL | review/approval/SoD | tests/test_research_governance.py | CLI actor는 인증 principal이 아니며 외부 조직 운영은 미검증 |
+| 산출물 레지스트리 | src/market_research/research/research_package_registry.py | PARTIAL | immutable evidence graph+exact source-package usage commit gate | tests/test_research_package_registry.py | governed usage의 존재·정확성은 강제하지만 출판 원자성과 일부 완전 manifest는 미완 |
+| 지식 검색 또는 지식 그래프 | src/market_research/research/knowledge_registry.py | PARTIAL | lineage/negative-result query | tests/test_knowledge_registry.py | mechanism/factor semantic query 제한 |
+| 접근 제어 | apps/internal_web/src/portal/authorization.py | PARTIAL | role+manifest/dataset grants; package HTML/JSON 전 경로 existence hiding | apps/internal_web/tests/test_research_explorer.py | project/job/search/download 소비 경로의 공통 enforcement 부족 |
+| 감사 로그 | apps/internal_web/src/portal/audit.py; services/research_operations/src/research_operations/outbox.py | VERIFIED | transactional intent+projection | apps/internal_web/tests/test_audit_outbox.py | 현장 retention 미검증 |
+| 관측성 | services/research_operations/src/research_operations/metrics.py | PARTIAL | health/readiness/prometheus | services/research_operations/tests/test_operations_surface.py | 실제 alert delivery 미검증 |
+| 연구 산출물 내보내기 | src/market_research/research/strategy_package.py | PARTIAL | static research-only package+governed export usage binding | tests/test_strategy_research_package.py | 주문/배포 명령은 의도적으로 없으며 usage append와 파일 출판의 원자성은 미검증 |
+
+## 13.8 Research Lifecycle Walkthrough
+
+이 표의 핵심 validation→reproduction→verification→approval→package 경로는 `validated_strategy_extension_production_acceptance` production E2E로 실제 실행했다. 최종 재실행은 383.12초에 PASS했고 단일 artifact set을 repository-external 경로에 보존했다. 표의 일반 계약과 남은 제약은 focused tests를 함께 근거로 한다.
+
+| 단계 | 대표 객체/진입점 | 판정 | 인정한 테스트 결과·제약 |
+| --- | --- | --- | --- |
+| 연구 생성 | src/market_research/research/research_standard.py; knowledge_registry.py | PARTIAL | tests/test_research_standard_authority_integration.py — Project 객체는 없고 연구 표준 객체부터 시작 |
+| 가설 등록 | src/market_research/research/hypothesis_contract.py | VERIFIED | tests/test_hypothesis_contract.py — 검증 가능 문장·메커니즘·반증 조건 |
+| 사전등록 | src/market_research/research/study_lifecycle.py | VERIFIED | tests/test_study_lifecycle.py — 변경·holdout 정책 hash 고정 |
+| 데이터 선택 | src/market_research/research/data_governance.py | PARTIAL | tests/test_data_governance_authority.py — license·issue admission과 exact artifact usage set |
+| 데이터 스냅샷 | research-freeze-dataset; src/market_research/research/dataset_freeze.py | VERIFIED | tests/test_dataset_freeze_publication.py — 불변 artifact+sidecar+hash |
+| 실험 실행 | research-backtest/research-walk-forward; validation_pipeline.py | VERIFIED | tests/test_strategy_extension_production_e2e.py — 결정론 launcher와 실패 보존 |
+| 백테스트 | src/market_research/research/validation_protocol.py; simulation_engine.py | VERIFIED | tests/test_common_simulation_engine.py — causal prefix+ledger+cost scenarios |
+| 검증 | research-validate; src/market_research/research/validation_pipeline.py | VERIFIED | tests/test_validation_pipeline_gate.py; tests/test_temporal_validation.py — fully nested selection은 미실행 |
+| 리뷰 | src/market_research/research/governance.py; portal review | PARTIAL | tests/test_research_governance.py — 역할·코멘트·결정은 있으나 인증 principal 결속은 없음 |
+| 독립 재현 | research-reproduce-run; independent_verification.py | PARTIAL | tests/test_research_reproduction_cli.py; tests/test_independent_verification.py — retained same-state PASS; caller ID·terminal source depth·cold-host 증거 한계 |
+| 릴리스 | governance approval; research_package_registry.py | PARTIAL | tests/test_research_package_registry.py — 불변 출판과 exact governed usage commit gate; 파일+append 원자성은 부분 |
+| 검색·재사용 | src/market_research/research/knowledge_registry.py; exploration queries | PARTIAL | tests/test_knowledge_registry.py — 구조화 검색은 있으나 고급 의미 검색 제한 |
+
+보존 증거 인덱스: `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json`  
+인덱스 byte SHA-256: `sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645`  
+보존 run root: `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0`
+
+| 보존 객체 | 절대 경로 | 파일 byte SHA-256 | 계약상 binding/result |
+| --- | --- | --- | --- |
+| 실행 로그 | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained.log` | `sha256:9d3b94d8e432e1a49bd5af15d0c88a0c634eee146883473cbfc142748921e4da` | 1 passed in 383.12s |
+| 연구 manifest | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-study/manifest.json` | `sha256:3118d6b6cce8fd5b2634f1fe65872b34f492fedcb2ccdfcd90723838b1366f75` | manifest_hash=sha256:6657a93b3caa82c892ae4ce4a521b52452c25377727e38330cd93e66a3be38c8 |
+| frozen dataset manifest | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-study/frozen/candles/KRW-BTC/240m/10886f9f67e7163e424db8ad9fec1af590e4f73210939efe0f2da33d87c97f2d/artifact.manifest.json` | `sha256:ba97ae8e6b63472ab5c1dcc02aa244351d9c5d44c75d01c99add67f4a6c6e894` | artifact_manifest_hash=sha256:675529d58bb77f2910317ebb82522a0fad7c8f2ea95e643da6d8390da0ca6e39 |
+| terminal validation report | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-summary.json` | `sha256:a0ff274d32a2342090f8ee1db893246b45191fc8d9a59c411a7fa27df92c62ec` | content_hash=sha256:64ed741f236dfb36f8d36d38a3ab1a665d3119e0d188a0666eaabea9a7c6ae65 |
+| authoritative reproduction receipt | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/runtime/reports/research/validated_strategy_extension_production_acceptance/validated_research_reproduction_receipt.json` | `sha256:fd7c1d66230e9afcac5c9a9037abcd4b3aef46422c2eccbc1ffdf9937e178b7c` | receipt_hash=sha256:cccbdc0578331ae502f3dfa3909b91988d3f5d8eddbdf82f87cfbd92a94bc889 |
+| reproduction outcome | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-reproduction.json` | `sha256:ef02206031889e7cdc9a868f1767dff993b3e945b382b71c166379ec24efb317` | status=PASS; reproduced_final_holdout_result_hash=sha256:9c5cef47703f7196c580b302cc7d39f118ae9aa532f7ebb50564c88646354359 |
+| independent verification | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/runtime/artifacts/reports/research/_registry/independent_verifications/validated-extension-verification/1.json` | `sha256:12ab279c31062b850875979fbcbcbbb2e53fa2441e24a586551367a5fcbbbc2c` | content_hash=sha256:96e67afec183e56e350df926a5612e581d7e7083ef868e92c966dc9688d1e65d; registry_row_hash=sha256:cc984a779ee10bae8fde3ae47353363fc91e60b7df01c41e278ebbba11769f41 |
+| approval | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-approval.json` | `sha256:66d39b38ce4b7694cd2c8ef75b9362a25fe93db0e19f5b92b183a83a4cad0407` | content_hash=sha256:df13d310d6e80c90bb95a704f5a5bf14e936f7d54ff3c651aeeef25064c796ac |
+| strategy package | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-strategy-package.json` | `sha256:562c9aa14cb508087d8935438bf87d6c75610601dbeee3ebd5143bb65784786f` | content_hash=sha256:db3b6863a9eac10f2a2f714e9b05a8f60c8043314f0c7d18b1bc6e8be41e790b; package_authority_result=PASS |
+| final research package registry | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/runtime/artifacts/reports/research/_registry/research_packages.jsonl` | `sha256:2be1f4d249c479e52079afc5ea5a8095b6fef255df8a9c63354c2d94e5bccff4` | package_id=validated-extension-final-research-package; version=1; content_hash=sha256:81478106033519e28fb12161ff173838b65c872d32b9a2c46eb90b27ebe5b4b1 |
+| pytest collection log | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/pytest-collection.log` | `sha256:cd9ae763e5b956688934079b5a0cdba3d093171f68c097daa94bb9b479affecd` | 1705 tests collected in 1.33s; exit=0 |
+| single full pytest log | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/pytest-full.log` | `sha256:d511ee9e29ccf8787737b04d2f1e52ca2d515fe415af5be7eb4794ebf661e954` | 1660 passed, 38 skipped, 7 failed, 4 warnings in 2073.04s; all seven failures were subsequently rerun |
+| full-suite failure rerun log | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/pytest-full-failures-rerun.log` | `sha256:4a10c1572838282d34f1aecaeab79c260fb7c57c0dc0e193d6d10b0583dfa468` | exact seven reported selectors: 7 passed in 0.80s; exit=0 |
+| dirty-tree release build refusal log | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/platform-build.log` | `sha256:85c2cbeb1272ccd08883bfc8c40a6b6b9ff580a91dc68a186a4a40dad0cd1ad6` | release_checkout_not_clean; expected fail-closed guard |
+| repository-external uv build log | `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/uv-build.log` | `sha256:60dabf09f25d8d22b559f4bc27389264725db5fc074c37e4b9f63c493eb39b6b` | three wheels and three source distributions built; exit=0 |
+
+## 13.9 Data Lineage Walkthrough
+
+보존 run의 대표 지표 `metrics_v2.return_risk.total_return_pct`를 다음 실제 identity/hash 경로로 역추적했다:
+
+```text
+Final ResearchPackage sha256:814781…
+→ StrategyPackage sha256:db3b686… (package_authority_result=PASS)
+→ terminal validation report sha256:64ed741…
+→ backtest report and portfolio ledger
+→ experiment validated_strategy_extension_production_acceptance
+→ manifest sha256:6657a93… + reproduction receipt sha256:cccbdc0…
+→ frozen dataset artifact manifest sha256:675529d…
+→ externally prepared immutable SQLite/source provenance
+```
+
+위 content hash와 파일 byte hash는 서로 다른 의미를 가지며 둘 다 보존 증거 표에 명시했다. final registry, strategy package, validation report, manifest와 dataset manifest의 실제 경로·hash가 evidence index에 함께 있다. `require_data_usage_binding_for_artifact`와 package registry resolver는 governed validation/package에 대해 authority·subject·version·content-hash의 exact set을 요구하고 missing/wrong/extra binding을 거부한다. 다만 파일 쓰기와 usage append 자체가 단일 저장 트랜잭션인 것은 아니다.
+
+## 13.10 Reproducibility Walkthrough
+
+1. 명령 형식은 `scripts/platform research research-reproduce-run --manifest <ABS_MANIFEST> --receipt <ABS_RECEIPT> --out <ABS_OUTPUT>`이며 CLI focused suite 5개가 PASS했다.
+2. production selector는 수정 후 441.41초에 PASS했고 retained rerun은 383.12초에 PASS했다. 실제 input/output root는 `/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0`다.
+3. 보존 결과는 validation content hash `sha256:64ed741…`, receipt hash `sha256:cccbdc0…`, reproduced final-holdout hash `sha256:9c5cef4…`, independent verification content hash `sha256:96e67af…`를 결속한다.
+4. receipt/report의 외부·내부 hash, report identity, compact candidate projection과 copied/rehashed receipt 공격을 focused tests가 거부한다.
+5. 남은 깊이 한계: terminal schema-3 원천 보고서는 독립 검증기 안에서 shallow schema/type/hash 검사를 받고 전체 terminal 계약 검증은 후속 governance 경로에 의존한다.
+6. 별도 host에서 원본 root와 cache를 제거하고 source/runtime/dataset bytes를 capsule로 복원한 성공 증거는 `NOT RETAINED`다. same-state PASS를 cold-host PASS로 해석하지 않는다.
+7. FG-06은 originator/verifier가 인증 principal이 아닌 caller-supplied 문자열이어서 FAIL이며, 이 치명 gate만으로도 최종 판정은 NOT이다.
+
+실행 기록:
+
+- receipt/report content-hash adversarial focused group — 5 passed
+- tests/test_research_reproduction_cli.py — 5 passed
+- governance/application focused group — 51 passed
+- tests/test_strategy_research_package.py — 21 passed
+- independent verification/reproduction focused group — 59 passed
+- architecture boundary + web package authorization focused group — 23 passed
+- research package registry/artifact governance focused group — 24 passed
+- production E2E retry — 1 passed in 441.41s
+- production E2E retained rerun — 1 passed in 383.12s; external evidence index and artifact hashes retained
+- canonical audit/report focused group — 32 passed, 1 schema-contract failure; exact selector rerun passed after schema update
+- pytest --collect-only on tests + web + operations — 1705 tests collected in 1.33s
+- single full pytest invocation — 1660 passed, 38 skipped, 7 failed, 4 warnings in 2073.04s
+- exact seven full-suite failure selectors — 7 passed in 0.80s; post-format affected selector — 1 passed in 0.18s
+- uv lock --check; scripts/platform lint; ruff format --check — PASS across 534 Python files
+- scripts/platform typecheck — PASS: Core 225, Web 51, Operations 20, audit tools 4 source files
+- scripts/platform compile; scripts/platform docs-check — PASS
+- scripts/platform audit — PASS: no known locked runtime dependency vulnerabilities
+- scripts/platform build — expected fail-closed on dirty audit worktree; uv build --all-packages to external output — 3 wheels and 3 sdists PASS
+- runtime package-content inspection — PASS: distribution boundaries, migration/SQL assets, and secret/runtime-artifact exclusions
+
+실패 및 해소 기록:
+
+- `initial validated strategy production E2E` — ResearchPackageRegistryError: research_package_operational_value_forbidden:$.independent_verification_registry_path → operational path was excluded from the immutable package payload; the selector then passed in 441.41s and a clean retained rerun passed in 383.12s
+- `initial canonical audit focused pytest` — pytest capture temporary file disappeared before collection (FileNotFoundError; zero tests ran) → TMPDIR/TMP/TEMP and --basetemp were pinned to the external audit root and capture was disabled with -s
+- `canonical audit/report focused pytest after external basetemp` — 32 passed and one report-schema assertion failed because the new retained_evidence field was not yet admitted by the test schema → the machine-result contract now validates the retained evidence index and artifact records; the exact selector passed
+- `single full pytest invocation` — 7 failed: one concurrent fixture publication conflict, four stale _manifest_stub calls, one stale full-scope evidence hash check, and one stale mypy invocation-count contract → serialized only the test-fixture confirmation publisher, supplied tmp_path at all four calls, refreshed two bound evidence hashes, and asserted all four typecheck invocations; the exact seven selectors passed in 0.80s
+- `ruff format --check` — one legacy completeness-gate test required formatting → formatted that file, rechecked all 534 Python files, and reran its reported full-suite selector successfully
+- `scripts/platform typecheck` — Core mypy rejected a duplicate local variable annotation in reproduction.py → removed only the duplicate annotation; Core, Web, Operations, and the four audit tools then passed strict mypy
+- `scripts/platform build` — release_checkout_not_clean → kept the clean-checkout release guard intact and built all three packages to a repository-external directory with uv; package-content inspection passed
+
+## 13.11 Anti-Pattern Findings
+
+| 안티패턴 | 탐지 여부 | 심각도 | 증거 | 영향 | 관련 평가 기준 | 수정·유지 방안 |
+| --- | --- | --- | --- | --- | --- | --- |
+| AP-01 노트북 공동 저장소 | NO | 낮음 | 공식 CLI/module pipeline | 공식 결과가 notebook cell에 의존하지 않음 | C-07, C-08 | notebook 우회 경로 탐지와 CLI boundary 테스트 유지 |
+| AP-02 백테스트 성과 순위표 | NO | 낮음 | 전체 후보·실패 보존 tests | 최고 결과만 남기지 않음 | C-11, C-12, F-24 | 전체 후보 분포와 terminal negative package 종단간 검증 추가 |
+| AP-03 변경 가능한 공용 데이터 | NO | 낮음 | dataset freeze create-or-verify | 덮어쓰기 대신 content addressing | B-01, B-12, C-18, FG-11 | create-or-verify 충돌·변조 테스트 유지 |
+| AP-04 수동 데이터 수정 | NO | 낮음 | 외부 준비 불변 입력+manifest | 수동 수정은 공식 경로가 아님 | B-01, B-13, FG-08 | 수동 변환을 반드시 버전·hash·lineage 객체로 출판 |
+| AP-05 성공 연구만 보존 | NO | 낮음 | failed/rejected/inconclusive registry | 부정 결과 검색 가능 | C-11, G-10, H-15, FG-12 | 실패·기각 보존과 검색 회귀 테스트 유지 |
+| AP-06 검증 데이터 반복 사용 | NO | 낮음 | holdout reservation/access audit | 중복 사용 fail-closed | D-08, D-09, F-03, FG-07 | 동시·재사용·시간역전 접근 적대적 테스트 유지 |
+| AP-07 신호와 체결의 혼합 | NO | 낮음 | signal/order/simulation contracts | 체결 가정이 신호 함수를 소유하지 않음 | A-04, E-01, E-07 | signal→intent→fill→ledger 경계 테스트 유지 |
+| AP-08 연구와 실거래 결합 | NO | 치명 | boundary AST/import tests | broker/account/order 기능 없음 | A-02, A-03, FG-01 | 금지 import·capability·environment 탐지를 CI에서 유지 |
+| AP-09 문서만 갖춘 가짜 완성도 | PARTIAL | 중간 | 이전 matrix 불일치를 이번 canonical evaluator로 교체 | 일부 고급 항목은 여전히 문서/부분 구현 | D-01, F-05, H-05, I-03 | M0–M3 항목을 완전 판정으로 표시하지 않고 gap·remediation을 유지 |
+| AP-10 외부 도구 이름만 나열 | NO | 낮음 | 실제 local contracts만 점수화 | 도구명만으로 점수를 주지 않음 | B-17, F-21, I-13 | 외부 제품명이 아닌 설정·호출·실패·계보 증거만 인정 |
+
+## 13.12 Unverified Claims
+
+- 별도 호스트/새 가상환경/빈 캐시에서의 독립 cold reproduction
+- caller-supplied originator/verifier 문자열이 실제 인증 principal과 일치한다는 보장 및 조직의 역할 분리(FG-06)
+- terminal schema-3 원천 보고서가 독립 검증기 내부에서 전체 terminal 계약으로 검증된다는 보장(후속 governance 검증과 별개)
+- 실제 복수 데이터 공급자·license steward·incident 조직의 승인/대응
+- 운영 PostgreSQL, TLS/PKI, backup destination, alert delivery의 현장 검수
+- 실시장 데이터로 보정된 market-impact/capacity 모형
+- 조직의 retention/legal-hold 집행과 계정 lifecycle 외부 승인
+- exact terminal/package DataUsageBinding은 read-side에서 강제되지만 artifact 쓰기와 append가 하나의 원자적 출판으로 보인다는 보장
+- data/code/experiment/result/verification/limitation manifest의 완전성
+- dataset entitlement가 explorer/package 외 job·일반 검색·download 소비 경로에서도 적용된다는 보장
+
+문서·외부 증거 한계 또는 중대한 M0–M3 공백이 있는 기준:
+
+| 기준 | 상태 | 확인하지 못한 범위 |
+| --- | --- | --- |
+| A-06 | IMPLEMENTED_NOT_VERIFIED | 정적 research package handoff는 통합되어 있으나 요구되는 liquidity/capacity estimate와 명시적 research confidence 계약이 없다. |
+| B-14 | IMPLEMENTED_NOT_VERIFIED | validated result와 governed strategy package 소비 시 artifact ID·version·content hash와 정확한 dataset usage binding을 read-side에서 재검증하지만 publication과 append-only binding 기록은 별도 쓰기라 원자적 단일 commit은 아니다. binding append 실패 뒤 남는 orphan artifact는 후속 소비에서 차단된다. |
+| B-17 | IMPLEMENTED_NOT_VERIFIED | 불변 ProviderComparison이 동일 의미 값 차이와 대체 판정을 보존하지만 실제 복수 공급자 현장 데이터 비교는 외부 증거가 필요하다. |
+| B-18 | IMPLEMENTED_NOT_VERIFIED | DatasetSuitabilityAssessment와 명시적 사용 결정이 validation admission에 결속되었으나 독립 데이터 steward의 현장 승인은 이번 로컬 감사에서 확인하지 못했다. |
+| B-19 | IMPLEMENTED_NOT_VERIFIED | 목적·사용자·파생물 보존·반출 범위를 가진 license policy/use decision과 exact artifact usage binding이 validated result/package 소비를 차단하지만 웹 다운로드·외부 반출 entitlement와의 직접 결속은 I-09 공백으로 남는다. |
+| B-22 | IMPLEMENTED_NOT_VERIFIED | 문제·resolution·waiver·usage registry는 통합됐지만 issue별 workaround와 관련 waiver/resolution을 포함한 완전한 영향 view 및 원자적 publication이 부족하다. |
+| C-06 | IMPLEMENTED_NOT_VERIFIED | 단일 재현 명령 또는 동등한 자동화 경로가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. |
+| C-15 | PARTIAL | worker-local cache와 content-bound key 구현은 있으나 cache invalidation 및 cache-on/off 결과 동등성 테스트가 없다. |
+| C-16 | IMPLEMENTED_NOT_VERIFIED | CI workflow에 same-state 재현 명령과 계약 테스트는 있으나 이번 감사에서 실제 원격 CI run receipt를 확인하지 못했고 cold restore도 FG-06으로 실패한다. |
+| C-19 | IMPLEMENTED_NOT_VERIFIED | 결과 영향 환경 allowlist와 package secret 검사는 있으나 secret을 reproduction receipt에 주입하는 직접 음성 테스트가 없다. |
+| C-20 | IMPLEMENTED_NOT_VERIFIED | resource planner가 계획 상한을 강제하지만 실제 CPU·메모리·runtime·storage 사용량을 공식 결과에 함께 기록하는 종단 간 증거는 없다. |
+| D-01 | MISSING | 고유 ID·상태·버전·소유자를 가진 ResearchProject aggregate가 없다. ResearchStandard/Hypothesis는 프로젝트 객체를 대체하지 않는다. |
+| D-10 | IMPLEMENTED_NOT_VERIFIED | 확정 후보 admission이 데이터 적합성·license·미해결 critical issue를 hash로 검증하지만 이를 소유하는 ResearchProject aggregate와 독립 steward 현장 승인은 없다. |
+| D-15 | PARTIAL | 지식 registry는 명시적 관계와 동일 identity 충돌을 다루지만 새 연구 시작 전 의미 기반 유사 연구 탐지를 제공하지 않는다. |
+| E-05 | IMPLEMENTED_NOT_VERIFIED | 상장폐지 수익률과 거래 불가능 상태를 처리하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. |
+| E-06 | PARTIAL | 기업행위 변환기는 존재하지만 공식 dataset materialization/backtest 호출 경로가 이를 소비하지 않는다. |
+| E-15 | PARTIAL | 거래량 대비 주문·ADV·최대 참여율을 실제 체결에 적용하는 계약이 없다. |
+| E-16 | DOCUMENTATION_ONLY | 주문 크기와 유동성에 반응하는 시장충격 모형이 명시적으로 unavailable이다. |
+| E-17 | MISSING | 자본 grid, 비용/미체결 curve, 손익분기 및 최대 수용 자본 분석이 없다. |
+| E-18 | DOCUMENTATION_ONLY | 공매도 locate·대차비·회수 위험을 지원하지 않는다. |
+| E-19 | DOCUMENTATION_ONLY | 현금이자 정책은 zero만 허용하며 자금조달/현금수익 모형이 없다. |
+| F-05 | PARTIAL | 외부/내부 fold는 불변 계획으로 사전 고정되지만 내부 fold가 후보 선택을 실제로 실행하지 않아 selection_is_fully_nested=false이다. |
+| F-06 | IMPLEMENTED_NOT_VERIFIED | temporal config는 선언된 일 단위 label horizon으로 purge와 forward embargo를 구성하지만 실제 target/forward-label 정의 및 표본 timestamp와 horizon을 결속하지 않는다. |
+| F-12 | PARTIAL | placebo 날짜·label shuffle·무관 대상·대체 설명 변수를 실행하는 반증 executor가 없다. |
+| F-16 | PARTIAL | 표준 시장/규모/가치/모멘텀/산업/국가 factor exposure 회귀가 없다. |
+| F-21 | DOCUMENTATION_ONLY | 동일 의미의 공급자 대체 dataset 결과 차이를 비교하고 차단하는 gate가 없다. |
+| F-23 | DOCUMENTATION_ONLY | 예측 모델 capability에 조건부인 calibration·drift·불균형·threshold 안정성 계약이 없다. |
+| G-01 | IMPLEMENTED_NOT_VERIFIED | 역할 불일치와 originator 분리는 강제하지만 CLI actor ID는 인증된 principal이 아닌 호출자 제공 문자열이라 한 운영자가 alias를 만들 수 있다. |
+| G-02 | IMPLEMENTED_NOT_VERIFIED | retained local production E2E에서 terminal 결과의 reproduce→비교→독립 판정 경로는 실행됐지만 빈 호스트에서 환경·외부 immutable dataset을 복원하지 못한다. 또한 독립 verifier 내부의 schema-3 terminal source report 검사는 schema·identity·content hash 수준에 머물고 전체 validated-result 계약 검사는 downstream governance validator에 의존한다. |
+| G-03 | VERIFIED | retained production E2E가 IndependentVerificationResult와 append-only registry row를 실제 생성·보존하지만 독립 verifier 자체는 schema-3 terminal source report의 전체 validated-result 계약을 검증하지 않는다. 빈 호스트 E5 재현도 FG-06으로 남는다. |
+| G-04 | VERIFIED | distinct-verifier canonical PASS와 대상 hash 없이는 승격이 차단되고 retained terminal reproduce→publish→approve E2E 및 음성 테스트가 확인됐다. 다만 schema-3 terminal source의 전체 계약 검사는 independent verifier가 아니라 downstream governance validator에서 수행되며 FG-06 cold restore는 실패한다. |
+| G-12 | PARTIAL | GovernanceWaiver가 목적·사유·승인자·만료를 보존하고 admission에서 scope/expiry를 검사하지만 데이터 거버넌스에 한정되며 직접 expired/future 음성 테스트가 부족하다. |
+| G-13 | PARTIAL | 데이터 문제에서 usage binding으로 영향 연구를 역조회하고 향후 admission을 차단하지만 이미 승인된 연구의 상태를 자동 전환하는 workflow가 없다. |
+| G-15 | DOCUMENTATION_ONLY | 역할별 책임이 문서화되어 있는가: 선언 또는 제한 문서만 있으며 실행 가능한 지원이 없다. |
+| G-16 | PARTIAL | CI와 앱 역할 권한은 있으나 CODEOWNERS·branch protection·승인 규칙이 연구자/검증자 분리를 강제한다는 실행 증거가 없다. |
+| H-01 | IMPLEMENTED_NOT_VERIFIED | 최종 결과가 단일 보고서가 아니라 완전한 연구 패키지인가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. |
+| H-04 | IMPLEMENTED_NOT_VERIFIED | package는 dataset snapshot/admission hash ref를 보존하지만 추출 시점·PIT·universe·quality·license를 포함한 완전한 data manifest를 자체 포함하지 않는다. |
+| H-05 | PARTIAL | reproduction receipt ref와 recipe 일부는 있으나 repo·commit·실행 명령·환경 image·lock·seed를 한 code manifest로 포함하지 않는다. |
+| H-06 | IMPLEMENTED_NOT_VERIFIED | experiment spec ref와 일부 parameter/cost hash는 있으나 기간·portfolio constraint·benchmark·전체 lineage를 포함한 완전한 experiment manifest가 없다. |
+| H-07 | IMPLEMENTED_NOT_VERIFIED | 결과 패키지가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. |
+| H-08 | IMPLEMENTED_NOT_VERIFIED | retained E2E에서 공식 IndependentVerificationResult가 승인·패키지에 hash로 결속되지만 schema-3 terminal source 전체 계약은 independent verifier 내부에서 검증되지 않고 수정 내역을 일급 필드로 보존하는 완전한 검증 보고서도 아니다. cold-host 독립 실행은 FG-06으로 남는다. |
+| H-09 | IMPLEMENTED_NOT_VERIFIED | package에 제한사항 컨테이너는 있으나 표본·비용추정·시장구조·적용 불가 환경·알 수 없는 위험 범주와 비어 있지 않은 검토 내용을 필수로 강제하지 않는다. |
+| H-10 | IMPLEMENTED_NOT_VERIFIED | 모든 산출물에 고유 ID와 버전이 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다. |
+| H-11 | IMPLEMENTED_NOT_VERIFIED | execution intent→fill→ledger 계보는 검증되지만 특정 보고 지표에서 결과·실험·commit·parameter·snapshot·원천까지 이어지는 단일 종단 간 trace 증거는 없다. |
+| H-17 | PARTIAL | 검색은 구조화 필터를 제공하지만 메커니즘·팩터·상충·비용 기각·재현 실패 질의를 직접 지원하지 않는다. |
+| H-18 | IMPLEMENTED_NOT_VERIFIED | DataQualityIncident/KnownDataIssue의 impact refs와 사용 binding 역검색 API는 있으나 승인된 연구의 상태 전환 및 외부 catalog UI 통합은 없다. |
+| H-19 | PARTIAL | 동일 identity 충돌은 차단하지만 제목·메커니즘·데이터·가설 의미를 비교하는 사전 유사도/중복 탐지 workflow는 없다. |
+| I-02 | IMPLEMENTED_NOT_VERIFIED | 정확 ID 기반 DATASET grant와 broad-dataset permission이 dataset explorer 및 package HTML/JSON 목록·상세·diff·lineage에서 fail-closed로 적용되지만 job 실행, 일반 연구 검색, 파일 다운로드·반출 등 모든 데이터 소비 경로의 중앙 entitlement로 통합되지는 않았다. |
+| I-03 | PARTIAL | ResearchProject 권위와 프로젝트 단위 권한/격리 경계가 없다. |
+| I-09 | PARTIAL | 데이터 license metadata가 웹 authorization과 download 결정에 연결되지 않는다. |
+| I-10 | PARTIAL | strategy subprocess 격리는 있으나 ResearchProject aggregate가 없어 프로젝트별 컴퓨팅 환경·캐시·credential 격리 경계를 구현하지 못한다. |
+| I-13 | UNVERIFIED_EXTERNAL | 내구성 alert delivery/ack/escalation 구현과 unit loopback은 있으나 실제 PostgreSQL 통합은 외부 테스트 DB 부재로 검증되지 않았다. |
+| I-14 | DOCUMENTATION_ONLY | 공식·기각·실패 연구별 보존/법적 보류 정책의 실행 계약이 없다. |
+| J-03 | PARTIAL | 가설·데이터·코드·실험·결과·검증·리뷰·산출물을 소유하는 프로젝트 workspace aggregate가 없다. |
+| J-04 | IMPLEMENTED_NOT_VERIFIED | 선택 후보 간 보고서 비교는 제공하지만 전체 실험 분포와 실패 결과를 함께 비교하는 화면/API가 없다. |
+| J-09 | PARTIAL | offline validation dispatch와 PostgreSQL lease/fencing 구현은 있으나 실제 PostgreSQL DSN 통합이 이번 로컬 감사에서 실행되지 않아 내구성 복구를 검증하지 못했다. |
+| J-10 | PARTIAL | 작업자·메모리·시간 제한은 있으나 CPU quota/core와 GPU request 계약이 없다. |
+| J-12 | IMPLEMENTED_NOT_VERIFIED | locked setup과 명령은 문서화됐지만 빈 환경 설치→sample data 준비→sample 실행→결과 확인을 자동화한 cold onboarding 테스트가 없고 FG-06도 남아 있다. |
+
+## 13.13 Top Gaps
+
+### P0 — Authenticated independent-verification principals
+
+- 관련 기준: FG-06, G-01, G-03, I-01
+- 현재 상태/중요성: 현재 originator_id와 verifier_id는 호출자가 제공하는 문자열이라 별칭 위조만으로 역할 분리를 가장할 수 있다.
+- 필요한 구현: authenticated principal assertion; role membership and session binding; non-forgeable actor provenance in receipts
+- 필요한 테스트: forged alias denial; expired/revoked principal; same-principal cross-role denial
+- 완료 조건: originator/verifier/approver가 인증된 서로 다른 principal로 결속
+
+### P1 — Liquidity, impact and capacity authority
+
+- 관련 기준: E-15, E-16, E-17
+- 현재 상태/중요성: 비용 후 성과가 자본 규모에 대해 비현실적일 수 있다.
+- 필요한 구현: ADV/depth participation; calibrated impact scenarios; capital/capacity curve
+- 필요한 테스트: capacity monotonicity; thin-liquidity stress
+- 완료 조건: 주문 크기 증가 시 impact/미체결 비감소; package evidence binding
+
+### P1 — ResearchProject/workspace aggregate
+
+- 관련 기준: D-01, I-03, J-03
+- 현재 상태/중요성: 연구·데이터·실험·리뷰의 소유/격리 단위가 없다.
+- 필요한 구현: immutable project identity/version; project-scoped grants and lineage
+- 필요한 테스트: cross-project denial; project archive/reopen
+- 완료 조건: 모든 lifecycle 객체가 project ref 보유
+
+### P1 — Cold independent reproduction capsule
+
+- 관련 기준: C-06, C-16, G-02
+- 현재 상태/중요성: same-state production E2E는 두 번 통과하고 한 세트를 보존했지만 원본 host/root/cache 없이 복원한 증거는 없다.
+- 필요한 구현: content-addressed data/source/runtime capsule; relocation-safe resolver; single package replay command
+- 필요한 테스트: old root unavailable subprocess; fresh locked runtime; empty cache
+- 완료 조건: 빈 외부 root에서 동일 hash 결과; 별도 host verification PASS
+
+### P1 — Full terminal source-report validation inside independent verification
+
+- 관련 기준: G-03, G-04
+- 현재 상태/중요성: terminal schema-3 원천 보고서는 독립 검증기 내부에서 type/schema/hash와 주변 selection·confirmation·registry 결속만 검사되고 전체 terminal 계약 검증은 뒤의 governance validator에 의존한다.
+- 필요한 구현: independent verifier invokes the full terminal report validator; preserve selection/confirmation/registry cross-bindings
+- 필요한 테스트: rehashed malformed schema-3 source denial; missing and contradictory terminal fields; verification PASS cannot precede full source validation
+- 완료 조건: 독립 검증 결과 자체만으로 original/reproduced terminal reports 모두 full-contract PASS
+
+### P1 — Atomic governed artifact and usage publication
+
+- 관련 기준: B-14, B-22
+- 현재 상태/중요성: 읽기 경로는 terminal/package의 exact authority·subject·version·hash set을 검사해 missing/wrong/extra commit을 거부하지만 파일 쓰기와 append가 하나의 트랜잭션은 아니다.
+- 필요한 구현: staged artifact publication transaction; usage binding precommit or recoverable journal; read-side completeness gate
+- 필요한 테스트: fault after each staged write; uncertain commit retry; orphan denial
+- 완료 조건: artifact와 usage edge가 함께 보이거나 모두 보이지 않음
+
+### P1 — Execute fully nested temporal selection
+
+- 관련 기준: F-05
+- 현재 상태/중요성: 내부 fold가 계획만 되고 후보 선택에 사용되지 않는다.
+- 필요한 구현: inner-fold selection executor; outer-only unbiased evaluation
+- 필요한 테스트: selection leakage negative test; nested replay
+- 완료 조건: selection_is_fully_nested=true
+
+### P1 — Terminal delisting and corporate-action integration
+
+- 관련 기준: E-05, E-06
+- 현재 상태/중요성: PIT 데이터가 있어도 실제 수익/수량 계산이 누락될 수 있다.
+- 필요한 구현: dataset materialization transformer; terminal return policy
+- 필요한 테스트: split/dividend/rights/merger/delisting E2E
+- 완료 조건: ledger와 package에 정책 hash 결속
+
+### P1 — Falsification, factor and provider sensitivity
+
+- 관련 기준: F-12, F-16, F-21
+- 현재 상태/중요성: 대체 설명과 공급자 의존성을 충분히 제거하지 못한다.
+- 필요한 구현: placebo/shuffle executor; factor exposure regression; provider result comparison gate
+- 필요한 테스트: known-null fixtures; provider divergence rejection
+- 완료 조건: validation package에 결과/한계 포함
+
+### P1 — Complete immutable research package manifests
+
+- 관련 기준: H-01, H-04, H-05, H-06, H-07, H-08, H-09, H-10
+- 현재 상태/중요성: 현재 package는 참조와 일부 요약을 보존하지만 data/code/experiment/result/verification/limitation 문서의 필수 항목을 자체 완결적으로 강제하지 않는다.
+- 필요한 구현: typed data, code, and experiment manifests; complete result and verification report; non-empty categorized limitation authority; artifact-wide ID/version contract
+- 필요한 테스트: missing field and empty-category denial; cross-manifest substitution/tamper; human/machine export E2E
+- 완료 조건: H-01의 9개 필수 구성이 모두 package에 자체 포함; 모든 참조·ID·version·hash 재검증 PASS
+
+### P1 — Dataset authorization across every consumption path
+
+- 관련 기준: I-02
+- 현재 상태/중요성: exact-ID grant는 dataset explorer와 package HTML/JSON list/detail/diff/lineage에서 적용되지만 job 실행, 일반 검색과 download에서 동일 entitlement를 공통으로 강제하지 않는다.
+- 필요한 구현: one dataset authorization application contract; all consumer adapters call the same decision; license-aware export decision binding
+- 필요한 테스트: unauthorized job/search/download denial; list/detail existence-hiding; grant revoke and stale-session denial
+- 완료 조건: dataset bytes·metadata·derived artifact의 모든 소비 경로가 동일 권한 receipt를 검증
+
+### P2 — Expiring policy exception authority
+
+- 관련 기준: G-12
+- 현재 상태/중요성: 데이터 거버넌스 waiver는 만료를 검사하지만 범용 정책 예외와 직접 만료 음성 증거는 불완전하다.
+- 필요한 구현: general policy exception authority; automatic expiry denial
+- 필요한 테스트: expired/future/wrong-scope tests
+- 완료 조건: 승격 시 current exception 재검증
+
+### P2 — License-aware export and executable retention
+
+- 관련 기준: I-09, I-14
+- 현재 상태/중요성: 데이터 권리와 법적 보존 의무를 플랫폼 경로가 완전히 집행하지 않는다.
+- 필요한 구현: download/export license decision; retention/legal-hold job
+- 필요한 테스트: forbidden export; hold prevents deletion
+- 완료 조건: audit receipt와 readiness 연결
+
+### P2 — Semantic knowledge and duplicate research workflows
+
+- 관련 기준: H-17, H-19, H-20
+- 현재 상태/중요성: 조직적 재사용과 중복 방지가 제한된다.
+- 필요한 구현: mechanism/factor/conflict indexing; duplicate similarity decision
+- 필요한 테스트: negative/contradictory query fixtures
+- 완료 조건: UI/API에서 근거와 함께 검색
+
+### P3 — Explicit CPU/GPU resource contract
+
+- 관련 기준: J-10
+- 현재 상태/중요성: worker 수·메모리 외 계산 자원 요청/격리가 불완전하다.
+- 필요한 구현: CPU core/quota and optional GPU request; scheduler admission
+- 필요한 테스트: quota exhaustion; unsupported GPU denial
+- 완료 조건: receipt/metrics에 실제 사용 기록
+
+### 해결한 근본 원인
+
+- 기준 드리프트 — 증상: 이전 도구가 원문 184개 기준과 다른 행을 평가했다. 구조 원인: rubric identity와 평가 surface가 evaluator 입력으로 고정되지 않았다. 해결: 원문 SHA, 정확한 184행/12 gate, source/test/surface hash를 canonical `verify-complete`에 결속했다. 단순 문서 패치와 달리 생성기·evaluator·CI가 동일 identity를 검증한다.
+- 분절된 데이터 metadata — 증상: license·suitability·issue가 연구 승격과 산출물 계보를 일관되게 차단하지 못했다. 구조 원인: 데이터 사용을 소유하는 불변 authority와 deterministic usage identity가 없었다. 해결: admission과 exact authority·subject·version·hash usage resolver를 validation/package read path에 연결해 missing/wrong/extra commit을 거부했다. 파일 쓰기와 append 원자성은 남은 공백이다.
+- receipt 자체 선언 — 증상: report를 다시 hash하고 copied fingerprint를 붙이는 공격이 baseline preflight를 우회할 수 있었다. 구조 원인: receipt의 외부 hash와 source report identity 및 compact candidate logical projection을 한 번에 재계산하지 않았다. 해결: schema 11 receipt, schema 10 fingerprint, report/receipt/terminal binding 재계산과 모든 preflight 적용으로 닫고 5개 receipt-hash 및 5개 CLI focused tests를 통과했다.
+- 독립 검증의 비공식성 — 증상: reproduction PASS가 승인 workflow의 일급 증거가 아니었다. 구조 원인: source/reproduced report, receipt, verifier 판정을 하나의 불변 identity로 묶는 authority가 없었다. 해결: `IndependentVerificationResult`와 승인 gate, retained production PASS evidence를 추가했다. 단, originator/verifier는 인증 principal이 아닌 caller-supplied 문자열이고 terminal schema-3 source의 독립 full validation도 남아 있다.
+- 시간 누출 선언 부재 — 증상: 간격만 떨어진 fold가 label 중첩을 제거했다고 단정할 수 없었다. 구조 원인: label interval·purge·forward embargo가 manifest-bound plan이 아니었다. 해결: 이 계약과 재해시 위조 검증을 추가했다. inner fold 선택 실행은 없으므로 F-05를 부분으로 유지했다.
+- dataset/package explorer 전역 노출 — 증상: 인증 사용자가 grant 없이 dataset 또는 bound package를 볼 수 있었다. 구조 원인: package projection의 모든 dataset identity를 공통 검사하지 않았다. 해결: exact-ID grants를 dataset explorer와 package HTML/JSON list/detail/diff/lineage에 적용하고 하위 lineage·충돌 projection을 fail-closed 404로 처리했다. job·일반 검색·download는 I-02 gap으로 남겼다.
+
+### 주요 변경 사항
+
+- 구조·책임: canonical audit generator/evaluator/report를 분리하고, data governance·independent verification·temporal validation을 불변 Core authority로 배치했다.
+- 경계: Core는 오프라인 연구 계약만 소유하고 Web은 인증·object authorization, Operations는 PostgreSQL 조정을 소유하는 기존 방향을 유지했다.
+- 데이터 흐름: immutable dataset→governance admission→validation report→verification→approval→package 경로를 실제 retained E2E로 보존하고 terminal/package exact usage commit을 read-side gate로 강제했다.
+- 의존성: 새 외부 시장 데이터·거래·계정 의존성은 추가하지 않았고 구현은 기존 Python/SQLite/JSONL/Django/PostgreSQL adapter 계약 내에서 완결했다.
+- 레거시·우회: 이전 product-scope checker를 canonical complete 판정에서 분리하고, explorer의 dataset 전역 조회와 verification receipt 자체 선언 우회를 차단했다.
+- 테스트·문서: receipt hash 5, CLI 5, governance 51, strategy package 21, verification 59, boundary/web 23, registry 24 focused 결과와 2회의 production E2E PASS를 기록했다. 정확한 실행 결과와 retained hash는 §13.8–13.10만을 권위로 삼는다.
+
+## 13.14 Remediation Roadmap
+
+### P0 — 치명적 결함 제거
+
+#### Authenticated independent-verification principals
+
+- 구현 대상: authenticated principal assertion; role membership and session binding; non-forgeable actor provenance in receipts
+- 예상 변경 모듈: apps/internal_web/src/portal/authorization.py; src/market_research/research/independent_verification.py; tests/test_research_reproduction_cli.py
+- 필수 테스트: forged alias denial; expired/revoked principal; same-principal cross-role denial
+- 의존성: FG-06, G-01, G-03, I-01의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: originator/verifier/approver가 인증된 서로 다른 principal로 결속
+
+### P1 — 연구 신뢰성 핵심
+
+#### Liquidity, impact and capacity authority
+
+- 구현 대상: ADV/depth participation; calibrated impact scenarios; capital/capacity curve
+- 예상 변경 모듈: src/market_research/research/execution_model/base.py; src/market_research/research/execution_model/depth_walk.py
+- 필수 테스트: capacity monotonicity; thin-liquidity stress
+- 의존성: E-15, E-16, E-17의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: 주문 크기 증가 시 impact/미체결 비감소; package evidence binding
+
+#### ResearchProject/workspace aggregate
+
+- 구현 대상: immutable project identity/version; project-scoped grants and lineage
+- 예상 변경 모듈: docs/investment-research-platform.md
+- 필수 테스트: cross-project denial; project archive/reopen
+- 의존성: D-01, I-03, J-03의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: 모든 lifecycle 객체가 project ref 보유
+
+#### Cold independent reproduction capsule
+
+- 구현 대상: content-addressed data/source/runtime capsule; relocation-safe resolver; single package replay command
+- 예상 변경 모듈: .github/workflows/research-ci.yml; src/market_research/research/cli.py
+- 필수 테스트: old root unavailable subprocess; fresh locked runtime; empty cache
+- 의존성: C-06, C-16, G-02의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: 빈 외부 root에서 동일 hash 결과; 별도 host verification PASS
+
+#### Full terminal source-report validation inside independent verification
+
+- 구현 대상: independent verifier invokes the full terminal report validator; preserve selection/confirmation/registry cross-bindings
+- 예상 변경 모듈: src/market_research/research/governance.py; src/market_research/research/independent_verification.py
+- 필수 테스트: rehashed malformed schema-3 source denial; missing and contradictory terminal fields; verification PASS cannot precede full source validation
+- 의존성: G-03, G-04의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: 독립 검증 결과 자체만으로 original/reproduced terminal reports 모두 full-contract PASS
+
+#### Atomic governed artifact and usage publication
+
+- 구현 대상: staged artifact publication transaction; usage binding precommit or recoverable journal; read-side completeness gate
+- 예상 변경 모듈: src/market_research/research/data_governance.py
+- 필수 테스트: fault after each staged write; uncertain commit retry; orphan denial
+- 의존성: B-14, B-22의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: artifact와 usage edge가 함께 보이거나 모두 보이지 않음
+
+#### Execute fully nested temporal selection
+
+- 구현 대상: inner-fold selection executor; outer-only unbiased evaluation
+- 예상 변경 모듈: src/market_research/research/temporal_validation.py
+- 필수 테스트: selection leakage negative test; nested replay
+- 의존성: F-05의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: selection_is_fully_nested=true
+
+#### Terminal delisting and corporate-action integration
+
+- 구현 대상: dataset materialization transformer; terminal return policy
+- 예상 변경 모듈: src/market_research/research/corporate_action_contract.py
+- 필수 테스트: split/dividend/rights/merger/delisting E2E
+- 의존성: E-05, E-06의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: ledger와 package에 정책 hash 결속
+
+#### Falsification, factor and provider sensitivity
+
+- 구현 대상: placebo/shuffle executor; factor exposure regression; provider result comparison gate
+- 예상 변경 모듈: src/market_research/research/data_governance.py; src/market_research/research/statistical_selection.py; src/market_research/research/stress_suite.py
+- 필수 테스트: known-null fixtures; provider divergence rejection
+- 의존성: F-12, F-16, F-21의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: validation package에 결과/한계 포함
+
+#### Complete immutable research package manifests
+
+- 구현 대상: typed data, code, and experiment manifests; complete result and verification report; non-empty categorized limitation authority; artifact-wide ID/version contract
+- 예상 변경 모듈: src/market_research/research/independent_verification.py; src/market_research/research/research_package_registry.py; src/market_research/research/strategy_package.py
+- 필수 테스트: missing field and empty-category denial; cross-manifest substitution/tamper; human/machine export E2E
+- 의존성: H-01, H-04, H-05, H-06, H-07, H-08, H-09, H-10의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: H-01의 9개 필수 구성이 모두 package에 자체 포함; 모든 참조·ID·version·hash 재검증 PASS
+
+#### Dataset authorization across every consumption path
+
+- 구현 대상: one dataset authorization application contract; all consumer adapters call the same decision; license-aware export decision binding
+- 예상 변경 모듈: apps/internal_web/src/portal/authorization.py
+- 필수 테스트: unauthorized job/search/download denial; list/detail existence-hiding; grant revoke and stale-session denial
+- 의존성: I-02의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: dataset bytes·metadata·derived artifact의 모든 소비 경로가 동일 권한 receipt를 검증
+
+### P2 — 플랫폼 완성도
+
+#### Expiring policy exception authority
+
+- 구현 대상: general policy exception authority; automatic expiry denial
+- 예상 변경 모듈: src/market_research/research/data_governance.py
+- 필수 테스트: expired/future/wrong-scope tests
+- 의존성: G-12의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: 승격 시 current exception 재검증
+
+#### License-aware export and executable retention
+
+- 구현 대상: download/export license decision; retention/legal-hold job
+- 예상 변경 모듈: docs/storage-layout.md; src/market_research/research/data_governance.py
+- 필수 테스트: forbidden export; hold prevents deletion
+- 의존성: I-09, I-14의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: audit receipt와 readiness 연결
+
+#### Semantic knowledge and duplicate research workflows
+
+- 구현 대상: mechanism/factor/conflict indexing; duplicate similarity decision
+- 예상 변경 모듈: src/market_research/research/knowledge_registry.py
+- 필수 테스트: negative/contradictory query fixtures
+- 의존성: H-17, H-19, H-20의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: UI/API에서 근거와 함께 검색
+
+### P3 — 확장성과 사용성
+
+#### Explicit CPU/GPU resource contract
+
+- 구현 대상: CPU core/quota and optional GPU request; scheduler admission
+- 예상 변경 모듈: src/market_research/research/resource_planner.py
+- 필수 테스트: quota exhaustion; unsupported GPU denial
+- 의존성: J-10의 기존 불변 identity·evidence 계약과 repository-external path 정책
+- 완료 기준: receipt/metrics에 실제 사용 기록
+
+## 13.15 Final 15 Questions
+
+| 번호 | 답 | 근거 | 설명 |
+| ---: | --- | --- | --- |
+| 1 | YES | point-in-time authority; dataset source provenance | 지원 데이터의 event/effective와 known/available 시각을 구분한다. |
+| 2 | PARTIAL | PIT universe; revision registry | 상장폐지/수정 이력은 보존하지만 terminal delisting return의 일반 실행 처리는 불완전하다. |
+| 3 | YES | production-e2e-retained-evidence.json; validation/package/dataset hash bindings | 보존한 production E2E의 validation content hash, package hash, manifest hash와 frozen dataset manifest hash를 한 인덱스에서 역추적할 수 있다. |
+| 4 | NO | C-06; research-reproduce-run | same-state PASS artifact는 보존했지만 별도 cold host·빈 cache에서 입력 bytes와 환경까지 복원한 증거는 없다. |
+| 5 | YES | experiment registry; failed lifecycle tests | 후보 조합과 실패 상태를 append-only로 보존한다. |
+| 6 | YES | train/validation/final_holdout contracts | 탐색·검증·최종 holdout의 사용 상태를 분리한다. |
+| 7 | YES | future suffix invariance; PIT universe tests | 미래정보와 생존편향 적대 테스트가 자동화되어 있다. |
+| 8 | PARTIAL | fee/slippage/latency stress; E-15~E-17 | 비용과 지연은 평가하지만 impact/ADV/capacity가 없다. |
+| 9 | YES | stress_suite.py; concentration metrics | 기간·거래·시장 regime 집중도를 기록한다. |
+| 10 | YES | statistical_selection.py; research standard | 통계 gate와 경제 메커니즘/비용 후 의미를 분리한다. |
+| 11 | PARTIAL | IndependentVerificationResult; FG-06 | 별도 검증 결과와 승인 gate는 있으나 originator/verifier가 인증 principal이 아니고 terminal schema-3 source 자체의 독립 full-contract 검증도 얕다. |
+| 12 | PARTIAL | strategy package limitations; failure conditions | 제한·실패 container는 있지만 표본·비용·시장구조·적용 불가·미확인 위험의 비공백 작성을 강제하지 않는다. |
+| 13 | YES | knowledge registry negative queries | 기각·실패·inconclusive 연구를 보존하고 조회한다. |
+| 14 | YES | release registry; exact package usage commit tests | 공식 릴리스는 새 version/content hash로만 출판되며 governed package의 missing/wrong/extra usage binding을 거부한다. |
+| 15 | YES | repository research-only boundary | 주문·계좌·실시간 position/PnL/risk를 구조적으로 금지한다. |
+
+## 13.16 Final Conclusion
+
+결론: NO
+
+핵심 이유:
+
+1. 시점 정확성·holdout·불변성·연구/실거래 경계는 강하다.
+2. 통합 가설→실험→검증→리뷰→package 경로는 실제 retained production E2E에서 두 번 PASS했다.
+3. 그러나 originator/verifier가 인증 principal이 아닌 caller-supplied 문자열이라 FG-06을 통과하지 못한다.
+4. terminal schema-3 source의 독립 full validation과 cold-host 재현 증거도 없다.
+5. 시장충격·유동성 참여·용량, fully nested selection, ResearchProject 격리가 불완전하다.
+
+완전 판정을 막는 조건:
+
+- FG-06 독립 검증 주체의 비인증 caller identity
+- Critical M4+ 미달 항목
+- 95점 미만 및 부분/미충족 기준 존재
+
+완전 판정을 받기 위한 최소 필수 수정:
+
+- non-forgeable authenticated principal 결속과 역할 분리 음성 테스트
+- terminal source full-contract 검증 및 content-addressed capsule의 별도 cold-host PASS
+- 실행 현실성(capacity/impact) 및 핵심 통계 검증 공백 폐쇄
+- project aggregate/격리와 남은 Critical M4+ 달성
+
+## 부록 A — 반복 감사 기록
+
+| 회차 | 회차 진단 | 상위 구조 원인 | 구현·주요 파일 | 검증 근거 | 회차 종료 판정 |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | 75.3819점, FG-06; 기존 도구가 다른 rubric을 평가 | rubric identity와 평가 surface가 evaluator 입력으로 결속되지 않음 | canonical 184행 matrix·source inventory 설계; `tools/reference_audit.py`, `tools/update_reference_audit.py` | baseline focused 268 passed; 최종 명령 결과는 §13.10 | 기능은 넓지만 기준 드리프트를 닫는 구조 작업 필요 |
+| 2 | criterion/gate 불일치와 dataset explorer 전역 노출 | 생성기 일원화와 DATASET resource authorization 부재 | source/test/surface hash 검증, canonical CLI/CI, exact-ID DATASET grants | canonical/docs/auth focused 검증; 실행 ledger는 §13.10 | matrix identity는 강화, explorer 외 소비 경로 권한은 미완 |
+| 3 | data governance·independent verification·temporal label overlap 결손 | 세 통제가 일급 불변 authority와 승인 gate가 아니었음 | governance admission, `IndependentVerificationResult`, label interval/purge/embargo 계약과 통합 | 관련 focused 명령·실패·해소는 §13.10 | 핵심 계약은 추가, cold restore·nested selection·인증 principal은 미완 |
+| 4 | 재해시 우회·선택적 binding·문서 증거의 과대평가 | 간접 증거를 실제 retained E2E artifact처럼 취급 | reproduced-report 결속, chronology/retry 보강, maturity 재평가, gap/roadmap/report schema 정합화 | 정확한 최종 focused→collection→full/static/build 결과는 §13.10만을 권위로 사용 | COMPLETE가 아님을 유지하고 FG-06 및 material M2/M3 공백을 명시 |
+| 5 | provenance와 terminal verification 적대 검토에서 실제 우회 발견 | 데이터 정책이 원천 provider/license와 분리되고 terminal receipt가 selection 재실행만 증명 | provenance-bound provider/catalog/license terms, retention 제한, registry identity, 실제 isolated final-holdout replay와 보고서 schema v2 결속 | 공급자 불일치·retention·row identity·missing terminal artifact 음성 테스트 및 production E2E; 최종 ledger는 §13.10 | same-state terminal 재현 강화; 인증 principal과 cold-host 증거는 미완 |
+| 6 | copied receipt/report rehash, orphan usage, package dataset 노출과 operational-path package 오염 | receipt projection·usage identity·package consumer 권한이 여러 경로에서 다르게 계산됨 | schema 11 receipt/report recomputation, exact terminal/package usage commit, package HTML/JSON list/detail/diff/lineage grant gate, operational path 제외 | focused 5/5/51/21/59/23/24 PASS; E2E 최초 실패 후 441.41s PASS와 383.12s retained PASS; §13.8 evidence index | FG-06 caller identity, shallow terminal source validation, cold-host proof 부재로 NOT 유지 |
+
+## 기계 판독 가능한 JSON 결과
+
+```json
+{
+  "verdict": "NOT_AN_INVESTMENT_RESEARCH_PLATFORM",
+  "is_complete_against_reference": false,
+  "overall_score": 71.9948,
+  "raw_weighted_score": 71.9948,
+  "score_cap": 84.0,
+  "repository": {
+    "root": "/home/vorac/work/Research",
+    "commit": "378081dcbf1caf758bb0d7981798d6a70204c7ec",
+    "branch": "main",
+    "dirty": true,
+    "assessment_surface": {
+      "schema_version": 2,
+      "file_count": 682,
+      "sha256": "06e9cc1fbcbb48786eb7e80fa9c7b847bd86acf0645e289a1acf0686d9c3721f",
+      "exclusions": [
+        "directory:.git",
+        "directory:.hypothesis",
+        "directory:.mypy_cache",
+        "directory:.pytest_cache",
+        "directory:.ruff_cache",
+        "directory:.tox",
+        "directory:.venv",
+        "directory:__pycache__",
+        "directory:build",
+        "directory:dist",
+        "directory:node_modules",
+        "directory_suffix:*.egg-info",
+        "file:docs/investment-research-platform-audit-report.md",
+        "file:docs/investment-research-platform-audit-result.json",
+        "file:docs/investment-research-platform-audit.json",
+        "file_suffix:*.pyc",
+        "file_suffix:*.pyo"
+      ]
+    },
+    "primary_languages": [
+      "Python",
+      "SQL",
+      "Shell",
+      "HTML",
+      "JavaScript"
+    ],
+    "entrypoints": [
+      "scripts/platform",
+      "market-research",
+      "Django portal",
+      "research-ops"
+    ],
+    "test_commands": [
+      "pytest",
+      "scripts/platform test-all",
+      "scripts/platform test-integration"
+    ]
+  },
+  "fatal_gates": [
+    {
+      "id": "FG-01",
+      "status": "PASS",
+      "evidence": [
+        "연구 전용 dependency/AST/capability guard와 CI 음성 테스트가 주문·계정·실거래 기능을 차단한다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-02",
+      "status": "PASS",
+      "evidence": [
+        "지원하는 수정 가능 authority는 event/effective와 known/available 시간을 분리하고 과거 조회를 제공한다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-03",
+      "status": "PASS",
+      "evidence": [
+        "causal prefix view와 future-suffix invariance/knowledge-time 음성 테스트가 미래 사용을 차단한다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_future_suffix_invariance.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-04",
+      "status": "PASS",
+      "evidence": [
+        "PIT universe가 listing/inactive/delisted 이력을 보존하고 시뮬레이션 선택에 적용된다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-05",
+      "status": "PASS",
+      "evidence": [
+        "공식 frozen artifact, manifest, row/query/snapshot hashes가 실행과 package에 결속된다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-06",
+      "status": "FAIL",
+      "evidence": [
+        "retained local production E2E의 same-state 재실행·비교는 PASS지만 새 환경에서 잠금 환경과 외부 immutable dataset을 자동 복원하지 않는다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "잠금 환경과 immutable dataset을 빈 외부 root에서 복원하고 별도 검증자가 수동 개입 없이 재실행한 불변 PASS 증거를 승격 gate에 결속한다."
+    },
+    {
+      "id": "FG-07",
+      "status": "PASS",
+      "evidence": [
+        "final holdout 예약·완료·재사용 authority가 중복 접근과 동시 사용을 차단한다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_registry_dataset_evidence.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-08",
+      "status": "PASS",
+      "evidence": [
+        "공식 결과는 CLI/module pipeline이며 notebook/Excel/copy-paste 단계를 요구하지 않는다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-09",
+      "status": "PASS",
+      "evidence": [
+        "확정 검증은 양의 base cost와 stress를 요구하고 gross/net/cost sensitivity를 함께 보존한다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-10",
+      "status": "PASS",
+      "evidence": [
+        "검증자 identity와 terminal 결과/receipt를 결속한 append-only IndependentVerificationResult가 승인 승격 gate에 필수다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-11",
+      "status": "PASS",
+      "evidence": [
+        "terminal/package publication은 create-or-verify 또는 append-only hash chain이며 충돌/변조 테스트가 있다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_terminal_artifact_immutability.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    },
+    {
+      "id": "FG-12",
+      "status": "PASS",
+      "evidence": [
+        "실패·기각·inconclusive 결과와 전체 후보 분포를 보존하고 검색한다."
+      ],
+      "verification_method": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+      "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
+      "mitigation_possible": true,
+      "required_remediation": "현재 음성/회귀 증거를 유지한다."
+    }
+  ],
+  "domain_scores": {
+    "scope_boundary": {
+      "max": 5.0,
+      "score": 4.1324
+    },
+    "data": {
+      "max": 15.0,
+      "score": 11.0294
+    },
+    "reproducibility": {
+      "max": 15.0,
+      "score": 11.5561
+    },
+    "research_lifecycle": {
+      "max": 10.0,
+      "score": 7.0125
+    },
+    "backtesting_simulation": {
+      "max": 15.0,
+      "score": 9.3875
+    },
+    "validation": {
+      "max": 15.0,
+      "score": 9.4138
+    },
+    "review_governance": {
+      "max": 10.0,
+      "score": 6.7222
+    },
+    "artifacts_knowledge": {
+      "max": 10.0,
+      "score": 6.4314
+    },
+    "security_observability": {
+      "max": 5.0,
+      "score": 3.0417
+    },
+    "architecture_usability": {
+      "max": 5.0,
+      "score": 3.2679
+    }
+  },
+  "criteria": [
+    {
+      "id": "A-01",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/monorepo-architecture.md",
+          "path_sha256": "f008f10647d90e3c9d158ce29376c0a9ebc634fc2ff44a9f89ad7de944418279",
+          "symbol_or_lines": "research-only scope and operational separation",
+          "test": "tests/test_repository_research_only_boundary.py",
+          "test_sha256": "cee661af0b960b92a42da2ba21f8ff03f1a32b2764d27b9e181ce0e280adaef6",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "연구 전용 플랫폼 목적이 코드와 문서에 일관되게 정의되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "A-02",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "research-only package limitations and capability denial",
+          "test": "tests/test_research_only_capability_guard.py",
+          "test_sha256": "a9117dc82905ee21ce17b572c1b56ff97994e58fa5c2880dedb5f511101d2011",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_only_capability_guard.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실거래 주문 연결이 존재하지 않는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "A-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/monorepo-architecture.md",
+          "path_sha256": "f008f10647d90e3c9d158ce29376c0a9ebc634fc2ff44a9f89ad7de944418279",
+          "symbol_or_lines": "research-only scope and operational separation",
+          "test": "tests/test_repository_research_only_boundary.py",
+          "test_sha256": "cee661af0b960b92a42da2ba21f8ff03f1a32b2764d27b9e181ce0e280adaef6",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실시간 포지션·손익·자본 배분 기능이 분리되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "A-04",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/simulation_engine.py",
+          "path_sha256": "4454262f25ba56728e1b0e6975a37ee15d87bebe0241bb06b60739bb7d812d68",
+          "symbol_or_lines": "offline signal, order, fill, ledger, and cost authority",
+          "test": "tests/test_common_simulation_engine.py",
+          "test_sha256": "54a27a3ce52007401494f9f401af2c88c3a24014c7f9c13882713f555941dd10",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "오프라인 체결 시뮬레이션과 실거래 실행이 구조적으로 구분되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "A-05",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/monorepo-architecture.md",
+          "path_sha256": "f008f10647d90e3c9d158ce29376c0a9ebc634fc2ff44a9f89ad7de944418279",
+          "symbol_or_lines": "research-only scope and operational separation",
+          "test": "tests/test_repository_research_only_boundary.py",
+          "test_sha256": "cee661af0b960b92a42da2ba21f8ff03f1a32b2764d27b9e181ce0e280adaef6",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_repository_research_only_boundary.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실시간 페이퍼 트레이딩이 연구 플랫폼 핵심 기능으로 포함되지 않는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "A-06",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "static downstream research package contract",
+          "test": "tests/test_strategy_research_package.py",
+          "test_sha256": "98ff7f37fa776b1486585f05eb70a6d5f22dde96ba070effc6d54c3ae4237215",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "정적 research package handoff는 통합되어 있으나 요구되는 liquidity/capacity estimate와 명시적 research confidence 계약이 없다.",
+      "required_remediation": "A-06의 후속 전략 계층에 넘기는 계약이 명확한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "A-07",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "research-only package limitations and capability denial",
+          "test": "tests/test_research_only_capability_guard.py",
+          "test_sha256": "a9117dc82905ee21ce17b572c1b56ff97994e58fa5c2880dedb5f511101d2011",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_only_capability_guard.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "범위 밖 기능을 탐지·차단하는 아키텍처 또는 정책 검사가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "A-08",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/architecture-boundaries.json",
+          "path_sha256": "7fae65f8e2b4dd36de54ee2d497e7ccb083677aab28b2f68be0ccdc478b324e6",
+          "symbol_or_lines": "distribution responsibilities and forbidden dependency edges",
+          "test": "tests/test_monorepo_architecture.py",
+          "test_sha256": "9efc4e1573f00692c691060117b6043eb5e58c31f6b3bde3b622cb47a884b119",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_monorepo_architecture.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "연구 플랫폼 자체 운영과 거래 운영을 명확히 구분하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-01",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/dataset_freeze.py",
+          "path_sha256": "1559e03902b70b0b08450edfed3e3f5bc4f9fe77d8de2f087465c68b2650be1c",
+          "symbol_or_lines": "immutable content-addressed dataset publication",
+          "test": "tests/test_dataset_freeze_publication.py",
+          "test_sha256": "9de5017c3573d4c908d0f2013d59af40b2327089a76371c584b94442086038e3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "원천 데이터가 불변 또는 버전 상태로 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-02",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_plane.py",
+          "path_sha256": "e2e36f0de154f25880902c9f615636deb30f60be37ae9bd9535969728f15f78b",
+          "symbol_or_lines": "dataset adapter, admission, and query boundaries",
+          "test": "tests/test_dataset_adapter_lifecycle.py",
+          "test_sha256": "d2cb45f6e18cec42288d8ebcc3069fa95692e30dba2fc081068001c0c4370f46",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_adapter_lifecycle.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "데이터 계층이 논리적으로 분리되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/point_in_time_selection.py",
+          "path_sha256": "81b9e837886336cdb11e33dfb7539836e100680b95d43273d42115e509d98c8f",
+          "symbol_or_lines": "knowledge-time and as-of selection authority",
+          "test": "tests/test_point_in_time_domain_contracts.py",
+          "test_sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "시점 기준 데이터 모델을 지원하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-04",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/point_in_time_selection.py",
+          "path_sha256": "81b9e837886336cdb11e33dfb7539836e100680b95d43273d42115e509d98c8f",
+          "symbol_or_lines": "knowledge-time and as-of selection authority",
+          "test": "tests/test_point_in_time_domain_contracts.py",
+          "test_sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "과거 시점 조회가 실제로 구현되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-05",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/dataset_snapshot.py",
+          "path_sha256": "ad92aad04e7eae2d2a028b0b4a6e93a3eaa332ccbaef3f73fe817254147e4c81",
+          "symbol_or_lines": "revision, quality, and snapshot evidence",
+          "test": "tests/test_point_in_time_domain_contracts.py",
+          "test_sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "수정 데이터의 최초 발표값과 최종 수정값이 구분되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-05의 수정 데이터의 최초 발표값과 최종 수정값이 구분되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-06",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/universe_contract.py",
+          "path_sha256": "21e202c8536d1c71e1d9903a84d05fa9fe43383144b803aa48f4dfb84676940d",
+          "symbol_or_lines": "point-in-time listing and investability universe",
+          "test": "tests/test_point_in_time_candle_selection.py",
+          "test_sha256": "05ae1de2e76939124b7e0e1121cba2e6ca89c3fe3508618b059d52f2b1e3576c",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "생존편향 방지 구조가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-07",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/universe_contract.py",
+          "path_sha256": "21e202c8536d1c71e1d9903a84d05fa9fe43383144b803aa48f4dfb84676940d",
+          "symbol_or_lines": "point-in-time listing and investability universe",
+          "test": "tests/test_point_in_time_candle_selection.py",
+          "test_sha256": "05ae1de2e76939124b7e0e1121cba2e6ca89c3fe3508618b059d52f2b1e3576c",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "유니버스가 각 시점 기준으로 구성되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-08",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/corporate_action_contract.py",
+          "path_sha256": "4430ea522e179354b10867f9be542b64a89042e80b4bf2df23d05deda269fad0",
+          "symbol_or_lines": "versioned corporate-action and delisting contracts",
+          "test": "tests/test_instrument_domain_contracts.py",
+          "test_sha256": "2472f6589cf801337ebb98d3c2e8dac24e6958c0433c3974522af432125ecd1a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "기업행위가 버전 정책에 따라 처리되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-08의 기업행위가 버전 정책에 따라 처리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-09",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/instrument_contract.py",
+          "path_sha256": "c6ec5264930686c3231c395046c086a5f15dafa5430237a45130aad4d7d8e249",
+          "symbol_or_lines": "instrument identity, currency, unit, and lifecycle contract",
+          "test": "tests/test_instrument_domain_contracts.py",
+          "test_sha256": "2472f6589cf801337ebb98d3c2e8dac24e6958c0433c3974522af432125ecd1a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "식별자와 기준정보가 장기간 일관되게 관리되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-09의 식별자와 기준정보가 장기간 일관되게 관리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-10",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/market_calendar_contract.py",
+          "path_sha256": "4fffd14ac551f1a16aa2d27250dc8cf3c99e97e582aa183e437d547888ec283f",
+          "symbol_or_lines": "timezone and trading-calendar contract",
+          "test": "tests/test_point_in_time_domain_contracts.py",
+          "test_sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "시간대와 거래일 캘린더가 명시적으로 처리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-11",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/datasets/schema_dictionary.py",
+          "path_sha256": "3badf95bdc15f495b15b2faa3887f398b6c77115978d69293d00818df1f29ddf",
+          "symbol_or_lines": "typed field, unit, currency, and schema dictionary",
+          "test": "tests/test_dataset_schema_dictionary.py",
+          "test_sha256": "22e79da31b51ef855b159444a223cc991a9a042f4ccfad8591938c974bc5c1f3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_schema_dictionary.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "통화·단위·가격 스케일이 명시적으로 관리되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-11의 통화·단위·가격 스케일이 명시적으로 관리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-12",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/dataset_freeze.py",
+          "path_sha256": "1559e03902b70b0b08450edfed3e3f5bc4f9fe77d8de2f087465c68b2650be1c",
+          "symbol_or_lines": "immutable content-addressed dataset publication",
+          "test": "tests/test_dataset_freeze_publication.py",
+          "test_sha256": "9de5017c3573d4c908d0f2013d59af40b2327089a76371c584b94442086038e3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "데이터셋이 공식 버전 객체인가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-12의 데이터셋이 공식 버전 객체인가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-13",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/dataset_snapshot.py",
+          "path_sha256": "ad92aad04e7eae2d2a028b0b4a6e93a3eaa332ccbaef3f73fe817254147e4c81",
+          "symbol_or_lines": "row/query/version-bound experiment snapshot",
+          "test": "tests/test_dataset_evidence_binding.py",
+          "test_sha256": "9f7a781c94a5799b0637a19f69c40258a98f95d0e1e66c26f2f7ba29a8d0bd27",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_evidence_binding.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실험 스냅샷이 실제 사용 행과 버전을 고정하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-14",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. Exact validated-result and governed strategy-package DataUsageBinding reads reject missing, wrong, or extra artifact identities."
+        }
+      ],
+      "gap": "validated result와 governed strategy package 소비 시 artifact ID·version·content hash와 정확한 dataset usage binding을 read-side에서 재검증하지만 publication과 append-only binding 기록은 별도 쓰기라 원자적 단일 commit은 아니다. binding append 실패 뒤 남는 orphan artifact는 후속 소비에서 차단된다.",
+      "required_remediation": "artifact publication과 exact DataUsageBinding append를 복구 가능한 단일 transaction/staging protocol로 묶고, 모든 보고 지표·package·impact consumer가 동일 resolver를 호출하도록 확장한다."
+    },
+    {
+      "id": "B-15",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/dataset_snapshot.py",
+          "path_sha256": "ad92aad04e7eae2d2a028b0b4a6e93a3eaa332ccbaef3f73fe817254147e4c81",
+          "symbol_or_lines": "revision, quality, and snapshot evidence",
+          "test": "tests/test_point_in_time_domain_contracts.py",
+          "test_sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "자동 데이터 품질 검사가 존재하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-15의 자동 데이터 품질 검사가 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-16",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "데이터 품질 결과가 저장되고 연구에 연결되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "B-16의 데이터 품질 결과가 저장되고 연구에 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-17",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "불변 ProviderComparison이 동일 의미 값 차이와 대체 판정을 보존하지만 실제 복수 공급자 현장 데이터 비교는 외부 증거가 필요하다.",
+      "required_remediation": "서로 독립된 실제 공급자 dataset으로 정의·값 차이, 대체 판정, 전환 이력을 실행하고 hash-bound 비교 증거를 보존한다."
+    },
+    {
+      "id": "B-18",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "DatasetSuitabilityAssessment와 명시적 사용 결정이 validation admission에 결속되었으나 독립 데이터 steward의 현장 승인은 이번 로컬 감사에서 확인하지 못했다.",
+      "required_remediation": "독립 data steward principal의 승인과 실제 현장 dataset 적합성 결과를 admission에 결속하고 실패·만료·재평가 경로를 검증한다."
+    },
+    {
+      "id": "B-19",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. Validated-result and governed package reads require the exact dataset admission and license-governance binding used at publication."
+        }
+      ],
+      "gap": "목적·사용자·파생물 보존·반출 범위를 가진 license policy/use decision과 exact artifact usage binding이 validated result/package 소비를 차단하지만 웹 다운로드·외부 반출 entitlement와의 직접 결속은 I-09 공백으로 남는다.",
+      "required_remediation": "license policy를 dataset grant, 다운로드, 외부 반출, 공개, 보존·삭제 결정의 공통 authorization authority로 연결하고 음성 E2E를 추가한다."
+    },
+    {
+      "id": "B-20",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "tests/research_noop_success_fixture.py",
+          "path_sha256": "06bef73675c7aaab2c91ca169aed58f24d4d0579a3d5d34a796d894788c316de",
+          "symbol_or_lines": "deterministic synthetic SQLite dataset and manifest fixture",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "결정론적 합성 SQLite/manifest fixture와 E2E 사용은 있으나 독립 사용자의 cold replay 증거는 없다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "B-21",
+      "importance": "SUPPORTING",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/datasets/artifact_manifest.py",
+          "path_sha256": "1271f37e441349ea3e9d2354fc4a2b71c8bf8c65fa14dfc587f41d38d0d5e32c",
+          "symbol_or_lines": "explicit schema-version and legacy rejection policy",
+          "test": "tests/test_dataset_manifest_migration.py",
+          "test_sha256": "a5a60aca8d523b2b9464ffb94f4bfcd2c5ce5f685bfdb85169c95d1ee3bcc9e9",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_manifest_migration.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "스키마 진화와 하위 호환성 정책이 있는가: 관련 코드/스키마 조각은 있으나 공식 통합 workflow와 충분한 테스트가 없다.",
+      "required_remediation": "B-21의 스키마 진화와 하위 호환성 정책이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "B-22",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "문제·resolution·waiver·usage registry는 통합됐지만 issue별 workaround와 관련 waiver/resolution을 포함한 완전한 영향 view 및 원자적 publication이 부족하다.",
+      "required_remediation": "B-22의 알려진 데이터 문제 레지스트리가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-01",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/code_provenance.py",
+          "path_sha256": "ecc1bf39dd15248bdc15231d6563e18c81f1660d60535d1192a3ec5ac134e382",
+          "symbol_or_lines": "commit and dirty-source provenance authority",
+          "test": "tests/test_code_provenance.py",
+          "test_sha256": "ca9209ba88b92e81608c6c3f7833ed5e8f83dbff941932e421de86da5531129c",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_code_provenance.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "공식 연구 결과에 코드 커밋이 고정되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-02",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/dataset_freeze.py",
+          "path_sha256": "1559e03902b70b0b08450edfed3e3f5bc4f9fe77d8de2f087465c68b2650be1c",
+          "symbol_or_lines": "immutable content-addressed dataset publication",
+          "test": "tests/test_dataset_freeze_publication.py",
+          "test_sha256": "9de5017c3573d4c908d0f2013d59af40b2327089a76371c584b94442086038e3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_dataset_freeze_publication.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "데이터 버전이 고정되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/reproduction.py",
+          "path_sha256": "0be651ba89eeea44f6c794b2616578eda6084b6dad7aeea9f36b592cbe5b4afd",
+          "symbol_or_lines": "locked dependency, runtime, system, and result-environment fingerprint",
+          "test": "tests/test_research_reproduction.py",
+          "test_sha256": "76b3a430192a0e9feee668b1c644263ad41aec2a869c55ef7c87fad2c0998ae4",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실행 환경이 고정되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-04",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/experiment_manifest.py",
+          "path_sha256": "d557e7eb53b304cb538652740ddebbc7b7b84172907436704cad3aa4c98d0c0a",
+          "symbol_or_lines": "strict Research Semantics v2 configuration authority",
+          "test": "tests/test_research_semantics_v2_contract.py",
+          "test_sha256": "5f02313a3cb696b4097ac5cc466233e0095b09c1e8bc78647cc1c359020fea51",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_semantics_v2_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "파라미터와 설정이 완전하게 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-05",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_plan.py",
+          "path_sha256": "097309ca06bf97e85be2bfb3ada10c085dd835fa266026cb2cd43a65bcf79f97",
+          "symbol_or_lines": "seed scope and deterministic execution-plan binding",
+          "test": "tests/test_simulation_seed_scope.py",
+          "test_sha256": "74e82bdd90a35202aff230e98267cada01dde74bc3cd9ba55c000b145457ad8a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_simulation_seed_scope.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "난수 재현성이 보장되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-06",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/cli.py",
+          "path_sha256": "5f5723e4a1b088e05a52a29902959998dcacc4af49c39ebddbd4639ad7700c37",
+          "symbol_or_lines": "research-reproduce-run same-state replay command",
+          "test": "tests/test_research_reproduction_cli.py",
+          "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "단일 재현 명령 또는 동등한 자동화 경로가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "C-06의 단일 재현 명령 또는 동등한 자동화 경로가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-07",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research_cli/commands.py",
+          "path_sha256": "42e04fd232ad8e774e124a1982010d02f72642aa31682cac282ffe4f19ec7b66",
+          "symbol_or_lines": "official non-notebook research command boundary",
+          "test": "tests/test_research_cli_boundary.py",
+          "test_sha256": "7352ca53bedd506786b868fe6c60a534df65567c7bab44c052dd00c968929b22",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "공식 결과가 수동 노트북 상태에 의존하지 않는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-08",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research_cli/commands.py",
+          "path_sha256": "42e04fd232ad8e774e124a1982010d02f72642aa31682cac282ffe4f19ec7b66",
+          "symbol_or_lines": "official non-notebook research command boundary",
+          "test": "tests/test_research_cli_boundary.py",
+          "test_sha256": "7352ca53bedd506786b868fe6c60a534df65567c7bab44c052dd00c968929b22",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "공식 산출물은 CLI/module 경로로 생성되지만 탐색 notebook과 공식 notebook을 구분·차단하는 실행 정책은 없다.",
+      "required_remediation": "C-08의 노트북이 탐색용과 공식 산출물 생성용으로 구분되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-09",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/experiment_identity.py",
+          "path_sha256": "b02a134be8fb5ba259f2c92c37ec8a0f7a2f294ad4e71033e1c1a0c7b5179d48",
+          "symbol_or_lines": "content-bound unique experiment identity",
+          "test": "tests/test_experiment_identity.py",
+          "test_sha256": "d132905c9d304b33f8e5713dcf2c6ea2009a71880e3ad73a8b126df7240616e5",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_identity.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "실험마다 고유 식별자가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "C-09의 실험마다 고유 식별자가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-10",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/experiment_registry.py",
+          "path_sha256": "e69ab08f8f8502368f447d89752dd1f69971ee48e934a514a2a3aa0af2756ccc",
+          "symbol_or_lines": "append-only experiment and split-use registry",
+          "test": "tests/test_experiment_registry_dataset_evidence.py",
+          "test_sha256": "38161a2fe5d8a16e96bbcddfd0d9b5c9e2e0033f9c913a10665d9b59cb273096",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_registry_dataset_evidence.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "실험 계보가 보존되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "C-10의 실험 계보가 보존되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-11",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/run_lifecycle.py",
+          "path_sha256": "fd6d1768ec2a11b57136e085b5ad95dec545d239a24e6e7532771414d1b241e5",
+          "symbol_or_lines": "terminal success and failure lifecycle evidence",
+          "test": "tests/test_run_lifecycle.py",
+          "test_sha256": "169df512ce5f98ed30eaadb13c1914ff0ed254911c009f3b364dc5f9b4f80932",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_run_lifecycle.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실패 실험도 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-12",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/experiment_registry.py",
+          "path_sha256": "e69ab08f8f8502368f447d89752dd1f69971ee48e934a514a2a3aa0af2756ccc",
+          "symbol_or_lines": "complete candidate-space and failed-candidate history",
+          "test": "tests/test_structured_experiment_completeness.py",
+          "test_sha256": "44834cc940f16d4b306bf92e9e61dffd76ade78e563fc67ddd85559d6eada471",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_structured_experiment_completeness.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "전체 파라미터 탐색 내역이 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-13",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/cli.py",
+          "path_sha256": "5f5723e4a1b088e05a52a29902959998dcacc4af49c39ebddbd4639ad7700c37",
+          "symbol_or_lines": "research-reproduce-run same-state replay command",
+          "test": "tests/test_research_reproduction_cli.py",
+          "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "동일 입력 재실행 결과가 허용오차 내에서 일치하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-14",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/reproduction.py",
+          "path_sha256": "0be651ba89eeea44f6c794b2616578eda6084b6dad7aeea9f36b592cbe5b4afd",
+          "symbol_or_lines": "receipt/report identity, stable-fingerprint comparison, and drift classification",
+          "test": "tests/test_research_reproduction.py",
+          "test_sha256": "76b3a430192a0e9feee668b1c644263ad41aec2a869c55ef7c87fad2c0998ae4",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. Rehashed reports, copied fingerprints, and receipt/report source-identity drift are rejected."
+        }
+      ],
+      "gap": "결과 비교 허용오차가 정의되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-15",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_plane.py",
+          "path_sha256": "e2e36f0de154f25880902c9f615636deb30f60be37ae9bd9535969728f15f78b",
+          "symbol_or_lines": "worker-local cache policy and content-bound key material",
+          "test": "tests/test_validation_pipeline_gate.py",
+          "test_sha256": "4ba4141a128ee46a38af94aa5e50ce27c628eef51ad94235704d6012501038b3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_pipeline_gate.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "worker-local cache와 content-bound key 구현은 있으나 cache invalidation 및 cache-on/off 결과 동등성 테스트가 없다.",
+      "required_remediation": "C-15의 캐시가 재현성을 훼손하지 않는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-16",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": ".github/workflows/research-ci.yml",
+          "path_sha256": "cdfea2939d5f5c895628fdf63327ef59c7cdb16fa84717528010ba4d84c6132b",
+          "symbol_or_lines": "same-state reproduction command in the CI contract",
+          "test": "tests/test_research_reproduction_cli.py",
+          "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "CI workflow에 same-state 재현 명령과 계약 테스트는 있으나 이번 감사에서 실제 원격 CI run receipt를 확인하지 못했고 cold restore도 FG-06으로 실패한다.",
+      "required_remediation": "C-16의 CI에서 재현성 검사가 수행되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-17",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_package_registry.py",
+          "path_sha256": "cd9504d53384a9bc4506b3115e48e8e287aa201eb227f22f4c721b4b5527afc8",
+          "symbol_or_lines": "versioned immutable release and supersession registry",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "공식 연구 릴리스가 버전으로 관리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-18",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/artifact_store.py",
+          "path_sha256": "c77031ed1696a4f5dbe6c2c51d9ad7d1acee817e7076c11f724ccb398eb81239",
+          "symbol_or_lines": "atomic create-or-verify content-addressed artifacts",
+          "test": "tests/test_terminal_artifact_immutability.py",
+          "test_sha256": "a130694dc75b1e453d355f010d73ec76e5b3bfd04500dcaf3fbfb1556834c0a9",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_terminal_artifact_immutability.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "공식 산출물이 불변 또는 내용 주소 기반으로 저장되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "C-19",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_plan.py",
+          "path_sha256": "097309ca06bf97e85be2bfb3ada10c085dd835fa266026cb2cd43a65bcf79f97",
+          "symbol_or_lines": "allowlisted result environment and secret exclusion",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "결과 영향 환경 allowlist와 package secret 검사는 있으나 secret을 reproduction receipt에 주입하는 직접 음성 테스트가 없다.",
+      "required_remediation": "C-19의 비밀정보가 재현 패키지와 분리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "C-20",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/resource_planner.py",
+          "path_sha256": "3f79561d38ebfebb3628c6490715588c84c25b7c36e4ac5d418a164351aa0b24",
+          "symbol_or_lines": "bounded worker, memory, row, and runtime planning",
+          "test": "tests/test_common_engine_resource_guards.py",
+          "test_sha256": "d754968432941eceef8cef6c371584329c4d7d6f2a1e15703d60ce8757927756",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_resource_guards.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "resource planner가 계획 상한을 강제하지만 실제 CPU·메모리·runtime·storage 사용량을 공식 결과에 함께 기록하는 종단 간 증거는 없다.",
+      "required_remediation": "C-20의 계산 비용과 자원 사용이 기록되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-01",
+      "importance": "CRITICAL",
+      "maturity": "M0",
+      "status": "MISSING",
+      "evidence": [
+        {
+          "path": "docs/investment-research-platform.md",
+          "path_sha256": "63968f1a6041ae3e10990d94b176344b2299ad3dd85155297e8aad03b1b8ab2a",
+          "symbol_or_lines": "documented object model without a ResearchProject aggregate",
+          "test": "tests/test_full_scope_research_standard.py",
+          "test_sha256": "ed77ad79444270660ca7c2a3e1dee2c22dffd5477ca8333fc6a0fa110c88aa3f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_research_standard.py",
+          "result": "ABSENCE evidence: repository inspection and the cited boundary surface found no implementation satisfying this criterion."
+        }
+      ],
+      "gap": "고유 ID·상태·버전·소유자를 가진 ResearchProject aggregate가 없다. ResearchStandard/Hypothesis는 프로젝트 객체를 대체하지 않는다.",
+      "required_remediation": "D-01의 연구 프로젝트가 공식 객체로 관리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-02",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_standard.py",
+          "path_sha256": "e37c9a5883d305f2251b65f43078f650fbe0603e857305f56210acd691bc9fb3",
+          "symbol_or_lines": "research question, hypothesis, mechanism, and transition authority",
+          "test": "tests/test_research_standard_authority_integration.py",
+          "test_sha256": "e85604968e0947931a54c384e1454981749b3d25e3e4ef02090798abfcb4d8cd",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_standard_authority_integration.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "연구 의제 등록을 지원하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "D-02의 연구 의제 등록을 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/hypothesis_contract.py",
+          "path_sha256": "ad5914a8963fa1510eb2c61857b6b2f6e689058eccaad7cc6ef9cc4ef34d3548",
+          "symbol_or_lines": "testable hypothesis, mechanism, and falsification contract",
+          "test": "tests/test_hypothesis_contract.py",
+          "test_sha256": "c70da19eb6c4ccb8818b4b05e6fe18c08670134273ffcc0f93b586136a6437fe",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "가설이 검증 가능한 형태로 명세되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-04",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/hypothesis_contract.py",
+          "path_sha256": "ad5914a8963fa1510eb2c61857b6b2f6e689058eccaad7cc6ef9cc4ef34d3548",
+          "symbol_or_lines": "testable hypothesis, mechanism, and falsification contract",
+          "test": "tests/test_hypothesis_contract.py",
+          "test_sha256": "c70da19eb6c4ccb8818b4b05e6fe18c08670134273ffcc0f93b586136a6437fe",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "경제적 메커니즘이 가설과 함께 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-05",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/hypothesis_contract.py",
+          "path_sha256": "ad5914a8963fa1510eb2c61857b6b2f6e689058eccaad7cc6ef9cc4ef34d3548",
+          "symbol_or_lines": "testable hypothesis, mechanism, and falsification contract",
+          "test": "tests/test_hypothesis_contract.py",
+          "test_sha256": "c70da19eb6c4ccb8818b4b05e6fe18c08670134273ffcc0f93b586136a6437fe",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "반증 조건이 사전에 정의되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-06",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/study_lifecycle.py",
+          "path_sha256": "67d2005f68d7bad2279ac3b5c2730bdf6955d17e4dc12f643e3f287112974452",
+          "symbol_or_lines": "preregistration, change, holdout, and follow-up lifecycle",
+          "test": "tests/test_study_lifecycle.py",
+          "test_sha256": "0d7b9fc561ab11c66eb8884fc3b376aaa082bb5b2e09ff86e1543292270b7b1d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "연구 설계 사전등록을 지원하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-07",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/study_lifecycle.py",
+          "path_sha256": "67d2005f68d7bad2279ac3b5c2730bdf6955d17e4dc12f643e3f287112974452",
+          "symbol_or_lines": "preregistration, change, holdout, and follow-up lifecycle",
+          "test": "tests/test_study_lifecycle.py",
+          "test_sha256": "0d7b9fc561ab11c66eb8884fc3b376aaa082bb5b2e09ff86e1543292270b7b1d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "사전등록 이후 변경 이력이 보존되는가: 관련 코드/스키마 조각은 있으나 공식 통합 workflow와 충분한 테스트가 없다.",
+      "required_remediation": "D-07의 사전등록 이후 변경 이력이 보존되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-08",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/split_usage_policy.py",
+          "path_sha256": "a184262d4cd22722d62a8c17e507ee87ab7f724327f01582e71ab5ba714d5273",
+          "symbol_or_lines": "exploration, validation, and final-holdout access policy",
+          "test": "tests/test_study_lifecycle.py",
+          "test_sha256": "0d7b9fc561ab11c66eb8884fc3b376aaa082bb5b2e09ff86e1543292270b7b1d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "탐색·개발·검증·최종 홀드아웃 구간이 구분되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "D-08의 탐색·개발·검증·최종 홀드아웃 구간이 구분되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-09",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/experiment_registry.py",
+          "path_sha256": "e69ab08f8f8502368f447d89752dd1f69971ee48e934a514a2a3aa0af2756ccc",
+          "symbol_or_lines": "append-only experiment and split-use registry",
+          "test": "tests/test_experiment_registry_dataset_evidence.py",
+          "test_sha256": "38161a2fe5d8a16e96bbcddfd0d9b5c9e2e0033f9c913a10665d9b59cb273096",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_experiment_registry_dataset_evidence.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "검증·홀드아웃 접근 횟수와 사용 이력이 관리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-10",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "확정 후보 admission이 데이터 적합성·license·미해결 critical issue를 hash로 검증하지만 이를 소유하는 ResearchProject aggregate와 독립 steward 현장 승인은 없다.",
+      "required_remediation": "D-10의 데이터 적합성 조사 결과가 연구 객체에 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-11",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_classification.py",
+          "path_sha256": "ff1175964d28355db12820ceaecfbb7dddb72d05305ab564d4fa687098e2a581",
+          "symbol_or_lines": "exploratory versus confirmatory result classification",
+          "test": "tests/test_research_lifecycle_contract.py",
+          "test_sha256": "dc7a87eb3bc2e769afdbb7febc2bc24a8f44d8fcc5cdb0a3ab96085e1390de1f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_lifecycle_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "탐색 분석이 공식 검증 결과와 구분되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-12",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_compiler.py",
+          "path_sha256": "9fd3161e6625030b2ae79e00905cd2d2b11da60b9719c91f3976163b6d8d2ea9",
+          "symbol_or_lines": "versioned compiled signal, feature, and strategy contract",
+          "test": "tests/test_compiled_strategy_contract.py",
+          "test_sha256": "110d314cbd8dd767ac4ba35474440c91cd17b8e8a4d1bd270127eb0c16656a18",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_compiled_strategy_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "신호·모델 정의가 명시적으로 버전 관리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-13",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_standard.py",
+          "path_sha256": "e37c9a5883d305f2251b65f43078f650fbe0603e857305f56210acd691bc9fb3",
+          "symbol_or_lines": "research question, hypothesis, mechanism, and transition authority",
+          "test": "tests/test_research_standard_authority_integration.py",
+          "test_sha256": "e85604968e0947931a54c384e1454981749b3d25e3e4ef02090798abfcb4d8cd",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_standard_authority_integration.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "연구 상태 머신이 존재하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-14",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_standard.py",
+          "path_sha256": "e37c9a5883d305f2251b65f43078f650fbe0603e857305f56210acd691bc9fb3",
+          "symbol_or_lines": "research question, hypothesis, mechanism, and transition authority",
+          "test": "tests/test_research_standard_authority_integration.py",
+          "test_sha256": "e85604968e0947931a54c384e1454981749b3d25e3e4ef02090798abfcb4d8cd",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_standard_authority_integration.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "상태 전환 규칙이 강제되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-15",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "지식 registry는 명시적 관계와 동일 identity 충돌을 다루지만 새 연구 시작 전 의미 기반 유사 연구 탐지를 제공하지 않는다.",
+      "required_remediation": "D-15의 중복·유사 연구를 찾을 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "D-16",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/study_lifecycle.py",
+          "path_sha256": "67d2005f68d7bad2279ac3b5c2730bdf6955d17e4dc12f643e3f287112974452",
+          "symbol_or_lines": "preregistration, change, holdout, and follow-up lifecycle",
+          "test": "tests/test_study_lifecycle.py",
+          "test_sha256": "0d7b9fc561ab11c66eb8884fc3b376aaa082bb5b2e09ff86e1543292270b7b1d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "post-hoc 조건을 새 가설 버전과 후속 reference로 등록하는 경로는 있으나 독립 E5 replay 증거는 없다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "D-17",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/views.py",
+          "path_sha256": "7c0dddeb64c04597ef27953f04fcbd0fac25561c7755c813131818aa7cca2f5a",
+          "symbol_or_lines": "review queue, detail, decision, and progress views",
+          "test": "apps/internal_web/tests/test_review_workflow.py",
+          "test_sha256": "e07238584cd77f9a12db2119267b10c0aea5b31a22020aac54e7bb7bee9de51e",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_review_workflow.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "review queue/detail과 job 진행 상태 UI가 있으나 독립 브라우저 환경에서의 E5 재생 증거는 없다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-01",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/validation_pipeline.py",
+          "path_sha256": "d6ba0eaf6b848142ba627b242a0629f0743f6d73c54dcf6da9d3f6e13529d185",
+          "symbol_or_lines": "admission, execution, validation, and terminal evidence pipeline",
+          "test": "tests/test_validation_pipeline_gate.py",
+          "test_sha256": "4ba4141a128ee46a38af94aa5e50ce27c628eef51ad94235704d6012501038b3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_pipeline_gate.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "백테스트 파이프라인 단계가 분리되어 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-02",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/causal_market_view.py",
+          "path_sha256": "2581f945baadc051d36776706f1f50d10b48cbd9da70f1bd50d922a07b248a75",
+          "symbol_or_lines": "prefix-bounded causal market observations",
+          "test": "tests/test_future_suffix_invariance.py",
+          "test_sha256": "48b6922ad90639a17452e786fa7742ddff393f43b22cf6a1a703153c64efd044",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_future_suffix_invariance.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "미래정보 누출 방지 장치가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/point_in_time_selection.py",
+          "path_sha256": "81b9e837886336cdb11e33dfb7539836e100680b95d43273d42115e509d98c8f",
+          "symbol_or_lines": "knowledge-time and as-of selection authority",
+          "test": "tests/test_point_in_time_domain_contracts.py",
+          "test_sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_domain_contracts.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "시간 정렬과 as-of join이 올바른가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-04",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/universe_contract.py",
+          "path_sha256": "21e202c8536d1c71e1d9903a84d05fa9fe43383144b803aa48f4dfb84676940d",
+          "symbol_or_lines": "point-in-time listing and investability universe",
+          "test": "tests/test_point_in_time_candle_selection.py",
+          "test_sha256": "05ae1de2e76939124b7e0e1121cba2e6ca89c3fe3508618b059d52f2b1e3576c",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_point_in_time_candle_selection.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "시점별 투자 가능 유니버스를 사용하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-05",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/corporate_action_contract.py",
+          "path_sha256": "4430ea522e179354b10867f9be542b64a89042e80b4bf2df23d05deda269fad0",
+          "symbol_or_lines": "versioned corporate-action and delisting contracts",
+          "test": "tests/test_instrument_domain_contracts.py",
+          "test_sha256": "2472f6589cf801337ebb98d3c2e8dac24e6958c0433c3974522af432125ecd1a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "상장폐지 수익률과 거래 불가능 상태를 처리하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "E-05의 상장폐지 수익률과 거래 불가능 상태를 처리하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-06",
+      "importance": "CRITICAL",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/corporate_action_contract.py",
+          "path_sha256": "4430ea522e179354b10867f9be542b64a89042e80b4bf2df23d05deda269fad0",
+          "symbol_or_lines": "versioned corporate-action and delisting contracts",
+          "test": "tests/test_instrument_domain_contracts.py",
+          "test_sha256": "2472f6589cf801337ebb98d3c2e8dac24e6958c0433c3974522af432125ecd1a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_instrument_domain_contracts.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "기업행위 변환기는 존재하지만 공식 dataset materialization/backtest 호출 경로가 이를 소비하지 않는다.",
+      "required_remediation": "E-06의 기업행위 조정이 백테스트와 일관되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-07",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/portfolio_view.py",
+          "path_sha256": "6e12ceae775776f206819e8e62254b335fea4e748bf9903e49432c93304f5382",
+          "symbol_or_lines": "signal-independent portfolio target and position view",
+          "test": "tests/test_single_portfolio_authority.py",
+          "test_sha256": "bffc0976d9ad81bf74c0fa0c4a432a9ea6ba3fa376c41a352196b1566b8a27da",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_single_portfolio_authority.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "포트폴리오 구성 로직이 신호와 분리되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-08",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/portfolio_view.py",
+          "path_sha256": "6e12ceae775776f206819e8e62254b335fea4e748bf9903e49432c93304f5382",
+          "symbol_or_lines": "signal-independent portfolio target and position view",
+          "test": "tests/test_single_portfolio_authority.py",
+          "test_sha256": "bffc0976d9ad81bf74c0fa0c4a432a9ea6ba3fa376c41a352196b1566b8a27da",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_single_portfolio_authority.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "단일자산 intent 외의 일반 target-portfolio 리밸런싱 계약이 없다.",
+      "required_remediation": "E-08의 리밸런싱 규칙이 명시적으로 구현되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-09",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/fixed_bps.py",
+          "path_sha256": "8b670e292ce76cd4702f87f77b0b32e981ef8556f5a1bc92b426d0a693e13759",
+          "symbol_or_lines": "fee and slippage execution-cost contract",
+          "test": "tests/test_common_simulation_engine.py",
+          "test_sha256": "54a27a3ce52007401494f9f401af2c88c3a24014c7f9c13882713f555941dd10",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "비용 모델이 존재하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "E-09의 비용 모델이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-10",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/fixed_bps.py",
+          "path_sha256": "8b670e292ce76cd4702f87f77b0b32e981ef8556f5a1bc92b426d0a693e13759",
+          "symbol_or_lines": "fee and slippage execution-cost contract",
+          "test": "tests/test_common_simulation_engine.py",
+          "test_sha256": "54a27a3ce52007401494f9f401af2c88c3a24014c7f9c13882713f555941dd10",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "고정/시나리오 비용과 depth walk는 있으나 자산·시장·유효기간별 비용 schedule 권위가 없다.",
+      "required_remediation": "E-10의 비용이 자산·시장·시점·유동성에 따라 달라질 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-11",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/stress_suite.py",
+          "path_sha256": "dc19590adc688c41cc026a06f2dd27e08a5af7796ec3b712e59bd2d1f4260539",
+          "symbol_or_lines": "cost, latency, ablation, period, and parameter stress scenarios",
+          "test": "tests/test_validation_stress_suite_contract.py",
+          "test_sha256": "18aca688b113730a2a222b1b3e36ed05099008b4e165b4f2921800749e2328ab",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "비용 시나리오를 지원하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-12",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/portfolio_ledger.py",
+          "path_sha256": "0b4d39440ed6066b039b151ac77dfae913e73aa62747c768bf3f74c9d107991d",
+          "symbol_or_lines": "cash, position, turnover, and accounting ledger authority",
+          "test": "tests/test_portfolio_accounting_properties.py",
+          "test_sha256": "ef7ca8cb3da862b09e367708d684c874fa1a7c77638a8af6143d3ec562360d24",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "비용 전 성과와 비용 후 성과가 모두 산출되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-13",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_timing.py",
+          "path_sha256": "5de5b5cf26029632119e3234940ffa007b9fd3d0ad2253aaa547337c999e2026",
+          "symbol_or_lines": "decision-to-order-to-fill latency timeline",
+          "test": "tests/test_execution_observability_timing.py",
+          "test_sha256": "1171fde067c81c62799f078073fcaa759b29f2876192e426a98c5a05ced18331",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_execution_observability_timing.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "체결 지연을 모델링할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-14",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/depth_walk.py",
+          "path_sha256": "4ee98a40868eddb00fe2830d8ed1b8f5ef1b9ad3f96eda9cc67d3123594bb623",
+          "symbol_or_lines": "partial-fill and finite-depth execution model",
+          "test": "tests/test_strategy_partial_fill_feedback.py",
+          "test_sha256": "1e746f4b6391892ce6567d5ee61186c346aec4f20068cde4d3381f632ad3b562",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_partial_fill_feedback.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "부분 체결과 유동성 한도를 모델링할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-15",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/depth_walk.py",
+          "path_sha256": "4ee98a40868eddb00fe2830d8ed1b8f5ef1b9ad3f96eda9cc67d3123594bb623",
+          "symbol_or_lines": "partial-fill and finite-depth execution model",
+          "test": "tests/test_strategy_partial_fill_feedback.py",
+          "test_sha256": "1e746f4b6391892ce6567d5ee61186c346aec4f20068cde4d3381f632ad3b562",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_partial_fill_feedback.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "거래량 대비 주문·ADV·최대 참여율을 실제 체결에 적용하는 계약이 없다.",
+      "required_remediation": "E-15의 거래 참여율을 반영할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-16",
+      "importance": "MAJOR",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/base.py",
+          "path_sha256": "bd9b9655f53314f28af450e8944b779d8d28110d407a1f8f8ca339e9113aadaa",
+          "symbol_or_lines": "explicit supported and unavailable execution capabilities",
+          "test": "tests/test_unsupported_strategy_capabilities.py",
+          "test_sha256": "6c480dfe0738f9550e53c3a4462f1b83e6f7686917443862db8b017b1d251962",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_unsupported_strategy_capabilities.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "주문 크기와 유동성에 반응하는 시장충격 모형이 명시적으로 unavailable이다.",
+      "required_remediation": "E-16의 시장충격 모델이 주문 크기와 유동성에 반응하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-17",
+      "importance": "MAJOR",
+      "maturity": "M0",
+      "status": "MISSING",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/base.py",
+          "path_sha256": "bd9b9655f53314f28af450e8944b779d8d28110d407a1f8f8ca339e9113aadaa",
+          "symbol_or_lines": "explicit supported and unavailable execution capabilities",
+          "test": "tests/test_unsupported_strategy_capabilities.py",
+          "test_sha256": "6c480dfe0738f9550e53c3a4462f1b83e6f7686917443862db8b017b1d251962",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_unsupported_strategy_capabilities.py",
+          "result": "ABSENCE evidence: repository inspection and the cited boundary surface found no implementation satisfying this criterion."
+        }
+      ],
+      "gap": "자본 grid, 비용/미체결 curve, 손익분기 및 최대 수용 자본 분석이 없다.",
+      "required_remediation": "E-17의 전략 용량 분석이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-18",
+      "importance": "MAJOR",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_model/base.py",
+          "path_sha256": "bd9b9655f53314f28af450e8944b779d8d28110d407a1f8f8ca339e9113aadaa",
+          "symbol_or_lines": "explicit supported and unavailable execution capabilities",
+          "test": "tests/test_unsupported_strategy_capabilities.py",
+          "test_sha256": "6c480dfe0738f9550e53c3a4462f1b83e6f7686917443862db8b017b1d251962",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_unsupported_strategy_capabilities.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "공매도 locate·대차비·회수 위험을 지원하지 않는다.",
+      "required_remediation": "E-18의 공매도 현실성을 평가할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-19",
+      "importance": "MAJOR",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "src/market_research/research/simulation_engine.py",
+          "path_sha256": "4454262f25ba56728e1b0e6975a37ee15d87bebe0241bb06b60739bb7d812d68",
+          "symbol_or_lines": "offline signal, order, fill, ledger, and cost authority",
+          "test": "tests/test_common_simulation_engine.py",
+          "test_sha256": "54a27a3ce52007401494f9f401af2c88c3a24014c7f9c13882713f555941dd10",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_simulation_engine.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "현금이자 정책은 zero만 허용하며 자금조달/현금수익 모형이 없다.",
+      "required_remediation": "E-19의 자금조달 비용과 현금 수익을 처리할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-20",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/execution_invariants.py",
+          "path_sha256": "b71e1e9a1c18603e01cb10772a176286d413df9c4845acb61d135d1465ac07eb",
+          "symbol_or_lines": "halt, tradability, and execution timeline invariants",
+          "test": "tests/test_execution_invariant_authority.py",
+          "test_sha256": "7641e1875bd04237c50da2b6210eaaa0345b6b44405938cfe9a50137ef14a27f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_execution_invariant_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "거래정지·가격제한·거래 불가능 이벤트를 처리하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "E-20의 거래정지·가격제한·거래 불가능 이벤트를 처리하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-21",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/portfolio_ledger.py",
+          "path_sha256": "0b4d39440ed6066b039b151ac77dfae913e73aa62747c768bf3f74c9d107991d",
+          "symbol_or_lines": "cash, position, turnover, and accounting ledger authority",
+          "test": "tests/test_portfolio_accounting_properties.py",
+          "test_sha256": "ef7ca8cb3da862b09e367708d684c874fa1a7c77638a8af6143d3ec562360d24",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "포트폴리오 회전율을 정확히 계산하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "E-21의 포트폴리오 회전율을 정확히 계산하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-22",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/portfolio_ledger.py",
+          "path_sha256": "0b4d39440ed6066b039b151ac77dfae913e73aa62747c768bf3f74c9d107991d",
+          "symbol_or_lines": "cash, position, turnover, and accounting ledger authority",
+          "test": "tests/test_portfolio_accounting_properties.py",
+          "test_sha256": "ef7ca8cb3da862b09e367708d684c874fa1a7c77638a8af6143d3ec562360d24",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "성과 귀속이 가능한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "E-22의 성과 귀속이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-23",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/strategy_sdk/runtime.py",
+          "path_sha256": "f831449d4650e67263925f59867da1a650a29176867222d8d625956b7c651592",
+          "symbol_or_lines": "production-path strategy extension contract",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "여러 연구 유형을 지원하거나 확장 계약을 제공하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-24",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/benchmark_suite.py",
+          "path_sha256": "3d7ce9a0b781bf284d903f949fdebab08ea85aaa1a3e0c7aa4a55042838128fd",
+          "symbol_or_lines": "deterministic common-engine benchmark cases",
+          "test": "tests/test_benchmark_suite.py",
+          "test_sha256": "11a72ede0b47030aa77545f5cdf6ef5f3ec55fc517590b8f36fb1ddcc90d8f51",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_benchmark_suite.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "공통 엔진 benchmark와 결정론·비용·시간 테스트는 있으나 split/dividend/delisting 회계 benchmark가 없다.",
+      "required_remediation": "E-24의 백테스트 엔진에 기준 테스트가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "E-25",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/portfolio_ledger.py",
+          "path_sha256": "0b4d39440ed6066b039b151ac77dfae913e73aa62747c768bf3f74c9d107991d",
+          "symbol_or_lines": "cash, position, turnover, and accounting ledger authority",
+          "test": "tests/test_portfolio_accounting_properties.py",
+          "test_sha256": "ef7ca8cb3da862b09e367708d684c874fa1a7c77638a8af6143d3ec562360d24",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_portfolio_accounting_properties.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "백테스트 결과와 회계적 포트폴리오 상태가 일치하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "E-26",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/resource_planner.py",
+          "path_sha256": "3f79561d38ebfebb3628c6490715588c84c25b7c36e4ac5d418a164351aa0b24",
+          "symbol_or_lines": "bounded worker, memory, row, and runtime planning",
+          "test": "tests/test_common_engine_resource_guards.py",
+          "test_sha256": "d754968432941eceef8cef6c371584329c4d7d6f2a1e15703d60ce8757927756",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_resource_guards.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "resource planner와 guard는 통합됐지만 대규모 실제 workload 및 측정된 memory envelope 검증이 없다.",
+      "required_remediation": "E-26의 대규모 데이터에서 성능과 메모리 제어가 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-01",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "통계 검정이 연구 데이터 구조에 맞게 선택되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-01의 통계 검정이 연구 데이터 구조에 맞게 선택되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-02",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "다중가설 문제를 다루는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/split_usage_policy.py",
+          "path_sha256": "a184262d4cd22722d62a8c17e507ee87ab7f724327f01582e71ab5ba714d5273",
+          "symbol_or_lines": "exploration, validation, and final-holdout access policy",
+          "test": "tests/test_study_lifecycle.py",
+          "test_sha256": "0d7b9fc561ab11c66eb8884fc3b376aaa082bb5b2e09ff86e1543292270b7b1d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "홀드아웃 검증이 구현되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-04",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/walk_forward.py",
+          "path_sha256": "0313a1730c18abbe51058bcf231607f3000e51eea9d1fa70ed09b75afe6910f0",
+          "symbol_or_lines": "forward-only train and validation windows",
+          "test": "tests/test_frozen_dataset_walk_forward_integration.py",
+          "test_sha256": "73497663643fe7ab1e4a442012a1ca8cfdfea0b6d4afc319b8ecae78b7a6ea74",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_frozen_dataset_walk_forward_integration.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "워크포워드 검증이 가능한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-05",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/temporal_validation.py",
+          "path_sha256": "eee53ff71a791b3d33d92529561f374fa627a74c865f67b8118ace82a9b67e3a",
+          "symbol_or_lines": "label intervals, purge, embargo, and nested fold plans",
+          "test": "tests/test_temporal_validation.py",
+          "test_sha256": "06dfb47d30dd5ae8abf31c6cba66c57c7bd127eee98b7f236e54ce317f3c4458",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_temporal_validation.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "외부/내부 fold는 불변 계획으로 사전 고정되지만 내부 fold가 후보 선택을 실제로 실행하지 않아 selection_is_fully_nested=false이다.",
+      "required_remediation": "F-05의 중첩 교차검증이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-06",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/temporal_validation.py",
+          "path_sha256": "eee53ff71a791b3d33d92529561f374fa627a74c865f67b8118ace82a9b67e3a",
+          "symbol_or_lines": "label intervals, purge, embargo, and nested fold plans",
+          "test": "tests/test_temporal_validation.py",
+          "test_sha256": "06dfb47d30dd5ae8abf31c6cba66c57c7bd127eee98b7f236e54ce317f3c4458",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_temporal_validation.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "temporal config는 선언된 일 단위 label horizon으로 purge와 forward embargo를 구성하지만 실제 target/forward-label 정의 및 표본 timestamp와 horizon을 결속하지 않는다.",
+      "required_remediation": "F-06의 겹치는 레이블과 시간 누출을 고려한 검증이 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-07",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "백테스트 과적합 위험을 평가하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-08",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/stress_suite.py",
+          "path_sha256": "dc19590adc688c41cc026a06f2dd27e08a5af7796ec3b712e59bd2d1f4260539",
+          "symbol_or_lines": "cost, latency, ablation, period, and parameter stress scenarios",
+          "test": "tests/test_validation_stress_suite_contract.py",
+          "test_sha256": "18aca688b113730a2a222b1b3e36ed05099008b4e165b4f2921800749e2328ab",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "시간 강건성 검사가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-08의 시간 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-09",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/cross_section_validation.py",
+          "path_sha256": "cffb97d4288c3bf1e86b0893491ac2d6ca3e55a4f1906b785d45e757c92efc4a",
+          "symbol_or_lines": "cross-sectional subgroup robustness",
+          "test": "tests/test_cross_section_validation.py",
+          "test_sha256": "5fd517313a86a66b15deefabe69879e24076576cd912b9e81c1456c855b4f27e",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_cross_section_validation.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "횡단면 강건성 검사가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-09의 횡단면 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-10",
+      "importance": "CRITICAL",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/stress_suite.py",
+          "path_sha256": "dc19590adc688c41cc026a06f2dd27e08a5af7796ec3b712e59bd2d1f4260539",
+          "symbol_or_lines": "cost, latency, ablation, period, and parameter stress scenarios",
+          "test": "tests/test_validation_stress_suite_contract.py",
+          "test_sha256": "18aca688b113730a2a222b1b3e36ed05099008b4e165b4f2921800749e2328ab",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "파라미터와 신호 생략 외의 정의 변형 matrix가 일반 계약으로 승격되지 않았다.",
+      "required_remediation": "F-10의 정의 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-11",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/decision_stream_perturbation.py",
+          "path_sha256": "e88a3b9153db23b3ead9540c7b9745cdba5a523b7cb3d3e5c6f58a6692b40066",
+          "symbol_or_lines": "alternate implementation and decision-stream perturbation",
+          "test": "tests/test_decision_stream_perturbation.py",
+          "test_sha256": "3e1673ce3b422dfddd008dac7ae5e1da0e65bba46e1208acc8956a5763cf9f4e",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_decision_stream_perturbation.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "구현 강건성 검사가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-11의 구현 강건성 검사가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-12",
+      "importance": "CRITICAL",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/stress_suite.py",
+          "path_sha256": "dc19590adc688c41cc026a06f2dd27e08a5af7796ec3b712e59bd2d1f4260539",
+          "symbol_or_lines": "cost, latency, ablation, period, and parameter stress scenarios",
+          "test": "tests/test_validation_stress_suite_contract.py",
+          "test_sha256": "18aca688b113730a2a222b1b3e36ed05099008b4e165b4f2921800749e2328ab",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "placebo 날짜·label shuffle·무관 대상·대체 설명 변수를 실행하는 반증 executor가 없다.",
+      "required_remediation": "F-12의 반증 실험을 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-13",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/result_concentration.py",
+          "path_sha256": "4bd752c0f0b0533b1e7a79c3b31a3ce68acb7df185584c2506650a139194a675",
+          "symbol_or_lines": "period, trade, and instrument concentration diagnostics",
+          "test": "tests/test_result_concentration.py",
+          "test_sha256": "112fa728f04a209d31531e26165df7ebc7ca2d536bef2d21759c55e7cb36ab07",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_result_concentration.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "결과의 특정 기간 집중도를 탐지하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-14",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/result_concentration.py",
+          "path_sha256": "4bd752c0f0b0533b1e7a79c3b31a3ce68acb7df185584c2506650a139194a675",
+          "symbol_or_lines": "period, trade, and instrument concentration diagnostics",
+          "test": "tests/test_result_concentration.py",
+          "test_sha256": "112fa728f04a209d31531e26165df7ebc7ca2d536bef2d21759c55e7cb36ab07",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_result_concentration.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "소수 종목 집중도를 탐지하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-14의 소수 종목 집중도를 탐지하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-15",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/return_panel.py",
+          "path_sha256": "27bb064a9cdb89d701619a96f344b9ecea7630c58a1a7c16d19c4673a48518db",
+          "symbol_or_lines": "return panel, outlier, and benchmark evidence",
+          "test": "tests/test_return_panel_benchmarks.py",
+          "test_sha256": "99a551144cdf0756ceafb5f37c2307f214d71fb9531d008d5bb46cd8311a544f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_return_panel_benchmarks.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "극단 관측치 의존성을 검사하는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-16",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "표준 시장/규모/가치/모멘텀/산업/국가 factor exposure 회귀가 없다.",
+      "required_remediation": "F-16의 알려진 팩터와 구조적 노출을 분석하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-17",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "통계적 유의성과 경제적 의미를 구분하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-17의 통계적 유의성과 경제적 의미를 구분하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-18",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/hypothesis_contract.py",
+          "path_sha256": "ad5914a8963fa1510eb2c61857b6b2f6e689058eccaad7cc6ef9cc4ef34d3548",
+          "symbol_or_lines": "testable hypothesis, mechanism, and falsification contract",
+          "test": "tests/test_hypothesis_contract.py",
+          "test_sha256": "c70da19eb6c4ccb8818b4b05e6fe18c08670134273ffcc0f93b586136a6437fe",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_hypothesis_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "경제적 메커니즘 검증 구조가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-18의 경제적 메커니즘 검증 구조가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-19",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/forward_diagnostics.py",
+          "path_sha256": "9ed6e9f6856a3a48c3052a854364795c6aa407db38dd961e586fedf1944fe9c7",
+          "symbol_or_lines": "signal horizon and decay diagnostics",
+          "test": "tests/test_full_scope_prospective.py",
+          "test_sha256": "ec09a95c32fb34a46853b75475a65dd464b13916c5b2dd29980a46b8e2ad1d3f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_prospective.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "신호 감쇠 속도를 분석하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-19의 신호 감쇠 속도를 분석하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-20",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/stress_suite.py",
+          "path_sha256": "dc19590adc688c41cc026a06f2dd27e08a5af7796ec3b712e59bd2d1f4260539",
+          "symbol_or_lines": "cost, latency, ablation, period, and parameter stress scenarios",
+          "test": "tests/test_validation_stress_suite_contract.py",
+          "test_sha256": "18aca688b113730a2a222b1b3e36ed05099008b4e165b4f2921800749e2328ab",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_stress_suite_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "거래 현실성 스트레스 테스트가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "F-20의 거래 현실성 스트레스 테스트가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-21",
+      "importance": "MAJOR",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "동일 의미의 공급자 대체 dataset 결과 차이를 비교하고 차단하는 gate가 없다.",
+      "required_remediation": "F-21의 결과의 데이터 공급자 민감도를 검사할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-22",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "불확실성과 신뢰구간이 결과에 포함되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "F-23",
+      "importance": "MAJOR",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "src/market_research/research/statistical_selection.py",
+          "path_sha256": "3f948ea9c4d160377044dbbaf4a9e61922c5cf0778fb688452cfe44f9cbe9491",
+          "symbol_or_lines": "multiple-testing, confidence, and selection authority",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "예측 모델 capability에 조건부인 calibration·drift·불균형·threshold 안정성 계약이 없다.",
+      "required_remediation": "F-23의 예측 모델의 캘리브레이션과 안정성을 평가할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-24",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/study_lifecycle.py",
+          "path_sha256": "67d2005f68d7bad2279ac3b5c2730bdf6955d17e4dc12f643e3f287112974452",
+          "symbol_or_lines": "PASS, FAIL, INSUFFICIENT, and execution-failure preservation",
+          "test": "tests/test_study_lifecycle.py",
+          "test_sha256": "0d7b9fc561ab11c66eb8884fc3b376aaa082bb5b2e09ff86e1543292270b7b1d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_study_lifecycle.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "부정 결과를 보존하는 lifecycle 결정과 합성 테스트는 있으나 실제 negative run_research_validation 경로가 양성 결과와 동일한 terminal/package 증거를 생성하는 종단 간 검증은 없다.",
+      "required_remediation": "F-24의 결과가 부정적인 경우에도 동일한 검증 패키지를 생성하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "F-25",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/validation_pipeline.py",
+          "path_sha256": "d6ba0eaf6b848142ba627b242a0629f0743f6d73c54dcf6da9d3f6e13529d185",
+          "symbol_or_lines": "admission, execution, validation, and terminal evidence pipeline",
+          "test": "tests/test_validation_pipeline_gate.py",
+          "test_sha256": "4ba4141a128ee46a38af94aa5e50ce27c628eef51ad94235704d6012501038b3",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_validation_pipeline_gate.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "검증 항목이 자동 게이트로 연결되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "G-01",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "immutable verifier result, receipt/report fingerprint binding, and comparison registry",
+          "test": "tests/test_independent_verification.py",
+          "test_sha256": "76a9e15cfce806c9c35b858716c090121ce3c8f61618bffc55b1076f0474bbcd",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "역할 불일치와 originator 분리는 강제하지만 CLI actor ID는 인증된 principal이 아닌 호출자 제공 문자열이라 한 운영자가 alias를 만들 수 있다.",
+      "required_remediation": "researcher·verifier·approver ID를 호출자 문자열이 아닌 인증된 immutable principal/credential claim에서 도출하고 alias·impersonation을 차단한다."
+    },
+    {
+      "id": "G-02",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/cli.py",
+          "path_sha256": "5f5723e4a1b088e05a52a29902959998dcacc4af49c39ebddbd4639ad7700c37",
+          "symbol_or_lines": "research-reproduce-run same-state replay command",
+          "test": "tests/test_research_reproduction_cli.py",
+          "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reproduction_cli.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. The retained local production E2E reaches same-state reproduction, but it is not a cold-host restore. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        },
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "terminal validation through reproduction, independent result, approval, and governed package",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. The retained local production E2E reaches same-state reproduction, but it is not a cold-host restore. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        }
+      ],
+      "gap": "retained local production E2E에서 terminal 결과의 reproduce→비교→독립 판정 경로는 실행됐지만 빈 호스트에서 환경·외부 immutable dataset을 복원하지 못한다. 또한 독립 verifier 내부의 schema-3 terminal source report 검사는 schema·identity·content hash 수준에 머물고 전체 validated-result 계약 검사는 downstream governance validator에 의존한다.",
+      "required_remediation": "빈 호스트에서 lock 환경과 immutable dataset을 자동 복원하는 verifier workflow를 추가하고 schema-3 terminal source에 전체 validated-result validator를 직접 적용한다."
+    },
+    {
+      "id": "G-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "immutable verifier result, receipt/report fingerprint binding, and comparison registry",
+          "test": "tests/test_independent_verification.py",
+          "test_sha256": "76a9e15cfce806c9c35b858716c090121ce3c8f61618bffc55b1076f0474bbcd",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. The retained local production E2E stores a hash-bound IndependentVerificationResult and registry row. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        },
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "terminal validation through reproduction, independent result, approval, and governed package",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. The retained local production E2E stores a hash-bound IndependentVerificationResult and registry row. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        }
+      ],
+      "gap": "retained production E2E가 IndependentVerificationResult와 append-only registry row를 실제 생성·보존하지만 독립 verifier 자체는 schema-3 terminal source report의 전체 validated-result 계약을 검증하지 않는다. 빈 호스트 E5 재현도 FG-06으로 남는다.",
+      "required_remediation": "independent verifier가 schema-3 terminal source 전체 계약을 직접 검증하게 하고 별도 cold-host 실행의 result·registry·artifact hash를 retained evidence로 보존한다."
+    },
+    {
+      "id": "G-04",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/governance.py",
+          "path_sha256": "cebd3d1f775a8ac388fff431433127a1351513cc8460faa5fa5c1d3f7f36be6b",
+          "symbol_or_lines": "review, decision, separation-of-duties, and canonical reproduction-PASS approval gate",
+          "test": "tests/test_research_governance.py",
+          "test_sha256": "7bbdaf109e9343bfca0edc8e5587d5fe98bf3bc604547ff789f7fb88a3719d18",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. The retained local production E2E reaches approval only through a canonical PASS result; negative gate tests cover missing, drifted, and non-independent evidence. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        },
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "terminal validation through reproduction, independent result, approval, and governed package",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed. The retained local production E2E reaches approval only through a canonical PASS result; negative gate tests cover missing, drifted, and non-independent evidence. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        }
+      ],
+      "gap": "distinct-verifier canonical PASS와 대상 hash 없이는 승격이 차단되고 retained terminal reproduce→publish→approve E2E 및 음성 테스트가 확인됐다. 다만 schema-3 terminal source의 전체 계약 검사는 independent verifier가 아니라 downstream governance validator에서 수행되며 FG-06 cold restore는 실패한다.",
+      "required_remediation": "schema-3 terminal source 전체 계약 검증을 독립 PASS 생성 전에 강제하고 cold-host 재현 실패·drift·변조가 모든 승격 경로를 차단하는 E2E를 추가한다."
+    },
+    {
+      "id": "G-05",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/governance.py",
+          "path_sha256": "cebd3d1f775a8ac388fff431433127a1351513cc8460faa5fa5c1d3f7f36be6b",
+          "symbol_or_lines": "review, decision, separation-of-duties, and canonical reproduction-PASS approval gate",
+          "test": "tests/test_research_governance.py",
+          "test_sha256": "7bbdaf109e9343bfca0edc8e5587d5fe98bf3bc604547ff789f7fb88a3719d18",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "연구 리뷰가 코드 리뷰보다 넓은 범위를 다루는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "G-06",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/governance.py",
+          "path_sha256": "5ae51caed87b21b618d344b11dbd95774f511b9aae1e062e278068d88cafce2a",
+          "symbol_or_lines": "transactional review comments and decisions",
+          "test": "apps/internal_web/tests/test_governance_database_authority.py",
+          "test_sha256": "21492f089d86a59b468670a15ae5057d3e44da4885ae4414dd5995936959ecda",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_governance_database_authority.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "리뷰 코멘트와 답변이 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "G-07",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/governance.py",
+          "path_sha256": "cebd3d1f775a8ac388fff431433127a1351513cc8460faa5fa5c1d3f7f36be6b",
+          "symbol_or_lines": "review, decision, separation-of-duties, and canonical reproduction-PASS approval gate",
+          "test": "tests/test_research_governance.py",
+          "test_sha256": "7bbdaf109e9343bfca0edc8e5587d5fe98bf3bc604547ff789f7fb88a3719d18",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "승인·기각 근거가 기록되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "G-08",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "docs/research-standard-authority.md",
+          "path_sha256": "e78f8707bcb46adaf0e9181b14091ac5943660d2e5e723e91539a573513d7fee",
+          "symbol_or_lines": "review roles and required research policy",
+          "test": "tests/test_documentation_contract.py",
+          "test_sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "필수 정책이 문서 또는 코드로 존재하는가: 관련 코드/스키마 조각은 있으나 공식 통합 workflow와 충분한 테스트가 없다.",
+      "required_remediation": "G-08의 필수 정책이 문서 또는 코드로 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "G-09",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/governance.py",
+          "path_sha256": "cebd3d1f775a8ac388fff431433127a1351513cc8460faa5fa5c1d3f7f36be6b",
+          "symbol_or_lines": "review, decision, separation-of-duties, and canonical reproduction-PASS approval gate",
+          "test": "tests/test_research_governance.py",
+          "test_sha256": "7bbdaf109e9343bfca0edc8e5587d5fe98bf3bc604547ff789f7fb88a3719d18",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_governance.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "정책이 단순 문서가 아니라 워크플로에 반영되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "G-10",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "기각된 연구가 보존되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "G-11",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "대체/저하는 표현하지만 CHALLENGED와 DEPRECATED를 일관된 연구 상태로 제공하지 않는다.",
+      "required_remediation": "G-11의 `Challenged`, `Superseded`, `Deprecated` 상태를 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "G-12",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "GovernanceWaiver가 목적·사유·승인자·만료를 보존하고 admission에서 scope/expiry를 검사하지만 데이터 거버넌스에 한정되며 직접 expired/future 음성 테스트가 부족하다.",
+      "required_remediation": "G-12의 예외 승인에 만료·사유·승인자가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "G-13",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "데이터 문제에서 usage binding으로 영향 연구를 역조회하고 향후 admission을 차단하지만 이미 승인된 연구의 상태를 자동 전환하는 workflow가 없다.",
+      "required_remediation": "G-13의 데이터 오류 발생 시 영향 분석 워크플로가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "G-14",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_decision_report.py",
+          "path_sha256": "ec2471e2d9bd42f5551e91f6f44921c8da224bea4e95a84c82a8239d5923a097",
+          "symbol_or_lines": "evidence-strength and conclusion decision record",
+          "test": "tests/test_research_decision_report.py",
+          "test_sha256": "9d1adfcc03ea6d6712651b732e7de2aea4d7165c4c35fc6c681911f0e3acfdfc",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_decision_report.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "결론의 강도가 증거 수준에 연결되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "G-14의 결론의 강도가 증거 수준에 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "G-15",
+      "importance": "SUPPORTING",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "docs/research-standard-authority.md",
+          "path_sha256": "e78f8707bcb46adaf0e9181b14091ac5943660d2e5e723e91539a573513d7fee",
+          "symbol_or_lines": "review roles and required research policy",
+          "test": "tests/test_documentation_contract.py",
+          "test_sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "역할별 책임이 문서화되어 있는가: 선언 또는 제한 문서만 있으며 실행 가능한 지원이 없다.",
+      "required_remediation": "G-15의 역할별 책임이 문서화되어 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "G-16",
+      "importance": "SUPPORTING",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": ".github/workflows/research-ci.yml",
+          "path_sha256": "cdfea2939d5f5c895628fdf63327ef59c7cdb16fa84717528010ba4d84c6132b",
+          "symbol_or_lines": "reproduction, boundary, and canonical audit CI jobs",
+          "test": "tests/test_platform_completeness_runner.py",
+          "test_sha256": "9b2386da16a3a380ea7306a76fc6e7a386b2db247de93864d950fd5b1b09474a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_platform_completeness_runner.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "CI와 앱 역할 권한은 있으나 CODEOWNERS·branch protection·승인 규칙이 연구자/검증자 분리를 강제한다는 실행 증거가 없다.",
+      "required_remediation": "G-16의 CODEOWNERS·승인 규칙·권한이 역할 분리를 보조하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-01",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "machine-readable complete research package",
+          "test": "tests/test_strategy_research_package.py",
+          "test_sha256": "98ff7f37fa776b1486585f05eb70a6d5f22dde96ba070effc6d54c3ae4237215",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "최종 결과가 단일 보고서가 아니라 완전한 연구 패키지인가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-01의 최종 결과가 단일 보고서가 아니라 완전한 연구 패키지인가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-02",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_reporting.py",
+          "path_sha256": "3984a086ee787bec1fbcd956b07a8898053bc101dc253a2f627dc085ad53ef37",
+          "symbol_or_lines": "human-readable Markdown and machine-readable report rendering",
+          "test": "tests/test_research_reporting.py",
+          "test_sha256": "d10bf1c22283c9acc149a621df54e13ea4c98241aff5b7c9d6a25e1e48f31568",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reporting.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "연구 요약에 핵심 정보가 포함되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-02의 연구 요약에 핵심 정보가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-03",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "machine-readable complete research package",
+          "test": "tests/test_strategy_research_package.py",
+          "test_sha256": "98ff7f37fa776b1486585f05eb70a6d5f22dde96ba070effc6d54c3ae4237215",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "가설 문서가 포함되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "H-04",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_package_registry.py",
+          "path_sha256": "cd9504d53384a9bc4506b3115e48e8e287aa201eb227f22f4c721b4b5527afc8",
+          "symbol_or_lines": "immutable versioned package evidence graph",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "package는 dataset snapshot/admission hash ref를 보존하지만 추출 시점·PIT·universe·quality·license를 포함한 완전한 data manifest를 자체 포함하지 않는다.",
+      "required_remediation": "H-04의 데이터 매니페스트가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-05",
+      "importance": "CRITICAL",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_package_registry.py",
+          "path_sha256": "cd9504d53384a9bc4506b3115e48e8e287aa201eb227f22f4c721b4b5527afc8",
+          "symbol_or_lines": "immutable versioned package evidence graph",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "reproduction receipt ref와 recipe 일부는 있으나 repo·commit·실행 명령·환경 image·lock·seed를 한 code manifest로 포함하지 않는다.",
+      "required_remediation": "H-05의 코드 매니페스트가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-06",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_package_registry.py",
+          "path_sha256": "cd9504d53384a9bc4506b3115e48e8e287aa201eb227f22f4c721b4b5527afc8",
+          "symbol_or_lines": "immutable versioned package evidence graph",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "experiment spec ref와 일부 parameter/cost hash는 있으나 기간·portfolio constraint·benchmark·전체 lineage를 포함한 완전한 experiment manifest가 없다.",
+      "required_remediation": "H-06의 실험 매니페스트가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-07",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "machine-readable complete research package",
+          "test": "tests/test_strategy_research_package.py",
+          "test_sha256": "98ff7f37fa776b1486585f05eb70a6d5f22dde96ba070effc6d54c3ae4237215",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "결과 패키지가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-07의 결과 패키지가 충분한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-08",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "immutable verifier result, receipt/report fingerprint binding, and comparison registry",
+          "test": "tests/test_independent_verification.py",
+          "test_sha256": "76a9e15cfce806c9c35b858716c090121ce3c8f61618bffc55b1076f0474bbcd",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_independent_verification.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. The retained local production E2E binds the independent-verification object into approval and package evidence. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        },
+        {
+          "path": "src/market_research/research/independent_verification.py",
+          "path_sha256": "c184c7762eb009fc79244dd07f8504fcb7757131fce41780e15b129b8f338eda",
+          "symbol_or_lines": "terminal validation through reproduction, independent result, approval, and governed package",
+          "test": "tests/test_strategy_extension_production_e2e.py",
+          "test_sha256": "1c5cfcbdc003da8574eb8ec9f5f0e5d4652c3f876660608e8078f04571843f59",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extension_production_e2e.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. The retained local production E2E binds the independent-verification object into approval and package evidence. Retained local production E2E manifest: /home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json (sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645, PASS); this is not cold-host evidence."
+        }
+      ],
+      "gap": "retained E2E에서 공식 IndependentVerificationResult가 승인·패키지에 hash로 결속되지만 schema-3 terminal source 전체 계약은 independent verifier 내부에서 검증되지 않고 수정 내역을 일급 필드로 보존하는 완전한 검증 보고서도 아니다. cold-host 독립 실행은 FG-06으로 남는다.",
+      "required_remediation": "검증 보고서에 수정 내역을 일급 필드로 추가하고 schema-3 source 전체 계약, 발견·미해결 문제, 판정 근거를 독립 cold-host receipt와 함께 package에 결속한다."
+    },
+    {
+      "id": "H-09",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/strategy_package.py",
+          "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
+          "symbol_or_lines": "machine-readable complete research package",
+          "test": "tests/test_strategy_research_package.py",
+          "test_sha256": "98ff7f37fa776b1486585f05eb70a6d5f22dde96ba070effc6d54c3ae4237215",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_research_package.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "package에 제한사항 컨테이너는 있으나 표본·비용추정·시장구조·적용 불가 환경·알 수 없는 위험 범주와 비어 있지 않은 검토 내용을 필수로 강제하지 않는다.",
+      "required_remediation": "H-09의 제한사항 문서가 포함되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-10",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_package_registry.py",
+          "path_sha256": "cd9504d53384a9bc4506b3115e48e8e287aa201eb227f22f4c721b4b5527afc8",
+          "symbol_or_lines": "immutable versioned package evidence graph",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "모든 산출물에 고유 ID와 버전이 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-10의 모든 산출물에 고유 ID와 버전이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-11",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/lineage.py",
+          "path_sha256": "a4ba24a144a90139ec78db3cb9bdd3e38f59f68f59b9ec65058008cc1171edda",
+          "symbol_or_lines": "bidirectional hash-bound execution lineage",
+          "test": "tests/test_execution_lineage_contract.py",
+          "test_sha256": "c2f45b86291e876d26799d511c60c78fd1ab8c764fa3b1486e8b7c4d41451aa1",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_execution_lineage_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "execution intent→fill→ledger 계보는 검증되지만 특정 보고 지표에서 결과·실험·commit·parameter·snapshot·원천까지 이어지는 단일 종단 간 trace 증거는 없다.",
+      "required_remediation": "H-11의 특정 보고 지표에서 원천까지 역추적 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-12",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/artifact_store.py",
+          "path_sha256": "c77031ed1696a4f5dbe6c2c51d9ad7d1acee817e7076c11f724ccb398eb81239",
+          "symbol_or_lines": "atomic create-or-verify content-addressed artifacts",
+          "test": "tests/test_terminal_artifact_immutability.py",
+          "test_sha256": "a130694dc75b1e453d355f010d73ec76e5b3bfd04500dcaf3fbfb1556834c0a9",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_terminal_artifact_immutability.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "산출물 무결성을 확인할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "H-13",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "연구 메타데이터 카탈로그가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-13의 연구 메타데이터 카탈로그가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-14",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/feature_definition.py",
+          "path_sha256": "fa4a231b34b93c5feccb448c556f78b9f2634a10bb9d3b017995625bfa5909c7",
+          "symbol_or_lines": "versioned feature definition and provider binding",
+          "test": "tests/test_feature_definition_authority.py",
+          "test_sha256": "2f877d84544c02d2a63cf86c5d7b55736fd5bddd251c5be776d80b53b5c10e21",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_feature_definition_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "변수·특성 레지스트리가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-14의 변수·특성 레지스트리가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-15",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "실패 연구와 실패 실험을 검색할 수 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "H-16",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "연구 간 관계를 표현할 수 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-16의 연구 간 관계를 표현할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-17",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "검색은 구조화 필터를 제공하지만 메커니즘·팩터·상충·비용 기각·재현 실패 질의를 직접 지원하지 않는다.",
+      "required_remediation": "H-17의 지식 검색이 파일명 검색을 넘어서는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-18",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "DataQualityIncident/KnownDataIssue의 impact refs와 사용 binding 역검색 API는 있으나 승인된 연구의 상태 전환 및 외부 catalog UI 통합은 없다.",
+      "required_remediation": "H-18의 특정 데이터 오류의 영향 연구를 역검색할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-19",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "동일 identity 충돌은 차단하지만 제목·메커니즘·데이터·가설 의미를 비교하는 사전 유사도/중복 탐지 workflow는 없다.",
+      "required_remediation": "H-19의 연구 중복 탐지가 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-20",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/knowledge_registry.py",
+          "path_sha256": "86b769fd3bf056be24a203ef99a30adadb8afccbea8e8c1fb8fdae88a0a850d3",
+          "symbol_or_lines": "append-only research relationship and outcome registry",
+          "test": "tests/test_knowledge_registry.py",
+          "test_sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_knowledge_registry.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "후속 연구와 미해결 질문이 지식 시스템에 축적되는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "H-20의 후속 연구와 미해결 질문이 지식 시스템에 축적되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "H-21",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_reporting.py",
+          "path_sha256": "3984a086ee787bec1fbcd956b07a8898053bc101dc253a2f627dc085ad53ef37",
+          "symbol_or_lines": "human-readable Markdown and machine-readable report rendering",
+          "test": "tests/test_research_reporting.py",
+          "test_sha256": "d10bf1c22283c9acc149a621df54e13ea4c98241aff5b7c9d6a25e1e48f31568",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_reporting.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "Markdown/JSON renderer는 있으나 공식 내보내기 명령의 독립 E2E·edge 검증이 불완전하다.",
+      "required_remediation": "H-21의 산출물 내보내기 형식이 기계 판독 가능하고 사람이 읽을 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-01",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/authorization.py",
+          "path_sha256": "9a4e7ee6a82c78720e9237de062900fd6b9d9f015d4709eb52987175072bf967",
+          "symbol_or_lines": "role and exact-resource authorization",
+          "test": "apps/internal_web/tests/test_resource_authorization.py",
+          "test_sha256": "9d251c70bc2f9663b327aa9144b183e400d7ba520dd4022d60f1914cf8509c07",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_resource_authorization.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "역할 기반 접근제어가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "I-01의 역할 기반 접근제어가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-02",
+      "importance": "CRITICAL",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/authorization.py",
+          "path_sha256": "9a4e7ee6a82c78720e9237de062900fd6b9d9f015d4709eb52987175072bf967",
+          "symbol_or_lines": "exact dataset grants across dataset and package list, detail, diff, and lineage views",
+          "test": "apps/internal_web/tests/test_research_explorer.py",
+          "test_sha256": "bc41d1446730f367d18f90876ab334adbdbd7b885b949ffb80b3e17a3ae8260c",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_research_explorer.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent. HTML and JSON package list/detail/diff/lineage paths filter or deny every package whose bound dataset is not granted."
+        }
+      ],
+      "gap": "정확 ID 기반 DATASET grant와 broad-dataset permission이 dataset explorer 및 package HTML/JSON 목록·상세·diff·lineage에서 fail-closed로 적용되지만 job 실행, 일반 연구 검색, 파일 다운로드·반출 등 모든 데이터 소비 경로의 중앙 entitlement로 통합되지는 않았다.",
+      "required_remediation": "동일 exact-dataset entitlement resolver를 job submit/execute, 일반 검색, download/export와 모든 package consumer에 적용하고 grant 누락·부분 lineage 누출 음성 E2E를 유지한다."
+    },
+    {
+      "id": "I-03",
+      "importance": "CRITICAL",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "docs/investment-research-platform.md",
+          "path_sha256": "63968f1a6041ae3e10990d94b176344b2299ad3dd85155297e8aad03b1b8ab2a",
+          "symbol_or_lines": "documented object model without a ResearchProject aggregate",
+          "test": "tests/test_full_scope_research_standard.py",
+          "test_sha256": "ed77ad79444270660ca7c2a3e1dee2c22dffd5477ca8333fc6a0fa110c88aa3f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_research_standard.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "ResearchProject 권위와 프로젝트 단위 권한/격리 경계가 없다.",
+      "required_remediation": "I-03의 프로젝트별 격리 또는 권한 경계가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-04",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/audit.py",
+          "path_sha256": "6c17decba87c0ff7ea60668c634db6e48817fb10fff79da6c91df6b34cb0e673",
+          "symbol_or_lines": "transactional audit intent and protected event projection",
+          "test": "apps/internal_web/tests/test_audit_outbox.py",
+          "test_sha256": "bae8e06438adc7faaf31ba538852146232d3d987506f17ccd2f4c309ec12a270",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_audit_outbox.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "감사 로그가 변경 불가능하거나 충분히 보호되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "I-05",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/security.py",
+          "path_sha256": "b7972b3dc7a92a5cd03bf5d4134d47573ea9e2da7aaa0786db33325d56243518",
+          "symbol_or_lines": "safe path, download, content, and secret controls",
+          "test": "apps/internal_web/tests/test_security_storage.py",
+          "test_sha256": "1ee41ec2010b79fa7c66ba1b6eeb006054ad657967519b8c63adb9bc1ab24fd6",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_security_storage.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "비밀정보 관리가 안전한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "I-06",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/security.py",
+          "path_sha256": "b7972b3dc7a92a5cd03bf5d4134d47573ea9e2da7aaa0786db33325d56243518",
+          "symbol_or_lines": "safe path, download, content, and secret controls",
+          "test": "apps/internal_web/tests/test_security_storage.py",
+          "test_sha256": "1ee41ec2010b79fa7c66ba1b6eeb006054ad657967519b8c63adb9bc1ab24fd6",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_security_storage.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "외부 반출과 다운로드 통제를 지원하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "I-06의 외부 반출과 다운로드 통제를 지원하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-07",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/security.py",
+          "path_sha256": "b7972b3dc7a92a5cd03bf5d4134d47573ea9e2da7aaa0786db33325d56243518",
+          "symbol_or_lines": "secret, path, topology, and audit-detail redaction",
+          "test": "apps/internal_web/tests/test_security_storage.py",
+          "test_sha256": "1ee41ec2010b79fa7c66ba1b6eeb006054ad657967519b8c63adb9bc1ab24fd6",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_security_storage.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "민감 데이터 마스킹이 가능한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "I-08",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_package_registry.py",
+          "path_sha256": "cd9504d53384a9bc4506b3115e48e8e287aa201eb227f22f4c721b4b5527afc8",
+          "symbol_or_lines": "package, code, and artifact hash/tamper protection",
+          "test": "tests/test_research_package_registry.py",
+          "test_sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_package_registry.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "코드 또는 산출물 무결성 검사가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "I-09",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/data_governance.py",
+          "path_sha256": "a5880617f665b8b8d76db06ce2f1b1486636aa6f4590293e7076c962dba3ee02",
+          "symbol_or_lines": "license, suitability, provider, issue, waiver, and exact artifact-use binding authorities",
+          "test": "tests/test_data_governance_authority.py",
+          "test_sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_data_governance_authority.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "데이터 license metadata가 웹 authorization과 download 결정에 연결되지 않는다.",
+      "required_remediation": "I-09의 데이터 라이선스가 접근 제어에 반영되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-10",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/isolated_process.py",
+          "path_sha256": "907b8e83438cdec067742d5d71f6e0ff7198e7b9245f9c568e6dd6e5aa9cf7eb",
+          "symbol_or_lines": "subprocess and external-root execution isolation",
+          "test": "tests/test_strategy_process_isolation.py",
+          "test_sha256": "839421b9add50bc3369d22d016fbdee106132588d2e0653f15e813ca60b4ae6c",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_process_isolation.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "strategy subprocess 격리는 있으나 ResearchProject aggregate가 없어 프로젝트별 컴퓨팅 환경·캐시·credential 격리 경계를 구현하지 못한다.",
+      "required_remediation": "I-10의 연구 컴퓨팅 환경이 프로젝트별로 격리되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-11",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "services/research_operations/src/research_operations/metrics.py",
+          "path_sha256": "8f3ca4149a991522b0800a9c668d455f43b894f946f9ec892ef553dfaffd235b",
+          "symbol_or_lines": "health, readiness, and Prometheus metrics",
+          "test": "services/research_operations/tests/test_operations_surface.py",
+          "test_sha256": "3dd7d89715eedd4d90c967a6230e130221fbbbeb811e5fa3e243f472f23ce2b0",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_operations_surface.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "플랫폼 관측성이 존재하는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "I-11의 플랫폼 관측성이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-12",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/audit_trace_recorder.py",
+          "path_sha256": "4249daeebed5f6edbf2829418ad4a4e7876e51a104d2b9fd50884f4d423b6dae",
+          "symbol_or_lines": "research and experiment correlation in audit evidence",
+          "test": "tests/test_common_engine_audit_e2e.py",
+          "test_sha256": "02dba5e1fc77531aaede3e94be7937c9b9dc5e2b2e1113dd3ef8c4338ff77c2d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_audit_e2e.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "감사 이벤트에는 상관 ID가 있으나 metrics/trace에 연구·실험 상관관계가 완결되지 않았다.",
+      "required_remediation": "I-12의 로그·메트릭·트레이스에 연구 ID와 실험 ID가 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-13",
+      "importance": "SUPPORTING",
+      "maturity": "M2",
+      "status": "UNVERIFIED_EXTERNAL",
+      "evidence": [
+        {
+          "path": "services/research_operations/src/research_operations/alerting.py",
+          "path_sha256": "2deaaeeeb2610b3fe0fe9e8ccd0e681dda1e65f45112f88b93c3b8590e305698",
+          "symbol_or_lines": "durable delivery, acknowledgement, and escalation",
+          "test": "services/research_operations/tests/test_service_alert_unit.py",
+          "test_sha256": "3ad43975806086bc391ecde6a8e6bbd509e2cd81e9229a4ea81853e924465eff",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_service_alert_unit.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "내구성 alert delivery/ack/escalation 구현과 unit loopback은 있으나 실제 PostgreSQL 통합은 외부 테스트 DB 부재로 검증되지 않았다.",
+      "required_remediation": "I-13의 오류 경보가 연구자 또는 플랫폼 관리자에게 전달되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "I-14",
+      "importance": "SUPPORTING",
+      "maturity": "M1",
+      "status": "DOCUMENTATION_ONLY",
+      "evidence": [
+        {
+          "path": "docs/storage-layout.md",
+          "path_sha256": "c444238cfd37e69ab4a63afd2cc31ed671d43eec6afe73ae522b52c4e7d11085",
+          "symbol_or_lines": "artifact and runtime retention constraints",
+          "test": "tests/test_common_engine_retention.py",
+          "test_sha256": "eb896276775db6295b9b454d7ebedc2e44c458524766bdc75f7b8bbedf98489d",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_retention.py",
+          "result": "DOCUMENTATION/PLACEHOLDER evidence only; executable criterion-level support is not claimed."
+        }
+      ],
+      "gap": "공식·기각·실패 연구별 보존/법적 보류 정책의 실행 계약이 없다.",
+      "required_remediation": "I-14의 보존 기간과 삭제 정책이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-01",
+      "importance": "CRITICAL",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/architecture-boundaries.json",
+          "path_sha256": "7fae65f8e2b4dd36de54ee2d497e7ccb083677aab28b2f68be0ccdc478b324e6",
+          "symbol_or_lines": "distribution responsibilities and forbidden dependency edges",
+          "test": "tests/test_monorepo_architecture.py",
+          "test_sha256": "9efc4e1573f00692c691060117b6043eb5e58c31f6b3bde3b622cb47a884b119",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_monorepo_architecture.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "플랫폼 구성요소의 책임과 경계가 명확한가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "J-02",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/views.py",
+          "path_sha256": "7c0dddeb64c04597ef27953f04fcbd0fac25561c7755c813131818aa7cca2f5a",
+          "symbol_or_lines": "authenticated research portal and workflow views",
+          "test": "apps/internal_web/tests/test_browser_e2e.py",
+          "test_sha256": "dcee1592d0c61c6f058530a0fe259ad2960757a47477738ae5049a4ca39a1263",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_browser_e2e.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "연구 포털 또는 통합 제어 인터페이스가 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "J-02의 연구 포털 또는 통합 제어 인터페이스가 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-03",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "docs/investment-research-platform.md",
+          "path_sha256": "63968f1a6041ae3e10990d94b176344b2299ad3dd85155297e8aad03b1b8ab2a",
+          "symbol_or_lines": "documented object model without a ResearchProject aggregate",
+          "test": "tests/test_full_scope_research_standard.py",
+          "test_sha256": "ed77ad79444270660ca7c2a3e1dee2c22dffd5477ca8333fc6a0fa110c88aa3f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_full_scope_research_standard.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "가설·데이터·코드·실험·결과·검증·리뷰·산출물을 소유하는 프로젝트 workspace aggregate가 없다.",
+      "required_remediation": "J-03의 프로젝트 작업 공간에서 핵심 객체가 연결되는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-04",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/research/research_reporting.py",
+          "path_sha256": "3984a086ee787bec1fbcd956b07a8898053bc101dc253a2f627dc085ad53ef37",
+          "symbol_or_lines": "selected-candidate report comparison",
+          "test": "tests/test_application_report_comparison.py",
+          "test_sha256": "ee279a63dfc9897fa5b84fb73173c375cea6db9ca9e5cb2ad71a6791d9492e3a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_application_report_comparison.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "선택 후보 간 보고서 비교는 제공하지만 전체 실험 분포와 실패 결과를 함께 비교하는 화면/API가 없다.",
+      "required_remediation": "J-04의 실험 비교 화면 또는 동등한 비교 기능이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-05",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/api_views.py",
+          "path_sha256": "eb50730984da53a6fb97f60326545f8f85551483e5eb6ba9e9cf687455823489",
+          "symbol_or_lines": "dataset catalog, profile, and bounded exploration API",
+          "test": "apps/internal_web/tests/test_data_explorer.py",
+          "test_sha256": "e845539cfbaa12912d224563b47c55a871912700889836e28ec918bbada7fe95",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_data_explorer.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "데이터 탐색 인터페이스가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "J-05의 데이터 탐색 인터페이스가 충분한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-06",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "apps/internal_web/src/portal/views.py",
+          "path_sha256": "7c0dddeb64c04597ef27953f04fcbd0fac25561c7755c813131818aa7cca2f5a",
+          "symbol_or_lines": "review queue, detail, decision, and progress views",
+          "test": "apps/internal_web/tests/test_review_workflow.py",
+          "test_sha256": "e07238584cd77f9a12db2119267b10c0aea5b31a22020aac54e7bb7bee9de51e",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q apps/internal_web/tests/test_review_workflow.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "리뷰 인터페이스가 충분한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "J-06의 리뷰 인터페이스가 충분한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-07",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/architecture-boundaries.json",
+          "path_sha256": "7fae65f8e2b4dd36de54ee2d497e7ccb083677aab28b2f68be0ccdc478b324e6",
+          "symbol_or_lines": "distribution responsibilities and forbidden dependency edges",
+          "test": "tests/test_monorepo_architecture.py",
+          "test_sha256": "9efc4e1573f00692c691060117b6043eb5e58c31f6b3bde3b622cb47a884b119",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_monorepo_architecture.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "공통 라이브러리와 연구별 코드가 구분되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "J-08",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/strategy_sdk/runtime.py",
+          "path_sha256": "f831449d4650e67263925f59867da1a650a29176867222d8d625956b7c651592",
+          "symbol_or_lines": "bounded research strategy extension contract",
+          "test": "tests/test_strategy_extensibility_contract.py",
+          "test_sha256": "aeb7e9ab96b686e0a56a2d4c9729635c1d399ad0a6fe6251530d7b11162f382f",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_strategy_extensibility_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "플러그인 또는 확장 계약이 명확한가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "J-08의 플러그인 또는 확장 계약이 명확한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-09",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "services/research_operations/src/research_operations/research_job_worker.py",
+          "path_sha256": "db0b96f919e54f02b27e258ace7c3b486bd403603eaf1a189be8ddcaee28f04c",
+          "symbol_or_lines": "durable leased and supervised offline research job dispatch",
+          "test": "services/research_operations/tests/test_core_unit.py",
+          "test_sha256": "8f2c72d76e35fe12fe477ed59e73ecb719f57f7f78393f75dba550ed902397de",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_core_unit.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "offline validation dispatch와 PostgreSQL lease/fencing 구현은 있으나 실제 PostgreSQL DSN 통합이 이번 로컬 감사에서 실행되지 않아 내구성 복구를 검증하지 못했다.",
+      "required_remediation": "J-09의 워크플로 오케스트레이션이 존재하는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-10",
+      "importance": "MAJOR",
+      "maturity": "M2",
+      "status": "PARTIAL",
+      "evidence": [
+        {
+          "path": "src/market_research/research/resource_planner.py",
+          "path_sha256": "3f79561d38ebfebb3628c6490715588c84c25b7c36e4ac5d418a164351aa0b24",
+          "symbol_or_lines": "bounded worker, memory, row, and runtime planning",
+          "test": "tests/test_common_engine_resource_guards.py",
+          "test_sha256": "d754968432941eceef8cef6c371584329c4d7d6f2a1e15703d60ce8757927756",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_common_engine_resource_guards.py",
+          "result": "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
+        }
+      ],
+      "gap": "작업자·메모리·시간 제한은 있으나 CPU quota/core와 GPU request 계약이 없다.",
+      "required_remediation": "J-10의 CPU·메모리·GPU 등 계산 자원을 지정할 수 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-11",
+      "importance": "MAJOR",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "src/market_research/application/contracts.py",
+          "path_sha256": "4a87f1433c20d27dc025373e0c96b6bc87343f4f9e4ac7b4a3a6383df400db9a",
+          "symbol_or_lines": "published Core application adapter contracts",
+          "test": "tests/test_application_contracts_and_capabilities.py",
+          "test_sha256": "e8f55ba9894dcf7f7d9c80ef1520be507e00b34a753eb0496b4aefb8cab34e90",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_application_contracts_and_capabilities.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "패키지와 서비스 간 계약이 명시적이고 테스트되는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    },
+    {
+      "id": "J-12",
+      "importance": "MAJOR",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "README.md",
+          "path_sha256": "ca8c2aeeeff8886bae0f1f7c6c3e457a9eeca3b6b79e9dbdb578afd19dcbc60b",
+          "symbol_or_lines": "locked setup, commands, external-root, and validation guide",
+          "test": "tests/test_distribution_metadata.py",
+          "test_sha256": "df094fe887e47e6abf2ed4128aa54a42ae36eda29aca8a73b7b895b34ed6af8a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_distribution_metadata.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "locked setup과 명령은 문서화됐지만 빈 환경 설치→sample data 준비→sample 실행→결과 확인을 자동화한 cold onboarding 테스트가 없고 FG-06도 남아 있다.",
+      "required_remediation": "J-12의 개발자 온보딩이 재현 가능한가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-13",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/monorepo-iterations.md",
+          "path_sha256": "030d630dcf30db708f5a1b8d34457309579e6c8d48448aca761f8786064526f8",
+          "symbol_or_lines": "architecture iteration and boundary decision history",
+          "test": "tests/test_documentation_contract.py",
+          "test_sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "아키텍처 결정 기록이 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "J-13의 아키텍처 결정 기록이 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-14",
+      "importance": "SUPPORTING",
+      "maturity": "M3",
+      "status": "IMPLEMENTED_NOT_VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/internal-web-architecture.md",
+          "path_sha256": "eebc6c6f0c9a741bdf2767cf3be470dc13eefd56c8e1d6b909301416619d4641",
+          "symbol_or_lines": "researcher, reviewer, approver, and operator workflow",
+          "test": "tests/test_documentation_contract.py",
+          "test_sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_documentation_contract.py",
+          "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        }
+      ],
+      "gap": "연구자·엔지니어·검증자 협업 흐름이 문서화되어 있는가: 실제 호출 경로와 기본 테스트는 있으나 일반화된 실패 조건 또는 종단 간 증거가 불완전하다.",
+      "required_remediation": "J-14의 연구자·엔지니어·검증자 협업 흐름이 문서화되어 있는가 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
+    },
+    {
+      "id": "J-15",
+      "importance": "SUPPORTING",
+      "maturity": "M4",
+      "status": "VERIFIED",
+      "evidence": [
+        {
+          "path": "docs/internal-web-operations-handoff.md",
+          "path_sha256": "1b482a8dbe3fec21532784ffe0c997554b69d045b8c3bb2a0b45b0b3231f155b",
+          "symbol_or_lines": "phased migration, deployment, backup, and operations handoff",
+          "test": "services/research_operations/tests/test_prior_release_upgrade.py",
+          "test_sha256": "f8b3cd77f53a09aa4c4a1d3cf7af7cd4f8fde7ed5ce979fc2556b30be1c2ad4a",
+          "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q services/research_operations/tests/test_prior_release_upgrade.py",
+          "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        }
+      ],
+      "gap": "단계별 구축·마이그레이션·운영 문서가 있는가: 로컬 종단 간/경계 검증은 있으나 독립 외부 환경의 E5 실행 증거는 이번 감사에서 확인되지 않았다.",
+      "required_remediation": "독립 환경에서 동일 입력을 복원·실행한 hash-bound receipt를 추가하고 CI/현장 증거를 결속한다."
+    }
+  ],
+  "final_questions": [
+    {
+      "number": 1,
+      "answer": "YES",
+      "evidence": [
+        "point-in-time authority",
+        "dataset source provenance"
+      ],
+      "explanation": "지원 데이터의 event/effective와 known/available 시각을 구분한다."
+    },
+    {
+      "number": 2,
+      "answer": "PARTIAL",
+      "evidence": [
+        "PIT universe",
+        "revision registry"
+      ],
+      "explanation": "상장폐지/수정 이력은 보존하지만 terminal delisting return의 일반 실행 처리는 불완전하다."
+    },
+    {
+      "number": 3,
+      "answer": "YES",
+      "evidence": [
+        "production-e2e-retained-evidence.json",
+        "validation/package/dataset hash bindings"
+      ],
+      "explanation": "보존한 production E2E의 validation content hash, package hash, manifest hash와 frozen dataset manifest hash를 한 인덱스에서 역추적할 수 있다."
+    },
+    {
+      "number": 4,
+      "answer": "NO",
+      "evidence": [
+        "C-06",
+        "research-reproduce-run"
+      ],
+      "explanation": "same-state PASS artifact는 보존했지만 별도 cold host·빈 cache에서 입력 bytes와 환경까지 복원한 증거는 없다."
+    },
+    {
+      "number": 5,
+      "answer": "YES",
+      "evidence": [
+        "experiment registry",
+        "failed lifecycle tests"
+      ],
+      "explanation": "후보 조합과 실패 상태를 append-only로 보존한다."
+    },
+    {
+      "number": 6,
+      "answer": "YES",
+      "evidence": [
+        "train/validation/final_holdout contracts"
+      ],
+      "explanation": "탐색·검증·최종 holdout의 사용 상태를 분리한다."
+    },
+    {
+      "number": 7,
+      "answer": "YES",
+      "evidence": [
+        "future suffix invariance",
+        "PIT universe tests"
+      ],
+      "explanation": "미래정보와 생존편향 적대 테스트가 자동화되어 있다."
+    },
+    {
+      "number": 8,
+      "answer": "PARTIAL",
+      "evidence": [
+        "fee/slippage/latency stress",
+        "E-15~E-17"
+      ],
+      "explanation": "비용과 지연은 평가하지만 impact/ADV/capacity가 없다."
+    },
+    {
+      "number": 9,
+      "answer": "YES",
+      "evidence": [
+        "stress_suite.py",
+        "concentration metrics"
+      ],
+      "explanation": "기간·거래·시장 regime 집중도를 기록한다."
+    },
+    {
+      "number": 10,
+      "answer": "YES",
+      "evidence": [
+        "statistical_selection.py",
+        "research standard"
+      ],
+      "explanation": "통계 gate와 경제 메커니즘/비용 후 의미를 분리한다."
+    },
+    {
+      "number": 11,
+      "answer": "PARTIAL",
+      "evidence": [
+        "IndependentVerificationResult",
+        "FG-06"
+      ],
+      "explanation": "별도 검증 결과와 승인 gate는 있으나 originator/verifier가 인증 principal이 아니고 terminal schema-3 source 자체의 독립 full-contract 검증도 얕다."
+    },
+    {
+      "number": 12,
+      "answer": "PARTIAL",
+      "evidence": [
+        "strategy package limitations",
+        "failure conditions"
+      ],
+      "explanation": "제한·실패 container는 있지만 표본·비용·시장구조·적용 불가·미확인 위험의 비공백 작성을 강제하지 않는다."
+    },
+    {
+      "number": 13,
+      "answer": "YES",
+      "evidence": [
+        "knowledge registry negative queries"
+      ],
+      "explanation": "기각·실패·inconclusive 연구를 보존하고 조회한다."
+    },
+    {
+      "number": 14,
+      "answer": "YES",
+      "evidence": [
+        "release registry",
+        "exact package usage commit tests"
+      ],
+      "explanation": "공식 릴리스는 새 version/content hash로만 출판되며 governed package의 missing/wrong/extra usage binding을 거부한다."
+    },
+    {
+      "number": 15,
+      "answer": "YES",
+      "evidence": [
+        "repository research-only boundary"
+      ],
+      "explanation": "주문·계좌·실시간 position/PnL/risk를 구조적으로 금지한다."
+    }
+  ],
+  "top_gaps": [
+    {
+      "priority": "P0",
+      "criterion_ids": [
+        "FG-06",
+        "G-01",
+        "G-03",
+        "I-01"
+      ],
+      "title": "Authenticated independent-verification principals",
+      "why_it_matters": "현재 originator_id와 verifier_id는 호출자가 제공하는 문자열이라 별칭 위조만으로 역할 분리를 가장할 수 있다.",
+      "required_implementation": [
+        "authenticated principal assertion",
+        "role membership and session binding",
+        "non-forgeable actor provenance in receipts"
+      ],
+      "required_tests": [
+        "forged alias denial",
+        "expired/revoked principal",
+        "same-principal cross-role denial"
+      ],
+      "definition_of_done": [
+        "originator/verifier/approver가 인증된 서로 다른 principal로 결속"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "E-15",
+        "E-16",
+        "E-17"
+      ],
+      "title": "Liquidity, impact and capacity authority",
+      "why_it_matters": "비용 후 성과가 자본 규모에 대해 비현실적일 수 있다.",
+      "required_implementation": [
+        "ADV/depth participation",
+        "calibrated impact scenarios",
+        "capital/capacity curve"
+      ],
+      "required_tests": [
+        "capacity monotonicity",
+        "thin-liquidity stress"
+      ],
+      "definition_of_done": [
+        "주문 크기 증가 시 impact/미체결 비감소",
+        "package evidence binding"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "D-01",
+        "I-03",
+        "J-03"
+      ],
+      "title": "ResearchProject/workspace aggregate",
+      "why_it_matters": "연구·데이터·실험·리뷰의 소유/격리 단위가 없다.",
+      "required_implementation": [
+        "immutable project identity/version",
+        "project-scoped grants and lineage"
+      ],
+      "required_tests": [
+        "cross-project denial",
+        "project archive/reopen"
+      ],
+      "definition_of_done": [
+        "모든 lifecycle 객체가 project ref 보유"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "C-06",
+        "C-16",
+        "G-02"
+      ],
+      "title": "Cold independent reproduction capsule",
+      "why_it_matters": "same-state production E2E는 두 번 통과하고 한 세트를 보존했지만 원본 host/root/cache 없이 복원한 증거는 없다.",
+      "required_implementation": [
+        "content-addressed data/source/runtime capsule",
+        "relocation-safe resolver",
+        "single package replay command"
+      ],
+      "required_tests": [
+        "old root unavailable subprocess",
+        "fresh locked runtime",
+        "empty cache"
+      ],
+      "definition_of_done": [
+        "빈 외부 root에서 동일 hash 결과",
+        "별도 host verification PASS"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "G-03",
+        "G-04"
+      ],
+      "title": "Full terminal source-report validation inside independent verification",
+      "why_it_matters": "terminal schema-3 원천 보고서는 독립 검증기 내부에서 type/schema/hash와 주변 selection·confirmation·registry 결속만 검사되고 전체 terminal 계약 검증은 뒤의 governance validator에 의존한다.",
+      "required_implementation": [
+        "independent verifier invokes the full terminal report validator",
+        "preserve selection/confirmation/registry cross-bindings"
+      ],
+      "required_tests": [
+        "rehashed malformed schema-3 source denial",
+        "missing and contradictory terminal fields",
+        "verification PASS cannot precede full source validation"
+      ],
+      "definition_of_done": [
+        "독립 검증 결과 자체만으로 original/reproduced terminal reports 모두 full-contract PASS"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "B-14",
+        "B-22"
+      ],
+      "title": "Atomic governed artifact and usage publication",
+      "why_it_matters": "읽기 경로는 terminal/package의 exact authority·subject·version·hash set을 검사해 missing/wrong/extra commit을 거부하지만 파일 쓰기와 append가 하나의 트랜잭션은 아니다.",
+      "required_implementation": [
+        "staged artifact publication transaction",
+        "usage binding precommit or recoverable journal",
+        "read-side completeness gate"
+      ],
+      "required_tests": [
+        "fault after each staged write",
+        "uncertain commit retry",
+        "orphan denial"
+      ],
+      "definition_of_done": [
+        "artifact와 usage edge가 함께 보이거나 모두 보이지 않음"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "F-05"
+      ],
+      "title": "Execute fully nested temporal selection",
+      "why_it_matters": "내부 fold가 계획만 되고 후보 선택에 사용되지 않는다.",
+      "required_implementation": [
+        "inner-fold selection executor",
+        "outer-only unbiased evaluation"
+      ],
+      "required_tests": [
+        "selection leakage negative test",
+        "nested replay"
+      ],
+      "definition_of_done": [
+        "selection_is_fully_nested=true"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "E-05",
+        "E-06"
+      ],
+      "title": "Terminal delisting and corporate-action integration",
+      "why_it_matters": "PIT 데이터가 있어도 실제 수익/수량 계산이 누락될 수 있다.",
+      "required_implementation": [
+        "dataset materialization transformer",
+        "terminal return policy"
+      ],
+      "required_tests": [
+        "split/dividend/rights/merger/delisting E2E"
+      ],
+      "definition_of_done": [
+        "ledger와 package에 정책 hash 결속"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "F-12",
+        "F-16",
+        "F-21"
+      ],
+      "title": "Falsification, factor and provider sensitivity",
+      "why_it_matters": "대체 설명과 공급자 의존성을 충분히 제거하지 못한다.",
+      "required_implementation": [
+        "placebo/shuffle executor",
+        "factor exposure regression",
+        "provider result comparison gate"
+      ],
+      "required_tests": [
+        "known-null fixtures",
+        "provider divergence rejection"
+      ],
+      "definition_of_done": [
+        "validation package에 결과/한계 포함"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "H-01",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-07",
+        "H-08",
+        "H-09",
+        "H-10"
+      ],
+      "title": "Complete immutable research package manifests",
+      "why_it_matters": "현재 package는 참조와 일부 요약을 보존하지만 data/code/experiment/result/verification/limitation 문서의 필수 항목을 자체 완결적으로 강제하지 않는다.",
+      "required_implementation": [
+        "typed data, code, and experiment manifests",
+        "complete result and verification report",
+        "non-empty categorized limitation authority",
+        "artifact-wide ID/version contract"
+      ],
+      "required_tests": [
+        "missing field and empty-category denial",
+        "cross-manifest substitution/tamper",
+        "human/machine export E2E"
+      ],
+      "definition_of_done": [
+        "H-01의 9개 필수 구성이 모두 package에 자체 포함",
+        "모든 참조·ID·version·hash 재검증 PASS"
+      ]
+    },
+    {
+      "priority": "P1",
+      "criterion_ids": [
+        "I-02"
+      ],
+      "title": "Dataset authorization across every consumption path",
+      "why_it_matters": "exact-ID grant는 dataset explorer와 package HTML/JSON list/detail/diff/lineage에서 적용되지만 job 실행, 일반 검색과 download에서 동일 entitlement를 공통으로 강제하지 않는다.",
+      "required_implementation": [
+        "one dataset authorization application contract",
+        "all consumer adapters call the same decision",
+        "license-aware export decision binding"
+      ],
+      "required_tests": [
+        "unauthorized job/search/download denial",
+        "list/detail existence-hiding",
+        "grant revoke and stale-session denial"
+      ],
+      "definition_of_done": [
+        "dataset bytes·metadata·derived artifact의 모든 소비 경로가 동일 권한 receipt를 검증"
+      ]
+    },
+    {
+      "priority": "P2",
+      "criterion_ids": [
+        "G-12"
+      ],
+      "title": "Expiring policy exception authority",
+      "why_it_matters": "데이터 거버넌스 waiver는 만료를 검사하지만 범용 정책 예외와 직접 만료 음성 증거는 불완전하다.",
+      "required_implementation": [
+        "general policy exception authority",
+        "automatic expiry denial"
+      ],
+      "required_tests": [
+        "expired/future/wrong-scope tests"
+      ],
+      "definition_of_done": [
+        "승격 시 current exception 재검증"
+      ]
+    },
+    {
+      "priority": "P2",
+      "criterion_ids": [
+        "I-09",
+        "I-14"
+      ],
+      "title": "License-aware export and executable retention",
+      "why_it_matters": "데이터 권리와 법적 보존 의무를 플랫폼 경로가 완전히 집행하지 않는다.",
+      "required_implementation": [
+        "download/export license decision",
+        "retention/legal-hold job"
+      ],
+      "required_tests": [
+        "forbidden export",
+        "hold prevents deletion"
+      ],
+      "definition_of_done": [
+        "audit receipt와 readiness 연결"
+      ]
+    },
+    {
+      "priority": "P2",
+      "criterion_ids": [
+        "H-17",
+        "H-19",
+        "H-20"
+      ],
+      "title": "Semantic knowledge and duplicate research workflows",
+      "why_it_matters": "조직적 재사용과 중복 방지가 제한된다.",
+      "required_implementation": [
+        "mechanism/factor/conflict indexing",
+        "duplicate similarity decision"
+      ],
+      "required_tests": [
+        "negative/contradictory query fixtures"
+      ],
+      "definition_of_done": [
+        "UI/API에서 근거와 함께 검색"
+      ]
+    },
+    {
+      "priority": "P3",
+      "criterion_ids": [
+        "J-10"
+      ],
+      "title": "Explicit CPU/GPU resource contract",
+      "why_it_matters": "worker 수·메모리 외 계산 자원 요청/격리가 불완전하다.",
+      "required_implementation": [
+        "CPU core/quota and optional GPU request",
+        "scheduler admission"
+      ],
+      "required_tests": [
+        "quota exhaustion",
+        "unsupported GPU denial"
+      ],
+      "definition_of_done": [
+        "receipt/metrics에 실제 사용 기록"
+      ]
+    }
+  ],
+  "unverified_external_dependencies": [
+    "별도 호스트/새 가상환경/빈 캐시에서의 독립 cold reproduction",
+    "caller-supplied originator/verifier 문자열이 실제 인증 principal과 일치한다는 보장 및 조직의 역할 분리(FG-06)",
+    "terminal schema-3 원천 보고서가 독립 검증기 내부에서 전체 terminal 계약으로 검증된다는 보장(후속 governance 검증과 별개)",
+    "실제 복수 데이터 공급자·license steward·incident 조직의 승인/대응",
+    "운영 PostgreSQL, TLS/PKI, backup destination, alert delivery의 현장 검수",
+    "실시장 데이터로 보정된 market-impact/capacity 모형",
+    "조직의 retention/legal-hold 집행과 계정 lifecycle 외부 승인",
+    "exact terminal/package DataUsageBinding은 read-side에서 강제되지만 artifact 쓰기와 append가 하나의 원자적 출판으로 보인다는 보장",
+    "data/code/experiment/result/verification/limitation manifest의 완전성",
+    "dataset entitlement가 explorer/package 외 job·일반 검색·download 소비 경로에서도 적용된다는 보장"
+  ],
+  "retained_evidence": {
+    "index": {
+      "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-evidence.json",
+      "byte_sha256": "sha256:e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645",
+      "run_root": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0",
+      "test_status": "PASS"
+    },
+    "artifacts": [
+      {
+        "label": "실행 로그",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained.log",
+        "byte_sha256": "sha256:9d3b94d8e432e1a49bd5af15d0c88a0c634eee146883473cbfc142748921e4da",
+        "binding": "1 passed in 383.12s"
+      },
+      {
+        "label": "연구 manifest",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-study/manifest.json",
+        "byte_sha256": "sha256:3118d6b6cce8fd5b2634f1fe65872b34f492fedcb2ccdfcd90723838b1366f75",
+        "binding": "manifest_hash=sha256:6657a93b3caa82c892ae4ce4a521b52452c25377727e38330cd93e66a3be38c8"
+      },
+      {
+        "label": "frozen dataset manifest",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-study/frozen/candles/KRW-BTC/240m/10886f9f67e7163e424db8ad9fec1af590e4f73210939efe0f2da33d87c97f2d/artifact.manifest.json",
+        "byte_sha256": "sha256:ba97ae8e6b63472ab5c1dcc02aa244351d9c5d44c75d01c99add67f4a6c6e894",
+        "binding": "artifact_manifest_hash=sha256:675529d58bb77f2910317ebb82522a0fad7c8f2ea95e643da6d8390da0ca6e39"
+      },
+      {
+        "label": "terminal validation report",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-summary.json",
+        "byte_sha256": "sha256:a0ff274d32a2342090f8ee1db893246b45191fc8d9a59c411a7fa27df92c62ec",
+        "binding": "content_hash=sha256:64ed741f236dfb36f8d36d38a3ab1a665d3119e0d188a0666eaabea9a7c6ae65"
+      },
+      {
+        "label": "authoritative reproduction receipt",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/runtime/reports/research/validated_strategy_extension_production_acceptance/validated_research_reproduction_receipt.json",
+        "byte_sha256": "sha256:fd7c1d66230e9afcac5c9a9037abcd4b3aef46422c2eccbc1ffdf9937e178b7c",
+        "binding": "receipt_hash=sha256:cccbdc0578331ae502f3dfa3909b91988d3f5d8eddbdf82f87cfbd92a94bc889"
+      },
+      {
+        "label": "reproduction outcome",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-reproduction.json",
+        "byte_sha256": "sha256:ef02206031889e7cdc9a868f1767dff993b3e945b382b71c166379ec24efb317",
+        "binding": "status=PASS; reproduced_final_holdout_result_hash=sha256:9c5cef47703f7196c580b302cc7d39f118ae9aa532f7ebb50564c88646354359"
+      },
+      {
+        "label": "independent verification",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/runtime/artifacts/reports/research/_registry/independent_verifications/validated-extension-verification/1.json",
+        "byte_sha256": "sha256:12ab279c31062b850875979fbcbcbbb2e53fa2441e24a586551367a5fcbbbc2c",
+        "binding": "content_hash=sha256:96e67afec183e56e350df926a5612e581d7e7083ef868e92c966dc9688d1e65d; registry_row_hash=sha256:cc984a779ee10bae8fde3ae47353363fc91e60b7df01c41e278ebbba11769f41"
+      },
+      {
+        "label": "approval",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-approval.json",
+        "byte_sha256": "sha256:66d39b38ce4b7694cd2c8ef75b9362a25fe93db0e19f5b92b183a83a4cad0407",
+        "binding": "content_hash=sha256:df13d310d6e80c90bb95a704f5a5bf14e936f7d54ff3c651aeeef25064c796ac"
+      },
+      {
+        "label": "strategy package",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/validated-strategy-package.json",
+        "byte_sha256": "sha256:562c9aa14cb508087d8935438bf87d6c75610601dbeee3ebd5143bb65784786f",
+        "binding": "content_hash=sha256:db3b6863a9eac10f2a2f714e9b05a8f60c8043314f0c7d18b1bc6e8be41e790b; package_authority_result=PASS"
+      },
+      {
+        "label": "final research package registry",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/production-e2e-retained-pytest/test_validated_new_strategy_re0/runtime/artifacts/reports/research/_registry/research_packages.jsonl",
+        "byte_sha256": "sha256:2be1f4d249c479e52079afc5ea5a8095b6fef255df8a9c63354c2d94e5bccff4",
+        "binding": "package_id=validated-extension-final-research-package; version=1; content_hash=sha256:81478106033519e28fb12161ff173838b65c872d32b9a2c46eb90b27ebe5b4b1"
+      },
+      {
+        "label": "pytest collection log",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/pytest-collection.log",
+        "byte_sha256": "sha256:cd9ae763e5b956688934079b5a0cdba3d093171f68c097daa94bb9b479affecd",
+        "binding": "1705 tests collected in 1.33s; exit=0"
+      },
+      {
+        "label": "single full pytest log",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/pytest-full.log",
+        "byte_sha256": "sha256:d511ee9e29ccf8787737b04d2f1e52ca2d515fe415af5be7eb4794ebf661e954",
+        "binding": "1660 passed, 38 skipped, 7 failed, 4 warnings in 2073.04s; all seven failures were subsequently rerun"
+      },
+      {
+        "label": "full-suite failure rerun log",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/pytest-full-failures-rerun.log",
+        "byte_sha256": "sha256:4a10c1572838282d34f1aecaeab79c260fb7c57c0dc0e193d6d10b0583dfa468",
+        "binding": "exact seven reported selectors: 7 passed in 0.80s; exit=0"
+      },
+      {
+        "label": "dirty-tree release build refusal log",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/platform-build.log",
+        "byte_sha256": "sha256:85c2cbeb1272ccd08883bfc8c40a6b6b9ff580a91dc68a186a4a40dad0cd1ad6",
+        "binding": "release_checkout_not_clean; expected fail-closed guard"
+      },
+      {
+        "label": "repository-external uv build log",
+        "path": "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/uv-build.log",
+        "byte_sha256": "sha256:60dabf09f25d8d22b559f4bc27389264725db5fc074c37e4b9f63c493eb39b6b",
+        "binding": "three wheels and three source distributions built; exit=0"
+      }
+    ]
+  },
+  "commands_executed": [
+    "receipt/report content-hash adversarial focused group — 5 passed",
+    "tests/test_research_reproduction_cli.py — 5 passed",
+    "governance/application focused group — 51 passed",
+    "tests/test_strategy_research_package.py — 21 passed",
+    "independent verification/reproduction focused group — 59 passed",
+    "architecture boundary + web package authorization focused group — 23 passed",
+    "research package registry/artifact governance focused group — 24 passed",
+    "production E2E retry — 1 passed in 441.41s",
+    "production E2E retained rerun — 1 passed in 383.12s; external evidence index and artifact hashes retained",
+    "canonical audit/report focused group — 32 passed, 1 schema-contract failure; exact selector rerun passed after schema update",
+    "pytest --collect-only on tests + web + operations — 1705 tests collected in 1.33s",
+    "single full pytest invocation — 1660 passed, 38 skipped, 7 failed, 4 warnings in 2073.04s",
+    "exact seven full-suite failure selectors — 7 passed in 0.80s; post-format affected selector — 1 passed in 0.18s",
+    "uv lock --check; scripts/platform lint; ruff format --check — PASS across 534 Python files",
+    "scripts/platform typecheck — PASS: Core 225, Web 51, Operations 20, audit tools 4 source files",
+    "scripts/platform compile; scripts/platform docs-check — PASS",
+    "scripts/platform audit — PASS: no known locked runtime dependency vulnerabilities",
+    "scripts/platform build — expected fail-closed on dirty audit worktree; uv build --all-packages to external output — 3 wheels and 3 sdists PASS",
+    "runtime package-content inspection — PASS: distribution boundaries, migration/SQL assets, and secret/runtime-artifact exclusions"
+  ],
+  "tests_failed": [
+    {
+      "command": "initial validated strategy production E2E",
+      "failure": "ResearchPackageRegistryError: research_package_operational_value_forbidden:$.independent_verification_registry_path",
+      "resolution": "operational path was excluded from the immutable package payload; the selector then passed in 441.41s and a clean retained rerun passed in 383.12s"
+    },
+    {
+      "command": "initial canonical audit focused pytest",
+      "failure": "pytest capture temporary file disappeared before collection (FileNotFoundError; zero tests ran)",
+      "resolution": "TMPDIR/TMP/TEMP and --basetemp were pinned to the external audit root and capture was disabled with -s"
+    },
+    {
+      "command": "canonical audit/report focused pytest after external basetemp",
+      "failure": "32 passed and one report-schema assertion failed because the new retained_evidence field was not yet admitted by the test schema",
+      "resolution": "the machine-result contract now validates the retained evidence index and artifact records; the exact selector passed"
+    },
+    {
+      "command": "single full pytest invocation",
+      "failure": "7 failed: one concurrent fixture publication conflict, four stale _manifest_stub calls, one stale full-scope evidence hash check, and one stale mypy invocation-count contract",
+      "resolution": "serialized only the test-fixture confirmation publisher, supplied tmp_path at all four calls, refreshed two bound evidence hashes, and asserted all four typecheck invocations; the exact seven selectors passed in 0.80s"
+    },
+    {
+      "command": "ruff format --check",
+      "failure": "one legacy completeness-gate test required formatting",
+      "resolution": "formatted that file, rechecked all 534 Python files, and reran its reported full-suite selector successfully"
+    },
+    {
+      "command": "scripts/platform typecheck",
+      "failure": "Core mypy rejected a duplicate local variable annotation in reproduction.py",
+      "resolution": "removed only the duplicate annotation; Core, Web, Operations, and the four audit tools then passed strict mypy"
+    },
+    {
+      "command": "scripts/platform build",
+      "failure": "release_checkout_not_clean",
+      "resolution": "kept the clean-checkout release guard intact and built all three packages to a repository-external directory with uv; package-content inspection passed"
+    }
+  ],
+  "final_reasoning": "통합 연구 workflow와 강한 PIT/holdout/immutability 경계는 존재하지만 FG-06의 비인증 caller identity, terminal source 독립 검증 깊이, cold-host proof, execution capacity reality, project aggregate와 fully nested selection이 남아 완전 판정할 수 없다."
+}
+```

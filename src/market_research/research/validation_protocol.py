@@ -164,6 +164,11 @@ from .stress_suite import (
     analyze_stress_suite,
     stress_suite_required,
 )
+from .temporal_validation import (
+    NestedTemporalValidationPlan,
+    TemporalValidationError,
+    build_manifest_nested_temporal_validation_plan,
+)
 from .strategy_compiler import StrategyCompiler, validate_compiled_strategy_contract
 from .strategy_registry import StrategyRegistry, reconstruct_strategy_registry
 from .strategy_spec import exit_policy_hash
@@ -666,10 +671,11 @@ def _load_worker_task_snapshots_from_db(
             raise ResearchValidationError(
                 "parallel_worker_walk_forward_manifest_missing"
             )
+        windows, _ = _admitted_walk_forward_windows(manifest)
         return _load_walk_forward_snapshots(
             db_path=db_path,
             manifest=manifest,
-            windows=rolling_walk_forward_windows(manifest),
+            windows=windows,
             run_context=run_context,
         )
     return {
@@ -2497,6 +2503,10 @@ def run_research_backtest(
         artifact_context=artifact_context,
         governance_authority_manager=governance_authority_manager,
     )
+    _annotate_authoritative_reproduction_receipt_eligibility(
+        report=report_payload,
+        manifest=manifest,
+    )
     candidate_artifact_observability = _publish_candidate_result_artifacts(
         report=report_payload,
         manifest=manifest,
@@ -2543,7 +2553,7 @@ def run_research_backtest(
             report_bytes=write_result.artifact_write_summary["report_bytes"],
         )
     )
-    full_candidates = _install_published_report_payload(
+    _install_published_report_payload(
         in_memory_report=report_payload,
         published_report=write_result.report_payload or {},
         report_detail=manifest.research_run.report_detail,
@@ -2551,7 +2561,6 @@ def run_research_backtest(
     )
     _attach_authoritative_reproduction_receipt(
         report=report_payload,
-        full_candidates=full_candidates,
         manifest=manifest,
         report_path=paths.report_path,
     )
@@ -2614,7 +2623,7 @@ def run_research_walk_forward(
         experiment_id=manifest.experiment_id,
         budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
     )
-    windows = rolling_walk_forward_windows(manifest)
+    windows, temporal_validation_plan = _admitted_walk_forward_windows(manifest)
     if len(windows) < manifest.walk_forward.min_windows:
         raise ResearchValidationError(
             f"walk_forward_insufficient_windows: available={len(windows)} min_windows={manifest.walk_forward.min_windows}"
@@ -2769,6 +2778,23 @@ def run_research_walk_forward(
         artifact_context=artifact_context,
         governance_authority_manager=governance_authority_manager,
     )
+    if temporal_validation_plan is not None:
+        report_payload["nested_temporal_validation"] = {
+            "admission_status": "PASS",
+            "outer_execution_ranges_purged_and_embargoed": True,
+            "embargo_semantics": "forward_only_pre_test_exclusion",
+            "inner_split_execution_status": "PREDECLARED_NOT_EXECUTED",
+            "selection_is_fully_nested": False,
+            "limitations": [
+                "inner folds are immutable admission evidence but are not yet used to rank parameter candidates"
+            ],
+            "plan": temporal_validation_plan.as_dict(),
+            "plan_hash": temporal_validation_plan.contract_hash(),
+        }
+    _annotate_authoritative_reproduction_receipt_eligibility(
+        report=report_payload,
+        manifest=manifest,
+    )
     candidate_artifact_observability = _publish_candidate_result_artifacts(
         report=report_payload,
         manifest=manifest,
@@ -2815,7 +2841,7 @@ def run_research_walk_forward(
             report_bytes=write_result.artifact_write_summary["report_bytes"],
         )
     )
-    full_candidates = _install_published_report_payload(
+    _install_published_report_payload(
         in_memory_report=report_payload,
         published_report=write_result.report_payload or {},
         report_detail=manifest.research_run.report_detail,
@@ -2823,7 +2849,6 @@ def run_research_walk_forward(
     )
     _attach_authoritative_reproduction_receipt(
         report=report_payload,
-        full_candidates=full_candidates,
         manifest=manifest,
         report_path=paths.report_path,
     )
@@ -3067,6 +3092,7 @@ def run_final_holdout_confirmation(
     material = {
         "schema_version": FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION,
         "artifact_type": "final_holdout_confirmation",
+        "generated_at": completion["row"]["created_at"],
         "manifest_hash": manifest.manifest_hash(),
         "selection_artifact_hash": artifact["content_hash"],
         "selected_candidate_id": selected_id,
@@ -3244,19 +3270,20 @@ def _final_holdout_gate_result(
     return ("PASS" if not reasons else "FAIL", sorted(set(reasons)))
 
 
-def _attach_authoritative_reproduction_receipt(
+def _annotate_authoritative_reproduction_receipt_eligibility(
     *,
     report: dict[str, Any],
-    full_candidates: list[dict[str, Any]],
     manifest: ExperimentManifest,
-    report_path: Path,
-) -> None:
-    """Attach immutable-artifact receipt evidence, or an explicit policy-A result.
+) -> bool:
+    """Persist receipt-ineligibility diagnostics before report publication."""
 
-    Mutable ``sqlite_candles`` is intentionally research-only DECLARED_ONLY
-    evidence.  It can produce a diagnostic report but cannot honestly produce
-    an authoritative immutable-artifact receipt.
-    """
+    existing_status = report.get("reproduction_receipt_status")
+    if existing_status in {
+        "UNAVAILABLE_MUTABLE_SOURCE_POLICY_A",
+        "INELIGIBLE_DIRTY_SOURCE",
+    }:
+        return False
+
     split_rows = report.get("dataset_splits")
     non_verified = isinstance(split_rows, dict) and any(
         not isinstance(row, dict)
@@ -3279,7 +3306,8 @@ def _attach_authoritative_reproduction_receipt(
                 "authoritative_reproduction_receipt_unavailable_mutable_source",
             }
         )
-        return
+        return False
+
     run_environment = report.get("run_environment")
     code_provenance = (
         run_environment.get("code_provenance")
@@ -3299,10 +3327,29 @@ def _attach_authoritative_reproduction_receipt(
             set(report.get("warnings") or ())
             | {"authoritative_reproduction_receipt_ineligible_dirty_source"}
         )
+        return False
+    return True
+
+
+def _attach_authoritative_reproduction_receipt(
+    *,
+    report: dict[str, Any],
+    manifest: ExperimentManifest,
+    report_path: Path,
+) -> None:
+    """Attach immutable-artifact receipt evidence, or an explicit policy-A result.
+
+    Mutable ``sqlite_candles`` is intentionally research-only DECLARED_ONLY
+    evidence.  It can produce a diagnostic report but cannot honestly produce
+    an authoritative immutable-artifact receipt.
+    """
+    if not _annotate_authoritative_reproduction_receipt_eligibility(
+        report=report,
+        manifest=manifest,
+    ):
         return
     receipt_path = report_path.with_name("reproduction_receipt.json")
     receipt_report = dict(report)
-    receipt_report["candidates"] = full_candidates
     receipt = create_reproduction_receipt(
         report=receipt_report, manifest=manifest, receipt_path=receipt_path
     )
@@ -11545,6 +11592,34 @@ def _selection_only_candidate_payload(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_selection_only_candidate_payload(item) for item in value]
     return value
+
+
+def _admitted_walk_forward_windows(
+    manifest: ExperimentManifest,
+) -> tuple[list[dict[str, DateRange]], NestedTemporalValidationPlan | None]:
+    """Return execution ranges only after optional temporal leakage admission."""
+
+    raw_windows = rolling_walk_forward_windows(manifest)
+    try:
+        plan = build_manifest_nested_temporal_validation_plan(manifest)
+    except TemporalValidationError as exc:
+        raise ResearchValidationError(
+            f"nested_temporal_validation_admission_failed:{exc}"
+        ) from exc
+    if plan is None:
+        return raw_windows, None
+    admitted = [
+        {
+            "train": DateRange(**dict(window["train"])),
+            "test": DateRange(**dict(window["test"])),
+        }
+        for window in plan.outer_windows()
+    ]
+    if len(admitted) != len(raw_windows):
+        raise ResearchValidationError(
+            "nested_temporal_validation_admission_failed:outer_fold_count_mismatch"
+        )
+    return admitted, plan
 
 
 def _load_walk_forward_snapshots(

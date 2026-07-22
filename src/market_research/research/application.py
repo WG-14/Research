@@ -14,7 +14,12 @@ from market_research.storage_io import (
     write_text_atomic,
 )
 
+from .data_governance import (
+    DataGovernanceError,
+    publish_data_usage_binding_for_artifact,
+)
 from .experiment_identity import bind_research_validation_experiment
+from .knowledge_contract import AuthorityRef
 from .research_reporting import (
     compare_research_decision_reports,
     render_research_decision_report_markdown,
@@ -240,6 +245,27 @@ class ResearchApplicationService:
         except (OSError, ValueError) as exc:
             raise StrategyPackageError(
                 f"strategy_package_publication_failed:{publication_target.name}:{exc}"
+            ) from exc
+        try:
+            publish_data_usage_binding_for_artifact(
+                manager=self.paths,
+                source=report,
+                affected_authority_refs=(
+                    AuthorityRef(
+                        authority="strategy_package_export",
+                        subject_type="research_package",
+                        subject_id=experiment_id,
+                        subject_version=str(package["content_hash"]),
+                        authority_hash=str(package["content_hash"]),
+                    ),
+                ),
+                recorded_by=str(approval.get("reviewer_id") or "strategy-package"),
+                recorded_at=str(approval.get("approved_at") or "") or None,
+                required_purpose="RESEARCH_PACKAGE_EXPORT",
+            )
+        except DataGovernanceError as exc:
+            raise StrategyPackageError(
+                f"strategy_package_data_usage_binding_failed:{exc}"
             ) from exc
         return package
 

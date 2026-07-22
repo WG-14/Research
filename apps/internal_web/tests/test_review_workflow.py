@@ -77,6 +77,9 @@ def _approval_payload(
         "approval_request_id": approval_request_id or str(uuid.uuid4()),
         "rationale": "independent evidence review passed",
         "resolved_requirement_ids": "",
+        "verification_id": "web-verification",
+        "verification_version": "1",
+        "verification_hash": "sha256:" + "9" * 64,
         "password": password,
         "confirm": "on",
     }
@@ -331,6 +334,9 @@ def test_prior_reviewer_cannot_be_final_approver(
             cleaned_data={
                 "rationale": "the reviewer cannot approve the same result",
                 "resolved_requirement_ids": (),
+                "verification_id": "web-verification",
+                "verification_version": "1",
+                "verification_hash": "sha256:" + "9" * 64,
             },
             correlation_id=str(uuid.uuid4()),
         )
@@ -372,6 +378,9 @@ def test_approval_permission_without_approver_role_fails_closed(
             cleaned_data={
                 "rationale": "permission alone must not imply the duty role",
                 "resolved_requirement_ids": (),
+                "verification_id": "web-verification",
+                "verification_version": "1",
+                "verification_hash": "sha256:" + "9" * 64,
             },
             correlation_id=str(uuid.uuid4()),
         )
@@ -404,6 +413,9 @@ def test_approver_group_reaches_hash_bound_approval_validation(
             cleaned_data={
                 "rationale": "valid approver must still satisfy evidence binding",
                 "resolved_requirement_ids": (),
+                "verification_id": "web-verification",
+                "verification_version": "1",
+                "verification_hash": "sha256:" + "9" * 64,
             },
             correlation_id=str(uuid.uuid4()),
         )
@@ -516,6 +528,9 @@ def test_prior_approved_actor_is_not_added_to_replay_prohibition_set(
             "approval_request_id": request_id,
             "rationale": "exact replay",
             "resolved_requirement_ids": (),
+            "verification_id": "web-verification",
+            "verification_version": "1",
+            "verification_hash": "sha256:" + "9" * 64,
         },
         correlation_id=str(uuid.uuid4()),
     )

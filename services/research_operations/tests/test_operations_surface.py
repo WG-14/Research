@@ -402,6 +402,7 @@ def test_expected_portal_migrations_come_from_installed_web_package() -> None:
         "0007_governance_authority",
         "0008_imported_decision_report",
         "0009_resourceaccessgrant",
+        "0010_dataset_resource_access",
     )
 
 

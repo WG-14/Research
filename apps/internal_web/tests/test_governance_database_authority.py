@@ -41,6 +41,14 @@ from portal.models import (
 pytestmark = pytest.mark.django_db
 
 
+def _verification_fields() -> dict[str, str]:
+    return {
+        "verification_id": "web-verification",
+        "verification_version": "1",
+        "verification_hash": "sha256:" + "9" * 64,
+    }
+
+
 @pytest.fixture
 def approver_user(db):
     user = get_user_model().objects.create_user(
@@ -436,6 +444,7 @@ def test_approval_is_atomic_idempotent_and_compare_and_swap_guarded(
         "approval_request_id": request_id,
         "rationale": "independent approval evidence is complete",
         "resolved_requirement_ids": (),
+        **_verification_fields(),
     }
 
     first = approve_job_candidate(
@@ -527,6 +536,7 @@ def test_approval_and_lifecycle_transition_roll_back_when_outbox_write_fails(
                 "approval_request_id": str(uuid.uuid4()),
                 "rationale": "approval must share the outbox transaction",
                 "resolved_requirement_ids": (),
+                **_verification_fields(),
             },
             correlation_id=str(uuid.uuid4()),
         )
@@ -570,6 +580,7 @@ def test_exact_retry_reconciles_file_approval_that_preceded_database_commit(
             "approval_request_id": str(uuid.uuid4()),
             "rationale": "reconcile the exact filesystem publication retry",
             "resolved_requirement_ids": (),
+            **_verification_fields(),
         },
         correlation_id=str(uuid.uuid4()),
     )

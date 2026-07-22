@@ -37,6 +37,7 @@ _APPLICATION_PERMISSION_MAP = {
     "portal.submit_research_job": {"research.execute", "research.view"},
     "portal.view_all_research_jobs": {"research.view"},
     "portal.view_all_research_manifests": {"research.view"},
+    "portal.view_all_research_datasets": {"research.view"},
     "portal.record_research_review": {"research.review.record", "research.view"},
     "portal.approve_research_candidate": {"research.approve", "research.view"},
     "portal.manage_research_web": {

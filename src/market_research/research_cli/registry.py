@@ -79,6 +79,16 @@ def _reproduce_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--out")
+    parser.add_argument("--verification-id")
+    parser.add_argument("--verification-version")
+    parser.add_argument("--verifier")
+    parser.add_argument(
+        "--verifier-role",
+        choices=("independent_verifier",),
+        default="independent_verifier",
+    )
+    parser.add_argument("--verified-at")
+    parser.add_argument("--unresolved-issue", action="append", default=[])
 
 
 def _csv_strings(value: str) -> tuple[str, ...]:
@@ -181,6 +191,10 @@ def _approve_strategy_candidate(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reviewer", required=True)
     parser.add_argument("--rationale", required=True)
     parser.add_argument("--resolved-requirement", action="append", default=[])
+    parser.add_argument("--verification-id", required=True)
+    parser.add_argument("--verification-version", required=True)
+    parser.add_argument("--verification-hash", required=True)
+    parser.add_argument("--originator", action="append", required=True)
     parser.add_argument("--out", required=True)
 
 

@@ -22,6 +22,11 @@ from market_research.paths import ResearchPathManager
 from market_research.storage_io import write_json_atomic_create_or_verify
 
 from .artifact_store import ArtifactStore
+from .data_governance import (
+    DATA_GOVERNANCE_POLICY_GOVERNED,
+    DataGovernanceError,
+    require_data_usage_binding_for_artifact,
+)
 from .hash_chain import (
     append_hash_chained_jsonl_idempotent,
     read_hash_chained_jsonl_snapshot,
@@ -37,6 +42,7 @@ from .knowledge_registry import (
     knowledge_registry_path,
     validate_knowledge_registry,
 )
+from .knowledge_contract import AuthorityRef, KnowledgeContractError
 from .prospective_validation import (
     PROSPECTIVE_VALIDATION_HASH_LABEL,
     ImmutableEvidenceRef,
@@ -93,7 +99,13 @@ _SEMANTIC_PATH_KEYS = frozenset(
         "intra_candle_path_required",
     }
 )
-_ALLOWED_SOURCE_PROVENANCE_PATH_KEYS = frozenset({"knowledge_registry_path"})
+_ALLOWED_SOURCE_PROVENANCE_PATH_KEYS = frozenset(
+    {
+        "data_governance_registry_path",
+        "independent_verification_registry_path",
+        "knowledge_registry_path",
+    }
+)
 _PROJECTED_SOURCE_LOCATION_KEYS = frozenset({"source_uri"})
 _PROJECTABLE_INSTRUMENT_SOURCE_PATHS = frozenset(
     {
@@ -1267,6 +1279,11 @@ def _resolve_research_package_graph(
     decision, report = _resolve_validation_decision_and_report(
         manager=manager, package=package
     )
+    _require_source_package_data_usage_binding(
+        manager=manager,
+        source_package=resolved_source,
+        report=report,
+    )
     _resolve_terminal_report_edges(package=package, decision=decision, report=report)
     _resolve_prospective_references(manager=manager, package=package)
     _resolve_reproduction_receipt(
@@ -1369,6 +1386,45 @@ def _require_reference_authorities(refs: ResearchPackageEvidenceRefs) -> None:
             raise ResearchPackageRegistryError(
                 f"research_package_reference_authority_invalid:{name}"
             )
+
+
+def _require_source_package_data_usage_binding(
+    *,
+    manager: ResearchPathManager,
+    source_package: Mapping[str, Any],
+    report: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Reject a governed source package whose usage append never committed."""
+
+    policy = source_package.get("data_governance_policy")
+    if policy is None:
+        # Read-only compatibility for package manifests created before governed
+        # exports became mandatory. New production exports always carry v2.
+        return None
+    if policy != DATA_GOVERNANCE_POLICY_GOVERNED:
+        raise ResearchPackageRegistryError(
+            "research_package_source_data_governance_policy_invalid"
+        )
+    package_hash = str(source_package.get("content_hash") or "")
+    experiment_id = str(report.get("experiment_id") or "")
+    try:
+        package_ref = AuthorityRef(
+            authority="strategy_package_export",
+            subject_type="research_package",
+            subject_id=experiment_id,
+            subject_version=package_hash,
+            authority_hash=package_hash,
+        )
+        return require_data_usage_binding_for_artifact(
+            manager=manager,
+            source=report,
+            affected_authority_refs=(package_ref,),
+            required_purpose="RESEARCH_PACKAGE_EXPORT",
+        )
+    except (DataGovernanceError, KnowledgeContractError) as exc:
+        raise ResearchPackageRegistryError(
+            "research_package_source_data_usage_binding_invalid:" + str(exc)
+        ) from exc
 
 
 def _resolve_hypothesis_reference(

@@ -85,6 +85,10 @@ from market_research.research.strategy_spec import (
     StrategySpec,
     materialize_strategy_parameters,
 )
+from tests.independent_verification_fixture import (
+    fixture_terminal_source_report,
+    publish_pass_verification,
+)
 from market_research.research.validation_pipeline import (
     resolve_bound_selected_candidate,
     validate_validated_research_result,
@@ -93,7 +97,10 @@ from market_research.research.validation_decision import (
     query_validation_decisions,
     validate_validation_decision_registry,
 )
-from market_research.research_composition import builtin_strategy_registry
+from market_research.research_composition import (
+    builtin_strategy_registry,
+    parse_builtin_manifest,
+)
 from market_research.research.execution_timing import candle_close_ts
 from market_research.research_cli.context import ResearchAppContext
 from market_research.research_cli.main import main as research_cli_main
@@ -102,6 +109,7 @@ from market_research.strategy_sdk.runtime import make_event_builder_runtime_fact
 from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 from tests.clean_provenance_fixture import install_committed_checkout_provenance
+from tests.data_governance_fixture import seed_confirmatory_data_governance
 from tests.test_common_simulation_engine import _dataset as common_engine_dataset
 
 
@@ -871,7 +879,13 @@ def _write_approved_noop_benchmark(
         "1",
     )
     confirmation_hash = sha256_prefixed({"fixture": "approved-noop-final-holdout"})
-    report_hash = sha256_prefixed({"fixture": "approved-noop-report"})
+    research_version = sha256_prefixed({"fixture": "approved-noop-manifest"})
+    report_hash = str(
+        fixture_terminal_source_report(
+            experiment_id="approved-noop-benchmark",
+            manifest_hash=research_version,
+        )["content_hash"]
+    )
     for source, destination, evidence in (
         (None, "DRAFT", {}),
         (
@@ -952,6 +966,14 @@ def _write_approved_noop_benchmark(
         {},
         registry=registry,
     )
+    verification = publish_pass_verification(
+        manager=context.paths,
+        verification_id="approved-noop-verification",
+        verifier_id="benchmark-fixture-verifier",
+        experiment_id="approved-noop-benchmark",
+        source_report_hash=report_hash,
+        manifest_hash=research_version,
+    )
     approval = approve_strategy_candidate(
         manager=context.paths,
         subject=candidate,
@@ -965,6 +987,10 @@ def _write_approved_noop_benchmark(
         final_holdout_confirmation_hash=confirmation_hash,
         reviewer_id="benchmark-fixture-approver",
         rationale="approved deterministic noop benchmark fixture",
+        independent_verification_ref=verification.ref(),
+        experiment_id=verification.experiment_id,
+        research_version=verification.research_version,
+        originator_actor_ids=frozenset({"benchmark-fixture-researcher"}),
     )
     material = {
         "artifact_type": "approved_strategy_reference",
@@ -1346,11 +1372,17 @@ def _write_validated_extension_manifest(
                 "max_normalized_local_curvature": 1.0,
             },
             "signal_omission": {
-                "omission_rates_pct": [25.0],
+                # The E2E proves that the pre-execution omission layer is wired
+                # and hash-bound, not that this tiny synthetic sample is robust
+                # to a probabilistic draw.  A 25% per-signal draw can omit zero
+                # entries for some content-bound manifest seeds, making the
+                # acceptance fixture depend on its temporary absolute paths.
+                # Omit every entry so the required evidence count is invariant.
+                "omission_rates_pct": [100.0],
                 "seed_policy": (
                     "derived_from_manifest_candidate_scenario_split_contract_hash"
                 ),
-                "min_return_retention_pct": 50.0,
+                "min_return_retention_pct": 0.0,
                 "min_omitted_entry_signals": 1,
             },
         },
@@ -2101,7 +2133,7 @@ def _record_validated_candidate_approval_prerequisites(
     *,
     context: ResearchAppContext,
     validation: dict[str, Any],
-) -> None:
+):
     candidate = GovernanceSubject(
         GovernanceSubjectType.STRATEGY_CANDIDATE,
         str(validation["selected_candidate_id"]),
@@ -2269,6 +2301,12 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
     approval_path = (tmp_path / "validated-approval.json").resolve()
     package_path = (tmp_path / "validated-strategy-package.json").resolve()
     reproduction_path = (tmp_path / "validated-reproduction.json").resolve()
+    selection_reproduction_path = (
+        tmp_path / "validated-selection-reproduction.json"
+    ).resolve()
+    rejected_approval_path = (
+        tmp_path / "rejected-selection-verification-approval.json"
+    ).resolve()
     original_package_path = builtin_strategies.__path__
 
     try:
@@ -2285,6 +2323,12 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         extension = expanded_registry.resolve(_VALIDATED_STRATEGY_NAME)
         assert extension.execution_authority == "common_simulation_engine"
         assert not hasattr(extension, "runner")
+        seed_confirmatory_data_governance(
+            manager=context.paths,
+            manifest=parse_builtin_manifest(
+                json.loads(manifest_path.read_text(encoding="utf-8"))
+            ),
+        )
 
         validation_output: list[str] = []
         context.printer = validation_output.append
@@ -2433,6 +2477,123 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             context=context,
             validation=validation,
         )
+        selection_receipt_path = context.paths.report_path(
+            "research",
+            _VALIDATED_EXPERIMENT_ID,
+            "reproduction_receipt.json",
+        )
+        selection_reproduction_rc = research_cli_main(
+            [
+                "research-reproduce-run",
+                "--manifest",
+                str(manifest_path),
+                "--receipt",
+                str(selection_receipt_path),
+                "--verification-id",
+                "validated-selection-verification",
+                "--verification-version",
+                "1",
+                "--verifier",
+                "validated-extension-independent-verifier",
+                "--out",
+                str(selection_reproduction_path),
+            ],
+            context=context,
+        )
+        assert selection_reproduction_rc == 0
+        selection_reproduction = json.loads(
+            selection_reproduction_path.read_text(encoding="utf-8")
+        )
+        selection_verification = selection_reproduction["independent_verification"]
+        rejected_output: list[str] = []
+        saved_printer = context.printer
+        context.printer = rejected_output.append
+        try:
+            rejected_approval_rc = research_cli_main(
+                [
+                    "research-approve-strategy-candidate",
+                    "--result",
+                    str(validation_path),
+                    "--subject-version",
+                    "1",
+                    "--reviewer",
+                    "validated-extension-approver",
+                    "--rationale",
+                    "selection-only reproduction cannot approve terminal validation",
+                    "--verification-id",
+                    str(selection_verification["verification_id"]),
+                    "--verification-version",
+                    str(selection_verification["version"]),
+                    "--verification-hash",
+                    str(selection_verification["content_hash"]),
+                    "--originator",
+                    "validated-extension-researcher",
+                    "--out",
+                    str(rejected_approval_path),
+                ],
+                context=context,
+            )
+        finally:
+            context.printer = saved_printer
+        assert rejected_approval_rc == 1
+        assert not rejected_approval_path.exists()
+        assert any(
+            "independent_verification_report_mismatch" in message
+            for message in rejected_output
+        )
+
+        terminal_receipt_path = Path(str(validation["reproduction_receipt_path"]))
+        terminal_receipt = load_reproduction_receipt(terminal_receipt_path)
+        assert terminal_receipt["source_report_hash"] == validation["content_hash"]
+        assert terminal_receipt["evidence_scope"] == "validated_research_result"
+        assert (
+            terminal_receipt["source_evidence_binding"][
+                "final_holdout_confirmation_hash"
+            ]
+            == validation["final_holdout_confirmation_hash"]
+        )
+        reproduction_rc = research_cli_main(
+            [
+                "research-reproduce-run",
+                "--manifest",
+                str(manifest_path),
+                "--receipt",
+                str(terminal_receipt_path),
+                "--verification-id",
+                "validated-extension-verification",
+                "--verification-version",
+                "1",
+                "--verifier",
+                "validated-extension-independent-verifier",
+                "--out",
+                str(reproduction_path),
+            ],
+            context=context,
+        )
+        assert reproduction_rc == 0
+        reproduction = json.loads(reproduction_path.read_text(encoding="utf-8"))
+        assert reproduction["status"] == "PASS"
+        assert reproduction["phase"] == "fingerprint_comparison"
+        assert reproduction["mismatches"] == []
+        reproduced_holdout_path = Path(
+            reproduction["reproduced_final_holdout_confirmation_path"]
+        )
+        assert reproduced_holdout_path.is_relative_to(
+            context.paths.report_root / "reproductions" / _VALIDATED_EXPERIMENT_ID
+        )
+        reproduced_holdout = json.loads(
+            reproduced_holdout_path.read_text(encoding="utf-8")
+        )
+        assert (
+            reproduction["reproduced_final_holdout_confirmation_hash"]
+            == reproduced_holdout["content_hash"]
+        )
+        assert (
+            reproduction["reproduced_final_holdout_result_hash"]
+            == reproduced_holdout["final_holdout_result_hash"]
+            == terminal_receipt["source_evidence_binding"]["final_holdout_result_hash"]
+        )
+        verification = reproduction["independent_verification"]
         approval_rc = research_cli_main(
             [
                 "research-approve-strategy-candidate",
@@ -2444,6 +2605,14 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "validated-extension-approver",
                 "--rationale",
                 "validated extension evidence reviewed",
+                "--verification-id",
+                str(verification["verification_id"]),
+                "--verification-version",
+                str(verification["version"]),
+                "--verification-hash",
+                str(verification["content_hash"]),
+                "--originator",
+                "validated-extension-researcher",
                 "--out",
                 str(approval_path),
             ],
@@ -2472,6 +2641,14 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "validated-extension-approver",
                 "--rationale",
                 "validated extension evidence reviewed",
+                "--verification-id",
+                str(verification["verification_id"]),
+                "--verification-version",
+                str(verification["version"]),
+                "--verification-hash",
+                str(verification["content_hash"]),
+                "--originator",
+                "validated-extension-researcher",
                 "--out",
                 str(approval_path),
             ],
@@ -2501,6 +2678,11 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         assert package["package_authority_result"] == "PASS"
         assert package["validation_result"] == "PASS"
         assert package["source_report_content_hash"] == validation["content_hash"]
+        assert package["independent_verification_ref"] == {
+            "verification_id": verification["verification_id"],
+            "version": verification["version"],
+            "content_hash": verification["content_hash"],
+        }
         assert (
             package["hypothesis_contract_hash"]
             == validation["hypothesis_contract_hash"]
@@ -2542,33 +2724,7 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             {key: value for key, value in package.items() if key != "content_hash"}
         )
 
-        receipt_path = context.paths.report_path(
-            "research",
-            _VALIDATED_EXPERIMENT_ID,
-            "reproduction_receipt.json",
-        )
-        reproduction_rc = research_cli_main(
-            [
-                "research-reproduce-run",
-                "--manifest",
-                str(manifest_path),
-                "--receipt",
-                str(receipt_path),
-                "--out",
-                str(reproduction_path),
-            ],
-            context=context,
-        )
-        assert reproduction_rc == 0
-        reproduction = json.loads(reproduction_path.read_text(encoding="utf-8"))
-        assert reproduction["status"] == "PASS"
-        assert reproduction["phase"] == "fingerprint_comparison"
-        assert reproduction["mismatches"] == []
-        reproduction_receipt = load_reproduction_receipt(receipt_path)
-        assert (
-            reproduction_receipt["source_report_hash"]
-            == validation["selection_report_hash"]
-        )
+        reproduction_receipt = load_reproduction_receipt(selection_receipt_path)
 
         source_package_ref = ImmutableEvidenceRef(
             authority="strategy_package_export",

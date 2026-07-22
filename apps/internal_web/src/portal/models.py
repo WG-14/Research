@@ -87,12 +87,13 @@ class ResourceAccessGrant(models.Model):
 
     Django model permissions answer whether an actor may perform a kind of
     operation at all.  This row answers *which* manifest, experiment, or
-    strategy the actor may access.  The portal deliberately exposes no grant
+    strategy or dataset the actor may access.  The portal deliberately exposes no grant
     mutation route or writable admin surface; grants arrive from the governed
     identity lifecycle and are only consumed here.
     """
 
     class ResourceType(models.TextChoices):
+        DATASET = "DATASET", "Dataset"
         MANIFEST = "MANIFEST", "Manifest"
         EXPERIMENT = "EXPERIMENT", "Experiment"
         STRATEGY = "STRATEGY", "Strategy"
@@ -130,6 +131,9 @@ class ResourceAccessGrant(models.Model):
 
     class Meta:
         ordering = ("resource_type", "resource_id", "access", "created_at")
+        permissions = [
+            ("view_all_research_datasets", "Can view all research datasets"),
+        ]
         indexes = [
             models.Index(
                 fields=("resource_type", "resource_id", "access"),

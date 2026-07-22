@@ -57,6 +57,7 @@ scripts/platform typecheck
 scripts/platform compile
 scripts/platform docs-check
 scripts/platform verify-complete --help
+scripts/platform verify-product-scope --help
 scripts/platform audit
 scripts/platform build
 scripts/platform install-release --help
@@ -69,13 +70,37 @@ scripts/platform research --help
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
-`verify-complete` evaluates the current full-scope research-only matrix: all
-431 explicit and normative criteria, all 19 blocking conditions, and
-hash-bound E4/E5 receipts remain in the denominator. A narrative score never
-grants completion credit. See the
-[full-scope evaluation matrix](docs/research-platform-full-scope-evaluation-matrix.json)
-and the [durable review](docs/research-platform-full-scope-review.md). The
-215-row matrix is retained only as historical evidence for the earlier rubric.
+`verify-complete` is bound to the canonical July 2026 investment-research
+platform audit by source and instruction SHA-256. It evaluates exactly 184
+A--J criteria and 12 fatal gates from the
+[canonical audit matrix](docs/investment-research-platform-audit.json). It
+fails closed when the matrix is malformed, any fatal gate fails or remains
+unverified, any Critical item is below M4, any criterion lacks verified
+evidence, or the weighted score is below 95. A narrative score never grants
+completion credit. CI uses `--validate-structure`; that option validates the
+criterion inventory without pretending that an incomplete platform is
+complete.
+
+The complete human-readable findings are in the
+[canonical audit report](docs/investment-research-platform-audit-report.md),
+with the same assessment available as a
+[machine-readable result](docs/investment-research-platform-audit-result.json).
+Both outputs are regenerated deterministically and checked with the matrix in
+CI.
+
+The normalized, reviewable copies of the exact
+[audit rubric](docs/investment-research-platform-audit-rubric.md) and
+[audit execution instructions](docs/investment-research-platform-audit-instructions.md)
+are hash-checked by the matrix generator. The matrix retains the SHA-256 of
+the original CRLF attachments as well as the normalized repository copies.
+
+The older derivative/product expansion remains independently inspectable with
+`verify-product-scope`. Its
+[431-row full-scope matrix](docs/research-platform-full-scope-evaluation-matrix.json)
+and [durable review](docs/research-platform-full-scope-review.md) are retained
+as historical, product-specific evidence and are not the completion authority
+for the canonical 184-criterion audit. The 215-row matrix is earlier historical
+evidence.
 
 ## Research CLI
 

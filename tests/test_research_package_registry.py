@@ -891,13 +891,20 @@ def test_final_package_rejects_secrets_paths_and_operational_command_values(
 def test_final_manifest_projects_out_canonical_source_registry_paths() -> None:
     base = _base_package()
     base["knowledge_registry_path"] = "/external/authority/knowledge.jsonl"
+    base["data_governance_registry_path"] = "/external/authority/data-governance.jsonl"
+    base["independent_verification_registry_path"] = (
+        "/external/authority/independent-verifications.jsonl"
+    )
     base["content_hash"] = sha256_prefixed(
         {key: value for key, value in base.items() if key != "content_hash"}
     )
 
     package, _, _, _ = _build_package(base)
 
-    assert "knowledge_registry_path" not in package.as_dict()["source_package"]
+    source_package = package.as_dict()["source_package"]
+    assert "knowledge_registry_path" not in source_package
+    assert "data_governance_registry_path" not in source_package
+    assert "independent_verification_registry_path" not in source_package
 
 
 def test_final_manifest_preserves_reviewed_intra_candle_path_semantics() -> None:

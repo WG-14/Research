@@ -90,7 +90,7 @@ case "${1:-}" in
     ;;
   lint)
     exec uv run --package research-operations ruff check \
-      src tests apps/internal_web/src apps/internal_web/tests \
+      src tests tools apps/internal_web/src apps/internal_web/tests \
       services/research_operations/src services/research_operations/tests
     ;;
   typecheck)
@@ -110,6 +110,10 @@ case "${1:-}" in
       -p market_research_web -p portal
     uv run --frozen --no-sync --package market-research mypy \
       --no-incremental --config-file pyproject.toml -p research_operations
+    uv run --frozen --no-sync --package market-research mypy \
+      --no-incremental --config-file pyproject.toml \
+      tools/reference_audit.py tools/reference_audit_surface.py \
+      tools/update_reference_audit.py tools/render_reference_audit_report.py
     ;;
   compile)
     exec uv run --package market-research python -m compileall -q \
@@ -122,6 +126,15 @@ case "${1:-}" in
     exec uv run --package market-research python tools/check_documentation.py
     ;;
   verify-complete)
+    shift
+    uv run --frozen --no-sync --package market-research \
+      python tools/update_reference_audit.py --check
+    uv run --frozen --no-sync --package market-research \
+      python tools/render_reference_audit_report.py --check
+    exec uv run --frozen --no-sync --package market-research \
+      python tools/reference_audit.py "$@"
+    ;;
+  verify-product-scope)
     shift
     exec uv run --frozen --no-sync --package market-research \
       python tools/platform_completeness.py "$@"
@@ -158,7 +171,7 @@ case "${1:-}" in
     exec uv run --frozen --package market-research market-research "$@"
     ;;
   *)
-    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|typecheck|compile|docs-check|verify-complete|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill|research}" >&2
+    echo "usage: scripts/platform {bootstrap|test-core|test-web|test-operations|test-all|test-browser|test-integration|lint|typecheck|compile|docs-check|verify-complete|verify-product-scope|audit|build|release-manifest|install-release|verify-deployment|backup-restore-drill|research}" >&2
     exit 64
     ;;
 esac

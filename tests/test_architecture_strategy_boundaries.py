@@ -171,7 +171,7 @@ def test_platform_documentation_matches_strategy_discovery_and_partial_exit_cont
     assert "opt-in partial exits" in documentation
     assert "no partial exits" not in documentation
     assert "selection artifact schema 2" in documentation
-    assert "Reproduction receipt schema 9" in documentation
+    assert "Reproduction receipt schema 11" in documentation
     assert "result-affecting environment" in documentation
     assert "same backtest or walk-forward path" in documentation
     assert "`quote_ts` and `quote_available_at_ts`" in documentation

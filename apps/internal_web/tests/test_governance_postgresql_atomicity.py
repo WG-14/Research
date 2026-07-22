@@ -132,6 +132,9 @@ def _contend(
                     "approval_request_id": request_id,
                     "rationale": "concurrent PostgreSQL approval",
                     "resolved_requirement_ids": (),
+                    "verification_id": "web-verification",
+                    "verification_version": "1",
+                    "verification_hash": "sha256:" + "9" * 64,
                 },
                 correlation_id=str(uuid.uuid4()),
             )

@@ -267,10 +267,15 @@ jobs:
         run: |
           scripts/platform lint
           uv run --no-sync ruff format --check \
-            src tests apps/internal_web/src apps/internal_web/tests \
+            src tests tools apps/internal_web/src apps/internal_web/tests \
             services/research_operations/src services/research_operations/tests
           scripts/platform compile
           scripts/platform docs-check
+      - name: Validate the canonical 184-criterion audit inventory
+        run: |
+          uv run --no-sync python tools/update_reference_audit.py --check
+          uv run --no-sync python tools/render_reference_audit_report.py --check
+          scripts/platform verify-complete --validate-structure
       - name: Audit locked runtime dependencies
         run: |
           uv export --frozen --all-packages --no-dev --no-emit-workspace \
@@ -340,6 +345,7 @@ jobs:
           assert "portal/templates/registration/login.html" in web
           assert "portal/static/portal/app.css" in web
           assert "portal/migrations/0009_resourceaccessgrant.py" in web
+          assert "portal/migrations/0010_dataset_resource_access.py" in web
           required_sql = {
               "research_operations/migrations/0001_initial.sql",
               "research_operations/migrations/0002_runtime_control.sql",

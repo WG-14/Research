@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from market_research.paths import ResearchPathManager
+from market_research.research.datasets.contracts import DatasetArtifactRef
 from market_research.research.experiment_manifest import ManifestValidationError
 from market_research.research.governance import (
     governance_registry_path,
@@ -60,6 +61,10 @@ from market_research.settings import ResearchSettings
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 from tests.test_hypothesis_contract import _structured_manifest_payload
 from tests.test_validation_admission_integration import _install_fast_validation
+from tests.data_governance_fixture import (
+    attach_immutable_dataset_artifact,
+    seed_confirmatory_data_governance,
+)
 
 
 def _manager(tmp_path: Path) -> ResearchPathManager:
@@ -296,6 +301,8 @@ class _ManifestStub:
     canonical: dict[str, Any]
     dataset: Any
     raw: dict[str, Any]
+    market: str = "KRW-BTC"
+    interval: str = "1m"
 
     def canonical_payload(self) -> dict[str, Any]:
         return self.canonical
@@ -307,7 +314,7 @@ class _ManifestStub:
         return sha256_prefixed({"seed_scope": self.canonical})
 
 
-def _manifest_stub() -> _ManifestStub:
+def _manifest_stub(tmp_path: Path) -> _ManifestStub:
     spec = parse_hypothesis_spec(hypothesis_spec_v2())
     binding = _binding(spec)
     split = {
@@ -317,9 +324,14 @@ def _manifest_stub() -> _ManifestStub:
     }
     canonical = {
         "experiment_id": "research-standard-authority-study",
+        "market": "KRW-BTC",
+        "interval": "1m",
         "hypothesis_spec": spec.as_dict(),
         "research_standard_binding": binding.as_dict(),
-        "dataset": {"snapshot_id": "immutable-snapshot-1", **split},
+        "dataset": {
+            "snapshot_id": "immutable-snapshot-1",
+            **split,
+        },
         "parameter_space": {"threshold": [1, 2]},
         "acceptance_gate": {"min_trade_count": 10},
         "statistical_validation": {"seed_policy": "derived"},
@@ -333,13 +345,32 @@ def _manifest_stub() -> _ManifestStub:
         "risk_policy": {"max_position_pct": 100},
         "research_run": {"max_workers": 1},
     }
+    canonical, frozen = attach_immutable_dataset_artifact(
+        canonical,
+        root=tmp_path,
+    )
     return _ManifestStub(
         experiment_id="research-standard-authority-study",
         hypothesis_spec=spec,
         research_standard_binding=binding,
         research_classification="validated_candidate",
         canonical=canonical,
-        dataset=SimpleNamespace(split=SimpleNamespace(as_dict=lambda: split)),
+        dataset=SimpleNamespace(
+            snapshot_id="immutable-snapshot-1",
+            source_content_hash=None,
+            source_schema_hash=None,
+            options={},
+            artifact_ref=DatasetArtifactRef(
+                artifact_manifest_uri=str(frozen["artifact_manifest_uri"]),
+                artifact_manifest_hash=str(frozen["artifact_manifest_hash"]),
+            ),
+            split=SimpleNamespace(
+                train=SimpleNamespace(**split["train"]),
+                validation=SimpleNamespace(**split["validation"]),
+                final_holdout=SimpleNamespace(**split["final_holdout"]),
+                as_dict=lambda: split,
+            ),
+        ),
         raw={},
     )
 
@@ -395,11 +426,12 @@ def test_admission_lifecycle_and_package_bind_standard_registry_lineage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    manifest = _manifest_stub()
+    manifest = _manifest_stub(tmp_path)
     monkeypatch.setattr(
         "market_research.research.knowledge_registry.require_point_in_time_scope",
         lambda *_args, **_kwargs: None,
     )
+    seed_confirmatory_data_governance(manager=manager, manifest=manifest)
 
     admission = freeze_validation_admission(
         manager=manager,
@@ -506,7 +538,7 @@ def test_successor_parent_must_preexist_and_is_persisted_as_outbound_ref(
     tmp_path: Path,
 ) -> None:
     manager = _manager(tmp_path)
-    original = _manifest_stub()
+    original = _manifest_stub(tmp_path)
     successor, successor_binding = _successor_manifest(original)
 
     with pytest.raises(
@@ -550,12 +582,13 @@ def test_successor_admission_requires_and_rechecks_published_parent_lineage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    original = _manifest_stub()
+    original = _manifest_stub(tmp_path)
     successor, _successor_binding = _successor_manifest(original)
     monkeypatch.setattr(
         "market_research.research.knowledge_registry.require_point_in_time_scope",
         lambda *_args, **_kwargs: None,
     )
+    seed_confirmatory_data_governance(manager=manager, manifest=successor)
 
     with pytest.raises(
         KnowledgeRegistryError,
@@ -567,6 +600,7 @@ def test_successor_admission_requires_and_rechecks_published_parent_lineage(
             admitted_at="2026-01-02T00:00:00+00:00",
         )
 
+    seed_confirmatory_data_governance(manager=manager, manifest=original)
     freeze_validation_admission(
         manager=manager,
         manifest=original,

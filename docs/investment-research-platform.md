@@ -213,11 +213,15 @@ Pre-holdout selection artifact schema 2 hashes a stable projection of each
 candidate identity, parameter and compiled-contract bindings, and the final
 selection score. Runtime duration, local paths, and their derived wrapper
 hashes are diagnostic observations and cannot change the selection evidence.
-Reproduction receipt schema 9 binds the source `report_kind`, executable source
+Reproduction receipt schema 11 binds the source `report_kind`, experiment and
+strategy identities, executable source
 or installed-package bytes, dependency resolution, Git state when available,
 Python/OS/machine identity, locale, timezone, and result-affecting environment;
 replay therefore uses the same backtest or walk-forward path and reports exact
 environment drift rather than accepting coincidentally equal results.
+For terminal validated results it also binds the absolute authoritative report
+path, the selected candidate, and the final-holdout result/data/query/quality
+hashes; malformed scoped bindings are rejected before replay starts.
 Resolved distributions are identified by normalized installed-file content and
 RECORD hashes as well as name and version, so a same-version rebuild or local
 package-file mutation changes the dependency contract. The receipt retains the

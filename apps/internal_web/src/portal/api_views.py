@@ -26,7 +26,16 @@ from .api_contract import (
     build_openapi_document,
     project_job,
 )
-from .authorization import can_access_manifest, jobs_visible_to, manifests_visible_to
+from .authorization import (
+    can_access_dataset,
+    can_access_manifest,
+    can_access_research_package,
+    can_access_research_package_lineage,
+    datasets_visible_to,
+    jobs_visible_to,
+    manifests_visible_to,
+    research_packages_visible_to,
+)
 from .jobs import (
     ActiveJobConflict,
     IdempotencyConflict,
@@ -786,7 +795,7 @@ def dataset_artifact_list(request: HttpRequest) -> JsonResponse:
         return _research_query_error(request, exc)
     return _research_list_response(
         request,
-        records=records,
+        records=tuple(datasets_visible_to(request.user, records)),
         filters=filters,
         detail_level=detail,
         audit_type="dataset_artifact_collection",
@@ -877,7 +886,7 @@ def research_package_list(request: HttpRequest) -> JsonResponse:
         return _research_query_error(request, exc)
     return _research_list_response(
         request,
-        records=records,
+        records=research_packages_visible_to(request.user, records),
         filters=filters,
         detail_level=detail,
         audit_type="research_package_collection",
@@ -910,6 +919,11 @@ def _generic_research_detail(
         return denied
     if invalid_id := _stable_research_identity(request, logical_id, version):
         return invalid_id
+    if section == "datasets" and not can_access_dataset(request.user, logical_id):
+        return _research_query_error(
+            request,
+            ValueError("research_resource_not_found"),
+        )
     detail = _research_detail_level(request)
     if isinstance(detail, JsonResponse):
         return detail
@@ -922,6 +936,11 @@ def _generic_research_detail(
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _research_query_error(request, exc)
+    if section == "packages" and not can_access_research_package(request.user, record):
+        return _research_query_error(
+            request,
+            ValueError("research_resource_not_found"),
+        )
     return _research_detail_response(
         request,
         record=record,
@@ -940,9 +959,45 @@ def research_package_lineage_view(
     if invalid_id := _stable_research_identity(request, logical_id, version):
         return invalid_id
     try:
-        payload = _research_service().package_lineage(
-            package_id=logical_id, version=version
+        service = _research_service()
+        record = service.get_record(
+            section="packages",
+            logical_id=logical_id,
+            version=version,
+            detail_level="summary",
         )
+        if not can_access_research_package(request.user, record):
+            return _research_query_error(
+                request,
+                ValueError("research_resource_not_found"),
+            )
+        payload = service.package_lineage(package_id=logical_id, version=version)
+        cached_records = {(logical_id, version): record}
+
+        def load_lineage_record(
+            package_id: str, package_version: str
+        ) -> dict[str, Any]:
+            identity = (package_id, package_version)
+            if identity not in cached_records:
+                cached_records[identity] = service.get_record(
+                    section="packages",
+                    logical_id=package_id,
+                    version=package_version,
+                    detail_level="summary",
+                )
+            return cached_records[identity]
+
+        if not can_access_research_package_lineage(
+            request.user,
+            payload,
+            root_id=logical_id,
+            root_version=version,
+            load_record=load_lineage_record,
+        ):
+            return _research_query_error(
+                request,
+                ValueError("research_resource_not_found"),
+            )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _research_query_error(request, exc)
     try:
@@ -984,7 +1039,28 @@ def research_package_diff_view(request: HttpRequest) -> JsonResponse:
     if invalid_id := _stable_research_identity(request, *values.values()):
         return invalid_id
     try:
-        payload = _research_service().package_diff(**values)
+        service = _research_service()
+        left = service.get_record(
+            section="packages",
+            logical_id=values["left_package_id"],
+            version=values["left_version"],
+            detail_level="summary",
+        )
+        right = service.get_record(
+            section="packages",
+            logical_id=values["right_package_id"],
+            version=values["right_version"],
+            detail_level="summary",
+        )
+        if not all(
+            can_access_research_package(request.user, record)
+            for record in (left, right)
+        ):
+            return _research_query_error(
+                request,
+                ValueError("research_resource_not_found"),
+            )
+        payload = service.package_diff(**values)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _research_query_error(request, exc)
     try:

@@ -49,7 +49,7 @@ area N exists. These three decisions must not be collapsed into “COMPLETE”.
 | 5. Operations uses a real sandbox | PASS | E2 | Operations invokes the published Bubblewrap facade; runtime attack test covers host file, network, secret and fork growth |
 | 6. Sandbox absence fails closed | PASS | E2 | missing `bwrap` rejects before strategy sentinel execution; no fallback path |
 | 7. Non-cooperative failure isolation | PASS | E2 | timeout, memory, output and process-group tests followed by a healthy run |
-| 8. Immutable code/data/environment binding | PASS | E2 | receipt schema 9 plus source archive/package/sidecar/plugin/dependency/dataset/seed/cost bindings |
+| 8. Immutable code/data/environment binding | PASS | E2 | receipt schema 11 plus experiment/strategy identity, compact-candidate projection, source archive/package/sidecar/plugin/dependency/dataset/seed/cost, and terminal-holdout bindings |
 | 9. Dirty-tree policy | PASS | E2 | official candidate execution is denied before registry/strategy admission; research-only output is non-authoritative |
 | 10. Final complete test run | PASS | E2 | one `scripts/platform test-all` command; zero failures and zero unexpected skips |
 | 11. Retirement preserves history | PASS | E2/E3 | append-only lifecycle, protected relations and immutable evidence |

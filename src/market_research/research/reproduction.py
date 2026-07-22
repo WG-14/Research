@@ -28,15 +28,20 @@ from .execution_plan import (
     DETERMINISTIC_SINGLE_THREAD_ENVIRONMENT_VARIABLES,
     RESULT_AFFECTING_ENVIRONMENT_VARIABLES,
 )
-from .hashing import content_hash_payload, sha256_prefixed
+from .hashing import (
+    content_hash_payload,
+    logical_evidence_hash_payload,
+    report_content_hash_payload,
+    sha256_prefixed,
+)
 from .strategy_compiler import (
     StrategyCompilationError,
     validate_compiled_strategy_contract,
 )
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 9
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 9
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 10
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 11
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PYTHON_HASH_SEED_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,9})\Z")
@@ -61,6 +66,8 @@ class ReproductionContractError(ValueError):
 class ResearchReproductionFingerprint:
     schema_version: int
     report_kind: str
+    experiment_id: str
+    strategy_name: str
     manifest_hash: str
     research_classification: str
     dataset_fingerprint: str
@@ -77,6 +84,8 @@ class ResearchReproductionFingerprint:
         return {
             "schema_version": self.schema_version,
             "report_kind": self.report_kind,
+            "experiment_id": self.experiment_id,
+            "strategy_name": self.strategy_name,
             "manifest_hash": self.manifest_hash,
             "research_classification": self.research_classification,
             "dataset_fingerprint": self.dataset_fingerprint,
@@ -127,6 +136,9 @@ def build_reproduction_fingerprint(
     report_kind = _required_string(report, "report_kind", "report")
     if report_kind not in {"backtest", "walk_forward"}:
         raise ReproductionContractError("report.report_kind is unsupported")
+    experiment_id = _required_string(report, "experiment_id", "report")
+    if experiment_id != manifest.experiment_id:
+        raise ReproductionContractError("report.experiment_id does not match manifest")
     manifest_hash = _required_sha256(report, "manifest_hash", "report")
     if manifest_hash != manifest.manifest_hash():
         raise ReproductionContractError("report.manifest_hash does not match manifest")
@@ -198,6 +210,8 @@ def build_reproduction_fingerprint(
     material: dict[str, object] = {
         "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
         "report_kind": report_kind,
+        "experiment_id": experiment_id,
+        "strategy_name": strategy_name,
         "manifest_hash": manifest_hash,
         "research_classification": research_classification,
         "dataset_fingerprint": dataset_fingerprint,
@@ -212,6 +226,8 @@ def build_reproduction_fingerprint(
     return ResearchReproductionFingerprint(
         schema_version=REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
         report_kind=report_kind,
+        experiment_id=experiment_id,
+        strategy_name=strategy_name,
         manifest_hash=manifest_hash,
         research_classification=research_classification,
         dataset_fingerprint=dataset_fingerprint,
@@ -234,20 +250,7 @@ def create_reproduction_receipt(
     manifest: ExperimentManifest,
     receipt_path: str | Path,
 ) -> dict[str, object]:
-    fingerprint = build_reproduction_fingerprint(report, manifest=manifest)
-    source_report_hash = _required_sha256(report, "content_hash", "report")
-    payload: dict[str, object] = {
-        "schema_version": REPRODUCTION_RECEIPT_SCHEMA_VERSION,
-        "receipt_type": "research_run_reproduction_receipt",
-        "experiment_id": manifest.experiment_id,
-        "manifest_hash": manifest.manifest_hash(),
-        "source_report_hash": source_report_hash,
-        "stable_fingerprint": fingerprint.as_dict(),
-        "stable_fingerprint_hash": fingerprint.stable_fingerprint_hash,
-    }
-    payload["receipt_content_hash"] = sha256_prefixed(
-        content_hash_payload(payload), label="reproduction_receipt_content"
-    )
+    payload = build_reproduction_receipt(report=report, manifest=manifest)
     target = Path(receipt_path)
     try:
         write_json_atomic_create_or_verify(target, payload)
@@ -255,6 +258,101 @@ def create_reproduction_receipt(
         raise ReproductionContractError(
             f"reproduction_receipt_publication_failed:{target.name}:{exc}"
         ) from exc
+    return payload
+
+
+def build_reproduction_receipt(
+    *,
+    report: Mapping[str, Any],
+    manifest: ExperimentManifest,
+) -> dict[str, object]:
+    """Build a receipt payload without publishing it.
+
+    Terminal validation publishes its result and receipt as one coordinated
+    create-or-verify set, so it needs the same receipt construction contract
+    without an earlier standalone write.
+    """
+
+    fingerprint = build_reproduction_fingerprint(report, manifest=manifest)
+    source_report_hash = _required_sha256(report, "content_hash", "report")
+    return _build_reproduction_receipt_payload(
+        experiment_id=manifest.experiment_id,
+        manifest_hash=manifest.manifest_hash(),
+        source_report_hash=source_report_hash,
+        stable_fingerprint=fingerprint.as_dict(),
+    )
+
+
+def build_reproduction_receipt_from_fingerprint(
+    *,
+    experiment_id: str,
+    manifest_hash: str,
+    source_report_hash: str,
+    stable_fingerprint: Mapping[str, Any],
+    evidence_scope: str | None = None,
+    source_evidence_binding: Mapping[str, Any] | None = None,
+) -> dict[str, object]:
+    """Build a receipt around an already validated executable fingerprint."""
+
+    stable = dict(stable_fingerprint)
+    _validate_fingerprint_payload(stable, context="receipt.stable_fingerprint")
+    return _build_reproduction_receipt_payload(
+        experiment_id=experiment_id,
+        manifest_hash=manifest_hash,
+        source_report_hash=source_report_hash,
+        stable_fingerprint=stable,
+        evidence_scope=evidence_scope,
+        source_evidence_binding=source_evidence_binding,
+    )
+
+
+def _build_reproduction_receipt_payload(
+    *,
+    experiment_id: str,
+    manifest_hash: str,
+    source_report_hash: str,
+    stable_fingerprint: Mapping[str, Any],
+    evidence_scope: str | None = None,
+    source_evidence_binding: Mapping[str, Any] | None = None,
+) -> dict[str, object]:
+    stable = dict(stable_fingerprint)
+    stable_hash = _required_sha256(
+        stable,
+        "stable_fingerprint_hash",
+        "receipt.stable_fingerprint",
+    )
+    _required_sha256({"manifest_hash": manifest_hash}, "manifest_hash", "receipt")
+    _required_sha256(
+        {"source_report_hash": source_report_hash},
+        "source_report_hash",
+        "receipt",
+    )
+    payload: dict[str, object] = {
+        "schema_version": REPRODUCTION_RECEIPT_SCHEMA_VERSION,
+        "receipt_type": "research_run_reproduction_receipt",
+        "experiment_id": experiment_id,
+        "manifest_hash": manifest_hash,
+        "source_report_hash": source_report_hash,
+        "stable_fingerprint": stable,
+        "stable_fingerprint_hash": stable_hash,
+    }
+    if evidence_scope is not None or source_evidence_binding is not None:
+        if evidence_scope != "validated_research_result" or not isinstance(
+            source_evidence_binding, Mapping
+        ):
+            raise ReproductionContractError(
+                "reproduction receipt scoped evidence binding is invalid"
+            )
+        if stable.get("manifest_hash") != manifest_hash:
+            raise ReproductionContractError(
+                "receipt stable fingerprint manifest_hash mismatch"
+            )
+        payload["evidence_scope"] = evidence_scope
+        payload["source_evidence_binding"] = dict(source_evidence_binding)
+        _validate_terminal_source_evidence_binding(payload)
+    payload["receipt_content_hash"] = sha256_prefixed(
+        content_hash_payload(payload), label="reproduction_receipt_content"
+    )
     return payload
 
 
@@ -274,6 +372,20 @@ def load_reproduction_receipt(path: str | Path) -> dict[str, object]:
         )
     if payload.get("receipt_type") != "research_run_reproduction_receipt":
         raise ReproductionContractError("unsupported reproduction receipt type")
+    evidence_scope = payload.get("evidence_scope")
+    source_evidence_binding = payload.get("source_evidence_binding")
+    if (evidence_scope is None) != (source_evidence_binding is None) or (
+        evidence_scope is not None
+        and (
+            evidence_scope != "validated_research_result"
+            or not isinstance(source_evidence_binding, dict)
+        )
+    ):
+        raise ReproductionContractError(
+            "reproduction receipt scoped evidence binding is invalid"
+        )
+    if evidence_scope is not None:
+        _validate_terminal_source_evidence_binding(payload)
     expected_hash = _required_sha256(payload, "receipt_content_hash", "receipt")
     actual_hash = sha256_prefixed(
         content_hash_payload(
@@ -307,6 +419,265 @@ def load_reproduction_receipt(path: str | Path) -> dict[str, object]:
     _required_sha256(payload, "source_report_hash", "receipt")
     _validate_fingerprint_payload(stable, context="receipt.stable_fingerprint")
     return payload
+
+
+def _validate_terminal_source_evidence_binding(
+    receipt: Mapping[str, Any],
+) -> None:
+    binding = receipt.get("source_evidence_binding")
+    if receipt.get("evidence_scope") != "validated_research_result" or not isinstance(
+        binding, Mapping
+    ):
+        raise ReproductionContractError(
+            "reproduction receipt scoped evidence binding is invalid"
+        )
+    required_fields = {
+        "schema_version",
+        "artifact_type",
+        "terminal_source_report_hash",
+        "terminal_source_report_path",
+        "manifest_hash",
+        "selection_report_hash",
+        "selection_reproduction_receipt_hash",
+        "selection_artifact_hash",
+        "final_holdout_confirmation_hash",
+        "final_holdout_result_hash",
+        "final_holdout_query_hash",
+        "final_holdout_data_hash",
+        "final_holdout_fingerprint_hash",
+        "final_holdout_quality_hash",
+        "reproduction_binding_hash",
+        "content_hash",
+    }
+    if set(binding) != required_fields:
+        raise ReproductionContractError(
+            "reproduction receipt terminal evidence fields are invalid"
+        )
+    source_path = binding.get("terminal_source_report_path")
+    if (
+        binding.get("schema_version") != 1
+        or binding.get("artifact_type") != "validated_research_reproduction_binding"
+        or not isinstance(source_path, str)
+        or not source_path
+        or not Path(source_path).is_absolute()
+        or binding.get("terminal_source_report_hash")
+        != receipt.get("source_report_hash")
+        or binding.get("manifest_hash") != receipt.get("manifest_hash")
+    ):
+        raise ReproductionContractError(
+            "reproduction receipt terminal evidence binding is invalid"
+        )
+    for field in required_fields - {
+        "schema_version",
+        "artifact_type",
+        "terminal_source_report_path",
+    }:
+        _required_sha256(binding, field, "receipt.source_evidence_binding")
+    material = {key: value for key, value in binding.items() if key != "content_hash"}
+    if binding.get("content_hash") != sha256_prefixed(
+        material,
+        label="validated_research_reproduction_binding",
+    ):
+        raise ReproductionContractError(
+            "reproduction receipt terminal evidence content hash mismatch"
+        )
+
+
+def validate_reproduction_receipt_report_binding(
+    *,
+    report: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+) -> None:
+    """Prove that a receipt fingerprint was derived from its bound report.
+
+    A receipt content hash only authenticates the receipt itself.  Without this
+    projection check, a caller could point a copied fingerprint at a different
+    hash-valid report and falsely obtain a successful independent comparison.
+    The immutable receipt supplies the manifest-derived assumption hashes; all
+    result, data, candidate, selection, and runtime evidence is recomputed from
+    the report before the two fingerprints are compared.
+    """
+
+    if (
+        receipt.get("schema_version") != REPRODUCTION_RECEIPT_SCHEMA_VERSION
+        or receipt.get("receipt_type") != "research_run_reproduction_receipt"
+    ):
+        raise ReproductionContractError("reproduction receipt contract is invalid")
+    expected_receipt_hash = _required_sha256(receipt, "receipt_content_hash", "receipt")
+    actual_receipt_hash = sha256_prefixed(
+        content_hash_payload(
+            {
+                key: value
+                for key, value in receipt.items()
+                if key != "receipt_content_hash"
+            }
+        ),
+        label="reproduction_receipt_content",
+    )
+    if actual_receipt_hash != expected_receipt_hash:
+        raise ReproductionContractError("reproduction receipt content hash mismatch")
+
+    source_report_hash = _required_sha256(receipt, "source_report_hash", "receipt")
+    report_content_hash = _required_sha256(report, "content_hash", "report")
+    actual_report_hash = sha256_prefixed(
+        report_content_hash_payload(dict(report)),
+        label="stable_final_report_content_hash",
+    )
+    if report_content_hash != actual_report_hash:
+        raise ReproductionContractError("report content hash mismatch")
+    if source_report_hash != report_content_hash:
+        raise ReproductionContractError("receipt source report hash mismatch")
+
+    stable = receipt.get("stable_fingerprint")
+    if not isinstance(stable, Mapping):
+        raise ReproductionContractError("receipt.stable_fingerprint is required")
+    _validate_fingerprint_payload(stable, context="receipt.stable_fingerprint")
+    for field in ("experiment_id", "manifest_hash"):
+        if receipt.get(field) != report.get(field):
+            raise ReproductionContractError(
+                f"receipt.{field} does not match source report"
+            )
+    if receipt.get("evidence_scope") is not None:
+        _validate_terminal_source_evidence_binding(receipt)
+    actual = _report_bound_fingerprint(report=report, contract=stable)
+    comparison = compare_reproduction_fingerprints(stable, actual)
+    if comparison.status != "PASS":
+        paths = ",".join(
+            str(item.get("path") or "unknown") for item in comparison.mismatches
+        )
+        raise ReproductionContractError(
+            "reproduction receipt report fingerprint mismatch:" + paths
+        )
+
+
+def _report_bound_fingerprint(
+    *,
+    report: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    report_kind = _required_string(report, "report_kind", "report")
+    experiment_id = _required_string(report, "experiment_id", "report")
+    strategy_name = _required_string(report, "strategy_name", "report")
+    manifest_hash = _required_sha256(report, "manifest_hash", "report")
+    research_classification = _required_string(
+        report, "research_classification", "report"
+    )
+    for field, actual in (
+        ("report_kind", report_kind),
+        ("experiment_id", experiment_id),
+        ("strategy_name", strategy_name),
+        ("manifest_hash", manifest_hash),
+        ("research_classification", research_classification),
+    ):
+        if contract.get(field) != actual:
+            raise ReproductionContractError(
+                f"report.{field} does not match receipt fingerprint"
+            )
+
+    dataset_fingerprint = _required_sha256(report, "dataset_content_hash", "report")
+    dataset_split_hashes = _dataset_split_hashes(report)
+    candidates_value = report.get("candidates")
+    if not isinstance(candidates_value, list) or not candidates_value:
+        raise ReproductionContractError(
+            "report.candidates is required and must be non-empty"
+        )
+    candidates = tuple(
+        sorted(
+            (_candidate_fingerprint(candidate) for candidate in candidates_value),
+            key=_candidate_sort_key,
+        )
+    )
+    strategy_contract_hashes = tuple(
+        sorted({str(item["strategy_plugin_contract_hash"]) for item in candidates})
+    )
+
+    assumptions_value = contract.get("execution_assumption_hashes")
+    if not isinstance(assumptions_value, list):
+        raise ReproductionContractError(
+            "receipt.stable_fingerprint.execution_assumption_hashes is required"
+        )
+    assumptions: tuple[dict[str, str], ...] = tuple(
+        {
+            "name": _required_string(
+                item,
+                "name",
+                "receipt.stable_fingerprint.execution_assumption_hashes",
+            ),
+            "hash": _required_sha256(
+                item,
+                "hash",
+                "receipt.stable_fingerprint.execution_assumption_hashes",
+            ),
+        }
+        for item in assumptions_value
+        if isinstance(item, Mapping)
+    )
+    if len(assumptions) != len(assumptions_value):
+        raise ReproductionContractError(
+            "receipt.stable_fingerprint.execution_assumption_hashes is invalid"
+        )
+    expected_assumption_names = {
+        "cost_model",
+        "execution_model",
+        "execution_timing",
+        "portfolio_policy",
+        "risk_policy",
+        "simulation_seed_scope",
+        "simulation_policy",
+    }
+    if {item["name"] for item in assumptions} != expected_assumption_names:
+        raise ReproductionContractError(
+            "receipt.stable_fingerprint.execution_assumption_hashes is incomplete"
+        )
+    _assert_report_execution_bindings(report, assumptions)
+    expected_assumptions = {item["name"]: item["hash"] for item in assumptions}
+    if (
+        _required_sha256(report, "risk_policy_hash", "report")
+        != expected_assumptions["risk_policy"]
+    ):
+        raise ReproductionContractError(
+            "report.risk_policy_hash does not match receipt fingerprint"
+        )
+
+    strict_environment = _strict_environment_fingerprint(report)
+    strict_environment_hash = sha256_prefixed(
+        strict_environment,
+        label="reproduction_strict_environment",
+    )
+    final_selection = {
+        "best_candidate_id": report.get("best_candidate_id"),
+        "selected_candidate_id": report.get("selected_candidate_id"),
+        "validation_eligibility_status": _required_string(
+            report, "validation_eligibility_gate_result", "report"
+        ),
+        "statistical_gate_result": report.get("statistical_gate_result"),
+        "final_selection_gate_result": report.get("final_selection_gate_result"),
+        "selection_artifact_hash": report.get("selection_artifact_hash"),
+        "final_holdout_confirmation_hash": report.get(
+            "final_holdout_confirmation_hash"
+        ),
+    }
+    material: dict[str, Any] = {
+        "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
+        "report_kind": report_kind,
+        "experiment_id": experiment_id,
+        "strategy_name": strategy_name,
+        "manifest_hash": manifest_hash,
+        "research_classification": research_classification,
+        "dataset_fingerprint": dataset_fingerprint,
+        "dataset_split_hashes": list(dataset_split_hashes),
+        "strategy_contract_hashes": list(strategy_contract_hashes),
+        "execution_assumption_hashes": [dict(item) for item in assumptions],
+        "strict_environment": strict_environment,
+        "strict_environment_hash": strict_environment_hash,
+        "candidate_fingerprints": list(candidates),
+        "final_selection": final_selection,
+    }
+    material["stable_fingerprint_hash"] = sha256_prefixed(
+        material,
+        label="reproduction_stable_fingerprint",
+    )
+    return material
 
 
 def compare_reproduction_fingerprints(
@@ -417,11 +788,11 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     candidate_id = _required_string(candidate, "parameter_candidate_id", "candidate")
     precomputed = candidate.get("reproduction_candidate_fingerprint")
     if precomputed is not None:
-        _validate_candidate_fingerprint(precomputed, context="report")
         if not isinstance(precomputed, dict):
             raise ReproductionContractError(
                 "candidate.reproduction_candidate_fingerprint must be an object"
             )
+        _validate_candidate_fingerprint(precomputed, context="report")
         if precomputed.get("candidate_id") != candidate_id:
             raise ReproductionContractError(
                 f"candidate {candidate_id}.reproduction fingerprint identity mismatch"
@@ -463,7 +834,12 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
                 raise ReproductionContractError(
                     f"candidate {candidate_id}.gate_fail_reasons compact fingerprint mismatch"
                 )
-        return dict(precomputed)
+        fingerprint = dict(precomputed)
+        fingerprint["report_candidate_projection_hash"] = (
+            _report_candidate_projection_hash(candidate)
+        )
+        _validate_candidate_fingerprint(fingerprint, context="report")
+        return fingerprint
     scenarios_value = candidate.get("scenario_results")
     if not isinstance(scenarios_value, list) or not scenarios_value:
         raise ReproductionContractError(
@@ -561,7 +937,7 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
             key=_scenario_sort_key,
         )
     )
-    fingerprint: dict[str, object] = {
+    fingerprint = {
         "candidate_id": candidate_id,
         "effective_strategy_parameters_hash": effective_hash,
         "strategy_spec_hash": _required_sha256(
@@ -585,9 +961,38 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
         ),
         "primary_scenario_id": primary_scenario_id,
         "scenarios": list(scenarios),
+        "report_candidate_projection_hash": _report_candidate_projection_hash(
+            candidate
+        ),
     }
     _validate_candidate_fingerprint(fingerprint, context="candidate")
     return fingerprint
+
+
+def _report_candidate_projection_hash(candidate: Mapping[str, Any]) -> str:
+    """Bind every logical field visible in the report's candidate projection."""
+
+    projected = logical_evidence_hash_payload(
+        {
+            key: value
+            for key, value in candidate.items()
+            if key
+            not in {
+                "reproduction_candidate_fingerprint",
+                # These hashes summarize the full external candidate artifact.
+                # Clean isolated replays can legitimately produce different
+                # physical/profile aliases while retaining identical compact
+                # semantic bodies.  The full executable fingerprint binds the
+                # underlying behavior, ledger, metric, and contract hashes.
+                "candidate_profile_hash",
+                "candidate_payload_hash",
+            }
+        }
+    )
+    return sha256_prefixed(
+        projected,
+        label="reproduction_report_candidate_projection",
+    )
 
 
 def candidate_reproduction_fingerprint(candidate: dict[str, Any]) -> dict[str, object]:
@@ -1068,7 +1473,7 @@ def _source_archive_identity(
 ) -> dict[str, object] | None:
     value = environment.get("source_archive")
     if value is None:
-        # Compatibility for schema-v9 receipts created before source archives
+        # Compatibility for schema-v9 fingerprints created before source archives
         # became mandatory for newly executed repository runs.
         return None
     if not isinstance(value, dict):
@@ -1116,6 +1521,8 @@ def _validate_fingerprint_payload(payload: Mapping[str, Any], *, context: str) -
     report_kind = _required_string(payload, "report_kind", context)
     if report_kind not in {"backtest", "walk_forward"}:
         raise ReproductionContractError(f"{context}.report_kind is unsupported")
+    _required_string(payload, "experiment_id", context)
+    _required_string(payload, "strategy_name", context)
     _required_sha256(payload, "manifest_hash", context)
     _required_string(payload, "research_classification", context)
     _required_sha256(payload, "dataset_fingerprint", context)
@@ -1460,6 +1867,7 @@ def _validate_candidate_fingerprint(candidate: Any, *, context: str) -> None:
     _required_sha256(candidate, "strategy_plugin_contract_hash", candidate_context)
     _required_sha256(candidate, "strategy_registry_hash", candidate_context)
     _required_sha256(candidate, "compiled_strategy_contract_hash", candidate_context)
+    _required_sha256(candidate, "report_candidate_projection_hash", candidate_context)
     _required_string(candidate, "acceptance_gate_status", candidate_context)
     _string_list(
         candidate.get("gate_fail_reasons"), f"{candidate_context}.gate_fail_reasons"

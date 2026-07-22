@@ -112,6 +112,10 @@ def test_approval_cli_rejects_report_with_stale_content_hash(tmp_path: Path) -> 
         reviewer_id="approver-a",
         rationale="review complete",
         resolved_requirement_ids=(),
+        verification_id="unresolved-verification",
+        verification_version="1",
+        verification_hash="sha256:" + "0" * 64,
+        originator_ids=("researcher-a",),
         out_path=str(tmp_path / "approval.json"),
     )
     assert rc == 1
@@ -139,6 +143,10 @@ def test_approval_cli_rejects_nonpassing_validated_result(tmp_path: Path) -> Non
         reviewer_id="approver-a",
         rationale="must not approve failed evidence",
         resolved_requirement_ids=(),
+        verification_id="unresolved-verification",
+        verification_version="1",
+        verification_hash="sha256:" + "0" * 64,
+        originator_ids=("researcher-a",),
         out_path=str(tmp_path / "approval.json"),
     )
 
@@ -170,6 +178,10 @@ def test_approval_cli_rejects_pass_summary_with_failed_stage(
         reviewer_id="approver-a",
         rationale="must not approve contradictory evidence",
         resolved_requirement_ids=(),
+        verification_id="unresolved-verification",
+        verification_version="1",
+        verification_hash="sha256:" + "0" * 64,
+        originator_ids=("researcher-a",),
         out_path=str(tmp_path / "approval.json"),
     )
 

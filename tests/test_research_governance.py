@@ -23,6 +23,11 @@ from market_research.research.governance import (
     validate_strategy_approval,
 )
 from market_research.settings import ResearchSettings
+from tests.independent_verification_fixture import (
+    fixture_terminal_source_report,
+    publish_failed_verification,
+    publish_pass_verification,
+)
 
 
 def _manager(tmp_path: Path) -> ResearchPathManager:
@@ -41,7 +46,36 @@ def _manager(tmp_path: Path) -> ResearchPathManager:
 
 
 def _hash(char: str) -> str:
+    if char == "5":
+        return str(
+            fixture_terminal_source_report(
+                experiment_id="governance-fixture",
+                manifest_hash="sha256:" + "e" * 64,
+            )["content_hash"]
+        )
     return "sha256:" + char * 64
+
+
+def _verification_kwargs(
+    manager: ResearchPathManager,
+    *,
+    source_report_hash: str | None = None,
+    verifier_id: str = "independent-verifier-a",
+) -> dict[str, object]:
+    result = publish_pass_verification(
+        manager=manager,
+        verification_id=f"candidate-a-verification-{verifier_id}",
+        verifier_id=verifier_id,
+        experiment_id="governance-fixture",
+        source_report_hash=source_report_hash or _hash("5"),
+        manifest_hash=_hash("e"),
+    )
+    return {
+        "independent_verification_ref": result.ref(),
+        "experiment_id": result.experiment_id,
+        "research_version": result.research_version,
+        "originator_actor_ids": frozenset({"researcher-a"}),
+    }
 
 
 def test_hypothesis_and_strategy_lifecycles_are_independent_and_hash_chained(
@@ -528,6 +562,7 @@ def test_changes_requested_must_be_resolved_before_human_approval(
         reviewer_id="approver-a",
         rationale="cost sensitivity requirement resolved",
         resolved_requirement_ids=("REQ-1",),
+        **_verification_kwargs(manager),
     )
     assert (
         validate_strategy_approval(
@@ -569,6 +604,7 @@ def test_approval_is_bound_to_report_candidate_and_current_state(
         final_holdout_confirmation_hash=_hash("3"),
         reviewer_id="approver-a",
         rationale="economic and overfit review passed",
+        **_verification_kwargs(manager),
     )
     assert "strategy_approval_source_report_mismatch" in validate_strategy_approval(
         approval,
@@ -638,6 +674,7 @@ def test_approval_rejects_copied_noncanonical_governance_registry(
         final_holdout_confirmation_hash=_hash("3"),
         reviewer_id="approver-a",
         rationale="economic and overfit review passed",
+        **_verification_kwargs(manager),
     )
     canonical_path = governance_registry_path(manager)
     copied_path = tmp_path / "copied-governance.jsonl"
@@ -745,6 +782,7 @@ def _approval_kwargs(
     reviewer_id: str = "approver-a",
     rationale: str = "independent approval",
     approval_request_id: str | None = None,
+    verifier_id: str = "independent-verifier-a",
 ) -> dict[str, object]:
     return {
         "manager": manager,
@@ -760,7 +798,109 @@ def _approval_kwargs(
         "reviewer_id": reviewer_id,
         "rationale": rationale,
         "approval_request_id": approval_request_id,
+        **_verification_kwargs(manager, verifier_id=verifier_id),
     }
+
+
+def test_approval_requires_pass_from_a_distinct_independent_verifier(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    missing = _approval_kwargs(manager, subject, hypothesis)
+    missing.pop("independent_verification_ref")
+
+    with pytest.raises(GovernanceError, match="independent_verification_required"):
+        approve_strategy_candidate(**missing)
+
+    with pytest.raises(
+        GovernanceError,
+        match="independent_verifier_separation_violation",
+    ):
+        approve_strategy_candidate(
+            **_approval_kwargs(
+                manager,
+                subject,
+                hypothesis,
+                verifier_id="approver-a",
+            )
+        )
+
+    with pytest.raises(GovernanceError, match="originator_ids_required"):
+        without_originator = _approval_kwargs(manager, subject, hypothesis)
+        without_originator["originator_actor_ids"] = frozenset()
+        approve_strategy_candidate(**without_originator)
+
+    with pytest.raises(
+        GovernanceError,
+        match="independent_verifier_separation_violation",
+    ):
+        approve_strategy_candidate(
+            **_approval_kwargs(
+                manager,
+                subject,
+                hypothesis,
+                verifier_id="researcher-a",
+            )
+        )
+
+    drift = publish_failed_verification(
+        manager=manager,
+        verification_id="candidate-a-verification-drift",
+        verifier_id="independent-verifier-b",
+        experiment_id="governance-fixture",
+        source_report_hash=_hash("5"),
+        manifest_hash=_hash("e"),
+    )
+    request = _approval_kwargs(manager, subject, hypothesis)
+    request.update(
+        independent_verification_ref=drift.ref(),
+        experiment_id=drift.experiment_id,
+        research_version=drift.research_version,
+    )
+    with pytest.raises(GovernanceError, match="verification_not_passed"):
+        approve_strategy_candidate(**request)
+
+
+def test_approval_rejects_future_ordering_and_legacy_v1_artifact(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    request = _approval_kwargs(manager, subject, hypothesis)
+    request["decided_at"] = "2018-12-31T23:59:59+00:00"
+    with pytest.raises(
+        GovernanceError,
+        match="independent_verification_after_approval",
+    ):
+        approve_strategy_candidate(**request)
+
+    approval = approve_strategy_candidate(
+        **_approval_kwargs(manager, subject, hypothesis)
+    )
+    legacy = {**approval, "schema_version": 1}
+    legacy["content_hash"] = sha256_prefixed(
+        content_hash_payload(
+            {key: value for key, value in legacy.items() if key != "content_hash"}
+        )
+    )
+    reasons = validate_strategy_approval(
+        legacy,
+        source_report_hash=_hash("5"),
+        selected_candidate_id="candidate-a",
+        final_holdout_confirmation_hash=_hash("3"),
+        hypothesis_id="edge",
+        hypothesis_version="1",
+        hypothesis_contract_hash=_hash("4"),
+        strategy_name="noop_baseline",
+        strategy_version="v1",
+        strategy_plugin_contract_hash=_hash("a"),
+        effective_strategy_parameters_hash=_hash("b"),
+        manager=manager,
+    )
+    assert reasons == ["strategy_approval_legacy_v1_rejected_unverified"]
 
 
 def test_approval_exact_replay_returns_one_atomic_pair_and_key_conflict_fails(

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from market_research.paths import ResearchPathManager
+from market_research.research.hashing import (
+    report_content_hash_payload,
+    sha256_prefixed,
+)
 from market_research.research_composition import load_builtin_manifest as load_manifest
 from market_research.research.validation_protocol import run_research_backtest
 from market_research.research_composition import builtin_strategy_registry
@@ -42,4 +47,27 @@ def test_research_only_sqlite_completion_policy_is_explicit(tmp_path: Path) -> N
     assert all(
         row["artifact_content_hash"] is None
         for row in report["dataset_splits"].values()
+    )
+    published = json.loads(
+        manager.report_path(
+            "research", "noop_success_import_boundary", "backtest_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert published["reproduction_receipt_status"] == (
+        "UNAVAILABLE_MUTABLE_SOURCE_POLICY_A"
+    )
+    assert published["reproduction_receipt_reason"] == (
+        "mutable_dataset_source_not_verified_immutable_artifact"
+    )
+    assert (
+        "authoritative_reproduction_receipt_unavailable_mutable_source"
+        in published["warnings"]
+    )
+    assert published["content_hash"] == sha256_prefixed(
+        report_content_hash_payload(published)
+    )
+    tampered = dict(published)
+    tampered["reproduction_receipt_reason"] = "different_reason"
+    assert tampered["content_hash"] != sha256_prefixed(
+        report_content_hash_payload(tampered)
     )

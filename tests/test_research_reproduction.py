@@ -171,7 +171,6 @@ def test_dirty_exploratory_run_is_explicitly_receipt_ineligible(
 
     _attach_authoritative_reproduction_receipt(
         report=report,
-        full_candidates=[],
         manifest=load_manifest(manifest_path),
         report_path=tmp_path / "report.json",
     )
@@ -458,6 +457,8 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
     fingerprint = {
         "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
         "report_kind": "backtest",
+        "experiment_id": "experiment_a",
+        "strategy_name": "strategy_a",
         "manifest_hash": digest("manifest"),
         "research_classification": "research_only",
         "dataset_fingerprint": digest("dataset"),
@@ -493,6 +494,9 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
                 "strategy_plugin_contract_hash": digest("plugin"),
                 "strategy_registry_hash": digest("registry"),
                 "compiled_strategy_contract_hash": digest("compiled"),
+                "report_candidate_projection_hash": digest(
+                    "candidate-report-projection"
+                ),
                 "acceptance_gate_status": "PASS",
                 "gate_fail_reasons": [],
                 "primary_scenario_id": "base",

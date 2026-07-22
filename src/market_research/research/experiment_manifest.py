@@ -70,6 +70,11 @@ from .etf_nav_contract import (
     EtfNavHistory,
     parse_etf_nav_history,
 )
+from .temporal_validation import (
+    NestedTemporalValidationConfig,
+    TemporalValidationError,
+    parse_nested_temporal_validation_config,
+)
 
 if TYPE_CHECKING:
     from .strategy_registry import StrategyRegistry
@@ -593,14 +598,18 @@ class WalkForwardConfig:
     test_window_days: int
     step_days: int
     min_windows: int
+    temporal_validation: NestedTemporalValidationConfig | None = None
 
-    def as_dict(self) -> dict[str, int]:
-        return {
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
             "train_window_days": self.train_window_days,
             "test_window_days": self.test_window_days,
             "step_days": self.step_days,
             "min_windows": self.min_windows,
         }
+        if self.temporal_validation is not None:
+            payload["temporal_validation"] = self.temporal_validation.as_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -3906,6 +3915,27 @@ def _parse_walk_forward(value: Any) -> WalkForwardConfig | None:
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("walk_forward must be an object")
+    allowed_fields = {
+        "train_window_days",
+        "test_window_days",
+        "step_days",
+        "min_windows",
+        "temporal_validation",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(
+            f"walk_forward unsupported fields: {','.join(unknown)}"
+        )
+    temporal_value = value.get("temporal_validation")
+    try:
+        temporal_validation = (
+            parse_nested_temporal_validation_config(temporal_value)
+            if temporal_value is not None
+            else None
+        )
+    except TemporalValidationError as exc:
+        raise ManifestValidationError(str(exc)) from exc
     return WalkForwardConfig(
         train_window_days=_positive_int(
             value.get("train_window_days"), "walk_forward.train_window_days"
@@ -3915,6 +3945,7 @@ def _parse_walk_forward(value: Any) -> WalkForwardConfig | None:
         ),
         step_days=_positive_int(value.get("step_days"), "walk_forward.step_days"),
         min_windows=_positive_int(value.get("min_windows"), "walk_forward.min_windows"),
+        temporal_validation=temporal_validation,
     )
 
 

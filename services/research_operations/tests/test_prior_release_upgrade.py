@@ -572,7 +572,7 @@ def test_prior_release_schema_and_data_upgrade_to_current_platform(
             django_migration_count = connection.execute(
                 "SELECT count(*) FROM django_migrations"
             ).fetchone()[0]
-        assert current_portal_head == "0009_resourceaccessgrant"
+        assert current_portal_head == "0010_dataset_resource_access"
         assert import_permission_count == 1
         assert preserved_admin_permission_count == 1
         assert recovery_table == "research_ops.recovery_activation_event"

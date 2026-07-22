@@ -5,11 +5,25 @@ from .experiment_manifest import (
     ManifestValidationError,
     load_manifest,
 )
+from .temporal_validation import (
+    NestedTemporalValidationConfig,
+    NestedTemporalValidationPlan,
+    TemporalLabelInterval,
+    TemporalValidationError,
+    build_nested_temporal_validation_plan,
+    parse_nested_temporal_validation_plan,
+)
 
 __all__ = [
     "ExperimentManifest",
     "ManifestValidationError",
+    "NestedTemporalValidationConfig",
+    "NestedTemporalValidationPlan",
+    "TemporalLabelInterval",
+    "TemporalValidationError",
     "load_manifest",
+    "build_nested_temporal_validation_plan",
+    "parse_nested_temporal_validation_plan",
     "ResearchApplicationService",
     "run_research_validation",
     "build_research_decision_report",
