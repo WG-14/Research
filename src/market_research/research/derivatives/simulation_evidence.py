@@ -1122,6 +1122,27 @@ def _verify_futures_step(step: Mapping[str, object]) -> None:
         raw = step.get(key)
         if raw is not None:
             _verify_content_hash(_object(raw, f"futures_step.{key}"), label, key)
+    raw_quantity_plan = step.get("roll_quantity_plan")
+    if raw_quantity_plan is not None:
+        quantity_plan = _object(
+            raw_quantity_plan,
+            "futures_step.roll_quantity_plan",
+        )
+        _verify_content_hash(
+            quantity_plan,
+            "futures_exposure_preserving_roll_quantity_plan",
+            "roll_quantity_plan",
+        )
+        roll_execution = _object(
+            step.get("roll_execution"),
+            "futures_step.roll_execution",
+        )
+        if roll_execution.get("quantity_plan_hash") != quantity_plan.get(
+            "content_hash"
+        ):
+            raise SimulationEvidenceError(
+                "futures_roll_quantity_plan_execution_unbound"
+            )
     ledger = _object(step.get("ledger"), "futures_step.ledger")
     for position in _objects(ledger.get("positions"), "futures_ledger.positions"):
         _verify_content_hash(position, "futures_position", "futures_position")
@@ -1235,6 +1256,48 @@ def _validate_option_payload(
     for contract in contracts:
         _verify_content_hash(contract, "option_contract", "option_contract")
         contract_id = _text(contract.get("contract_id"), "option_contract.contract_id")
+        contract_multiplier = exact_decimal(
+            contract.get("multiplier"), "option_contract.multiplier"
+        )
+        settlement_type = contract.get("settlement_type")
+        deliverable_terms = (
+            contract.get("deliverable_asset_id"),
+            contract.get("physical_settlement_convention"),
+            contract.get("deliverable_quantity_per_contract"),
+            contract.get("deliverable_contract_multiplier"),
+        )
+        if settlement_type == "PHYSICAL":
+            _text(deliverable_terms[0], "option_contract.deliverable_asset_id")
+            if deliverable_terms[1] not in {
+                "SPOT_STRIKE_EXCHANGE",
+                "FUTURE_POSITION_NO_PRINCIPAL",
+            }:
+                raise SimulationEvidenceError(
+                    "option_contract_settlement_convention_invalid"
+                )
+            deliverable_quantity = exact_decimal(
+                deliverable_terms[2],
+                "option_contract.deliverable_quantity_per_contract",
+            )
+            deliverable_multiplier = exact_decimal(
+                deliverable_terms[3],
+                "option_contract.deliverable_contract_multiplier",
+            )
+            if (
+                deliverable_quantity <= 0
+                or deliverable_multiplier <= 0
+                or deliverable_quantity * deliverable_multiplier != contract_multiplier
+            ):
+                raise SimulationEvidenceError(
+                    "option_contract_deliverable_notional_mismatch"
+                )
+        elif settlement_type == "CASH":
+            if any(item is not None for item in deliverable_terms):
+                raise SimulationEvidenceError(
+                    "cash_option_contract_deliverable_forbidden"
+                )
+        else:
+            raise SimulationEvidenceError("option_contract_settlement_type_invalid")
         contract_by_id[contract_id] = contract
         contract_hash_by_id[contract_id] = _text(
             contract["content_hash"], "option_contract.content_hash"
@@ -1595,6 +1658,7 @@ def _validate_option_payload(
                 "cash_delta",
                 "deliverable_quantity_delta",
                 "deliverable_asset_id",
+                "deliverable_contract_multiplier",
                 "source_position_hash",
                 "early_exercise_decision",
                 "content_hash",
@@ -1890,23 +1954,44 @@ def _validate_option_payload(
         cash_delta = Decimal("0")
         deliverable_delta = Decimal("0")
         deliverable_id: object = None
+        event_deliverable_multiplier: Decimal | None = None
         if exercised > 0:
-            scale = exercised * multiplier
             if lifecycle_contract.get("settlement_type") == "CASH":
+                scale = exercised * multiplier
                 cash_delta = sign * intrinsic * scale
             else:
                 deliverable_id = lifecycle_contract.get("deliverable_asset_id")
+                convention = lifecycle_contract.get("physical_settlement_convention")
+                deliverable_quantity = exact_decimal(
+                    lifecycle_contract.get("deliverable_quantity_per_contract"),
+                    "option_contract.deliverable_quantity_per_contract",
+                )
+                event_deliverable_multiplier = exact_decimal(
+                    lifecycle_contract.get("deliverable_contract_multiplier"),
+                    "option_contract.deliverable_contract_multiplier",
+                )
+                scale = exercised * deliverable_quantity
                 if lifecycle_contract.get("option_type") == "CALL":
                     deliverable_delta = sign * scale
-                    cash_delta = -sign * strike * scale
                 else:
                     deliverable_delta = -sign * scale
-                    cash_delta = sign * strike * scale
+                if convention == "SPOT_STRIKE_EXCHANGE":
+                    cash_delta = (
+                        -sign * strike * scale * event_deliverable_multiplier
+                        if lifecycle_contract.get("option_type") == "CALL"
+                        else sign * strike * scale * event_deliverable_multiplier
+                    )
         if (
             event.get("cash_delta") != decimal_text(cash_delta)
             or event.get("deliverable_quantity_delta")
             != decimal_text(deliverable_delta)
             or event.get("deliverable_asset_id") != deliverable_id
+            or event.get("deliverable_contract_multiplier")
+            != (
+                None
+                if event_deliverable_multiplier is None
+                else decimal_text(event_deliverable_multiplier)
+            )
         ):
             raise SimulationEvidenceError("option_lifecycle_cash_delivery_mismatch")
         event_items.append(

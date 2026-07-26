@@ -22,6 +22,7 @@ from market_research.research.derivatives.options import (
     OptionLifecycleEvent,
     OptionSettlementInput,
     OptionType,
+    PhysicalSettlementConvention,
     SettlementType as OptionSettlementType,
     TransactionSide,
     position_from_fill,
@@ -38,7 +39,10 @@ from market_research.research.multi_asset.market_state import (
     FXQuote,
     MarketState,
     ObservationMetadata,
+    RateQuote,
     SpotQuote,
+    VolatilityPoint,
+    VolatilitySurface,
 )
 from market_research.research.multi_asset.portfolio import (
     AssetClass,
@@ -292,6 +296,7 @@ def _complete_ledger() -> UnifiedPortfolioLedger:
             deliverable_asset_class=AssetClass.SPOT,
             deliverable_currency="USD",
             deliverable_quantity_delta=Decimal("100"),
+            deliverable_multiplier=Decimal("1"),
             deliverable_basis_price=Decimal("100"),
             deliverable_mark_price=Decimal("120"),
             metadata=(("lifecycle_type", "EXERCISE"),),
@@ -411,6 +416,11 @@ def _option_contract() -> OptionContract:
         settlement_at="2026-07-02T10:00:00+00:00",
         price_tick=Decimal("0.01"),
         deliverable_asset_id="UNDERLYING",
+        physical_settlement_convention=(
+            PhysicalSettlementConvention.SPOT_STRIKE_EXCHANGE
+        ),
+        deliverable_quantity_per_contract=Decimal("100"),
+        deliverable_contract_multiplier=Decimal("1"),
     )
 
 
@@ -487,6 +497,7 @@ def test_existing_derivative_adapters_preserve_cash_settlement_and_delivery() ->
         cash_delta=Decimal("-10000"),
         deliverable_quantity_delta=Decimal("100"),
         deliverable_asset_id="UNDERLYING",
+        deliverable_contract_multiplier=Decimal("1"),
         source_position_hash=position.content_hash,
     )
 
@@ -691,6 +702,30 @@ def _market_state() -> MarketState:
                 price=Decimal("120"),
                 currency="USD",
                 unit="USD_per_share",
+                metadata=metadata,
+            ),
+        ),
+        volatility_surfaces=(
+            VolatilitySurface(
+                surface_id="AAPL.vol.surface",
+                underlying_instrument_id="AAPL",
+                quote_currency="USD",
+                points=(
+                    VolatilityPoint(
+                        expiry_at="2026-12-18T21:00:00+00:00",
+                        strike=Decimal("120"),
+                        volatility=Decimal("0.25"),
+                    ),
+                ),
+                metadata=metadata,
+            ),
+        ),
+        rates=(
+            RateQuote(
+                rate_id="USD.30D",
+                currency="USD",
+                tenor_days=30,
+                rate=Decimal("0.04"),
                 metadata=metadata,
             ),
         ),

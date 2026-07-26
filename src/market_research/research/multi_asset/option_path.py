@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
 from market_research.research.hashing import sha256_prefixed
 
@@ -278,6 +278,7 @@ class SurfaceRawPoint:
 class CleanedOptionChain:
     underlying_id: str
     decision_at: datetime
+    market_state_hash: str
     points: tuple[SurfaceRawPoint, ...]
     forward: ForwardEstimate
     policy_hash: str
@@ -287,6 +288,7 @@ class CleanedOptionChain:
     def __post_init__(self) -> None:
         _nonempty(self.underlying_id, "underlying_id")
         _utc(self.decision_at, "decision_at")
+        _nonempty(self.market_state_hash, "market_state_hash")
         if not self.points:
             raise OptionPathError("cleaned chain cannot be empty")
         if any(point.known_at > self.decision_at for point in self.points):
@@ -300,6 +302,7 @@ class CleanedOptionChain:
                 {
                     "underlying_id": self.underlying_id,
                     "decision_at": self.decision_at,
+                    "market_state_hash": self.market_state_hash,
                     "points": [point.content_hash for point in self.points],
                     "forward_hash": self.forward.content_hash,
                     "policy_hash": self.policy_hash,
@@ -323,11 +326,13 @@ class OptionChainCleaner:
         *,
         underlying_id: str,
         decision_at: datetime,
+        market_state_hash: str,
         spot: Decimal,
         forward: ForwardEstimate,
         observations: Sequence[RawOptionObservation],
     ) -> CleanedOptionChain:
         _utc(decision_at, "decision_at")
+        _nonempty(market_state_hash, "market_state_hash")
         if spot <= ZERO:
             raise OptionPathError("spot must be positive")
         if forward.estimated_at > decision_at:
@@ -347,6 +352,7 @@ class OptionChainCleaner:
         return CleanedOptionChain(
             underlying_id=underlying_id,
             decision_at=decision_at,
+            market_state_hash=market_state_hash,
             points=points,
             forward=forward,
             policy_hash=self._policy.content_hash,
@@ -461,6 +467,7 @@ class OptionSelectionPolicy:
     maximum_delta_distance: Decimal
     minimum_liquidity_weight: Decimal
     fallback: DeltaFallback
+    model_specification_hash: str
 
     def __post_init__(self) -> None:
         _nonempty(self.policy_id, "policy_id")
@@ -476,6 +483,10 @@ class OptionSelectionPolicy:
             raise OptionPathError("maximum_delta_distance cannot be negative")
         if not ZERO <= self.minimum_liquidity_weight <= ONE:
             raise OptionPathError("minimum_liquidity_weight must be in [0, 1]")
+        _nonempty(
+            self.model_specification_hash,
+            "selection_policy.model_specification_hash",
+        )
 
     @property
     def content_hash(self) -> str:
@@ -499,6 +510,8 @@ class CalculatedOptionDelta:
     market_state_hash: str
     model_specification_hash: str
     valuation_input_hash: str
+    source_quote_hash: str
+    forward_hash: str
 
     def __post_init__(self) -> None:
         _nonempty(self.contract_id, "calculated_delta.contract_id")
@@ -517,6 +530,8 @@ class CalculatedOptionDelta:
             "market_state_hash",
             "model_specification_hash",
             "valuation_input_hash",
+            "source_quote_hash",
+            "forward_hash",
         ):
             _nonempty(str(getattr(self, field_name)), f"calculated_delta.{field_name}")
 
@@ -530,12 +545,15 @@ class OptionSelectionDecision:
     decision_at: datetime
     chain_hash: str
     policy_hash: str
+    market_state_hash: str
+    model_specification_hash: str
     eligible_contract_ids: tuple[str, ...]
     selected_contract_id: str | None
     selected_expiry: datetime | None
     selected_strike: Decimal | None
     selected_delta: Decimal | None
     selected_delta_evidence_hash: str | None
+    selected_valuation_input_hash: str | None
     delta_distance: Decimal | None
     exact_tolerance_match: bool
     rejection_reason: str | None
@@ -549,6 +567,7 @@ def select_option_contract(
     chain: CleanedOptionChain,
     policy: OptionSelectionPolicy,
     calculated_deltas: Sequence[CalculatedOptionDelta],
+    expected_valuation_input_hashes: Mapping[str, str],
 ) -> OptionSelectionDecision:
     ordered_deltas = tuple(sorted(calculated_deltas, key=lambda item: item.contract_id))
     if not ordered_deltas:
@@ -569,6 +588,25 @@ def select_option_contract(
             "calculated option delta references unknown contract:"
             + ",".join(sorted(unknown_contracts))
         )
+    if set(expected_valuation_input_hashes) != set(delta_by_contract):
+        raise OptionPathError(
+            "calculated option delta valuation input coverage mismatch"
+        )
+    point_by_contract = {point.contract_id: point for point in chain.points}
+    for delta in ordered_deltas:
+        point = point_by_contract[delta.contract_id]
+        if (
+            delta.market_state_hash != chain.market_state_hash
+            or delta.model_specification_hash != policy.model_specification_hash
+            or delta.source_quote_hash != point.quote_hash
+            or delta.forward_hash != point.forward_hash
+            or delta.forward_hash != chain.forward.content_hash
+            or delta.valuation_input_hash
+            != expected_valuation_input_hashes[delta.contract_id]
+        ):
+            raise OptionPathError(
+                f"calculated option delta evidence binding mismatch:{delta.contract_id}"
+            )
 
     candidates: list[tuple[SurfaceRawPoint, CalculatedOptionDelta]] = []
     for point in chain.included_points:
@@ -597,12 +635,15 @@ def select_option_contract(
             decision_at=chain.decision_at,
             chain_hash=chain.content_hash,
             policy_hash=policy.content_hash,
+            market_state_hash=chain.market_state_hash,
+            model_specification_hash=policy.model_specification_hash,
             eligible_contract_ids=(),
             selected_contract_id=None,
             selected_expiry=None,
             selected_strike=None,
             selected_delta=None,
             selected_delta_evidence_hash=None,
+            selected_valuation_input_hash=None,
             delta_distance=None,
             exact_tolerance_match=False,
             rejection_reason="NO_ELIGIBLE_LISTED_CONTRACT",
@@ -615,12 +656,15 @@ def select_option_contract(
             decision_at=chain.decision_at,
             chain_hash=chain.content_hash,
             policy_hash=policy.content_hash,
+            market_state_hash=chain.market_state_hash,
+            model_specification_hash=policy.model_specification_hash,
             eligible_contract_ids=tuple(item.contract_id for item, _ in candidates),
             selected_contract_id=None,
             selected_expiry=None,
             selected_strike=None,
             selected_delta=None,
             selected_delta_evidence_hash=None,
+            selected_valuation_input_hash=None,
             delta_distance=distance,
             exact_tolerance_match=False,
             rejection_reason="NO_CONTRACT_WITHIN_DELTA_TOLERANCE",
@@ -629,12 +673,15 @@ def select_option_contract(
         decision_at=chain.decision_at,
         chain_hash=chain.content_hash,
         policy_hash=policy.content_hash,
+        market_state_hash=chain.market_state_hash,
+        model_specification_hash=policy.model_specification_hash,
         eligible_contract_ids=tuple(item.contract_id for item, _ in candidates),
         selected_contract_id=selected.contract_id,
         selected_expiry=selected.expiry,
         selected_strike=selected.strike,
         selected_delta=selected_delta.delta,
         selected_delta_evidence_hash=selected_delta.content_hash,
+        selected_valuation_input_hash=selected_delta.valuation_input_hash,
         delta_distance=distance,
         exact_tolerance_match=within,
         rejection_reason=None if within else "NEAREST_CONTRACT_FALLBACK",

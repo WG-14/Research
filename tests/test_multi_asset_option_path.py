@@ -27,6 +27,8 @@ from market_research.research.multi_asset.option_path import (
 
 
 AS_OF = datetime(2025, 2, 3, 15, tzinfo=UTC)
+MARKET_STATE_HASH = "sha256:decision-state"
+MODEL_SPECIFICATION_HASH = "sha256:model-specification"
 ATTRIBUTION_POLICY = OptionAttributionPolicy(
     policy_id="vanilla-path-residual-v1",
     version="1",
@@ -81,6 +83,7 @@ def _cleaned_chain() -> CleanedOptionChain:
     return OptionChainCleaner(DEFAULT_OPTION_CLEANING_POLICY).clean(
         underlying_id="underlying:equity",
         decision_at=AS_OF,
+        market_state_hash=MARKET_STATE_HASH,
         spot=Decimal("100"),
         forward=_forward(),
         observations=(
@@ -118,14 +121,23 @@ def _calculated_deltas(
             known_at=known_at,
             delta=delta,
             market_state_hash="sha256:decision-state",
-            model_specification_hash="sha256:model-specification",
+            model_specification_hash=MODEL_SPECIFICATION_HASH,
             valuation_input_hash=f"sha256:valuation-input:{contract_id}",
+            source_quote_hash=f"sha256:{contract_id}",
+            forward_hash=_forward().content_hash,
         )
         for contract_id, delta in (
             ("option:put-95", put_95),
             ("option:put-100", put_100),
         )
     )
+
+
+def _valuation_input_hashes() -> dict[str, str]:
+    return {
+        contract_id: f"sha256:valuation-input:{contract_id}"
+        for contract_id in ("option:put-95", "option:put-100")
+    }
 
 
 def test_cleaning_retains_raw_bid_ask_iv_and_exclusion_evidence() -> None:
@@ -158,9 +170,15 @@ def test_delta_selection_uses_only_real_point_in_time_contracts() -> None:
         maximum_delta_distance=Decimal("0.05"),
         minimum_liquidity_weight=Decimal("0.25"),
         fallback=DeltaFallback.REJECT,
+        model_specification_hash=MODEL_SPECIFICATION_HASH,
     )
 
-    decision = select_option_contract(_cleaned_chain(), policy, _calculated_deltas())
+    decision = select_option_contract(
+        _cleaned_chain(),
+        policy,
+        _calculated_deltas(),
+        _valuation_input_hashes(),
+    )
 
     assert decision.selected_contract_id == "option:put-95"
     assert decision.selected_delta == Decimal("-0.28")
@@ -182,12 +200,14 @@ def test_delta_selection_ignores_supplier_delta_and_uses_model_result() -> None:
         maximum_delta_distance=Decimal("0.05"),
         minimum_liquidity_weight=Decimal("0.25"),
         fallback=DeltaFallback.REJECT,
+        model_specification_hash=MODEL_SPECIFICATION_HASH,
     )
 
     decision = select_option_contract(
         _cleaned_chain(),
         policy,
         _calculated_deltas(put_95=Decimal("-0.60"), put_100=Decimal("-0.31")),
+        _valuation_input_hashes(),
     )
 
     assert decision.selected_contract_id == "option:put-100"
@@ -206,6 +226,7 @@ def test_delta_selection_rejects_future_or_unbound_model_results() -> None:
         maximum_delta_distance=Decimal("0.05"),
         minimum_liquidity_weight=Decimal("0.25"),
         fallback=DeltaFallback.REJECT,
+        model_specification_hash=MODEL_SPECIFICATION_HASH,
     )
     future = AS_OF + timedelta(microseconds=1)
 
@@ -214,9 +235,38 @@ def test_delta_selection_rejects_future_or_unbound_model_results() -> None:
             _cleaned_chain(),
             policy,
             _calculated_deltas(calculated_at=future, known_at=future),
+            _valuation_input_hashes(),
         )
     with pytest.raises(OptionPathError, match="required"):
-        select_option_contract(_cleaned_chain(), policy, ())
+        select_option_contract(
+            _cleaned_chain(),
+            policy,
+            (),
+            {},
+        )
+    with pytest.raises(OptionPathError, match="evidence binding mismatch"):
+        select_option_contract(
+            _cleaned_chain(),
+            policy,
+            tuple(
+                replace(item, market_state_hash="sha256:forged-state")
+                for item in _calculated_deltas()
+            ),
+            _valuation_input_hashes(),
+        )
+    with pytest.raises(OptionPathError, match="evidence binding mismatch"):
+        select_option_contract(
+            _cleaned_chain(),
+            policy,
+            tuple(
+                replace(
+                    item,
+                    valuation_input_hash="sha256:forged-valuation-input",
+                )
+                for item in _calculated_deltas()
+            ),
+            _valuation_input_hashes(),
+        )
 
 
 def test_cleaning_fails_closed_if_snapshot_contains_future_knowledge() -> None:
@@ -230,6 +280,7 @@ def test_cleaning_fails_closed_if_snapshot_contains_future_knowledge() -> None:
         OptionChainCleaner(DEFAULT_OPTION_CLEANING_POLICY).clean(
             underlying_id="underlying:equity",
             decision_at=AS_OF,
+            market_state_hash=MARKET_STATE_HASH,
             spot=Decimal("100"),
             forward=_forward(),
             observations=(future,),

@@ -101,6 +101,13 @@ class SettlementType(StrEnum):
     PHYSICAL = "PHYSICAL"
 
 
+class PhysicalSettlementConvention(StrEnum):
+    """Economic convention for a physically settled option."""
+
+    SPOT_STRIKE_EXCHANGE = "SPOT_STRIKE_EXCHANGE"
+    FUTURE_POSITION_NO_PRINCIPAL = "FUTURE_POSITION_NO_PRINCIPAL"
+
+
 class QuoteState(StrEnum):
     NORMAL = "NORMAL"
     NO_QUOTE = "NO_QUOTE"
@@ -193,6 +200,9 @@ class OptionContract:
     bermudan_exercise_at: tuple[str, ...] = ()
     adjusted_contract: bool = False
     deliverable_asset_id: str | None = None
+    physical_settlement_convention: PhysicalSettlementConvention | None = None
+    deliverable_quantity_per_contract: Decimal | None = None
+    deliverable_contract_multiplier: Decimal | None = None
     content_hash: str = field(init=False)
     schema_version: int = DERIVATIVE_RESEARCH_SCHEMA_VERSION
 
@@ -252,15 +262,53 @@ class OptionContract:
         elif self.bermudan_exercise_at:
             raise DerivativeResearchError("bermudan_schedule_for_non_bermudan_option")
         if self.settlement_type is SettlementType.PHYSICAL:
-            if self.deliverable_asset_id is None:
+            if (
+                self.deliverable_asset_id is None
+                or self.physical_settlement_convention is None
+                or self.deliverable_quantity_per_contract is None
+                or self.deliverable_contract_multiplier is None
+            ):
                 raise DerivativeResearchError(
-                    "physical_option_deliverable_asset_required"
+                    "physical_option_deliverable_terms_required"
                 )
             require_stable_id(
                 self.deliverable_asset_id,
                 "option_contract.deliverable_asset_id",
             )
-        elif self.deliverable_asset_id is not None:
+            _require_enum(
+                self.physical_settlement_convention,
+                PhysicalSettlementConvention,
+                "option_contract.physical_settlement_convention",
+            )
+            deliverable_quantity = exact_decimal(
+                self.deliverable_quantity_per_contract,
+                "option_contract.deliverable_quantity_per_contract",
+                positive=True,
+            )
+            deliverable_multiplier = exact_decimal(
+                self.deliverable_contract_multiplier,
+                "option_contract.deliverable_contract_multiplier",
+                positive=True,
+            )
+            if deliverable_quantity * deliverable_multiplier != multiplier:
+                raise DerivativeResearchError(
+                    "physical_option_deliverable_notional_mismatch"
+                )
+            object.__setattr__(
+                self, "deliverable_quantity_per_contract", deliverable_quantity
+            )
+            object.__setattr__(
+                self, "deliverable_contract_multiplier", deliverable_multiplier
+            )
+        elif any(
+            item is not None
+            for item in (
+                self.deliverable_asset_id,
+                self.physical_settlement_convention,
+                self.deliverable_quantity_per_contract,
+                self.deliverable_contract_multiplier,
+            )
+        ):
             raise DerivativeResearchError("cash_option_cannot_declare_deliverable")
         object.__setattr__(
             self,
@@ -315,6 +363,21 @@ class OptionContract:
             "bermudan_exercise_at": list(self.bermudan_exercise_at),
             "adjusted_contract": self.adjusted_contract,
             "deliverable_asset_id": self.deliverable_asset_id,
+            "physical_settlement_convention": (
+                None
+                if self.physical_settlement_convention is None
+                else self.physical_settlement_convention.value
+            ),
+            "deliverable_quantity_per_contract": (
+                None
+                if self.deliverable_quantity_per_contract is None
+                else decimal_text(self.deliverable_quantity_per_contract)
+            ),
+            "deliverable_contract_multiplier": (
+                None
+                if self.deliverable_contract_multiplier is None
+                else decimal_text(self.deliverable_contract_multiplier)
+            ),
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -2471,6 +2534,7 @@ class OptionLifecycleEvent:
     cash_delta: Decimal
     deliverable_quantity_delta: Decimal
     deliverable_asset_id: str | None
+    deliverable_contract_multiplier: Decimal | None
     source_position_hash: str
     early_exercise_decision: EarlyExerciseDecision | None = None
     content_hash: str = field(init=False)
@@ -2510,6 +2574,29 @@ class OptionLifecycleEvent:
             require_stable_id(
                 self.deliverable_asset_id, "option_lifecycle.deliverable_asset_id"
             )
+        if self.deliverable_quantity_delta == _ZERO:
+            if (
+                self.deliverable_asset_id is not None
+                or self.deliverable_contract_multiplier is not None
+            ):
+                raise DerivativeResearchError(
+                    "option_lifecycle_empty_deliverable_terms"
+                )
+        elif (
+            self.deliverable_asset_id is None
+            or self.deliverable_contract_multiplier is None
+        ):
+            raise DerivativeResearchError("option_lifecycle_deliverable_terms_required")
+        else:
+            object.__setattr__(
+                self,
+                "deliverable_contract_multiplier",
+                exact_decimal(
+                    self.deliverable_contract_multiplier,
+                    "option_lifecycle.deliverable_contract_multiplier",
+                    positive=True,
+                ),
+            )
         require_hash(self.source_position_hash, "option_lifecycle.position_hash")
         if self.early_exercise_decision is not None and not isinstance(
             self.early_exercise_decision, EarlyExerciseDecision
@@ -2538,6 +2625,11 @@ class OptionLifecycleEvent:
             "cash_delta": decimal_text(self.cash_delta),
             "deliverable_quantity_delta": decimal_text(self.deliverable_quantity_delta),
             "deliverable_asset_id": self.deliverable_asset_id,
+            "deliverable_contract_multiplier": (
+                None
+                if self.deliverable_contract_multiplier is None
+                else decimal_text(self.deliverable_contract_multiplier)
+            ),
             "source_position_hash": self.source_position_hash,
             "early_exercise_decision": (
                 None
@@ -2622,18 +2714,38 @@ def simulate_option_lifecycle(
     cash_delta = _ZERO
     deliverable_delta = _ZERO
     deliverable_id: str | None = None
+    deliverable_multiplier: Decimal | None = None
     if exercised > 0:
-        scale = exercised * contract.multiplier
         if contract.settlement_type is SettlementType.CASH:
+            scale = exercised * contract.multiplier
             cash_delta = position_sign * intrinsic * scale
         else:
             deliverable_id = contract.deliverable_asset_id
+            deliverable_quantity = contract.deliverable_quantity_per_contract
+            deliverable_multiplier = contract.deliverable_contract_multiplier
+            convention = contract.physical_settlement_convention
+            if (
+                deliverable_quantity is None
+                or deliverable_multiplier is None
+                or convention is None
+            ):
+                raise DerivativeResearchError(
+                    "physical_option_deliverable_terms_required"
+                )
+            scale = exercised * deliverable_quantity
             if contract.option_type is OptionType.CALL:
                 deliverable_delta = position_sign * scale
-                cash_delta = -position_sign * contract.strike * scale
             else:
                 deliverable_delta = -position_sign * scale
-                cash_delta = position_sign * contract.strike * scale
+            if convention is PhysicalSettlementConvention.SPOT_STRIKE_EXCHANGE:
+                cash_delta = (
+                    -position_sign * contract.strike * scale * deliverable_multiplier
+                    if contract.option_type is OptionType.CALL
+                    else position_sign
+                    * contract.strike
+                    * scale
+                    * deliverable_multiplier
+                )
     return OptionLifecycleEvent(
         event_id=event_id,
         event_type=event_type,
@@ -2647,6 +2759,7 @@ def simulate_option_lifecycle(
         cash_delta=cash_delta,
         deliverable_quantity_delta=deliverable_delta,
         deliverable_asset_id=deliverable_id,
+        deliverable_contract_multiplier=deliverable_multiplier,
         source_position_hash=position.content_hash,
         early_exercise_decision=early_exercise_decision,
     )
@@ -2921,21 +3034,45 @@ def unwind_multi_leg_execution(
     complete = bool(attempts) and all(
         item.status is FillStatus.FILLED for item in attempts
     )
-    committed = tuple(attempts) if complete else ()
+    committed = tuple(item for item in attempts if item.status is FillStatus.FILLED)
+    remaining_contract_ids = tuple(
+        sorted(
+            {
+                original.contract.contract_id
+                for original, attempt in zip(
+                    reversed(result.committed_fills),
+                    attempts,
+                    strict=True,
+                )
+                if attempt.status is not FillStatus.FILLED
+            }
+        )
+    )
+    state = (
+        MultiLegState.UNWOUND
+        if complete
+        else MultiLegState.PARTIAL
+        if committed
+        else MultiLegState.FAILED
+    )
     return MultiLegExecutionResult(
         group_id=unwind_group_id,
         order_hash=result.order_hash,
         policy=MultiLegExecutionPolicy.SEQUENTIAL,
-        state=MultiLegState.UNWOUND if complete else MultiLegState.FAILED,
+        state=state,
         attempted_fills=tuple(attempts),
         committed_fills=committed,
-        legging_exposure_contract_ids=()
-        if complete
-        else tuple(item.contract.contract_id for item in result.committed_fills),
+        legging_exposure_contract_ids=remaining_contract_ids,
         net_cash_flow=sum((item.cash_flow for item in committed), _ZERO),
         opened_at=filled_at,
         finished_at=filled_at,
-        failure_code=None if complete else "multileg_unwind_failed",
+        failure_code=(
+            None
+            if complete
+            else "multileg_unwind_partial"
+            if committed
+            else "multileg_unwind_failed"
+        ),
     )
 
 

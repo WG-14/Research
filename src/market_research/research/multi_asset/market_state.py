@@ -17,9 +17,13 @@ from enum import StrEnum
 from typing import Callable, Iterable, TypeVar
 
 from ..hashing import sha256_prefixed
+from ..market_calendar_contract import (
+    MarketCalendarAuthority,
+    MarketCalendarContractError,
+)
 
 
-MARKET_STATE_SCHEMA_VERSION = 2
+MARKET_STATE_SCHEMA_VERSION = 3
 _STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _CURRENCY = re.compile(r"^[A-Z][A-Z0-9]{2,11}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -331,6 +335,91 @@ class RateQuote:
             "currency": self.currency,
             "tenor_days": self.tenor_days,
             "rate": _decimal_text(self.rate),
+            "unit": self.unit,
+            "metadata": self.metadata.as_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class FundingRateQuote:
+    """Point-in-time financing input distinct from a price observation."""
+
+    funding_rate_id: str
+    instrument_id: str
+    currency: str
+    annualized_rate: Decimal
+    settlement_at: str
+    interval_hours: int
+    metadata: ObservationMetadata
+    unit: str = "decimal_rate"
+
+    def __post_init__(self) -> None:
+        _require_id(self.funding_rate_id, "funding_rate.funding_rate_id")
+        _require_id(self.instrument_id, "funding_rate.instrument_id")
+        _require_currency(self.currency, "funding_rate.currency")
+        _decimal(self.annualized_rate, "funding_rate.annualized_rate")
+        object.__setattr__(
+            self,
+            "settlement_at",
+            _timestamp_text(self.settlement_at, "funding_rate.settlement_at"),
+        )
+        if (
+            isinstance(self.interval_hours, bool)
+            or not isinstance(self.interval_hours, int)
+            or self.interval_hours <= 0
+        ):
+            raise MarketStateError("funding_rate.interval_hours_invalid")
+        if self.unit != "decimal_rate":
+            raise MarketStateError("funding_rate.unit_must_be_decimal_rate")
+        if not isinstance(self.metadata, ObservationMetadata):
+            raise MarketStateError("funding_rate.metadata_required")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "funding_rate_id": self.funding_rate_id,
+            "instrument_id": self.instrument_id,
+            "currency": self.currency,
+            "annualized_rate": _decimal_text(self.annualized_rate),
+            "settlement_at": self.settlement_at,
+            "interval_hours": self.interval_hours,
+            "unit": self.unit,
+            "metadata": self.metadata.as_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DividendYieldAssumption:
+    """Versioned carry assumption used by forward and option valuation."""
+
+    assumption_id: str
+    underlying_instrument_id: str
+    currency: str
+    annualized_yield: Decimal
+    model_hash: str
+    metadata: ObservationMetadata
+    unit: str = "decimal_rate"
+
+    def __post_init__(self) -> None:
+        _require_id(self.assumption_id, "dividend_yield.assumption_id")
+        _require_id(
+            self.underlying_instrument_id,
+            "dividend_yield.underlying_instrument_id",
+        )
+        _require_currency(self.currency, "dividend_yield.currency")
+        _decimal(self.annualized_yield, "dividend_yield.annualized_yield")
+        _require_hash(self.model_hash, "dividend_yield.model_hash")
+        if self.unit != "decimal_rate":
+            raise MarketStateError("dividend_yield.unit_must_be_decimal_rate")
+        if not isinstance(self.metadata, ObservationMetadata):
+            raise MarketStateError("dividend_yield.metadata_required")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "assumption_id": self.assumption_id,
+            "underlying_instrument_id": self.underlying_instrument_id,
+            "currency": self.currency,
+            "annualized_yield": _decimal_text(self.annualized_yield),
+            "model_hash": self.model_hash,
             "unit": self.unit,
             "metadata": self.metadata.as_dict(),
         }
@@ -1014,6 +1103,18 @@ class MarketState:
         default=(),
         kw_only=True,
     )
+    calendar_authorities: tuple[MarketCalendarAuthority, ...] = field(
+        default=(),
+        kw_only=True,
+    )
+    funding_rates: tuple[FundingRateQuote, ...] = field(
+        default=(),
+        kw_only=True,
+    )
+    dividend_yields: tuple[DividendYieldAssumption, ...] = field(
+        default=(),
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
         if self.schema_version != MARKET_STATE_SCHEMA_VERSION:
@@ -1041,6 +1142,9 @@ class MarketState:
             "liquidity_quotes",
             "futures_curves",
             "option_chains",
+            "calendar_authorities",
+            "funding_rates",
+            "dividend_yields",
         ):
             object.__setattr__(
                 self,
@@ -1055,10 +1159,37 @@ class MarketState:
             "fx_quotes",
             tuple(sorted(self.fx_quotes, key=lambda item: item.pair)),
         )
+        self._validate_calendar_authorities()
         self._validate_unique_components()
         self._validate_availability_and_quality()
         self._validate_component_consistency()
         self._validate_currency_coverage()
+
+    def _validate_calendar_authorities(self) -> None:
+        if not self.calendar_authorities:
+            return
+        authorities = tuple(
+            sorted(
+                self.calendar_authorities,
+                key=lambda item: (item.calendar_id, item.version),
+            )
+        )
+        object.__setattr__(self, "calendar_authorities", authorities)
+        authority_ids = [item.calendar_id for item in authorities]
+        if len(set(authority_ids)) != len(authority_ids):
+            raise MarketStateError("market_state_calendar_authority_duplicate")
+        if set(authority_ids) != set(self.calendar_ids):
+            raise MarketStateError("market_state_calendar_authority_set_mismatch")
+        for authority in authorities:
+            try:
+                authority.is_open_at(
+                    timestamp=self.valuation_at,
+                    known_at=self.valuation_at,
+                )
+            except MarketCalendarContractError as exc:
+                raise MarketStateError(
+                    f"market_state_calendar_authority_unusable:{authority.calendar_id}"
+                ) from exc
 
     def _validate_unique_components(self) -> None:
         definitions: tuple[
@@ -1109,6 +1240,16 @@ class MarketState:
                 lambda item: item.chain_id,  # type: ignore[attr-defined]
                 "option_chain",
             ),
+            (
+                self.funding_rates,
+                lambda item: item.funding_rate_id,  # type: ignore[attr-defined]
+                "funding_rate",
+            ),
+            (
+                self.dividend_yields,
+                lambda item: item.underlying_instrument_id,  # type: ignore[attr-defined]
+                "dividend_yield",
+            ),
         )
         for items, key, label in definitions:
             if _duplicates(items, key):
@@ -1146,6 +1287,8 @@ class MarketState:
             ("fx", self.fx_quotes),
             ("borrow", self.borrow_quotes),
             ("liquidity", self.liquidity_quotes),
+            ("funding_rate", self.funding_rates),
+            ("dividend_yield", self.dividend_yields),
         ):
             result.extend((label, item.metadata) for item in items)
         for curve in self.futures_curves:
@@ -1236,6 +1379,16 @@ class MarketState:
                     "market_state_futures_underlying_missing:"
                     f"{curve.underlying_instrument_id}"
                 )
+            underlying_spot = spot_by_id[curve.underlying_instrument_id]
+            if (
+                curve.currency != underlying_spot.currency
+                or curve.price_unit != underlying_spot.unit
+                or curve.metadata.calendar_id != underlying_spot.metadata.calendar_id
+            ):
+                raise MarketStateError(
+                    "market_state_futures_underlying_dimension_mismatch:"
+                    f"{curve.underlying_instrument_id}"
+                )
             for quote in curve.contracts:
                 if _timestamp(quote.expiry_at, "futures_quote.expiry_at") <= valuation:
                     raise MarketStateError(
@@ -1251,6 +1404,28 @@ class MarketState:
             if chain.underlying_instrument_id not in valid_option_underlyings:
                 raise MarketStateError(
                     "market_state_option_underlying_missing:"
+                    f"{chain.underlying_instrument_id}"
+                )
+            if chain.underlying_instrument_id in spot_by_id:
+                option_underlying_currency = spot_by_id[
+                    chain.underlying_instrument_id
+                ].currency
+                option_underlying_calendar = spot_by_id[
+                    chain.underlying_instrument_id
+                ].metadata.calendar_id
+            else:
+                option_underlying_currency = futures_by_contract[
+                    chain.underlying_instrument_id
+                ].currency
+                option_underlying_calendar = futures_by_contract[
+                    chain.underlying_instrument_id
+                ].metadata.calendar_id
+            if (
+                chain.currency != option_underlying_currency
+                or chain.metadata.calendar_id != option_underlying_calendar
+            ):
+                raise MarketStateError(
+                    "market_state_option_underlying_dimension_mismatch:"
                     f"{chain.underlying_instrument_id}"
                 )
             for option_quote in chain.quotes:
@@ -1283,6 +1458,49 @@ class MarketState:
                 raise MarketStateError(
                     f"market_state_derivative_liquidity_mismatch:{instrument_id}"
                 )
+        derivative_ids = set(futures_by_contract)
+        for funding_rate in self.funding_rates:
+            if funding_rate.instrument_id not in spot_ids | derivative_ids:
+                raise MarketStateError(
+                    "market_state_funding_instrument_missing:"
+                    f"{funding_rate.instrument_id}"
+                )
+            expected_currency = (
+                spot_by_id[funding_rate.instrument_id].currency
+                if funding_rate.instrument_id in spot_by_id
+                else futures_by_contract[funding_rate.instrument_id].currency
+            )
+            expected_calendar = (
+                spot_by_id[funding_rate.instrument_id].metadata.calendar_id
+                if funding_rate.instrument_id in spot_by_id
+                else futures_by_contract[
+                    funding_rate.instrument_id
+                ].metadata.calendar_id
+            )
+            if (
+                funding_rate.currency != expected_currency
+                or funding_rate.metadata.calendar_id != expected_calendar
+            ):
+                raise MarketStateError(
+                    "market_state_funding_dimension_mismatch:"
+                    f"{funding_rate.instrument_id}"
+                )
+        for dividend_yield in self.dividend_yields:
+            dividend_spot = spot_by_id.get(dividend_yield.underlying_instrument_id)
+            if dividend_spot is None:
+                raise MarketStateError(
+                    "market_state_dividend_underlying_missing:"
+                    f"{dividend_yield.underlying_instrument_id}"
+                )
+            if (
+                dividend_yield.currency != dividend_spot.currency
+                or dividend_yield.metadata.calendar_id
+                != dividend_spot.metadata.calendar_id
+            ):
+                raise MarketStateError(
+                    "market_state_dividend_dimension_mismatch:"
+                    f"{dividend_yield.underlying_instrument_id}"
+                )
 
     def _validate_currency_coverage(self) -> None:
         currencies = {self.base_currency}
@@ -1294,6 +1512,8 @@ class MarketState:
         currencies.update(item.currency for item in self.liquidity_quotes)
         currencies.update(item.currency for item in self.futures_curves)
         currencies.update(item.currency for item in self.option_chains)
+        currencies.update(item.currency for item in self.funding_rates)
+        currencies.update(item.currency for item in self.dividend_yields)
         pairs = {item.pair for item in self.fx_quotes}
         for currency in currencies - {self.base_currency}:
             if (currency, self.base_currency) not in pairs and (
@@ -1388,6 +1608,92 @@ class MarketState:
             raise MarketStateError(f"option_analytics_mark_not_unique:{contract_id}")
         return matches[0]
 
+    def forward_consistency_diagnostics(
+        self,
+        *,
+        relative_tolerance: Decimal,
+    ) -> tuple[dict[str, object], ...]:
+        """Compare listed futures with simple-carry fair values.
+
+        This is a diagnostic rather than a price replacement.  It requires an
+        explicit rate and dividend assumption, retains the observed contract
+        mark, and reports the gap without modifying market data.
+        """
+
+        _decimal(
+            relative_tolerance,
+            "forward_consistency.relative_tolerance",
+        )
+        if relative_tolerance < 0:
+            raise MarketStateError("forward_consistency.relative_tolerance_negative")
+        rates_by_currency: dict[str, list[RateQuote]] = {}
+        for rate in self.rates:
+            rates_by_currency.setdefault(rate.currency, []).append(rate)
+        dividends = {
+            item.underlying_instrument_id: item for item in self.dividend_yields
+        }
+        diagnostics: list[dict[str, object]] = []
+        valuation = _timestamp(self.valuation_at, "market_state.valuation_at")
+        for curve in sorted(self.futures_curves, key=lambda item: item.curve_id):
+            spot = self.spot_price(curve.underlying_instrument_id)
+            dividend = dividends.get(curve.underlying_instrument_id)
+            if dividend is None or not rates_by_currency.get(curve.currency):
+                raise MarketStateError(
+                    "forward_consistency_inputs_missing:"
+                    f"{curve.underlying_instrument_id}"
+                )
+            for contract in sorted(
+                curve.contracts,
+                key=lambda item: (item.expiry_at, item.contract_id),
+            ):
+                seconds = Decimal(
+                    str(
+                        (
+                            _timestamp(
+                                contract.expiry_at,
+                                "futures_quote.expiry_at",
+                            )
+                            - valuation
+                        ).total_seconds()
+                    )
+                )
+                year_fraction = seconds / Decimal("31536000")
+                tenor_days = max(1, int(seconds / Decimal("86400")))
+                rate = min(
+                    rates_by_currency[curve.currency],
+                    key=lambda item: (
+                        abs(item.tenor_days - tenor_days),
+                        item.tenor_days,
+                        item.rate_id,
+                    ),
+                )
+                theoretical = spot.price * (
+                    Decimal("1")
+                    + (rate.rate - dividend.annualized_yield) * year_fraction
+                )
+                gap = contract.mark_price - theoretical
+                relative_gap = abs(gap) / spot.price
+                diagnostics.append(
+                    {
+                        "contract_id": contract.contract_id,
+                        "underlying_instrument_id": curve.underlying_instrument_id,
+                        "valuation_at": self.valuation_at,
+                        "expiry_at": contract.expiry_at,
+                        "observed_forward": _decimal_text(contract.mark_price),
+                        "theoretical_forward": _decimal_text(theoretical),
+                        "absolute_gap": _decimal_text(gap),
+                        "relative_gap": _decimal_text(relative_gap),
+                        "relative_tolerance": _decimal_text(relative_tolerance),
+                        "passed": relative_gap <= relative_tolerance,
+                        "method": "simple_carry_actual_365",
+                        "spot_source_hash": spot.metadata.source_hash,
+                        "rate_source_hash": rate.metadata.source_hash,
+                        "dividend_source_hash": dividend.metadata.source_hash,
+                        "futures_source_hash": contract.metadata.source_hash,
+                    }
+                )
+        return tuple(diagnostics)
+
     def derivative_underlying_price(self, instrument_id: str) -> Decimal:
         spot_matches = [
             item for item in self.spots if item.instrument_id == instrument_id
@@ -1460,6 +1766,13 @@ class MarketState:
             "valuation_at": self.valuation_at,
             "base_currency": self.base_currency,
             "calendar_ids": list(self.calendar_ids),
+            "calendar_authorities": [
+                {
+                    **item.as_dict(),
+                    "contract_hash": item.contract_hash(),
+                }
+                for item in self.calendar_authorities
+            ],
             "spots": [
                 item.as_dict()
                 for item in sorted(self.spots, key=lambda item: item.instrument_id)
@@ -1477,6 +1790,20 @@ class MarketState:
             "rates": [
                 item.as_dict()
                 for item in sorted(self.rates, key=lambda item: item.rate_id)
+            ],
+            "funding_rates": [
+                item.as_dict()
+                for item in sorted(
+                    self.funding_rates,
+                    key=lambda item: item.funding_rate_id,
+                )
+            ],
+            "dividend_yields": [
+                item.as_dict()
+                for item in sorted(
+                    self.dividend_yields,
+                    key=lambda item: item.underlying_instrument_id,
+                )
             ],
             "fx_quotes": [
                 item.as_dict()
@@ -1520,6 +1847,8 @@ SpotComponent = SpotQuote
 CurveComponent = YieldCurve
 VolatilityComponent = VolatilitySurface
 RateComponent = RateQuote
+FundingComponent = FundingRateQuote
+DividendComponent = DividendYieldAssumption
 FXComponent = FXQuote
 BorrowComponent = BorrowQuote
 LiquidityComponent = LiquidityQuote

@@ -15,24 +15,33 @@ from market_research.research.derivatives.futures import (
     ContractChainSnapshot,
     ContractQuote,
     ContinuousFuturesPoint,
+    ExpiryPolicy,
     FuturesContract,
     FuturesCostPolicy,
-    FuturesFill,
+    FuturesLedger,
+    FuturesOrderIntent,
+    FuturesSimulator,
     MarginCallAction,
     MarginSimulationPolicy,
     OrderSide,
-    RollExecution,
+    PhysicalDeliveryAction,
+    RollDecision,
     SessionType,
-    SettlementEvent,
+    SettlementPolicy,
     SettlementType as FuturesSettlementType,
 )
 from market_research.research.derivatives.options import (
     ExerciseStyle,
+    MultiLegExecutionPolicy,
+    MultiLegOrder,
+    MultiLegState,
     OptionChainSnapshot,
     OptionContract,
+    OptionLeg,
     OptionQuote,
     OptionSettlementInput,
     OptionType,
+    PositionSide,
     SettlementType as OptionSettlementType,
     TransactionSide,
     ValuationInputSnapshot,
@@ -59,7 +68,10 @@ from market_research.research.multi_asset.data import (
     BitemporalRecord,
     DataLayer,
     DataLineage,
+    DerivedLayerMetadata,
+    NormalizedLayerMetadata,
     ObservationClocks,
+    RawLayerMetadata,
 )
 from market_research.research.multi_asset.domain import (
     ContractSpecification,
@@ -140,6 +152,12 @@ from market_research.research.multi_asset.market_state import (
     VolatilityPoint,
     VolatilitySurface,
     YieldCurve,
+)
+from market_research.research.multi_asset.multileg_execution import (
+    LedgerExposureBinding,
+    LedgerExposureRequest,
+    MultiLegLedgerCommand,
+    MultiLegLedgerExecutionService,
 )
 from market_research.research.multi_asset.option_path import (
     CalculatedOptionDelta,
@@ -284,6 +302,9 @@ def _registry() -> InstrumentRegistry:
             issuer_id=issuer.issuer_id,
             currency="USD",
             unit="coin" if kind is InstrumentKind.SPOT else "contract",
+            primary_listing_id=(
+                "listing_btc_spot_xoff" if kind is InstrumentKind.SPOT else None
+            ),
             validity=validity,
             source=source,
         )
@@ -316,6 +337,15 @@ def _registry() -> InstrumentRegistry:
             expiry_at=expiry,
             last_trade_at=expiry,
             exercise_style=("EUROPEAN" if "put" in instrument_id else None),
+            minimum_tick=Decimal("0.01"),
+            tick_value=(Decimal("0.25") if "future" in instrument_id else Decimal("1")),
+            trading_currency="USD",
+            calendar_id=CALENDAR_ID,
+            lifecycle_rule_id=(
+                "future.cash.expiry.v1"
+                if "future" in instrument_id
+                else "option.european.cash.v1"
+            ),
             validity=validity,
             source=source,
         )
@@ -345,6 +375,9 @@ def _registry() -> InstrumentRegistry:
         price_unit="USD_per_coin",
         quantity_unit="coin",
         calendar_id=CALENDAR_ID,
+        market_segment="OFF_EXCHANGE_REFERENCE",
+        session_id="CONTINUOUS",
+        lot_size=Decimal("0.0001"),
         validity=validity,
         source=source,
     )
@@ -381,6 +414,7 @@ def _data_store() -> AppendOnlyBitemporalStore:
             ingested_at=f"2026-01-02T14:{minute + 2:02d}:00+00:00",
         )
 
+    raw_payload = {"close": "100", "currency": "USD", "eligible": True}
     raw = BitemporalRecord(
         record_id="raw_btc_spot_20260102",
         version=1,
@@ -388,12 +422,24 @@ def _data_store() -> AppendOnlyBitemporalStore:
         instrument_id=SPOT_ID,
         data_kind="spot_bar",
         clocks=clocks(30),
-        payload={"close": "100", "currency": "USD", "eligible": True},
+        payload=raw_payload,
         lineage=DataLineage(
             source_id="prepared_dataset",
             source_version="snapshot_20260102",
             source_artifact_hash=_hash("raw-dataset"),
             source_schema_hash=schema_hash,
+        ),
+        layer_metadata=RawLayerMetadata(
+            provider_record_id="prepared.btc.spot.20260102",
+            provider_symbol="BTCUSD",
+            source_object_id="object.btc.spot.20260102",
+            collection_batch_id="batch.reviewed.20260102",
+            original_schema_id="prepared.spot.bar.v1",
+            provider_version="snapshot_20260102",
+            payload_checksum=sha256_prefixed(
+                raw_payload,
+                label="multi_asset_data_payload",
+            ),
         ),
     )
     normalized = BitemporalRecord(
@@ -414,6 +460,23 @@ def _data_store() -> AppendOnlyBitemporalStore:
             transformation_version="v2",
             parameters_hash=_hash("normalize-policy"),
         ),
+        layer_metadata=NormalizedLayerMetadata(
+            internal_instrument_id=SPOT_ID,
+            source_timezone="UTC",
+            target_timezone="UTC",
+            source_price_unit="USD_per_coin",
+            target_price_unit="USD_per_coin",
+            source_quantity_unit="coin",
+            target_quantity_unit="coin",
+            currency="USD",
+            exchange_session_id="session.xoff.continuous",
+            provider_priority=1,
+            duplicate_resolution="UNIQUE",
+            unit_conversion_id="identity.usd.coin.v1",
+            missing_value=False,
+            outlier=False,
+            revised=False,
+        ),
     )
     derived = BitemporalRecord(
         record_id="derived_btc_spot_signal_20260102",
@@ -432,6 +495,14 @@ def _data_store() -> AppendOnlyBitemporalStore:
             transformation_id="derive_research_signal",
             transformation_version="v2",
             parameters_hash=_hash("signal-policy"),
+        ),
+        layer_metadata=DerivedLayerMetadata(
+            model_id="expected.return.signal",
+            model_version="v2",
+            input_snapshot_hash=normalized.record_hash(),
+            generated_at="2026-01-02T14:40:00+00:00",
+            code_version="commit.fixture",
+            code_hash=_hash("signal-code"),
         ),
     )
     return AppendOnlyBitemporalStore().append(raw).append(normalized).append(derived)
@@ -531,6 +602,16 @@ def _market_state_for(
                 currency="USD",
                 bid=Decimal("4.4"),
                 ask=Decimal("4.6"),
+                price_unit="USD_per_coin",
+                depth_quantity=Decimal("100"),
+                quantity_unit="contract",
+                metadata=metadata,
+            ),
+            LiquidityQuote(
+                instrument_id=ALT_OPTION_ID,
+                currency="USD",
+                bid=Decimal("6.4"),
+                ask=Decimal("6.6"),
                 price_unit="USD_per_coin",
                 depth_quantity=Decimal("100"),
                 quantity_unit="contract",
@@ -676,15 +757,19 @@ def _futures_contract(contract_id: str, expiration: str) -> FuturesContract:
 
 
 def _futures_quote(
-    contract: FuturesContract, price: str, sequence: int
+    contract: FuturesContract,
+    price: str,
+    sequence: int,
+    *,
+    observed_at: str = FUTURES_AS_OF,
 ) -> ContractQuote:
     value = Decimal(price)
     return ContractQuote(
         quote_id=f"quote_{contract.contract_id}_{sequence}",
         contract_id=contract.contract_id,
         root_id=contract.root_id,
-        observed_at=FUTURES_AS_OF,
-        trading_date="2026-03-10",
+        observed_at=observed_at,
+        trading_date=observed_at[:10],
         session=SessionType.COMBINED,
         session_sequence=sequence,
         open_price=value,
@@ -694,7 +779,7 @@ def _futures_quote(
         settlement_price=value,
         volume=Decimal("1000"),
         open_interest=Decimal("5000"),
-        availability=_availability(FUTURES_AS_OF),
+        availability=_availability(observed_at),
         source_hash=_hash(f"quote-source-{contract.contract_id}"),
         bid_price=value - Decimal("0.25"),
         ask_price=value + Decimal("0.25"),
@@ -1139,6 +1224,12 @@ def _execute_required_scenarios() -> _Run:
     old_contract = _futures_contract(OLD_FUTURE_ID, "2026-04-09")
     new_contract = _futures_contract(NEW_FUTURE_ID, "2026-05-09")
     far_contract = _futures_contract(FAR_FUTURE_ID, "2026-06-08")
+    entry_quote = _futures_quote(
+        old_contract,
+        "100",
+        3,
+        observed_at="2026-03-09T16:00:00Z",
+    )
     old_quote = _futures_quote(old_contract, "102", 0)
     new_quote = _futures_quote(new_contract, "100", 1)
     far_quote = _futures_quote(far_contract, "103", 2)
@@ -1172,7 +1263,7 @@ def _execute_required_scenarios() -> _Run:
         root_id=old_contract.root_id,
         observed_at="2026-03-09T16:00:00Z",
         source_contract_id=OLD_FUTURE_ID,
-        source_quote_hash=_hash("entry-future-quote"),
+        source_quote_hash=entry_quote.content_hash,
         source_price=Decimal("100"),
         continuous_price=Decimal("100"),
         additive_adjustment=Decimal("0"),
@@ -1276,94 +1367,88 @@ def _execute_required_scenarios() -> _Run:
         old_quote=old_quote,
         new_quote=new_quote,
         current_old_quantity=2,
-        target_exposure=Decimal("5000"),
+        target_exposure=Decimal("5100"),
         policy=roll_policy,
         cost_model=futures_cost_model,
     )
-    close_leg, open_leg = roll_plan.legs
-    entry_fill = FuturesFill(
+    simulator = FuturesSimulator(
+        simulator_id="simulator_btc_futures",
+        simulator_version="v2",
+        contracts=(old_contract, new_contract),
+        settlement_policy=SettlementPolicy(
+            policy_id="settlement_btc_daily",
+            policy_version="v2",
+            settlement_price_field="settlement_price",
+            daily_mark_to_market=True,
+            realize_variation_margin_daily=True,
+            collateral_annual_rate=Decimal("0.03"),
+        ),
+        margin_policy=margin_policy,
+        expiry_policy=ExpiryPolicy(
+            policy_id="expiry_btc_safe",
+            policy_version="v2",
+            exit_days_before_first_notice=0,
+            exit_days_before_last_trade=0,
+            physical_delivery_action=PhysicalDeliveryAction.FAIL_RESEARCH,
+        ),
+        cost_policy=futures_cost_model.policy,
+    )
+    entry_step = simulator.execute(
+        FuturesLedger.open("native_ledger_btc_futures", Decimal("20000")),
+        FuturesOrderIntent(
+            intent_id="intent_btc_future_entry",
+            contract_id=OLD_FUTURE_ID,
+            side=OrderSide.BUY,
+            quantity=2,
+            decision_at=entry_quote.observed_at,
+            signal_series_id=first_continuous.series_id,
+            signal_point_hash=first_continuous.content_hash,
+        ),
+        entry_quote,
         fill_id="fill_btc_future_entry",
-        intent_hash=first_continuous.content_hash,
-        contract_id=OLD_FUTURE_ID,
-        quote_hash=first_continuous.source_quote_hash,
-        filled_at="2026-03-09T16:00:00Z",
-        trading_date="2026-03-09",
-        session=SessionType.COMBINED,
-        side=OrderSide.BUY,
-        quantity=2,
-        reference_price=Decimal("100"),
-        fill_price=Decimal("100"),
-        multiplier=Decimal("25"),
-        commission=Decimal("4"),
-        slippage_cost=Decimal("0"),
-        realized_trade_pnl=Decimal("0"),
-        is_roll_leg=False,
+        step_id="step_btc_future_entry",
     )
-    settlement = SettlementEvent(
+    settlement_step = simulator.settle_daily(
+        entry_step.ledger,
+        old_quote,
         event_id="settlement_btc_old",
-        contract_id=OLD_FUTURE_ID,
-        quote_hash=old_quote.content_hash,
-        settled_at=FUTURES_AS_OF,
-        previous_settlement_price=Decimal("100"),
-        settlement_price=Decimal("102"),
-        quantity=2,
-        multiplier=Decimal("25"),
-        variation_margin=Decimal("100"),
+        step_id="step_btc_future_settlement",
+        as_of=FUTURES_AS_OF,
     )
-    close_fill = FuturesFill(
-        fill_id="fill_btc_roll_close",
-        intent_hash=roll_plan.content_hash,
-        contract_id=OLD_FUTURE_ID,
-        quote_hash=old_quote.content_hash,
-        filled_at=FUTURES_AS_OF,
-        trading_date="2026-03-10",
-        session=SessionType.COMBINED,
-        side=close_leg.side,
-        quantity=close_leg.quantity,
-        reference_price=close_leg.reference_price,
-        fill_price=close_leg.cost.expected_fill_price,
-        multiplier=old_contract.contract_multiplier,
-        commission=close_leg.cost.commission,
-        slippage_cost=close_leg.cost.slippage_cost,
-        realized_trade_pnl=Decimal("-25"),
-        is_roll_leg=True,
-    )
-    open_fill = FuturesFill(
-        fill_id="fill_btc_roll_open",
-        intent_hash=roll_plan.content_hash,
-        contract_id=NEW_FUTURE_ID,
-        quote_hash=new_quote.content_hash,
-        filled_at=FUTURES_AS_OF,
-        trading_date="2026-03-10",
-        session=SessionType.COMBINED,
-        side=open_leg.side,
-        quantity=open_leg.quantity,
-        reference_price=open_leg.reference_price,
-        fill_price=open_leg.cost.expected_fill_price,
-        multiplier=new_contract.contract_multiplier,
-        commission=open_leg.cost.commission,
-        slippage_cost=open_leg.cost.slippage_cost,
-        realized_trade_pnl=Decimal("0"),
-        is_roll_leg=True,
-    )
-    roll_execution = RollExecution(
-        execution_id="execution_btc_roll",
-        decision_hash=roll_plan.content_hash,
-        executed_at=FUTURES_AS_OF,
+    roll_decision = RollDecision(
+        decision_id="decision_btc_roll",
+        decision_at=FUTURES_AS_OF,
+        root_id=old_contract.root_id,
         from_contract_id=OLD_FUTURE_ID,
         to_contract_id=NEW_FUTURE_ID,
-        close_fill_hash=close_fill.content_hash,
-        open_fill_hash=open_fill.content_hash,
-        close_cost=close_fill.total_cost,
-        open_cost=open_fill.total_cost,
-        price_gap=new_quote.close_price - old_quote.close_price,
-        roll_yield=Decimal("0"),
+        should_roll=True,
+        reason="FIXED_MATURITY",
+        policy_hash=roll_policy.content_hash,
+        chain_snapshot_hash=chain.content_hash,
+        input_quote_hashes=(old_quote.content_hash, new_quote.content_hash),
     )
+    roll_step = simulator.roll(
+        settlement_step.ledger,
+        roll_decision,
+        old_quote,
+        new_quote,
+        execution_id="execution_btc_roll",
+        step_id="step_btc_roll",
+    )
+    entry_fill = entry_step.fills[0]
+    settlement = settlement_step.settlement_events[0]
+    close_fill, open_fill = roll_step.fills
+    roll_execution = roll_step.roll_execution
+    assert roll_execution is not None
+    assert roll_step.roll_quantity_plan is not None
+    assert roll_execution.quantity_plan_hash == roll_plan.quantity_plan_hash
+    assert close_fill.quantity == roll_plan.legs[0].quantity
+    assert open_fill.quantity == roll_plan.legs[1].quantity
     futures_pnl = reconcile_existing_futures_pnl(
         evidence_id="reconcile_btc_futures",
         observed_at=FUTURES_AS_OF,
-        opening_cash=Decimal("5001"),
-        closing_cash=Decimal("5018"),
+        opening_cash=entry_step.ledger.cash_balance,
+        closing_cash=roll_step.ledger.cash_balance,
         settlement_events=(settlement,),
         roll_execution=roll_execution,
         roll_fills=(close_fill, open_fill),
@@ -1594,6 +1679,7 @@ def _execute_required_scenarios() -> _Run:
     cleaned_chain = OptionChainCleaner(DEFAULT_OPTION_CLEANING_POLICY).clean(
         underlying_id=SPOT_ID,
         decision_at=OPTION_DECISION,
+        market_state_hash=decision_state.state_hash(),
         spot=Decimal("50"),
         forward=forward,
         observations=(
@@ -1612,6 +1698,9 @@ def _execute_required_scenarios() -> _Run:
         maximum_delta_distance=Decimal("0.05"),
         minimum_liquidity_weight=Decimal("0.25"),
         fallback=DeltaFallback.REJECT,
+        model_specification_hash=(
+            BlackScholesPricingAdapter().specification.content_hash
+        ),
     )
     pricing_adapter = BlackScholesPricingAdapter()
 
@@ -1656,15 +1745,19 @@ def _execute_required_scenarios() -> _Run:
             market_state_hash=decision_state.state_hash(),
             model_specification_hash=pricing_adapter.specification.content_hash,
             valuation_input_hash=pricing_state.valuation_input_hash,
+            source_quote_hash=quote.content_hash,
+            forward_hash=forward.content_hash,
         )
 
+    selection_deltas = (
+        calculated_delta(selected_contract, selected_quote),
+        calculated_delta(alternate_contract, alternate_quote),
+    )
     option_selection = select_option_contract(
         cleaned_chain,
         option_selection_policy,
-        (
-            calculated_delta(selected_contract, selected_quote),
-            calculated_delta(alternate_contract, alternate_quote),
-        ),
+        selection_deltas,
+        {item.contract_id: item.valuation_input_hash for item in selection_deltas},
     )
     assert option_selection.selected_contract_id == selected_contract.contract_id
     assert option_selection.selected_delta_evidence_hash is not None
@@ -1759,6 +1852,74 @@ def _execute_required_scenarios() -> _Run:
             margin_per_contract=market * selected_contract.multiplier,
             collateral_per_contract=market * selected_contract.multiplier,
         )
+        alternate_market = market + Decimal("2")
+        alternate_market_quote = OptionQuote(
+            quote_id=f"pricing_quote_{label}_alternate",
+            contract_id=alternate_contract.contract_id,
+            availability=availability,
+            as_of=_iso(at),
+            bid=alternate_market - Decimal("0.2"),
+            ask=alternate_market + Decimal("0.2"),
+            last=alternate_market,
+            bid_size=Decimal("20"),
+            ask_size=Decimal("20"),
+            volume=100,
+            open_interest=1000,
+        )
+        alternate_valuation_input = ValuationInputSnapshot(
+            valuation_input_id=f"valuation_input_{label}_alternate",
+            contract=alternate_contract,
+            quote=alternate_market_quote,
+            valuation_at=_iso(at),
+            spot_price=spot,
+            risk_free_rate=Decimal("0.04"),
+            dividend_yield=Decimal("0.01"),
+            forward_price=spot,
+            spot_availability=availability,
+            rate_availability=availability,
+            dividend_availability=availability,
+            forward_availability=availability,
+            source_manifest_hashes=tuple(
+                sorted(
+                    (
+                        alternate_market_quote.content_hash,
+                        store.content_hash(),
+                    )
+                )
+            ),
+        )
+        alternate_quote_metadata = ObservationMetadata(
+            observed_at=_iso(at - timedelta(seconds=5)),
+            knowledge_at=_iso(at - timedelta(seconds=5)),
+            source_hash=alternate_market_quote.content_hash,
+            calendar_id=CALENDAR_ID,
+            max_age_seconds=60,
+        )
+        alternate_typed_quote = OptionContractQuote(
+            contract_id=alternate_contract.contract_id,
+            underlying_instrument_id=alternate_contract.underlying_id,
+            expiry_at=alternate_contract.expiration_at,
+            right=MarketStateOptionRight.PUT,
+            strike=alternate_contract.strike,
+            currency=alternate_contract.currency,
+            price_unit="USD_per_coin",
+            bid=alternate_market_quote.bid or alternate_market,
+            ask=alternate_market_quote.ask or alternate_market,
+            last=alternate_market_quote.last,
+            settlement=None,
+            bid_size=alternate_market_quote.bid_size,
+            ask_size=alternate_market_quote.ask_size,
+            volume=Decimal(alternate_market_quote.volume),
+            open_interest=Decimal(alternate_market_quote.open_interest),
+            condition=QuoteCondition.NORMAL,
+            metadata=alternate_quote_metadata,
+        )
+        alternate_analytics = analytics_factory.derive(
+            quote=alternate_typed_quote,
+            valuation_input=alternate_valuation_input,
+            margin_per_contract=(alternate_market * alternate_contract.multiplier),
+            collateral_per_contract=(alternate_market * alternate_contract.multiplier),
+        )
         implied_volatility = analytics.implied_volatility
         model_price = analytics.model_price
         pricing_state = pricing_adapter.bind_state(
@@ -1784,15 +1945,21 @@ def _execute_required_scenarios() -> _Run:
             underlying_instrument_id=selected_contract.underlying_id,
             currency=selected_contract.currency,
             price_unit=typed_quote.price_unit,
-            quotes=(typed_quote,),
-            analytics=(analytics,),
+            quotes=(typed_quote, alternate_typed_quote),
+            analytics=(analytics, alternate_analytics),
             metadata=ObservationMetadata(
                 observed_at=_iso(at),
                 knowledge_at=_iso(at),
                 source_hash=evidence_hash(
                     {
-                        "quote": typed_quote.content_hash,
-                        "analytics": analytics.content_hash,
+                        "quotes": (
+                            typed_quote.content_hash,
+                            alternate_typed_quote.content_hash,
+                        ),
+                        "analytics": (
+                            analytics.content_hash,
+                            alternate_analytics.content_hash,
+                        ),
                     },
                     label="option-chain-market-state",
                 ),
@@ -1806,14 +1973,18 @@ def _execute_required_scenarios() -> _Run:
             volatility=implied_volatility,
             state_id=f"state_{label}",
         )
+        state_quotes = {
+            typed_quote.contract_id: typed_quote,
+            alternate_typed_quote.contract_id: alternate_typed_quote,
+        }
         liquidity = tuple(
             replace(
                 item,
-                bid=typed_quote.bid,
-                ask=typed_quote.ask,
-                metadata=quote_metadata,
+                bid=state_quotes[item.instrument_id].bid,
+                ask=state_quotes[item.instrument_id].ask,
+                metadata=state_quotes[item.instrument_id].metadata,
             )
-            if item.instrument_id == OPTION_ID
+            if item.instrument_id in state_quotes
             else item
             for item in base_state.liquidity_quotes
         )
@@ -2001,42 +2172,7 @@ def _execute_required_scenarios() -> _Run:
         object_hashes=option_objects,
     )
 
-    integrated_ledger = (
-        spot_ledger.publish_many(futures_operating_drafts)
-        .publish_many(option_entry_drafts)
-        .publish_many(option_mark_drafts)
-    )
-    integrated_snapshot = integrated_ledger.replay()
-    integrated_accounting, integrated_valuation = _accounting(integrated_snapshot)
-    source_hash_by_id = {
-        SPOT_ID: next(
-            item.content_hash
-            for item in integrated_ledger.events
-            if item.event_id == "spot_entry"
-        ),
-        NEW_FUTURE_ID: open_fill.content_hash,
-        OPTION_ID: option_fill.content_hash,
-    }
-    opened_at_by_id = {
-        SPOT_ID: _iso(DECISION),
-        NEW_FUTURE_ID: FUTURES_AS_OF,
-        OPTION_ID: _iso(OPTION_DECISION),
-    }
-    exposure_positions = tuple(
-        ExposurePosition(
-            position_id=f"exposure_{item.instrument_id}",
-            instrument_id=item.instrument_id,
-            quantity=item.quantity,
-            quantity_unit=(
-                "coin" if item.asset_class is AssetClass.SPOT else "contract"
-            ),
-            multiplier=item.multiplier,
-            currency=item.currency,
-            source_hash=source_hash_by_id[item.instrument_id],
-            opened_at=opened_at_by_id[item.instrument_id],
-        )
-        for item in integrated_snapshot.positions
-    )
+    integrated_base_ledger = spot_ledger.publish_many(futures_operating_drafts)
     catalog: ProductCatalog = registry
     exposure_engine = ExposureEngine.with_default_spot(
         product_catalog=catalog,
@@ -2059,10 +2195,128 @@ def _execute_required_scenarios() -> _Run:
             ),
         ),
     )
-    exposure = exposure_engine.evaluate(
+    multi_leg_order = MultiLegOrder(
+        group_id="required.protective.put.spread",
+        legs=(
+            OptionLeg(
+                leg_id="required.put45.long",
+                contract=selected_contract,
+                side=PositionSide.LONG,
+                quantity=Decimal("1"),
+            ),
+            OptionLeg(
+                leg_id="required.put50.short",
+                contract=alternate_contract,
+                side=PositionSide.SHORT,
+                quantity=Decimal("1"),
+            ),
+        ),
+        policy=MultiLegExecutionPolicy.SIMULTANEOUS,
+        requested_at=_iso(OPTION_DECISION),
+        maximum_leg_time_skew_seconds=0,
+        allow_partial=False,
+        execution_policy_hash=_hash("required-multileg-execution-policy"),
+    )
+    multi_leg_service = MultiLegLedgerExecutionService()
+    multi_leg_execution = multi_leg_service.execute(
+        MultiLegLedgerCommand(
+            execution_id="required.multileg.execution",
+            order=multi_leg_order,
+            quotes=(selected_quote, alternate_quote),
+            fill_times=(
+                ("required.put45.long", _iso(OPTION_DECISION)),
+                ("required.put50.short", _iso(OPTION_DECISION)),
+            ),
+            fee_per_contract=Decimal("1"),
+        ),
+        ledger=integrated_base_ledger,
+        fx_rates={"USD": Decimal("1")},
+        exposure_request=LedgerExposureRequest(
+            snapshot_id="exposure_required_multileg_entry",
+            engine=exposure_engine,
+            market_state=final_state,
+            bindings=(
+                LedgerExposureBinding(
+                    instrument_id=SPOT_ID,
+                    quantity_unit="coin",
+                    opened_at=_iso(DECISION),
+                ),
+                LedgerExposureBinding(
+                    instrument_id=NEW_FUTURE_ID,
+                    quantity_unit="contract",
+                    opened_at=FUTURES_AS_OF,
+                ),
+                LedgerExposureBinding(
+                    instrument_id=OPTION_ID,
+                    quantity_unit="contract",
+                    opened_at=_iso(OPTION_DECISION),
+                ),
+                LedgerExposureBinding(
+                    instrument_id=ALT_OPTION_ID,
+                    quantity_unit="contract",
+                    opened_at=_iso(OPTION_DECISION),
+                ),
+            ),
+        ),
+    )
+    assert multi_leg_execution.authoritative_result.state is MultiLegState.FILLED
+    assert multi_leg_execution.exposure is not None
+    multi_leg_fill_by_contract = {
+        item.contract.contract_id: item
+        for item in multi_leg_execution.authoritative_result.committed_fills
+    }
+    integrated_selected_fill = multi_leg_fill_by_contract[OPTION_ID]
+    integrated_alternate_fill = multi_leg_fill_by_contract[ALT_OPTION_ID]
+    assert integrated_selected_fill.price is not None
+    assert integrated_alternate_fill.price is not None
+    alternate_mark_draft = mark_event(
+        event_id="option_mark_alternate_final",
+        occurred_at=_iso(FINAL_MARK_AT),
+        asset_class=AssetClass.OPTION,
+        instrument_id=ALT_OPTION_ID,
+        currency="USD",
+        mark_price=Decimal("6.5"),
+        source_hashes=(final_state.option_analytics_mark(ALT_OPTION_ID).content_hash,),
+    )
+    integrated_ledger = multi_leg_execution.ledger_after.publish_many(
+        option_mark_drafts
+    ).publish(alternate_mark_draft)
+    integrated_snapshot = integrated_ledger.replay()
+    integrated_accounting, integrated_valuation = _accounting(integrated_snapshot)
+    source_hash_by_id = {
+        SPOT_ID: next(
+            item.content_hash
+            for item in integrated_ledger.events
+            if item.event_id == "spot_entry"
+        ),
+        NEW_FUTURE_ID: open_fill.content_hash,
+        OPTION_ID: integrated_selected_fill.content_hash,
+        ALT_OPTION_ID: integrated_alternate_fill.content_hash,
+    }
+    opened_at_by_id = {
+        SPOT_ID: _iso(DECISION),
+        NEW_FUTURE_ID: FUTURES_AS_OF,
+        OPTION_ID: _iso(OPTION_DECISION),
+        ALT_OPTION_ID: _iso(OPTION_DECISION),
+    }
+    exposure_request = LedgerExposureRequest(
         snapshot_id="exposure_required_integrated",
-        positions=exposure_positions,
+        engine=exposure_engine,
         market_state=final_state,
+        bindings=tuple(
+            LedgerExposureBinding(
+                instrument_id=item.instrument_id,
+                quantity_unit=(
+                    "coin" if item.asset_class is AssetClass.SPOT else "contract"
+                ),
+                opened_at=opened_at_by_id[item.instrument_id],
+            )
+            for item in integrated_snapshot.positions
+        ),
+    )
+    exposure = multi_leg_service.evaluate_ledger_exposure(
+        integrated_ledger,
+        exposure_request,
     )
     joint_shock = JointMarketShock(
         scenario_id="joint_btc_downside",
@@ -2070,6 +2324,7 @@ def _execute_required_scenarios() -> _Run:
             (SPOT_ID, Decimal("-0.10")),
             (NEW_FUTURE_ID, Decimal("-0.08")),
             (OPTION_ID, Decimal("0.25")),
+            (ALT_OPTION_ID, Decimal("0.20")),
         ),
         volatility_shifts=(("surface_btc_puts", Decimal("0.05")),),
         rate_shifts=(("rate_usd_30d", Decimal("0.01")),),
@@ -2085,10 +2340,44 @@ def _execute_required_scenarios() -> _Run:
         base_liquidation_costs={
             SPOT_ID: spot_cost.total,
             NEW_FUTURE_ID: open_fill.total_cost,
-            OPTION_ID: option_fill.fee,
+            OPTION_ID: integrated_selected_fill.fee,
+            ALT_OPTION_ID: integrated_alternate_fill.fee,
         },
     )
-    terminal_ledger = integrated_ledger.publish(lifecycle_draft)
+    integrated_selected_position = multi_leg_execution.position_for_contract(OPTION_ID)
+    integrated_alternate_position = multi_leg_execution.position_for_contract(
+        ALT_OPTION_ID
+    )
+    integrated_selected_lifecycle = simulate_option_lifecycle(
+        integrated_selected_position,
+        event_id="integrated.lifecycle.put45.expiry",
+        event_at=_iso(OPTION_EXPIRY),
+        settlement_input=settlement_input,
+    )
+    alternate_settlement_input = OptionSettlementInput(
+        settlement_input_id="settlement_input_btc_put50_integrated",
+        contract_id=ALT_OPTION_ID,
+        settlement_at=_iso(OPTION_EXPIRY),
+        availability=_availability(_iso(OPTION_EXPIRY)),
+        spot_price=Decimal("40"),
+        source_manifest_hash=_hash("option-expiry-settlement"),
+    )
+    integrated_alternate_lifecycle = simulate_option_lifecycle(
+        integrated_alternate_position,
+        event_id="integrated.lifecycle.put50.expiry",
+        event_at=_iso(OPTION_EXPIRY),
+        settlement_input=alternate_settlement_input,
+    )
+    integrated_lifecycle = multi_leg_service.project_lifecycle(
+        multi_leg_execution,
+        events=(
+            integrated_selected_lifecycle,
+            integrated_alternate_lifecycle,
+        ),
+        deliverable_asset_classes={},
+        ledger=integrated_ledger,
+    )
+    terminal_ledger = integrated_lifecycle.ledger_after
     terminal_snapshot = terminal_ledger.replay()
     terminal_quantities = {
         item.instrument_id: item.quantity for item in terminal_snapshot.positions
@@ -2097,6 +2386,12 @@ def _execute_required_scenarios() -> _Run:
         spot_valuation.economic_pnl,
         futures_valuation.economic_pnl,
         option_live_valuation.economic_pnl,
+        (
+            (integrated_alternate_fill.price - Decimal("6.5"))
+            * integrated_alternate_fill.filled_quantity
+            * alternate_contract.multiplier
+            - integrated_alternate_fill.fee
+        ),
     )
     integrated_legs = (
         IntegratedLegResult(
@@ -2118,17 +2413,34 @@ def _execute_required_scenarios() -> _Run:
         IntegratedLegResult(
             leg_id="leg_option",
             instrument_id=OPTION_ID,
-            trade_hash=option_fill.content_hash,
-            cost=option_fill.fee,
+            trade_hash=integrated_selected_fill.content_hash,
+            cost=integrated_selected_fill.fee,
             pnl=integrated_leg_pnls[2],
             terminal_quantity=terminal_quantities.get(OPTION_ID, Decimal("0")),
+        ),
+        IntegratedLegResult(
+            leg_id="leg_option_alternate",
+            instrument_id=ALT_OPTION_ID,
+            trade_hash=integrated_alternate_fill.content_hash,
+            cost=integrated_alternate_fill.fee,
+            pnl=integrated_leg_pnls[3],
+            terminal_quantity=terminal_quantities.get(
+                ALT_OPTION_ID,
+                Decimal("0"),
+            ),
         ),
     )
     integrated_objects = _objects(
         trades=(
             execution.identity_payload(),
             open_fill.as_dict(),
-            option_fill.as_dict(),
+            {
+                **multi_leg_order.identity_payload(),
+                "content_hash": multi_leg_order.content_hash,
+            },
+            multi_leg_execution.as_dict(),
+            integrated_selected_fill.as_dict(),
+            integrated_alternate_fill.as_dict(),
         ),
         positions=integrated_snapshot.positions,
         events=integrated_ledger.events,
@@ -2146,11 +2458,16 @@ def _execute_required_scenarios() -> _Run:
             ],
             "option_attribution_hash": option_attribution.content_hash,
             "futures_reconciliation_hash": futures_pnl.content_hash,
+            "multileg_execution_hash": multi_leg_execution.content_hash,
+            "multileg_lifecycle_hash": integrated_lifecycle.content_hash,
         },
-        scenario_output=joint_scenario.identity_payload(),
+        scenario_output={
+            "joint_scenario": joint_scenario.identity_payload(),
+            "multi_leg_execution": multi_leg_execution.as_dict(),
+        },
     )
     integrated_trace = IntegratedScenarioTrace(
-        execution_mode="SIMULTANEOUS_ATOMIC",
+        execution_mode=multi_leg_execution.execution_mode,
         legs=integrated_legs,
         common_ledger_hash=integrated_ledger.content_hash,
         ledger_reconciled=integrated_valuation.reconciled,
@@ -2179,7 +2496,9 @@ def _execute_required_scenarios() -> _Run:
             entry_fill.as_dict(),
             close_fill.as_dict(),
             open_fill.as_dict(),
-            option_fill.as_dict(),
+            multi_leg_execution.as_dict(),
+            integrated_selected_fill.as_dict(),
+            integrated_alternate_fill.as_dict(),
         ),
         positions=integrated_snapshot.positions,
         events=terminal_ledger.events,
@@ -2188,6 +2507,8 @@ def _execute_required_scenarios() -> _Run:
         attribution={
             "option": option_attribution.content_hash,
             "futures": futures_pnl.content_hash,
+            "multi_leg": multi_leg_execution.content_hash,
+            "multi_leg_lifecycle": integrated_lifecycle.content_hash,
             "leg_pnl": [str(item) for item in integrated_leg_pnls],
         },
         scenario_output=joint_scenario.identity_payload(),
@@ -2350,11 +2671,16 @@ def test_required_t01_through_t05_use_real_objects_and_publish_immutable_evidenc
         SPOT_ID,
         NEW_FUTURE_ID,
         OPTION_ID,
+        ALT_OPTION_ID,
     }
     assert first.joint_scenario.ledger_hash == first.integrated_ledger.content_hash
     assert OPTION_ID not in {
         item.instrument_id for item in first.terminal_ledger.replay().positions
     }
+    assert ALT_OPTION_ID not in {
+        item.instrument_id for item in first.terminal_ledger.replay().positions
+    }
+    assert first.integrated_trace.execution_mode == "SIMULTANEOUS"
     assert tuple(item.scenario_id for item in first_study.scenarios) == (
         "T-01",
         "T-02",

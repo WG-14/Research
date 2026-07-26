@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from enum import StrEnum
 from typing import Iterable, Sequence
 
@@ -1798,6 +1798,210 @@ class FuturesOrderIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class ExposurePreservingRollQuantityPlan:
+    """Authoritative integer contract plan for one futures roll tranche.
+
+    Economic exposure is measured from the actual contract prices and
+    multipliers.  The target contract count is rounded to the nearest integer
+    using ``ROUND_HALF_UP`` so positive and negative half-contract ties are
+    handled symmetrically away from zero.
+    """
+
+    from_contract_id: str
+    to_contract_id: str
+    current_old_quantity: int
+    close_quantity: int
+    existing_new_quantity: int
+    target_exposure: Decimal
+    old_price: Decimal
+    new_price: Decimal
+    old_multiplier: Decimal
+    new_multiplier: Decimal
+    remaining_old_quantity: int = field(init=False)
+    resulting_new_quantity: int = field(init=False)
+    new_trade_quantity: int = field(init=False)
+    achieved_exposure: Decimal = field(init=False)
+    rounding_residual: Decimal = field(init=False)
+    content_hash: str = field(init=False)
+    rounding_method: str = "ROUND_HALF_UP"
+    schema_version: int = FUTURES_RESEARCH_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _require_schema(self.schema_version)
+        require_stable_id(
+            self.from_contract_id,
+            "exposure_preserving_roll.from_contract_id",
+        )
+        require_stable_id(
+            self.to_contract_id,
+            "exposure_preserving_roll.to_contract_id",
+        )
+        if self.from_contract_id == self.to_contract_id:
+            raise DerivativeResearchError(
+                "exposure_preserving_roll_contracts_must_differ"
+            )
+        for name in ("current_old_quantity", "close_quantity", "existing_new_quantity"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise DerivativeResearchError(f"roll_{name}_invalid")
+        if self.current_old_quantity == 0:
+            raise DerivativeResearchError("roll_current_old_quantity_required")
+        if not 0 < self.close_quantity <= abs(self.current_old_quantity):
+            raise DerivativeResearchError("roll_close_quantity_invalid")
+        if self.rounding_method != "ROUND_HALF_UP":
+            raise DerivativeResearchError("roll_quantity_rounding_method_unsupported")
+        for name in ("old_price", "new_price", "old_multiplier", "new_multiplier"):
+            object.__setattr__(
+                self,
+                name,
+                _as_decimal(
+                    getattr(self, name),
+                    f"exposure_preserving_roll.{name}",
+                    positive=True,
+                ),
+            )
+        target = _as_decimal(
+            self.target_exposure,
+            "exposure_preserving_roll.target_exposure",
+        )
+        if target == _ZERO or (target > _ZERO) != (self.current_old_quantity > 0):
+            raise DerivativeResearchError("roll_target_direction_mismatch")
+        object.__setattr__(self, "target_exposure", target)
+        if self.existing_new_quantity and (
+            (self.existing_new_quantity > 0) != (target > _ZERO)
+        ):
+            raise DerivativeResearchError("roll_existing_new_direction_mismatch")
+
+        direction = 1 if self.current_old_quantity > 0 else -1
+        remaining_old = self.current_old_quantity - direction * self.close_quantity
+        old_unit_exposure = self.old_price * self.old_multiplier
+        new_unit_exposure = self.new_price * self.new_multiplier
+        residual_target_for_new = target - Decimal(remaining_old) * old_unit_exposure
+        resulting_new = int(
+            (residual_target_for_new / new_unit_exposure).to_integral_value(
+                rounding=ROUND_HALF_UP
+            )
+        )
+        if resulting_new == 0 or (resulting_new > 0) != (target > _ZERO):
+            raise DerivativeResearchError("roll_new_contract_count_invalid")
+        new_trade = resulting_new - self.existing_new_quantity
+        if new_trade == 0:
+            raise DerivativeResearchError("roll_requires_two_nonzero_legs")
+        if (new_trade > 0) != (target > _ZERO):
+            raise DerivativeResearchError("roll_new_leg_would_reduce_existing_target")
+        achieved = (
+            Decimal(remaining_old) * old_unit_exposure
+            + Decimal(resulting_new) * new_unit_exposure
+        )
+        object.__setattr__(self, "remaining_old_quantity", remaining_old)
+        object.__setattr__(self, "resulting_new_quantity", resulting_new)
+        object.__setattr__(self, "new_trade_quantity", new_trade)
+        object.__setattr__(self, "achieved_exposure", achieved)
+        object.__setattr__(self, "rounding_residual", target - achieved)
+        object.__setattr__(
+            self,
+            "content_hash",
+            _hash_payload(
+                "futures_exposure_preserving_roll_quantity_plan",
+                self.identity_payload(),
+            ),
+        )
+
+    @property
+    def close_side(self) -> OrderSide:
+        return OrderSide.SELL if self.current_old_quantity > 0 else OrderSide.BUY
+
+    @property
+    def open_side(self) -> OrderSide:
+        return OrderSide.BUY if self.new_trade_quantity > 0 else OrderSide.SELL
+
+    @property
+    def open_quantity(self) -> int:
+        return abs(self.new_trade_quantity)
+
+    def order_intents(
+        self,
+        *,
+        execution_id: str,
+        decision_at: str,
+    ) -> tuple[FuturesOrderIntent, FuturesOrderIntent]:
+        require_stable_id(execution_id, "roll_execution.execution_id")
+        parse_timestamp(decision_at, "roll_execution.decision_at")
+        return (
+            FuturesOrderIntent(
+                intent_id=f"{execution_id}.close",
+                contract_id=self.from_contract_id,
+                side=self.close_side,
+                quantity=self.close_quantity,
+                decision_at=decision_at,
+            ),
+            FuturesOrderIntent(
+                intent_id=f"{execution_id}.open",
+                contract_id=self.to_contract_id,
+                side=self.open_side,
+                quantity=self.open_quantity,
+                decision_at=decision_at,
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "from_contract_id": self.from_contract_id,
+            "to_contract_id": self.to_contract_id,
+            "current_old_quantity": self.current_old_quantity,
+            "close_quantity": self.close_quantity,
+            "close_side": self.close_side.value,
+            "remaining_old_quantity": self.remaining_old_quantity,
+            "existing_new_quantity": self.existing_new_quantity,
+            "resulting_new_quantity": self.resulting_new_quantity,
+            "new_trade_quantity": self.new_trade_quantity,
+            "open_quantity": self.open_quantity,
+            "open_side": self.open_side.value,
+            "target_exposure": _decimal_payload(self.target_exposure),
+            "achieved_exposure": _decimal_payload(self.achieved_exposure),
+            "rounding_residual": _decimal_payload(self.rounding_residual),
+            "old_price": _decimal_payload(self.old_price),
+            "new_price": _decimal_payload(self.new_price),
+            "old_multiplier": _decimal_payload(self.old_multiplier),
+            "new_multiplier": _decimal_payload(self.new_multiplier),
+            "rounding_method": self.rounding_method,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        return {**self.identity_payload(), "content_hash": self.content_hash}
+
+
+def calculate_exposure_preserving_roll_quantities(
+    *,
+    from_contract_id: str,
+    to_contract_id: str,
+    current_old_quantity: int,
+    close_quantity: int,
+    existing_new_quantity: int,
+    target_exposure: Decimal,
+    old_price: Decimal,
+    new_price: Decimal,
+    old_multiplier: Decimal,
+    new_multiplier: Decimal,
+) -> ExposurePreservingRollQuantityPlan:
+    """Calculate the only supported futures roll contract quantities."""
+
+    return ExposurePreservingRollQuantityPlan(
+        from_contract_id=from_contract_id,
+        to_contract_id=to_contract_id,
+        current_old_quantity=current_old_quantity,
+        close_quantity=close_quantity,
+        existing_new_quantity=existing_new_quantity,
+        target_exposure=target_exposure,
+        old_price=old_price,
+        new_price=new_price,
+        old_multiplier=old_multiplier,
+        new_multiplier=new_multiplier,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class FuturesPosition:
     contract_id: str
     quantity: int
@@ -2178,6 +2382,7 @@ class RollExecution:
     open_cost: Decimal
     price_gap: Decimal
     roll_yield: Decimal
+    quantity_plan_hash: str | None = None
     content_hash: str = field(init=False)
     schema_version: int = FUTURES_RESEARCH_SCHEMA_VERSION
 
@@ -2193,6 +2398,11 @@ class RollExecution:
             self.open_fill_hash,
         ):
             require_hash(value, "roll_execution.evidence_hash")
+        if self.quantity_plan_hash is not None:
+            require_hash(
+                self.quantity_plan_hash,
+                "roll_execution.quantity_plan_hash",
+            )
         if self.from_contract_id == self.to_contract_id:
             raise DerivativeResearchError("roll_execution_contracts_must_differ")
         for name in ("close_cost", "open_cost"):
@@ -2233,6 +2443,7 @@ class RollExecution:
             "open_cost": _decimal_payload(self.open_cost),
             "price_gap": _decimal_payload(self.price_gap),
             "roll_yield": _decimal_payload(self.roll_yield),
+            "quantity_plan_hash": self.quantity_plan_hash,
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -2247,6 +2458,7 @@ class SimulationStep:
     settlement_events: tuple[SettlementEvent, ...] = ()
     margin_call: MarginCallEvent | None = None
     roll_execution: RollExecution | None = None
+    roll_quantity_plan: ExposurePreservingRollQuantityPlan | None = None
     diagnostics: tuple[str, ...] = ()
     content_hash: str = field(init=False)
     schema_version: int = FUTURES_RESEARCH_SCHEMA_VERSION
@@ -2262,6 +2474,56 @@ class SimulationStep:
             or self.diagnostics
         ):
             raise DerivativeResearchError("simulation_step_evidence_required")
+        if self.roll_quantity_plan is not None:
+            if self.roll_execution is None:
+                raise DerivativeResearchError(
+                    "simulation_step_roll_quantity_plan_without_execution"
+                )
+            if (
+                self.roll_execution.quantity_plan_hash
+                != self.roll_quantity_plan.content_hash
+            ):
+                raise DerivativeResearchError(
+                    "simulation_step_roll_quantity_plan_hash_mismatch"
+                )
+            if len(self.fills) != 2:
+                raise DerivativeResearchError(
+                    "simulation_step_roll_quantity_plan_requires_two_fills"
+                )
+            close_fill, open_fill = self.fills
+            expected = (
+                (
+                    self.roll_quantity_plan.from_contract_id,
+                    self.roll_quantity_plan.close_side,
+                    self.roll_quantity_plan.close_quantity,
+                ),
+                (
+                    self.roll_quantity_plan.to_contract_id,
+                    self.roll_quantity_plan.open_side,
+                    self.roll_quantity_plan.open_quantity,
+                ),
+            )
+            actual = tuple(
+                (fill.contract_id, fill.side, fill.quantity) for fill in self.fills
+            )
+            if actual != expected:
+                raise DerivativeResearchError(
+                    "simulation_step_roll_quantity_plan_fill_mismatch"
+                )
+            if (
+                self.roll_execution.close_fill_hash != close_fill.content_hash
+                or self.roll_execution.open_fill_hash != open_fill.content_hash
+                or self.roll_execution.close_cost != close_fill.total_cost
+                or self.roll_execution.open_cost != open_fill.total_cost
+            ):
+                raise DerivativeResearchError(
+                    "simulation_step_roll_execution_fill_mismatch"
+                )
+        elif (
+            self.roll_execution is not None
+            and self.roll_execution.quantity_plan_hash is not None
+        ):
+            raise DerivativeResearchError("simulation_step_roll_quantity_plan_missing")
         object.__setattr__(
             self,
             "content_hash",
@@ -2280,6 +2542,11 @@ class SimulationStep:
             ),
             "roll_execution": (
                 None if self.roll_execution is None else self.roll_execution.as_dict()
+            ),
+            "roll_quantity_plan": (
+                None
+                if self.roll_quantity_plan is None
+                else self.roll_quantity_plan.as_dict()
             ),
             "diagnostics": list(self.diagnostics),
         }
@@ -2813,16 +3080,15 @@ class FuturesSimulator:
             margin_call=margin_call,
         )
 
-    def roll(
+    def plan_roll(
         self,
         ledger: FuturesLedger,
         decision: RollDecision,
         old_quote: ContractQuote,
         new_quote: ContractQuote,
-        *,
-        execution_id: str,
-        step_id: str,
-    ) -> SimulationStep:
+    ) -> ExposurePreservingRollQuantityPlan:
+        """Plan a full roll from the marked exposure of actual contracts."""
+
         if not decision.should_roll:
             raise DerivativeResearchError("roll_execution_requires_triggered_decision")
         if (
@@ -2841,13 +3107,51 @@ class FuturesSimulator:
         position = ledger.position_for(decision.from_contract_id)
         if position is None:
             raise DerivativeResearchError("roll_execution_source_position_missing")
-        close_side = OrderSide.SELL if position.quantity > 0 else OrderSide.BUY
-        open_side = OrderSide.BUY if position.quantity > 0 else OrderSide.SELL
-        close_intent = FuturesOrderIntent(
-            intent_id=f"{execution_id}.close",
-            contract_id=decision.from_contract_id,
-            side=close_side,
-            quantity=abs(position.quantity),
+        old_contract = self.contract_for(decision.from_contract_id)
+        new_contract = self.contract_for(decision.to_contract_id)
+        if (
+            old_contract.root_id != decision.root_id
+            or new_contract.root_id != decision.root_id
+            or old_quote.root_id != decision.root_id
+            or new_quote.root_id != decision.root_id
+        ):
+            raise DerivativeResearchError("roll_execution_root_mismatch")
+        existing_new = ledger.position_for(decision.to_contract_id)
+        existing_new_quantity = 0 if existing_new is None else existing_new.quantity
+        target_exposure = (
+            Decimal(position.quantity)
+            * old_quote.close_price
+            * old_contract.contract_multiplier
+            + Decimal(existing_new_quantity)
+            * new_quote.close_price
+            * new_contract.contract_multiplier
+        )
+        return calculate_exposure_preserving_roll_quantities(
+            from_contract_id=old_contract.contract_id,
+            to_contract_id=new_contract.contract_id,
+            current_old_quantity=position.quantity,
+            close_quantity=abs(position.quantity),
+            existing_new_quantity=existing_new_quantity,
+            target_exposure=target_exposure,
+            old_price=old_quote.close_price,
+            new_price=new_quote.close_price,
+            old_multiplier=old_contract.contract_multiplier,
+            new_multiplier=new_contract.contract_multiplier,
+        )
+
+    def roll(
+        self,
+        ledger: FuturesLedger,
+        decision: RollDecision,
+        old_quote: ContractQuote,
+        new_quote: ContractQuote,
+        *,
+        execution_id: str,
+        step_id: str,
+    ) -> SimulationStep:
+        quantity_plan = self.plan_roll(ledger, decision, old_quote, new_quote)
+        close_intent, open_intent = quantity_plan.order_intents(
+            execution_id=execution_id,
             decision_at=decision.decision_at,
         )
         after_close, close_fill = self._execute(
@@ -2857,13 +3161,6 @@ class FuturesSimulator:
             fill_id=f"{execution_id}.close.fill",
             is_roll_leg=True,
         )
-        open_intent = FuturesOrderIntent(
-            intent_id=f"{execution_id}.open",
-            contract_id=decision.to_contract_id,
-            side=open_side,
-            quantity=abs(position.quantity),
-            decision_at=decision.decision_at,
-        )
         after_open, open_fill = self._execute(
             after_close,
             open_intent,
@@ -2871,12 +3168,12 @@ class FuturesSimulator:
             fill_id=f"{execution_id}.open.fill",
             is_roll_leg=True,
         )
-        direction = _ONE if position.quantity > 0 else -_ONE
+        direction = _ONE if quantity_plan.current_old_quantity > 0 else -_ONE
         price_gap = new_quote.close_price - old_quote.close_price
         old_contract = self.contract_for(decision.from_contract_id)
         roll_yield = (
             -price_gap
-            * abs(position.quantity)
+            * abs(quantity_plan.current_old_quantity)
             * old_contract.contract_multiplier
             * direction
         )
@@ -2892,6 +3189,7 @@ class FuturesSimulator:
             open_cost=open_fill.total_cost,
             price_gap=price_gap,
             roll_yield=roll_yield,
+            quantity_plan_hash=quantity_plan.content_hash,
         )
         final_ledger = FuturesLedger(
             ledger_id=after_open.ledger_id,
@@ -2913,6 +3211,7 @@ class FuturesSimulator:
             ledger=final_ledger,
             fills=(close_fill, open_fill),
             roll_execution=execution,
+            roll_quantity_plan=quantity_plan,
         )
 
     def execute_spread(
@@ -4453,6 +4752,7 @@ __all__ = [
     "ContinuousAdjustment",
     "ContinuousFuturesPoint",
     "ContinuousFuturesPolicy",
+    "ExposurePreservingRollQuantityPlan",
     "ExpiryPolicy",
     "FUTURES_RESEARCH_SCHEMA_VERSION",
     "FuturesContract",
@@ -4494,6 +4794,7 @@ __all__ = [
     "SpreadLeg",
     "attribute_roll_return",
     "build_continuous_point",
+    "calculate_exposure_preserving_roll_quantities",
     "compute_basis_feature",
     "compute_curve_feature",
     "decide_roll",

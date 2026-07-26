@@ -6,13 +6,13 @@
   "score_cap": 84.0,
   "repository": {
     "root": "/home/vorac/work/Research",
-    "commit": "55316236669c0d7a0128fd081f67e7643e8a2fa6",
+    "commit": "a73adb4d94fff8836e0641e54e50ef84537d65e3",
     "branch": "main",
     "dirty": true,
     "assessment_surface": {
       "schema_version": 2,
-      "file_count": 722,
-      "sha256": "5a99f090a084bb4389652afb837e6d257d55de92f58d5abaef26a5f7121052fc",
+      "file_count": 730,
+      "sha256": "8ad6f95795b49d27aeecc66723408364acdb38c12c4fa800ce5acbedf550ae3c",
       "exclusions": [
         "directory:.git",
         "directory:.hypothesis",
@@ -921,10 +921,10 @@
       "evidence": [
         {
           "path": "src/market_research/research_cli/commands.py",
-          "path_sha256": "42e04fd232ad8e774e124a1982010d02f72642aa31682cac282ffe4f19ec7b66",
+          "path_sha256": "627c4707830d519b311af4b642afbfaf6e6dce6a0d48443dbb926eb6dbedcc2b",
           "symbol_or_lines": "official non-notebook research command boundary",
           "test": "tests/test_research_cli_boundary.py",
-          "test_sha256": "7352ca53bedd506786b868fe6c60a534df65567c7bab44c052dd00c968929b22",
+          "test_sha256": "c93a982e5af563488efa058c1fb580415ff4e4bae0b143fcee0f5fe503e5635b",
           "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
           "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
         }
@@ -940,10 +940,10 @@
       "evidence": [
         {
           "path": "src/market_research/research_cli/commands.py",
-          "path_sha256": "42e04fd232ad8e774e124a1982010d02f72642aa31682cac282ffe4f19ec7b66",
+          "path_sha256": "627c4707830d519b311af4b642afbfaf6e6dce6a0d48443dbb926eb6dbedcc2b",
           "symbol_or_lines": "official non-notebook research command boundary",
           "test": "tests/test_research_cli_boundary.py",
-          "test_sha256": "7352ca53bedd506786b868fe6c60a534df65567c7bab44c052dd00c968929b22",
+          "test_sha256": "c93a982e5af563488efa058c1fb580415ff4e4bae0b143fcee0f5fe503e5635b",
           "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
           "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
         }
@@ -3731,7 +3731,7 @@
       "evidence": [
         {
           "path": "docs/internal-web-architecture.md",
-          "path_sha256": "eebc6c6f0c9a741bdf2767cf3be470dc13eefd56c8e1d6b909301416619d4641",
+          "path_sha256": "939862916afb1c37d93c2582ca6dbc094bbecfab34c8a050c488b7d662498bbb",
           "symbol_or_lines": "researcher, reviewer, approver, and operator workflow",
           "test": "tests/test_documentation_contract.py",
           "test_sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1",

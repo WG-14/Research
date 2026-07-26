@@ -246,6 +246,7 @@ class PortfolioEventDraft:
     deliverable_asset_class: AssetClass | None = None
     deliverable_currency: str | None = None
     deliverable_quantity_delta: Decimal = Decimal("0")
+    deliverable_multiplier: Decimal | None = None
     deliverable_basis_price: Decimal | None = None
     deliverable_mark_price: Decimal | None = None
     execution_context_hash: str | None = None
@@ -290,6 +291,7 @@ class PortfolioEvent:
     deliverable_asset_class: AssetClass | None = None
     deliverable_currency: str | None = None
     deliverable_quantity_delta: Decimal = Decimal("0")
+    deliverable_multiplier: Decimal | None = None
     deliverable_basis_price: Decimal | None = None
     deliverable_mark_price: Decimal | None = None
     execution_context_hash: str | None = None
@@ -362,6 +364,7 @@ def _normalize_and_validate_event(event: PortfolioEventDraft | PortfolioEvent) -
         "mark_price",
         "margin_requirement",
         "settlement_quantity",
+        "deliverable_multiplier",
         "deliverable_basis_price",
         "deliverable_mark_price",
     ):
@@ -514,6 +517,7 @@ def _validate_event_semantics(event: PortfolioEventDraft | PortfolioEvent) -> No
             event.deliverable_asset_id,
             event.deliverable_asset_class,
             event.deliverable_currency,
+            event.deliverable_multiplier,
             event.deliverable_basis_price,
             event.deliverable_mark_price,
         )
@@ -701,6 +705,11 @@ def _event_identity_payload(
         ),
         "deliverable_currency": event.deliverable_currency,
         "deliverable_quantity_delta": _decimal_text(event.deliverable_quantity_delta),
+        "deliverable_multiplier": (
+            None
+            if event.deliverable_multiplier is None
+            else _decimal_text(event.deliverable_multiplier)
+        ),
         "deliverable_basis_price": (
             None
             if event.deliverable_basis_price is None
@@ -1559,6 +1568,7 @@ class UnifiedPortfolioLedger:
             event.deliverable_asset_id is None
             or event.deliverable_asset_class is None
             or event.deliverable_currency is None
+            or event.deliverable_multiplier is None
             or event.deliverable_basis_price is None
             or event.deliverable_mark_price is None
         ):
@@ -1572,9 +1582,11 @@ class UnifiedPortfolioLedger:
                 quantity=_ZERO,
                 average_price=event.deliverable_basis_price,
                 mark_price=event.deliverable_mark_price,
-                multiplier=_ONE,
+                multiplier=event.deliverable_multiplier,
             )
             positions[key] = deliverable
+        elif deliverable.multiplier != event.deliverable_multiplier:
+            raise PortfolioAccountingError("option_deliverable_multiplier_mismatch")
         deliverable.trade(
             event.deliverable_quantity_delta,
             event.deliverable_basis_price,
@@ -1789,6 +1801,9 @@ class OptionLifecycleEventLike(Protocol):
     def deliverable_asset_id(self) -> str | None: ...
 
     @property
+    def deliverable_contract_multiplier(self) -> Decimal | None: ...
+
+    @property
     def source_position_hash(self) -> str: ...
 
     @property
@@ -1820,6 +1835,15 @@ class OptionContractLike(Protocol):
 
     @property
     def deliverable_asset_id(self) -> str | None: ...
+
+    @property
+    def physical_settlement_convention(self) -> object | None: ...
+
+    @property
+    def deliverable_quantity_per_contract(self) -> Decimal | None: ...
+
+    @property
+    def deliverable_contract_multiplier(self) -> Decimal | None: ...
 
 
 @runtime_checkable
@@ -2055,9 +2079,11 @@ def adapt_option_lifecycle(
     expected_cash = _ZERO
     expected_delivery = _ZERO
     expected_deliverable_id: str | None = None
+    expected_deliverable_multiplier: Decimal | None = None
+    physical_convention: str | None = None
     if expected_exercised > _ZERO:
-        scale = expected_exercised * multiplier
         if settlement_type == "CASH":
+            scale = expected_exercised * multiplier
             expected_cash = position_sign * intrinsic * scale
         else:
             expected_deliverable_id = contract.deliverable_asset_id
@@ -2065,16 +2091,53 @@ def adapt_option_lifecycle(
                 raise PortfolioAccountingError(
                     "option_lifecycle_deliverable_id_missing"
                 )
+            physical_convention = _enum_text(contract.physical_settlement_convention)
+            if physical_convention not in {
+                "SPOT_STRIKE_EXCHANGE",
+                "FUTURE_POSITION_NO_PRINCIPAL",
+            }:
+                raise PortfolioAccountingError(
+                    "option_lifecycle_settlement_convention_invalid"
+                )
+            deliverable_quantity = contract.deliverable_quantity_per_contract
+            deliverable_multiplier = contract.deliverable_contract_multiplier
+            if deliverable_quantity is None or deliverable_multiplier is None:
+                raise PortfolioAccountingError(
+                    "option_lifecycle_deliverable_terms_missing"
+                )
+            deliverable_quantity = _decimal(
+                deliverable_quantity,
+                "option_lifecycle.deliverable_quantity_per_contract",
+                positive=True,
+            )
+            expected_deliverable_multiplier = _decimal(
+                deliverable_multiplier,
+                "option_lifecycle.deliverable_contract_multiplier",
+                positive=True,
+            )
+            if deliverable_quantity * expected_deliverable_multiplier != multiplier:
+                raise PortfolioAccountingError(
+                    "option_lifecycle_deliverable_notional_mismatch"
+                )
+            scale = expected_exercised * deliverable_quantity
             if option_type == "CALL":
                 expected_delivery = position_sign * scale
-                expected_cash = -position_sign * strike * scale
             else:
                 expected_delivery = -position_sign * scale
-                expected_cash = position_sign * strike * scale
+            if physical_convention == "SPOT_STRIKE_EXCHANGE":
+                expected_cash = (
+                    -position_sign * strike * scale * expected_deliverable_multiplier
+                    if option_type == "CALL"
+                    else position_sign
+                    * strike
+                    * scale
+                    * expected_deliverable_multiplier
+                )
     if (
         event.cash_delta != expected_cash
         or event.deliverable_quantity_delta != expected_delivery
         or event.deliverable_asset_id != expected_deliverable_id
+        or event.deliverable_contract_multiplier != expected_deliverable_multiplier
     ):
         raise PortfolioAccountingError("option_lifecycle_economics_mismatch")
 
@@ -2097,17 +2160,19 @@ def adapt_option_lifecycle(
     mark_price_value: Decimal | None = None
     deliverable_currency: str | None = None
     deliverable_class: AssetClass | None = None
+    ledger_deliverable_multiplier: Decimal | None = None
     if delivery_quantity != _ZERO:
         if event.deliverable_asset_id is None:
             raise PortfolioAccountingError("option_lifecycle_deliverable_id_missing")
-        basis_price = (
-            abs(event.cash_delta / delivery_quantity)
-            if event.cash_delta != _ZERO
-            else settlement_price
-        )
+        if event.deliverable_contract_multiplier is None:
+            raise PortfolioAccountingError(
+                "option_lifecycle_deliverable_multiplier_missing"
+            )
+        basis_price = strike
         mark_price_value = settlement_price
         deliverable_currency = currency
         deliverable_class = deliverable_asset_class
+        ledger_deliverable_multiplier = event.deliverable_contract_multiplier
     return PortfolioEventDraft(
         event_id=event.event_id,
         event_type=PortfolioEventType.OPTION_LIFECYCLE,
@@ -2122,6 +2187,7 @@ def adapt_option_lifecycle(
         deliverable_asset_class=deliverable_class,
         deliverable_currency=deliverable_currency,
         deliverable_quantity_delta=delivery_quantity,
+        deliverable_multiplier=ledger_deliverable_multiplier,
         deliverable_basis_price=basis_price,
         deliverable_mark_price=mark_price_value,
         source_hashes=(event.content_hash,),

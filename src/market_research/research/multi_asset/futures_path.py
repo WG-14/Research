@@ -25,12 +25,14 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from market_research.research.derivatives.common import (
     AvailabilityTimes,
+    DerivativeResearchError,
     decimal_text,
     parse_timestamp,
 )
 from market_research.research.derivatives.futures import (
     ContractChainSnapshot,
     ContractQuote,
+    ExposurePreservingRollQuantityPlan,
     FuturesCostPolicy,
     FuturesFill,
     MarginSimulationPolicy,
@@ -38,6 +40,7 @@ from market_research.research.derivatives.futures import (
     RollExecution,
     SettlementEvent,
     SettlementType,
+    calculate_exposure_preserving_roll_quantities,
     compute_basis_feature,
     compute_curve_feature,
     select_chain_as_of,
@@ -1571,6 +1574,7 @@ class ExposurePreservingRollPlan:
     tranche_index: int
     tranche_fraction: Decimal
     legs: tuple[PlannedRollLeg, PlannedRollLeg]
+    quantity_plan_hash: str
     policy_hash: str
     cost_model_hash: str
     content_hash: str = field(init=False)
@@ -1591,6 +1595,7 @@ class ExposurePreservingRollPlan:
             "new_contract_hash",
             "old_quote_hash",
             "new_quote_hash",
+            "quantity_plan_hash",
             "policy_hash",
             "cost_model_hash",
         ):
@@ -1664,31 +1669,24 @@ class ExposurePreservingRollPlan:
             or open_leg.multiplier != self.new_multiplier
         ):
             raise FuturesPathError("roll_plan_leg_multiplier_mismatch")
-        old_direction = 1 if self.current_old_quantity > 0 else -1
-        expected_close_side = OrderSide.SELL if old_direction > 0 else OrderSide.BUY
-        if close_leg.side is not expected_close_side:
+        quantity_plan = self.quantity_plan()
+        if self.quantity_plan_hash != quantity_plan.content_hash:
+            raise FuturesPathError("roll_plan_quantity_plan_hash_mismatch")
+        if close_leg.side is not quantity_plan.close_side:
             raise FuturesPathError("roll_plan_close_side_mismatch")
-        if self.remaining_old_quantity != (
-            self.current_old_quantity - old_direction * close_leg.quantity
-        ):
+        if close_leg.quantity != quantity_plan.close_quantity:
+            raise FuturesPathError("roll_plan_close_quantity_mismatch")
+        if self.remaining_old_quantity != quantity_plan.remaining_old_quantity:
             raise FuturesPathError("roll_plan_remaining_old_quantity_mismatch")
-        new_trade_direction = 1 if open_leg.side is OrderSide.BUY else -1
-        target_direction = 1 if self.target_exposure > 0 else -1
-        if new_trade_direction != target_direction:
+        if open_leg.side is not quantity_plan.open_side:
             raise FuturesPathError("roll_plan_open_side_mismatch")
-        if self.resulting_new_quantity != (
-            self.existing_new_quantity + new_trade_direction * open_leg.quantity
-        ):
+        if open_leg.quantity != quantity_plan.open_quantity:
+            raise FuturesPathError("roll_plan_open_quantity_mismatch")
+        if self.resulting_new_quantity != quantity_plan.resulting_new_quantity:
             raise FuturesPathError("roll_plan_resulting_new_quantity_mismatch")
-        expected_achieved_exposure = (
-            Decimal(self.remaining_old_quantity) * self.old_price * self.old_multiplier
-            + Decimal(self.resulting_new_quantity)
-            * self.new_price
-            * self.new_multiplier
-        )
-        if self.achieved_exposure != expected_achieved_exposure:
+        if self.achieved_exposure != quantity_plan.achieved_exposure:
             raise FuturesPathError("roll_plan_achieved_exposure_mismatch")
-        if self.rounding_residual != self.target_exposure - self.achieved_exposure:
+        if self.rounding_residual != quantity_plan.rounding_residual:
             raise FuturesPathError("roll_plan_rounding_residual_mismatch")
         object.__setattr__(
             self,
@@ -1699,6 +1697,24 @@ class ExposurePreservingRollPlan:
     @property
     def total_cost(self) -> Decimal:
         return sum((item.cost.total for item in self.legs), _ZERO)
+
+    def quantity_plan(self) -> ExposurePreservingRollQuantityPlan:
+        close_quantity = self.legs[0].quantity if len(self.legs) == 2 else 0
+        try:
+            return calculate_exposure_preserving_roll_quantities(
+                from_contract_id=self.old_contract_id,
+                to_contract_id=self.new_contract_id,
+                current_old_quantity=self.current_old_quantity,
+                close_quantity=close_quantity,
+                existing_new_quantity=self.existing_new_quantity,
+                target_exposure=self.target_exposure,
+                old_price=self.old_price,
+                new_price=self.new_price,
+                old_multiplier=self.old_multiplier,
+                new_multiplier=self.new_multiplier,
+            )
+        except DerivativeResearchError as exc:
+            raise FuturesPathError(str(exc)) from exc
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -1726,6 +1742,7 @@ class ExposurePreservingRollPlan:
             "tranche_index": self.tranche_index,
             "tranche_fraction": decimal_text(self.tranche_fraction),
             "legs": [item.as_dict() for item in self.legs],
+            "quantity_plan_hash": self.quantity_plan_hash,
             "policy_hash": self.policy_hash,
             "cost_model_hash": self.cost_model_hash,
             "total_cost": decimal_text(self.total_cost),
@@ -1799,42 +1816,48 @@ def plan_exposure_preserving_roll(
     )
     if close_quantity <= 0:
         raise FuturesPathError("split_roll_tranche_rounds_to_zero")
-    direction = 1 if current_old_quantity > 0 else -1
-    remaining_old = current_old_quantity - direction * close_quantity
-    old_unit_exposure = old_quote.close_price * old_contract.contract_multiplier
-    new_unit_exposure = new_quote.close_price * new_contract.contract_multiplier
-    residual_target_for_new = target - Decimal(remaining_old) * old_unit_exposure
-    desired_new_quantity = int(
-        (residual_target_for_new / new_unit_exposure).to_integral_value(
-            rounding=ROUND_HALF_UP
+    try:
+        quantity_plan = calculate_exposure_preserving_roll_quantities(
+            from_contract_id=old_contract.contract_id,
+            to_contract_id=new_contract.contract_id,
+            current_old_quantity=current_old_quantity,
+            close_quantity=close_quantity,
+            existing_new_quantity=existing_new_quantity,
+            target_exposure=target,
+            old_price=old_quote.close_price,
+            new_price=new_quote.close_price,
+            old_multiplier=old_contract.contract_multiplier,
+            new_multiplier=new_contract.contract_multiplier,
         )
-    )
-    if desired_new_quantity == 0 or (desired_new_quantity > 0) != (target > 0):
-        raise FuturesPathError("roll_new_contract_count_invalid")
-    new_trade_quantity = desired_new_quantity - existing_new_quantity
-    if new_trade_quantity == 0:
-        raise FuturesPathError("roll_requires_two_nonzero_legs")
-    if (new_trade_quantity > 0) != (target > 0):
-        raise FuturesPathError("roll_new_leg_would_reduce_existing_target")
-    close_side = OrderSide.SELL if current_old_quantity > 0 else OrderSide.BUY
-    open_side = OrderSide.BUY if new_trade_quantity > 0 else OrderSide.SELL
+    except DerivativeResearchError as exc:
+        raise FuturesPathError(str(exc)) from exc
+    close_side = quantity_plan.close_side
+    open_side = quantity_plan.open_side
     close_cost = cost_model.estimate_roll_leg(
         contract=old_contract,
         side=close_side,
-        quantity=close_quantity,
+        quantity=quantity_plan.close_quantity,
         reference_price=old_quote.close_price,
     )
     open_cost = cost_model.estimate_roll_leg(
         contract=new_contract,
         side=open_side,
-        quantity=abs(new_trade_quantity),
+        quantity=quantity_plan.open_quantity,
         reference_price=new_quote.close_price,
     )
-    close_delta = Decimal(-direction * close_quantity) * old_unit_exposure
-    open_delta = Decimal(new_trade_quantity) * new_unit_exposure
-    achieved = (
-        Decimal(remaining_old) * old_unit_exposure
-        + Decimal(desired_new_quantity) * new_unit_exposure
+    close_direction = _ONE if close_side is OrderSide.BUY else -_ONE
+    open_direction = _ONE if open_side is OrderSide.BUY else -_ONE
+    close_delta = (
+        close_direction
+        * quantity_plan.close_quantity
+        * old_quote.close_price
+        * old_contract.contract_multiplier
+    )
+    open_delta = (
+        open_direction
+        * quantity_plan.open_quantity
+        * new_quote.close_price
+        * new_contract.contract_multiplier
     )
     _require_hash(cost_model.content_hash, "roll.cost_model_hash")
     return ExposurePreservingRollPlan(
@@ -1853,11 +1876,11 @@ def plan_exposure_preserving_roll(
         original_old_quantity=original,
         current_old_quantity=current_old_quantity,
         existing_new_quantity=existing_new_quantity,
-        remaining_old_quantity=remaining_old,
-        resulting_new_quantity=desired_new_quantity,
+        remaining_old_quantity=quantity_plan.remaining_old_quantity,
+        resulting_new_quantity=quantity_plan.resulting_new_quantity,
         target_exposure=target,
-        achieved_exposure=achieved,
-        rounding_residual=target - achieved,
+        achieved_exposure=quantity_plan.achieved_exposure,
+        rounding_residual=quantity_plan.rounding_residual,
         tranche_index=tranche_index,
         tranche_fraction=fraction,
         legs=(
@@ -1865,7 +1888,7 @@ def plan_exposure_preserving_roll(
                 role=RollLegRole.CLOSE_OLD,
                 contract_id=old_contract.contract_id,
                 side=close_side,
-                quantity=close_quantity,
+                quantity=quantity_plan.close_quantity,
                 reference_price=old_quote.close_price,
                 multiplier=old_contract.contract_multiplier,
                 exposure_delta=close_delta,
@@ -1875,13 +1898,14 @@ def plan_exposure_preserving_roll(
                 role=RollLegRole.OPEN_NEW,
                 contract_id=new_contract.contract_id,
                 side=open_side,
-                quantity=abs(new_trade_quantity),
+                quantity=quantity_plan.open_quantity,
                 reference_price=new_quote.close_price,
                 multiplier=new_contract.contract_multiplier,
                 exposure_delta=open_delta,
                 cost=open_cost,
             ),
         ),
+        quantity_plan_hash=quantity_plan.content_hash,
         policy_hash=policy.content_hash,
         cost_model_hash=cost_model.content_hash,
     )
@@ -2011,8 +2035,16 @@ def reconcile_existing_futures_pnl(
     )
     if not planned <= executed <= observed:
         raise FuturesPathError("roll_reconciliation_timeline_invalid")
-    if roll_execution.decision_hash != roll_plan.content_hash:
+    quantity_plan = roll_plan.quantity_plan()
+    if (
+        roll_execution.quantity_plan_hash is None
+        or roll_execution.quantity_plan_hash != quantity_plan.content_hash
+    ):
         raise FuturesPathError("roll_execution_plan_hash_unbound")
+    close_intent, open_intent = quantity_plan.order_intents(
+        execution_id=roll_execution.execution_id,
+        decision_at=roll_execution.executed_at,
+    )
     if len(roll_fills) != 2:
         raise FuturesPathError("roll_reconciliation_requires_two_fills")
     by_hash = {item.content_hash: item for item in roll_fills}
@@ -2024,7 +2056,10 @@ def reconcile_existing_futures_pnl(
     except KeyError as exc:
         raise FuturesPathError("roll_execution_fill_hash_unbound") from exc
     close_leg, open_leg = roll_plan.legs
-    for fill, leg in ((close_fill, close_leg), (open_fill, open_leg)):
+    for fill, leg, intent in (
+        (close_fill, close_leg, close_intent),
+        (open_fill, open_leg, open_intent),
+    ):
         if not fill.is_roll_leg:
             raise FuturesPathError("roll_reconciliation_non_roll_fill")
         if (
@@ -2033,7 +2068,7 @@ def reconcile_existing_futures_pnl(
             or fill.quantity != leg.quantity
         ):
             raise FuturesPathError("roll_plan_fill_mismatch")
-        if fill.intent_hash != roll_plan.content_hash:
+        if fill.intent_hash != intent.content_hash:
             raise FuturesPathError("roll_plan_fill_intent_unbound")
         if parse_timestamp(fill.filled_at, "futures_fill.filled_at") != executed:
             raise FuturesPathError("roll_plan_fill_time_mismatch")

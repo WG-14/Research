@@ -9,6 +9,7 @@ from market_research.research.derivatives.application import (
     DerivativeApplicationError,
     DerivativeResearchApplicationService,
     FuturesOrderCommand,
+    FuturesRollCommand,
     FuturesSettlementCommand,
     FuturesStudyRequest,
     MultiLegStudyRequest,
@@ -31,6 +32,7 @@ from market_research.research.derivatives.futures import (
     LifecycleEventType,
     MarginCallAction,
     OrderSide,
+    RollDecision,
 )
 from market_research.research.derivatives.options import (
     BlackScholesModel,
@@ -278,6 +280,100 @@ def test_futures_application_executes_real_domain_steps_and_binds_run() -> None:
     )
     assert mismatch.status is ReproductionStatus.FAIL
     assert "simulation_hash" in mismatch.mismatch_fields
+
+
+def test_futures_application_records_exposure_preserving_roll_intents() -> None:
+    near, deferred, base_chain, _later = _market_fixture()
+    deferred = replace(deferred, contract_multiplier=Decimal("25"))
+    chain = replace(base_chain, contracts=(near, deferred))
+    preregistration = _preregistration(InstrumentKind.FUTURE)
+    simulator = _simulator((near, deferred))
+    dataset = _dataset(
+        instrument=InstrumentKind.FUTURE,
+        chain_hash=chain.content_hash,
+        universe_ids=tuple(item.contract_id for item in chain.contracts),
+    )
+    spec = _spec(
+        dataset,
+        simulation_policy_hash=simulator.content_hash,
+        cost_model_hash=simulator.cost_policy.content_hash,
+        fill_model_hash=futures_fill_model_hash(simulator),
+        hypothesis_hash=preregistration.hypothesis_version.content_hash,
+    )
+    old_quote = chain.quote_for(near.contract_id, chain.observed_at)
+    new_quote = chain.quote_for(deferred.contract_id, chain.observed_at)
+    decision = RollDecision(
+        decision_id="application.future.exposure.roll.decision",
+        decision_at=chain.observed_at,
+        root_id=chain.root_id,
+        from_contract_id=near.contract_id,
+        to_contract_id=deferred.contract_id,
+        should_roll=True,
+        reason="EXPOSURE_PRESERVING_REGRESSION",
+        policy_hash=HASH_A,
+        chain_snapshot_hash=chain.content_hash,
+        input_quote_hashes=(old_quote.content_hash, new_quote.content_hash),
+    )
+    request = FuturesStudyRequest(
+        run_id="run.future.exposure.roll",
+        simulation_id="simulation.future.exposure.roll",
+        ledger_id="ledger.future.exposure.roll",
+        started_at=chain.observed_at,
+        finished_at="2026-03-10T16:01:00Z",
+        initial_cash=Decimal("100000"),
+        preregistration=preregistration,
+        dataset=dataset,
+        experiment_spec=spec,
+        chain=chain,
+        simulator=simulator,
+        commands=(
+            FuturesOrderCommand(
+                intent=FuturesOrderIntent(
+                    intent_id="application.future.exposure.open",
+                    contract_id=near.contract_id,
+                    side=OrderSide.BUY,
+                    quantity=1,
+                    decision_at=chain.observed_at,
+                ),
+                fill_id="application.future.exposure.open.fill",
+                step_id="application.future.exposure.open.step",
+            ),
+            FuturesRollCommand(
+                decision=decision,
+                execution_id="application.future.exposure.roll.execution",
+                step_id="application.future.exposure.roll.step",
+            ),
+        ),
+    )
+    service = DerivativeResearchApplicationService()
+
+    execution = service.run_futures(request)
+
+    payload = execution.simulation.simulation_payload
+    steps = payload["steps"]
+    orders = payload["orders"]
+    roll_step = steps[1]
+    roll_fills = roll_step["fills"]
+    quantity_plan = roll_step["roll_quantity_plan"]
+    assert [item["quantity"] for item in roll_fills] == [1, 2]
+    assert [item["contract_id"] for item in roll_fills] == [
+        near.contract_id,
+        deferred.contract_id,
+    ]
+    assert quantity_plan["target_exposure"] == "5000"
+    assert quantity_plan["achieved_exposure"] == "5100"
+    assert quantity_plan["rounding_residual"] == "-100"
+    assert [item["quantity"] for item in orders] == [1, 1, 2]
+    assert {item["intent_hash"] for item in roll_fills} <= {
+        item["content_hash"] for item in orders
+    }
+    receipt = service.reproduce_futures(
+        request,
+        execution,
+        reproduction_id="reproduction.future.exposure.roll",
+        verified_at="2026-03-10T16:02:00Z",
+    )
+    assert receipt.status is ReproductionStatus.PASS
 
 
 def _futures_study_request() -> FuturesStudyRequest:

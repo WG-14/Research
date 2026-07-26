@@ -58,7 +58,11 @@ def _catalog() -> InstrumentRegistry:
             for item in source.listings
         ),
         contract_specifications=tuple(
-            replace(item, settlement_currency="USD")
+            replace(
+                item,
+                settlement_currency="USD",
+                trading_currency="USD",
+            )
             for item in source.contract_specifications
         ),
     )
@@ -398,6 +402,11 @@ def test_production_derivative_adapters_apply_multiplier_and_fx_once() -> None:
                     Decimal("25")
                     if item.instrument_id == "inst_btc_future_dec26"
                     else Decimal("100")
+                ),
+                tick_value=(
+                    Decimal("0.25")
+                    if item.instrument_id == "inst_btc_future_dec26"
+                    else Decimal("1")
                 ),
             )
             for item in catalog.contract_specifications

@@ -5,14 +5,23 @@ from decimal import Decimal
 
 import pytest
 
+from market_research.research.hashing import sha256_prefixed
 from market_research.research.instrument_kinds import InstrumentKind
+from market_research.research.market_calendar_contract import (
+    MARKET_CALENDAR_SCHEMA_VERSION,
+    MarketCalendarAuthority,
+)
 from market_research.research.multi_asset.data import (
     AppendOnlyBitemporalStore,
     BitemporalRecord,
     DataLayer,
     DataLineage,
+    DerivedLayerMetadata,
+    derived_input_snapshot_hash,
     MultiAssetDataError,
+    NormalizedLayerMetadata,
     ObservationClocks,
+    RawLayerMetadata,
 )
 from market_research.research.multi_asset.domain import (
     ContractSpecification,
@@ -22,11 +31,14 @@ from market_research.research.multi_asset.domain import (
     InstrumentRegistry,
     InstrumentRelationship,
     InstrumentRelationshipType,
+    InstrumentTradingStatus,
     Issuer,
     LifecycleEvent,
     LifecycleEventType,
     Listing,
     ProductMasterError,
+    ProductMasterHistory,
+    ProductMasterRevision,
     SettlementType,
     SourceReference,
     SymbolAlias,
@@ -34,7 +46,9 @@ from market_research.research.multi_asset.domain import (
 from market_research.research.multi_asset.market_state import (
     BorrowQuote,
     CurvePoint,
+    DividendYieldAssumption,
     FXQuote,
+    FundingRateQuote,
     FuturesContractQuote,
     FuturesCurveState,
     LiquidityQuote,
@@ -104,6 +118,7 @@ def _registry() -> InstrumentRegistry:
         unit="coin",
         validity=period,
         source=source,
+        primary_listing_id="listing_btc_spot_xoff",
     )
     future = Instrument(
         instrument_id="inst_btc_future_dec26",
@@ -136,6 +151,11 @@ def _registry() -> InstrumentRegistry:
         settlement_currency="KRW",
         expiry_at="2026-12-18T08:00:00+00:00",
         last_trade_at="2026-12-18T07:55:00+00:00",
+        minimum_tick=Decimal("0.01"),
+        tick_value=Decimal("0.01"),
+        trading_currency="KRW",
+        calendar_id="calendar_xoff",
+        lifecycle_rule_id="future.cash.expiry.v1",
         validity=period,
         source=source,
     )
@@ -149,6 +169,11 @@ def _registry() -> InstrumentRegistry:
         expiry_at="2026-11-20T08:00:00+00:00",
         last_trade_at="2026-11-20T07:55:00+00:00",
         exercise_style="EUROPEAN",
+        minimum_tick=Decimal("0.01"),
+        tick_value=Decimal("0.01"),
+        trading_currency="KRW",
+        calendar_id="calendar_xoff",
+        lifecycle_rule_id="option.european.physical.v1",
         validity=period,
         source=source,
     )
@@ -190,6 +215,9 @@ def _registry() -> InstrumentRegistry:
         calendar_id="calendar_xoff",
         validity=period,
         source=source,
+        market_segment="OFF_EXCHANGE_REFERENCE",
+        session_id="CONTINUOUS",
+        lot_size=Decimal("0.0001"),
     )
     alias = SymbolAlias(
         alias_id="alias_btc_vendor",
@@ -205,7 +233,7 @@ def _registry() -> InstrumentRegistry:
         instrument_id=future.instrument_id,
         event_type=LifecycleEventType.EXPIRY,
         effective_at="2026-12-18T08:00:00+00:00",
-        knowledge_at="2026-11-01T00:00:00+00:00",
+        knowledge_at="2026-11-02T00:00:00+00:00",
         contract_specification_id=(future_specification.contract_specification_id),
         validity=period,
         source=_source("b", observed_at="2026-11-02T00:00:00+00:00"),
@@ -226,7 +254,7 @@ def test_product_master_resolves_alias_and_typed_future_option_deliverable() -> 
     registry = _registry()
     as_of = "2026-06-01T00:00:00+00:00"
 
-    assert registry.schema_version == 2
+    assert registry.schema_version == 3
     assert (
         registry.resolve_symbol(
             provider_id="prepared_vendor", symbol="XBTKRW", as_of=as_of
@@ -240,6 +268,33 @@ def test_product_master_resolves_alias_and_typed_future_option_deliverable() -> 
     )
     assert [item.kind for item in deliverable] == [InstrumentKind.FUTURE]
     assert registry.contract_hash().startswith("sha256:")
+    assert (
+        registry.tradable_instrument_as_of("inst_btc_spot", as_of)
+        == registry.instruments[0]
+    )
+    suspended = replace(
+        registry.instruments[0],
+        trading_status=InstrumentTradingStatus.SUSPENDED,
+    )
+    assert (
+        replace(
+            registry,
+            instruments=(suspended, *registry.instruments[1:]),
+        ).tradable_instrument_as_of(suspended.instrument_id, as_of)
+        is None
+    )
+    assert (
+        replace(
+            registry,
+            listings=(),
+            symbol_aliases=(),
+            instruments=(
+                replace(registry.instruments[0], primary_listing_id=None),
+                *registry.instruments[1:],
+            ),
+        ).tradable_instrument_as_of("inst_btc_spot", as_of)
+        is None
+    )
 
     reordered = InstrumentRegistry(
         economic_underlyings=registry.economic_underlyings,
@@ -254,7 +309,54 @@ def test_product_master_resolves_alias_and_typed_future_option_deliverable() -> 
     assert reordered.contract_hash() == registry.contract_hash()
 
 
-def test_product_master_hides_late_observed_retroactive_revision() -> None:
+def test_product_master_rejects_incomplete_derivative_economic_terms() -> None:
+    registry = _registry()
+    incomplete_future = replace(
+        registry.contract_specifications[0],
+        minimum_tick=None,
+        tick_value=None,
+    )
+
+    with pytest.raises(
+        ProductMasterError,
+        match="derivative_contract_specification_economic_terms_required",
+    ):
+        replace(
+            registry,
+            contract_specifications=(
+                incomplete_future,
+                registry.contract_specifications[1],
+            ),
+        )
+    with pytest.raises(
+        ProductMasterError,
+        match="option_contract_specification_exercise_style_required",
+    ):
+        replace(
+            registry,
+            contract_specifications=(
+                registry.contract_specifications[0],
+                replace(
+                    registry.contract_specifications[1],
+                    exercise_style=None,
+                ),
+            ),
+        )
+    with pytest.raises(
+        ProductMasterError,
+        match="derivative_underlying_relationship_required",
+    ):
+        replace(
+            registry,
+            relationships=tuple(
+                item
+                for item in registry.relationships
+                if item.source_instrument_id != "inst_btc_future_dec26"
+            ),
+        )
+
+
+def test_product_master_preserves_pre_correction_value_by_knowledge_time() -> None:
     registry = _registry()
     as_of = "2026-06-01T00:00:00+00:00"
     before_revision = "2026-06-30T23:59:59+00:00"
@@ -289,43 +391,58 @@ def test_product_master_hides_late_observed_retroactive_revision() -> None:
             *registry.relationships[1:],
         ),
     )
+    original_revision = ProductMasterRevision(
+        revision_id="product_master.v1",
+        recorded_at="2025-12-01T00:00:00+00:00",
+        registry=registry,
+    )
+    corrected_revision = ProductMasterRevision(
+        revision_id="product_master.v2",
+        recorded_at=revision_known,
+        registry=revised,
+        supersedes_hash=original_revision.revision_hash(),
+        revision_reason="late_vendor_identifier_correction",
+    )
+    history = ProductMasterHistory((original_revision, corrected_revision))
 
     assert (
-        revised.instrument_as_of(
+        history.instrument_as_of(
             revised_spot.instrument_id,
             as_of,
             knowledge_at=before_revision,
         )
-        is None
+        == registry.instruments[0]
     )
-    assert revised.instrument_as_of(revised_spot.instrument_id, as_of) is None
-    with pytest.raises(ProductMasterError, match="symbol_alias_not_unique_as_of"):
-        revised.resolve_symbol(
+    assert (
+        history.resolve_symbol(
             provider_id="prepared_vendor",
             symbol="XBTKRW",
             as_of=as_of,
             knowledge_at=before_revision,
         )
-    assert (
-        revised.relationship_targets(
-            source_instrument_id="inst_btc_future_dec26",
-            relationship_type=InstrumentRelationshipType.FUTURE_UNDERLYING,
-            as_of=as_of,
-            knowledge_at=before_revision,
-        )
-        == ()
+        == registry.instruments[0]
     )
+    assert history.relationship_targets(
+        source_instrument_id="inst_btc_future_dec26",
+        relationship_type=InstrumentRelationshipType.FUTURE_UNDERLYING,
+        as_of=as_of,
+        knowledge_at=before_revision,
+    ) == (registry.instruments[0],)
     assert (
-        revised.contract_specification_as_of(
+        history.contract_specification_as_of(
             "inst_btc_future_dec26",
             as_of,
             knowledge_at=before_revision,
         )
-        is None
+        == registry.contract_specifications[0]
+    )
+    assert history.revision_as_known(before_revision) == original_revision
+    assert history.contract_hash_as_known(before_revision) != (
+        history.contract_hash_as_known(revision_known)
     )
 
     assert (
-        revised.instrument_as_of(
+        history.instrument_as_of(
             revised_spot.instrument_id,
             as_of,
             knowledge_at=revision_known,
@@ -333,7 +450,7 @@ def test_product_master_hides_late_observed_retroactive_revision() -> None:
         == revised_spot
     )
     assert (
-        revised.resolve_symbol(
+        history.resolve_symbol(
             provider_id="prepared_vendor",
             symbol="XBTKRW",
             as_of=as_of,
@@ -341,20 +458,40 @@ def test_product_master_hides_late_observed_retroactive_revision() -> None:
         )
         == revised_spot
     )
-    assert revised.relationship_targets(
+    assert history.relationship_targets(
         source_instrument_id="inst_btc_future_dec26",
         relationship_type=InstrumentRelationshipType.FUTURE_UNDERLYING,
         as_of=as_of,
         knowledge_at=revision_known,
     ) == (revised_spot,)
     assert (
-        revised.contract_specification_as_of(
+        history.contract_specification_as_of(
             "inst_btc_future_dec26",
             as_of,
             knowledge_at=revision_known,
         )
         == revised_future_specification
     )
+    assert history.revision_as_known(revision_known) == corrected_revision
+    assert history.contract_hash().startswith("sha256:")
+
+
+def test_product_master_revision_history_rejects_a_broken_chain() -> None:
+    first = ProductMasterRevision(
+        revision_id="product_master.v1",
+        recorded_at="2025-12-01T00:00:00+00:00",
+        registry=_registry(),
+    )
+    broken = ProductMasterRevision(
+        revision_id="product_master.v2",
+        recorded_at="2026-07-01T00:00:00+00:00",
+        registry=_registry(),
+        supersedes_hash=_hash("0"),
+        revision_reason="invalid_chain_for_test",
+    )
+
+    with pytest.raises(ProductMasterError, match="revision_chain_broken"):
+        ProductMasterHistory((first, broken))
 
 
 def test_product_master_rejects_wrong_future_option_deliverable_endpoints() -> None:
@@ -401,6 +538,59 @@ def test_lifecycle_events_are_filtered_by_knowledge_time() -> None:
     ] == ["event_future_expiry"]
 
 
+def test_lifecycle_event_retains_economic_terms_and_required_dates() -> None:
+    registry = _registry()
+    dividend = LifecycleEvent(
+        event_id="event_spot_cash_distribution",
+        instrument_id="inst_btc_spot",
+        event_type=LifecycleEventType.CASH_DISTRIBUTION,
+        effective_at="2026-07-03T00:00:00+00:00",
+        knowledge_at="2026-06-02T00:00:00+00:00",
+        announced_at="2026-06-01T00:00:00+00:00",
+        record_at="2026-07-02T00:00:00+00:00",
+        payment_at="2026-07-03T00:00:00+00:00",
+        cash_amount=Decimal("1.25"),
+        currency="KRW",
+        validity=_period(),
+        source=_source("9", observed_at="2026-06-02T00:00:00+00:00"),
+    )
+    with_dividend = replace(
+        registry,
+        lifecycle_events=registry.lifecycle_events + (dividend,),
+    )
+
+    payload = next(
+        item
+        for item in with_dividend.as_dict()["lifecycle_events"]
+        if item["event_id"] == dividend.event_id
+    )
+    assert payload["announced_at"] == "2026-06-01T00:00:00+00:00"
+    assert payload["cash_amount"] == "1.25"
+    assert payload["currency"] == "KRW"
+
+    with pytest.raises(ProductMasterError, match="amount_required"):
+        replace(dividend, cash_amount=None, currency=None)
+
+    with pytest.raises(
+        ProductMasterError,
+        match="knowledge_before_source_observed",
+    ):
+        replace(
+            dividend,
+            knowledge_at="2026-06-01T00:00:00+00:00",
+        )
+
+    with pytest.raises(
+        ProductMasterError,
+        match="knowledge_before_announcement",
+    ):
+        replace(
+            dividend,
+            source=_source("8", observed_at="2026-05-01T00:00:00+00:00"),
+            knowledge_at="2026-05-15T00:00:00+00:00",
+        )
+
+
 def _lineage(
     char: str,
     *,
@@ -429,7 +619,73 @@ def _clocks(prefix: str = "10") -> ObservationClocks:
     )
 
 
-def _raw_record(payload: dict[str, object] | None = None) -> BitemporalRecord:
+def _raw_metadata(
+    payload: dict[str, object],
+    *,
+    provider_record_id: str = "provider.btc.20260102.v1",
+    quality_flags: tuple[str, ...] = (),
+) -> RawLayerMetadata:
+    return RawLayerMetadata(
+        provider_record_id=provider_record_id,
+        provider_symbol="XBTKRW",
+        source_object_id="object.btc.daily.20260102",
+        collection_batch_id="batch.reviewed.20260102",
+        original_schema_id="provider.ohlcv.v1",
+        provider_version="v1",
+        payload_checksum=sha256_prefixed(
+            payload,
+            label="multi_asset_data_payload",
+        ),
+        quality_flags=quality_flags,
+    )
+
+
+def _normalized_metadata(
+    *,
+    quality_flags: tuple[str, ...] = (),
+) -> NormalizedLayerMetadata:
+    return NormalizedLayerMetadata(
+        internal_instrument_id="inst_btc_spot",
+        source_timezone="Asia/Seoul",
+        target_timezone="UTC",
+        source_price_unit="KRW_per_coin",
+        target_price_unit="KRW_per_coin",
+        source_quantity_unit="coin",
+        target_quantity_unit="coin",
+        currency="KRW",
+        exchange_session_id="session.krx.day",
+        provider_priority=1,
+        duplicate_resolution="UNIQUE",
+        unit_conversion_id="identity.krw.coin.v1",
+        missing_value=False,
+        outlier=False,
+        revised=False,
+        quality_flags=quality_flags,
+    )
+
+
+def _derived_metadata(
+    input_snapshot_hash: str,
+    *,
+    quality_flags: tuple[str, ...] = (),
+) -> DerivedLayerMetadata:
+    return DerivedLayerMetadata(
+        model_id="simple.return",
+        model_version="v1",
+        input_snapshot_hash=input_snapshot_hash,
+        generated_at="2026-01-02T12:00:00+00:00",
+        code_version="commit.test",
+        code_hash=_hash("7"),
+        quality_flags=quality_flags,
+    )
+
+
+def _raw_record(
+    payload: dict[str, object] | None = None,
+    *,
+    quality_flags: tuple[str, ...] = (),
+) -> BitemporalRecord:
+    record_payload = payload or {"close": "100", "currency": "KRW"}
     return BitemporalRecord(
         record_id="raw.btc.20260102",
         version=1,
@@ -437,8 +693,12 @@ def _raw_record(payload: dict[str, object] | None = None) -> BitemporalRecord:
         instrument_id="inst_btc_spot",
         data_kind="ohlcv",
         clocks=_clocks(),
-        payload=payload or {"close": "100", "currency": "KRW"},
+        payload=record_payload,
         lineage=_lineage("a"),
+        layer_metadata=_raw_metadata(
+            record_payload,
+            quality_flags=quality_flags,
+        ),
     )
 
 
@@ -456,6 +716,7 @@ def test_three_layer_store_is_immutable_and_hash_binds_lineage() -> None:
         clocks=_clocks("11"),
         payload={"close": Decimal("100.00"), "currency": "KRW"},
         lineage=_lineage("b", upstream=(raw.record_hash(),), transformed=True),
+        layer_metadata=_normalized_metadata(),
     )
     normalized_store = raw_store.append(normalized)
     derived = BitemporalRecord(
@@ -467,10 +728,11 @@ def test_three_layer_store_is_immutable_and_hash_binds_lineage() -> None:
         clocks=_clocks("12"),
         payload={"return": "0.01", "unit": "decimal_return"},
         lineage=_lineage("c", upstream=(normalized.record_hash(),), transformed=True),
+        layer_metadata=_derived_metadata(normalized.record_hash()),
     )
     complete = normalized_store.append(derived)
 
-    assert complete.schema_version == 2
+    assert complete.schema_version == 3
     mutable_payload["close"] = "999"
     assert raw.payload["close"] == "100"
     assert empty.records == ()
@@ -484,11 +746,62 @@ def test_three_layer_store_is_immutable_and_hash_binds_lineage() -> None:
     assert complete.content_hash().startswith("sha256:")
     with pytest.raises(FrozenInstanceError):
         raw.version = 2  # type: ignore[misc]
+    with pytest.raises(
+        MultiAssetDataError,
+        match="derived_record_known_before_generation",
+    ):
+        replace(
+            derived,
+            layer_metadata=replace(
+                derived.layer_metadata,
+                generated_at="2026-01-02T12:03:00+00:00",
+            ),
+        )
+    derived_before_upstream = replace(
+        derived,
+        record_id="derived.btc.return.before.upstream",
+        layer_metadata=replace(
+            derived.layer_metadata,
+            generated_at="2026-01-02T11:01:00+00:00",
+        ),
+    )
+    with pytest.raises(
+        MultiAssetDataError,
+        match="derived_record_generated_before_upstream_available",
+    ):
+        normalized_store.append(derived_before_upstream)
+
+
+def test_processed_record_cannot_predate_upstream_availability() -> None:
+    raw = _raw_record()
+    store = AppendOnlyBitemporalStore().append(raw)
+    normalized = BitemporalRecord(
+        record_id="normalized.btc.early",
+        version=1,
+        layer=DataLayer.NORMALIZED,
+        instrument_id=raw.instrument_id,
+        data_kind=raw.data_kind,
+        clocks=_clocks("09"),
+        payload={"close": "100", "currency": "KRW"},
+        lineage=_lineage(
+            "4",
+            upstream=(raw.record_hash(),),
+            transformed=True,
+        ),
+        layer_metadata=_normalized_metadata(),
+    )
+
+    with pytest.raises(
+        MultiAssetDataError,
+        match="processed_record_known_before_upstream_available",
+    ):
+        store.append(normalized)
 
 
 def test_bitemporal_query_excludes_later_correction_and_preserves_history() -> None:
     original = _raw_record()
     first = AppendOnlyBitemporalStore().append(original)
+    correction_payload = {"close": "101", "currency": "KRW"}
     correction = BitemporalRecord(
         record_id=original.record_id,
         version=2,
@@ -496,8 +809,13 @@ def test_bitemporal_query_excludes_later_correction_and_preserves_history() -> N
         instrument_id=original.instrument_id,
         data_kind=original.data_kind,
         clocks=_clocks("13"),
-        payload={"close": "101", "currency": "KRW"},
+        payload=correction_payload,
         lineage=_lineage("d"),
+        layer_metadata=_raw_metadata(
+            correction_payload,
+            provider_record_id="provider.btc.20260102.v2",
+            quality_flags=("provider_correction",),
+        ),
         supersedes_hash=original.record_hash(),
         correction_reason="reviewed vendor correction",
     )
@@ -521,6 +839,22 @@ def test_bitemporal_query_excludes_later_correction_and_preserves_history() -> N
 
 def test_data_store_rejects_missing_lineage_and_non_offline_source() -> None:
     raw = _raw_record()
+    with pytest.raises(
+        MultiAssetDataError,
+        match="raw_record_transformation_forbidden",
+    ):
+        replace(
+            raw,
+            lineage=_lineage("1", transformed=True),
+        )
+    with pytest.raises(
+        MultiAssetDataError,
+        match="normalized_metadata.currency_invalid_currency",
+    ):
+        replace(
+            _normalized_metadata(),
+            currency="usd",
+        )
     missing_upstream = BitemporalRecord(
         record_id="normalized.btc.missing",
         version=1,
@@ -530,6 +864,7 @@ def test_data_store_rejects_missing_lineage_and_non_offline_source() -> None:
         clocks=_clocks("11"),
         payload={"close": "100"},
         lineage=_lineage("b", upstream=(_hash("9"),), transformed=True),
+        layer_metadata=_normalized_metadata(),
     )
     with pytest.raises(MultiAssetDataError, match="lineage_upstream_record_missing"):
         AppendOnlyBitemporalStore().append(missing_upstream)
@@ -547,6 +882,126 @@ def test_data_store_rejects_missing_lineage_and_non_offline_source() -> None:
             received_at="2026-01-01T23:59:59+00:00",
             ingested_at="2026-01-02T00:00:01+00:00",
         )
+
+
+def test_layer_metadata_lineage_and_quality_propagate_in_both_directions() -> None:
+    raw = _raw_record(quality_flags=("provider_stale",))
+    normalized = BitemporalRecord(
+        record_id="normalized.btc.quality",
+        version=1,
+        layer=DataLayer.NORMALIZED,
+        instrument_id=raw.instrument_id,
+        data_kind="ohlcv",
+        clocks=_clocks("11"),
+        payload={"close": "100", "currency": "KRW"},
+        lineage=_lineage("b", upstream=(raw.record_hash(),), transformed=True),
+        layer_metadata=_normalized_metadata(quality_flags=("estimated_session",)),
+    )
+    derived = BitemporalRecord(
+        record_id="derived.btc.quality",
+        version=1,
+        layer=DataLayer.DERIVED,
+        instrument_id=raw.instrument_id,
+        data_kind="simple_return",
+        clocks=_clocks("12"),
+        payload={"return": "0.01", "unit": "decimal_return"},
+        lineage=_lineage("c", upstream=(normalized.record_hash(),), transformed=True),
+        layer_metadata=_derived_metadata(
+            normalized.record_hash(),
+            quality_flags=("model_fallback",),
+        ),
+    )
+    store = AppendOnlyBitemporalStore().append(raw).append(normalized).append(derived)
+
+    assert store.lineage_ancestors(derived.record_hash()) == (raw, normalized)
+    assert store.lineage_descendants(raw.record_hash()) == (normalized, derived)
+    assert store.trace_to_raw(derived.record_hash()) == (raw,)
+    assert store.propagated_quality_flags(derived.record_hash()) == (
+        "estimated_session",
+        "model_fallback",
+        "provider_stale",
+    )
+
+
+def test_layer_metadata_rejects_wrong_layer_and_raw_checksum() -> None:
+    payload = {"close": "100", "currency": "KRW"}
+    with pytest.raises(
+        MultiAssetDataError,
+        match="raw_record_layer_metadata_mismatch",
+    ):
+        BitemporalRecord(
+            record_id="raw.btc.wrong.metadata",
+            version=1,
+            layer=DataLayer.RAW,
+            instrument_id="inst_btc_spot",
+            data_kind="ohlcv",
+            clocks=_clocks(),
+            payload=payload,
+            lineage=_lineage("a"),
+            layer_metadata=_normalized_metadata(),
+        )
+    with pytest.raises(
+        MultiAssetDataError,
+        match="raw_record_payload_checksum_mismatch",
+    ):
+        BitemporalRecord(
+            record_id="raw.btc.bad.checksum",
+            version=1,
+            layer=DataLayer.RAW,
+            instrument_id="inst_btc_spot",
+            data_kind="ohlcv",
+            clocks=_clocks(),
+            payload=payload,
+            lineage=_lineage("a"),
+            layer_metadata=replace(
+                _raw_metadata(payload),
+                payload_checksum=_hash("8"),
+            ),
+        )
+    with pytest.raises(
+        MultiAssetDataError,
+        match="source_timezone_unknown",
+    ):
+        replace(
+            _normalized_metadata(),
+            source_timezone="Mars/Olympus",
+        )
+
+
+def test_derived_metadata_must_bind_the_exact_upstream_record_set() -> None:
+    raw = _raw_record()
+    normalized = BitemporalRecord(
+        record_id="normalized.btc.snapshot.binding",
+        version=1,
+        layer=DataLayer.NORMALIZED,
+        instrument_id=raw.instrument_id,
+        data_kind="ohlcv",
+        clocks=_clocks("11"),
+        payload={"close": "100", "currency": "KRW"},
+        lineage=_lineage("b", upstream=(raw.record_hash(),), transformed=True),
+        layer_metadata=_normalized_metadata(),
+    )
+    derived = BitemporalRecord(
+        record_id="derived.btc.snapshot.binding",
+        version=1,
+        layer=DataLayer.DERIVED,
+        instrument_id=raw.instrument_id,
+        data_kind="simple_return",
+        clocks=_clocks("12"),
+        payload={"return": "0.01"},
+        lineage=_lineage("c", upstream=(normalized.record_hash(),), transformed=True),
+        layer_metadata=_derived_metadata(_hash("8")),
+    )
+    normalized_store = AppendOnlyBitemporalStore().append(raw).append(normalized)
+
+    assert derived_input_snapshot_hash((normalized.record_hash(),)) == (
+        normalized.record_hash()
+    )
+    with pytest.raises(
+        MultiAssetDataError,
+        match="derived_input_snapshot_hash_mismatch",
+    ):
+        normalized_store.append(derived)
 
 
 def _metadata(
@@ -749,7 +1204,7 @@ def test_shared_market_state_is_consistent_hash_stable_and_currency_aware() -> N
     state = _market_state()
     state.require_usable()
 
-    assert state.schema_version == 2
+    assert state.schema_version == 3
     assert state.spot_price("inst_btc_spot").price == Decimal("100")
     assert state.convert(
         Decimal("2"), from_currency="USD", to_currency="KRW"
@@ -930,3 +1385,133 @@ def test_market_state_rejects_cross_component_currency_or_calendar_mismatch() ->
     foreign_calendar = replace(_metadata(), calendar_id="calendar_unregistered")
     with pytest.raises(MarketStateError, match="unregistered_calendar"):
         replace(state, rates=(replace(state.rates[0], metadata=foreign_calendar),))
+
+    futures_curve, _option_chain = _derivative_components()
+    cross_currency_curve = replace(
+        futures_curve,
+        currency="KRW",
+        contracts=tuple(
+            replace(item, currency="KRW") for item in futures_curve.contracts
+        ),
+    )
+    with pytest.raises(
+        MarketStateError,
+        match="futures_underlying_dimension_mismatch",
+    ):
+        replace(
+            state,
+            futures_curves=(cross_currency_curve,),
+        )
+
+    other_calendar_metadata = replace(
+        _metadata(),
+        calendar_id="calendar_other",
+    )
+    funding = FundingRateQuote(
+        funding_rate_id="funding_btc_wrong_calendar",
+        instrument_id=futures_curve.contracts[0].contract_id,
+        currency="USD",
+        annualized_rate=Decimal("0.01"),
+        settlement_at="2026-01-02T16:00:00+00:00",
+        interval_hours=8,
+        metadata=other_calendar_metadata,
+    )
+    with pytest.raises(
+        MarketStateError,
+        match="funding_dimension_mismatch",
+    ):
+        replace(
+            state,
+            calendar_ids=("calendar_other", "calendar_xoff"),
+            futures_curves=(futures_curve,),
+            funding_rates=(funding,),
+        )
+
+
+def test_market_state_binds_calendar_carry_and_forward_diagnostics() -> None:
+    metadata = replace(_metadata(), calendar_id="cal_xoffmarket")
+    calendar = MarketCalendarAuthority(
+        schema_version=MARKET_CALENDAR_SCHEMA_VERSION,
+        calendar_id="cal_xoffmarket",
+        calendar_version_id="calv_xoffmarket_v1",
+        version=1,
+        market_mode="continuous_24x7",
+        timezone_name="UTC",
+        tzdb_version="2026a",
+        dst_transition_policy=("iana_tzdb_reject_ambiguous_or_nonexistent_local_time"),
+        valid_from="2026-01-01",
+        valid_to="2026-12-31",
+        source_uri="/var/lib/market-research-inputs/calendar-xoff-v1.json",
+        source_content_hash=_hash("1"),
+        source_schema_hash=_hash("2"),
+        published_at="2025-12-01T00:00:00+00:00",
+        observed_at="2025-12-01T00:01:00+00:00",
+        weekly_sessions=(),
+        exceptions=(),
+    )
+    curve, _ = _derivative_components()
+    future = replace(curve.contracts[0], metadata=metadata)
+    curve = replace(curve, contracts=(future,), metadata=metadata)
+    spot = SpotQuote(
+        instrument_id="inst_btc_spot",
+        price=Decimal("100"),
+        currency="USD",
+        unit="USD_per_coin",
+        metadata=metadata,
+    )
+    state = MarketState(
+        state_id="market_state_carry_20260102",
+        valuation_at="2026-01-02T10:00:00+00:00",
+        base_currency="USD",
+        calendar_ids=(calendar.calendar_id,),
+        spots=(spot,),
+        rates=(
+            RateQuote(
+                rate_id="rate_usd_annual",
+                currency="USD",
+                tenor_days=365,
+                rate=Decimal("0.05"),
+                metadata=metadata,
+            ),
+        ),
+        calendar_authorities=(calendar,),
+        funding_rates=(
+            FundingRateQuote(
+                funding_rate_id="funding_btc_future_dec26",
+                instrument_id=future.contract_id,
+                currency="USD",
+                annualized_rate=Decimal("0.02"),
+                settlement_at="2026-01-02T16:00:00+00:00",
+                interval_hours=8,
+                metadata=metadata,
+            ),
+        ),
+        dividend_yields=(
+            DividendYieldAssumption(
+                assumption_id="dividend_btc_zero_proxy",
+                underlying_instrument_id=spot.instrument_id,
+                currency="USD",
+                annualized_yield=Decimal("0.01"),
+                model_hash=_hash("3"),
+                metadata=metadata,
+            ),
+        ),
+        futures_curves=(curve,),
+    )
+
+    state.require_usable()
+    diagnostic = state.forward_consistency_diagnostics(
+        relative_tolerance=Decimal("0.05")
+    )[0]
+    assert diagnostic["contract_id"] == future.contract_id
+    assert diagnostic["method"] == "simple_carry_actual_365"
+    assert diagnostic["passed"] is True
+    assert state.as_dict()["calendar_authorities"][0]["contract_hash"] == (
+        calendar.contract_hash()
+    )
+
+    with pytest.raises(
+        MarketStateError,
+        match="calendar_authority_set_mismatch",
+    ):
+        replace(state, calendar_ids=("cal_xoffmarket", "cal_secondmarket"))

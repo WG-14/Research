@@ -54,6 +54,16 @@ def execute_research_command(
             command=command, args=args, context=context
         )
 
+    if command in {
+        "research-multi-asset-execute",
+        "research-multi-asset-reproduce",
+    }:
+        return _execute_multi_asset_application_command(
+            command=command,
+            args=args,
+            context=context,
+        )
+
     from market_research.research import cli
 
     lifecycle_commands = {
@@ -494,6 +504,128 @@ def _execute_derivative_application_command(
         return 0 if receipt.status is ReproductionStatus.PASS else 1
 
     raise ValueError(f"unsupported derivative application command: {command}")
+
+
+def _execute_multi_asset_application_command(
+    *,
+    command: str,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+) -> int:
+    from market_research.research.multi_asset.application import (
+        MultiAssetApplicationError,
+    )
+    from market_research.research.multi_asset.builtin_runner import (
+        BuiltinMultiAssetCodecError,
+        BuiltinReproductionStatus,
+        execute_builtin_multi_asset,
+        reproduce_builtin_multi_asset,
+    )
+
+    if command == "research-multi-asset-execute":
+        execute_invocation = (
+            command,
+            "--request",
+            args.request,
+            "--out",
+            args.out,
+        )
+        try:
+            execution_record = execute_builtin_multi_asset(
+                paths=context.paths,
+                request_path=args.request,
+                output_path=args.out,
+                command=execute_invocation,
+            )
+        except MultiAssetApplicationError as exc:
+            context.run_result_hash = exc.run_manifest.content_hash
+            context.printer(
+                json.dumps(
+                    {
+                        "status": "FAILED",
+                        "run_manifest_hash": (exc.run_manifest.content_hash),
+                        "failure_code": exc.run_manifest.failure_code,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 1
+        context.run_result_hash = execution_record.content_hash
+        context.printer(
+            json.dumps(
+                {
+                    "status": "SUCCEEDED",
+                    "execution_record_hash": execution_record.content_hash,
+                    "request_hash": execution_record.request_hash,
+                    "study_content_hash": (execution_record.study_content_hash),
+                    "run_manifest_hash": execution_record.run_manifest_hash,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if command == "research-multi-asset-reproduce":
+        reproduction_invocation = (
+            command,
+            "--request",
+            args.request,
+            "--expected",
+            args.expected,
+            "--reproduction-id",
+            args.reproduction_id,
+            "--out",
+            args.out,
+        )
+        try:
+            reproduction_record = reproduce_builtin_multi_asset(
+                paths=context.paths,
+                request_path=args.request,
+                expected_path=args.expected,
+                reproduction_run_id=args.reproduction_id,
+                output_path=args.out,
+                command=reproduction_invocation,
+            )
+        except MultiAssetApplicationError as exc:
+            context.run_result_hash = exc.run_manifest.content_hash
+            context.printer(
+                json.dumps(
+                    {
+                        "status": "FAILED",
+                        "run_manifest_hash": (exc.run_manifest.content_hash),
+                        "failure_code": exc.run_manifest.failure_code,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 1
+        context.run_result_hash = reproduction_record.content_hash
+        context.printer(
+            json.dumps(
+                {
+                    "status": reproduction_record.status.value,
+                    "reproduction_record_hash": (reproduction_record.content_hash),
+                    "request_hash": reproduction_record.request_hash,
+                    "expected_execution_hash": (
+                        reproduction_record.expected_execution_hash
+                    ),
+                    "reproduced_study_hash": (
+                        reproduction_record.reproduced_study_hash
+                    ),
+                    "mismatch_fields": list(reproduction_record.mismatch_fields),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0 if reproduction_record.status is BuiltinReproductionStatus.PASS else 1
+
+    raise BuiltinMultiAssetCodecError(
+        f"unsupported_multi_asset_application_command:{command}"
+    )
 
 
 def _application_service(context: ResearchAppContext) -> ResearchApplicationService:

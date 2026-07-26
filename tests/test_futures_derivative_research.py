@@ -871,6 +871,131 @@ def test_roll_is_two_actual_contract_fills_with_two_costs_and_roll_yield() -> No
         )
 
 
+@pytest.mark.parametrize(
+    ("entry_side", "expected_new_quantity", "expected_residual"),
+    (
+        (OrderSide.BUY, 2, Decimal("-150")),
+        (OrderSide.SELL, -2, Decimal("150")),
+    ),
+)
+def test_roll_preserves_signed_exposure_across_price_and_multiplier_change(
+    entry_side: OrderSide,
+    expected_new_quantity: int,
+    expected_residual: Decimal,
+) -> None:
+    old_contract = _contract(
+        "FUT.ROLL.OLD",
+        last_trade="2026-04-20",
+        multiplier=Decimal("5"),
+    )
+    new_contract = _contract(
+        "FUT.ROLL.NEW",
+        last_trade="2026-06-20",
+        multiplier=Decimal("3"),
+    )
+    simulator = _simulator((old_contract, new_contract))
+    entry_quote = _quote(
+        old_contract.contract_id,
+        "2026-03-10T16:00:00Z",
+        "90",
+    )
+    opened = simulator.execute(
+        FuturesLedger.open("ledger.roll.exposure", Decimal("100000")),
+        FuturesOrderIntent(
+            intent_id="intent.roll.exposure.seed",
+            contract_id=old_contract.contract_id,
+            side=entry_side,
+            quantity=1,
+            decision_at=entry_quote.observed_at,
+        ),
+        entry_quote,
+        fill_id="fill.roll.exposure.seed",
+        step_id="step.roll.exposure.seed",
+    )
+    old_quote = _quote(
+        old_contract.contract_id,
+        "2026-03-11T16:00:00Z",
+        "90",
+    )
+    new_quote = _quote(
+        new_contract.contract_id,
+        "2026-03-11T16:00:00Z",
+        "100",
+    )
+    decision = RollDecision(
+        decision_id=f"decision.roll.exposure.{entry_side.value.lower()}",
+        decision_at=old_quote.observed_at,
+        root_id=old_contract.root_id,
+        from_contract_id=old_contract.contract_id,
+        to_contract_id=new_contract.contract_id,
+        should_roll=True,
+        reason="EXPOSURE_PRESERVING_REGRESSION",
+        policy_hash=HASH_A,
+        chain_snapshot_hash=HASH_B,
+        input_quote_hashes=(old_quote.content_hash, new_quote.content_hash),
+    )
+
+    rolled = simulator.roll(
+        opened.ledger,
+        decision,
+        old_quote,
+        new_quote,
+        execution_id=f"roll.exposure.{entry_side.value.lower()}",
+        step_id=f"step.roll.exposure.{entry_side.value.lower()}",
+    )
+
+    quantity_plan = rolled.roll_quantity_plan
+    execution = rolled.roll_execution
+    assert quantity_plan is not None
+    assert execution is not None
+    assert quantity_plan.from_contract_id == old_contract.contract_id
+    assert quantity_plan.to_contract_id == new_contract.contract_id
+    assert quantity_plan.close_quantity == 1
+    assert quantity_plan.resulting_new_quantity == expected_new_quantity
+    assert quantity_plan.open_quantity == 2
+    assert quantity_plan.target_exposure == (
+        Decimal("450") if entry_side is OrderSide.BUY else Decimal("-450")
+    )
+    assert quantity_plan.achieved_exposure == (
+        Decimal("600") if entry_side is OrderSide.BUY else Decimal("-600")
+    )
+    assert quantity_plan.rounding_residual == expected_residual
+    assert quantity_plan.rounding_method == "ROUND_HALF_UP"
+
+    close_fill, open_fill = rolled.fills
+    assert close_fill.contract_id == old_contract.contract_id
+    assert open_fill.contract_id == new_contract.contract_id
+    assert close_fill.quote_hash == old_quote.content_hash
+    assert open_fill.quote_hash == new_quote.content_hash
+    assert close_fill.multiplier == Decimal("5")
+    assert open_fill.multiplier == Decimal("3")
+    assert close_fill.side is quantity_plan.close_side
+    assert open_fill.side is quantity_plan.open_side
+    assert close_fill.quantity == 1
+    assert open_fill.quantity == 2
+    assert close_fill.total_cost == Decimal("2.25")
+    assert open_fill.total_cost == Decimal("3.50")
+    assert execution.quantity_plan_hash == quantity_plan.content_hash
+    assert execution.close_fill_hash == close_fill.content_hash
+    assert execution.open_fill_hash == open_fill.content_hash
+    assert execution.close_cost == close_fill.total_cost
+    assert execution.open_cost == open_fill.total_cost
+    assert execution.total_roll_cost == Decimal("5.75")
+    assert rolled.ledger.position_for(old_contract.contract_id) is None
+    new_position = rolled.ledger.position_for(new_contract.contract_id)
+    assert new_position is not None
+    assert new_position.quantity == expected_new_quantity
+    assert (
+        quantity_plan.target_exposure
+        - (
+            Decimal(new_position.quantity)
+            * new_quote.close_price
+            * new_contract.contract_multiplier
+        )
+        == expected_residual
+    )
+
+
 def test_expiration_uses_settlement_price_and_never_models_physical_delivery() -> None:
     cash_contract = _contract("FUT.CASH", last_trade="2026-03-20")
     physical_contract = _contract(

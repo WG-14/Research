@@ -478,6 +478,8 @@ def test_roll_planner_preserves_exposure_with_multiplier_change_and_costed_legs(
     assert plan.achieved_exposure == Decimal("50000")
     assert plan.rounding_residual == 0
     assert plan.total_cost == Decimal("502")
+    assert plan.quantity_plan_hash == plan.quantity_plan().content_hash
+    assert plan.quantity_plan().resulting_new_quantity == open_leg.quantity
 
 
 def test_split_roll_uses_original_quantity_and_records_rounding_residual() -> None:
@@ -591,9 +593,14 @@ def test_existing_settlement_and_roll_events_reconcile_to_cash_evidence() -> Non
         cost_model=_cost_adapter(),
     )
     close_leg, open_leg = plan.legs
+    quantity_plan = plan.quantity_plan()
+    close_intent, open_intent = quantity_plan.order_intents(
+        execution_id="execution.roll",
+        decision_at=AS_OF,
+    )
     close_fill = FuturesFill(
         fill_id="fill.roll.close",
-        intent_hash=plan.content_hash,
+        intent_hash=close_intent.content_hash,
         contract_id=old.contract_id,
         quote_hash=old_quote.content_hash,
         filled_at=AS_OF,
@@ -611,7 +618,7 @@ def test_existing_settlement_and_roll_events_reconcile_to_cash_evidence() -> Non
     )
     open_fill = FuturesFill(
         fill_id="fill.roll.open",
-        intent_hash=plan.content_hash,
+        intent_hash=open_intent.content_hash,
         contract_id=new.contract_id,
         quote_hash=new_quote.content_hash,
         filled_at=AS_OF,
@@ -629,7 +636,7 @@ def test_existing_settlement_and_roll_events_reconcile_to_cash_evidence() -> Non
     )
     execution = RollExecution(
         execution_id="execution.roll",
-        decision_hash=plan.content_hash,
+        decision_hash=HASH_A,
         executed_at=AS_OF,
         from_contract_id=old.contract_id,
         to_contract_id=new.contract_id,
@@ -639,6 +646,7 @@ def test_existing_settlement_and_roll_events_reconcile_to_cash_evidence() -> Non
         open_cost=open_fill.total_cost,
         price_gap=Decimal("0"),
         roll_yield=Decimal("0"),
+        quantity_plan_hash=plan.quantity_plan_hash,
     )
     settlement = SettlementEvent(
         event_id="settlement.old",
@@ -718,7 +726,7 @@ def test_existing_settlement_and_roll_events_reconcile_to_cash_evidence() -> Non
             opening_cash=opening_cash,
             closing_cash=closing_cash,
             settlement_events=(settlement,),
-            roll_execution=replace(execution, decision_hash=HASH_C),
+            roll_execution=replace(execution, quantity_plan_hash=HASH_C),
             roll_fills=(close_fill, open_fill),
             roll_plan=plan,
         )

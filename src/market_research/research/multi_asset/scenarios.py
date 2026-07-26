@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Iterable, Mapping, Protocol, runtime_checkable
 
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.multi_asset.portfolio import (
@@ -108,18 +108,336 @@ def _normalize_pairs(
     return normalized
 
 
+def _normalize_text_pairs(
+    values: tuple[tuple[str, str], ...],
+    field_name: str,
+) -> tuple[tuple[str, str], ...]:
+    normalized = tuple(sorted(values))
+    if len({key for key, _ in normalized}) != len(normalized):
+        raise ScenarioError(f"{field_name}_duplicate")
+    for key, value in normalized:
+        _require_id(key, f"{field_name}.key")
+        _require_id(value, f"{field_name}.value")
+    return normalized
+
+
+def _component_hash(component: object, *, label: str) -> str:
+    """Bind a projected component to its exact immutable source payload."""
+
+    existing = getattr(component, "content_hash", None)
+    if isinstance(existing, str):
+        _require_hash(existing, f"scenario.{label}.content_hash")
+        return existing
+    as_dict = getattr(component, "as_dict", None)
+    if callable(as_dict):
+        return sha256_prefixed(as_dict(), label=f"scenario_source_{label}")
+    raise ScenarioError(f"scenario_source_component_not_hashable:{label}")
+
+
+def _objects(value: object, field_name: str) -> tuple[object, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        raise ScenarioError(f"scenario_market_state_{field_name}_invalid")
+    return tuple(value)
+
+
+def _attribute_id(value: object, name: str, field_name: str) -> str:
+    identifier = getattr(value, name, None)
+    if not isinstance(identifier, str):
+        raise ScenarioError(f"{field_name}_invalid")
+    _require_id(identifier, field_name)
+    return identifier
+
+
+def _attribute_text(value: object, name: str, field_name: str) -> str:
+    text = getattr(value, name, None)
+    if not isinstance(text, str):
+        raise ScenarioError(f"{field_name}_invalid")
+    return text
+
+
+def _attribute_decimal(
+    value: object,
+    name: str,
+    field_name: str,
+    *,
+    nonnegative: bool = False,
+    positive: bool = False,
+) -> Decimal:
+    number = getattr(value, name, None)
+    if not isinstance(number, Decimal):
+        raise ScenarioError(f"{field_name}_must_be_decimal")
+    return _decimal(
+        number,
+        field_name,
+        nonnegative=nonnegative,
+        positive=positive,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class VolatilityPointProjection:
+    """One source-bound volatility point projected by a joint scenario."""
+
+    surface_id: str
+    underlying_instrument_id: str
+    expiry_at: str
+    strike: Decimal
+    base_volatility: Decimal
+    projected_volatility: Decimal
+    source_component_hash: str
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.surface_id, "volatility_projection.surface_id")
+        _require_id(
+            self.underlying_instrument_id,
+            "volatility_projection.underlying_instrument_id",
+        )
+        object.__setattr__(
+            self,
+            "expiry_at",
+            _timestamp_text(
+                self.expiry_at,
+                "volatility_projection.expiry_at",
+            ),
+        )
+        _decimal(self.strike, "volatility_projection.strike", positive=True)
+        _decimal(
+            self.base_volatility,
+            "volatility_projection.base_volatility",
+            nonnegative=True,
+        )
+        _decimal(
+            self.projected_volatility,
+            "volatility_projection.projected_volatility",
+            nonnegative=True,
+        )
+        _require_hash(
+            self.source_component_hash,
+            "volatility_projection.source_component_hash",
+        )
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                self.identity_payload(),
+                label="scenario_volatility_point_projection",
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, str]:
+        return {
+            "surface_id": self.surface_id,
+            "underlying_instrument_id": self.underlying_instrument_id,
+            "expiry_at": self.expiry_at,
+            "strike": _decimal_text(self.strike),
+            "base_volatility": _decimal_text(self.base_volatility),
+            "projected_volatility": _decimal_text(self.projected_volatility),
+            "source_component_hash": self.source_component_hash,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CommonMarketProjection:
+    """Hash-bound common-state adapter consumed by every product repricer.
+
+    The adapter inventories prices and economic factors from the actual shared
+    market state.  Ledger marks are retained only as an explicit fallback for
+    products absent from that state.  This makes an unheld derivative
+    underlying available to an option repricer without mutating the source.
+    """
+
+    parent_state_id: str
+    parent_state_hash: str
+    prices: tuple[tuple[str, Decimal], ...]
+    price_source_kinds: tuple[tuple[str, str], ...]
+    rate_levels: tuple[tuple[str, Decimal], ...]
+    rate_target_members: tuple[tuple[str, tuple[str, ...]], ...]
+    dividend_yields: tuple[tuple[str, Decimal], ...]
+    borrow_rates: tuple[tuple[str, Decimal], ...]
+    funding_rates: tuple[tuple[str, Decimal], ...]
+    spreads: tuple[tuple[str, Decimal], ...]
+    futures_curve_members: tuple[tuple[str, tuple[str, ...]], ...]
+    futures_underlyings: tuple[tuple[str, str], ...]
+    futures_basis_levels: tuple[tuple[str, Decimal], ...]
+    option_underlyings: tuple[tuple[str, str], ...]
+    volatility_points: tuple[VolatilityPointProjection, ...]
+    source_component_hashes: tuple[tuple[str, str], ...]
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.parent_state_id, "common_projection.parent_state_id")
+        _require_hash(
+            self.parent_state_hash,
+            "common_projection.parent_state_hash",
+        )
+        object.__setattr__(
+            self,
+            "prices",
+            _normalize_pairs(
+                self.prices,
+                "common_projection.prices",
+                positive=True,
+            ),
+        )
+        for field_name in (
+            "rate_levels",
+            "dividend_yields",
+            "borrow_rates",
+            "funding_rates",
+            "spreads",
+            "futures_basis_levels",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_pairs(
+                    getattr(self, field_name),
+                    f"common_projection.{field_name}",
+                    nonnegative=field_name in {"borrow_rates", "spreads"},
+                ),
+            )
+        object.__setattr__(
+            self,
+            "price_source_kinds",
+            _normalize_text_pairs(
+                self.price_source_kinds,
+                "common_projection.price_source_kinds",
+            ),
+        )
+        if set(dict(self.price_source_kinds)) != set(dict(self.prices)):
+            raise ScenarioError("common_projection_price_source_set_mismatch")
+        object.__setattr__(
+            self,
+            "futures_underlyings",
+            _normalize_text_pairs(
+                self.futures_underlyings,
+                "common_projection.futures_underlyings",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "option_underlyings",
+            _normalize_text_pairs(
+                self.option_underlyings,
+                "common_projection.option_underlyings",
+            ),
+        )
+        for field_name in ("rate_target_members", "futures_curve_members"):
+            members = tuple(
+                sorted(
+                    (target, tuple(sorted(values)))
+                    for target, values in getattr(self, field_name)
+                )
+            )
+            if len({target for target, _ in members}) != len(members):
+                raise ScenarioError(f"common_projection.{field_name}_duplicate")
+            for target, values in members:
+                _require_id(target, f"common_projection.{field_name}.target")
+                if not values or len(set(values)) != len(values):
+                    raise ScenarioError(
+                        f"common_projection.{field_name}.members_invalid"
+                    )
+                for value in values:
+                    _require_id(value, f"common_projection.{field_name}.member")
+            object.__setattr__(self, field_name, members)
+        points = tuple(
+            sorted(
+                self.volatility_points,
+                key=lambda item: (item.surface_id, item.expiry_at, item.strike),
+            )
+        )
+        if any(not isinstance(item, VolatilityPointProjection) for item in points):
+            raise ScenarioError("common_projection_volatility_point_invalid")
+        point_keys = [(item.surface_id, item.expiry_at, item.strike) for item in points]
+        if len(set(point_keys)) != len(point_keys):
+            raise ScenarioError("common_projection_volatility_point_duplicate")
+        object.__setattr__(self, "volatility_points", points)
+        sources = tuple(sorted(self.source_component_hashes))
+        if len({key for key, _ in sources}) != len(sources):
+            raise ScenarioError("common_projection_source_component_duplicate")
+        for key, source_hash in sources:
+            _require_id(key, "common_projection.source_component.key")
+            _require_hash(
+                source_hash,
+                "common_projection.source_component.hash",
+            )
+        object.__setattr__(self, "source_component_hashes", sources)
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                self.identity_payload(),
+                label="scenario_common_market_projection",
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        def pairs(values: tuple[tuple[str, Decimal], ...]) -> list[dict[str, str]]:
+            return [
+                {"key": key, "value": _decimal_text(value)} for key, value in values
+            ]
+
+        return {
+            "parent_state_id": self.parent_state_id,
+            "parent_state_hash": self.parent_state_hash,
+            "prices": pairs(self.prices),
+            "price_source_kinds": [
+                {"instrument_id": key, "source_kind": value}
+                for key, value in self.price_source_kinds
+            ],
+            "rate_levels": pairs(self.rate_levels),
+            "rate_target_members": [
+                {"target": target, "members": list(members)}
+                for target, members in self.rate_target_members
+            ],
+            "dividend_yields": pairs(self.dividend_yields),
+            "borrow_rates": pairs(self.borrow_rates),
+            "funding_rates": pairs(self.funding_rates),
+            "spreads": pairs(self.spreads),
+            "futures_curve_members": [
+                {"curve_id": curve_id, "contracts": list(contracts)}
+                for curve_id, contracts in self.futures_curve_members
+            ],
+            "futures_underlyings": [
+                {"contract_id": key, "underlying_instrument_id": value}
+                for key, value in self.futures_underlyings
+            ],
+            "futures_basis_levels": pairs(self.futures_basis_levels),
+            "option_underlyings": [
+                {"contract_id": key, "underlying_instrument_id": value}
+                for key, value in self.option_underlyings
+            ],
+            "volatility_points": [
+                item.identity_payload() for item in self.volatility_points
+            ],
+            "source_component_hashes": [
+                {"component": key, "hash": value}
+                for key, value in self.source_component_hashes
+            ],
+        }
+
+
 @runtime_checkable
 class SpotQuoteLike(Protocol):
-    price: Decimal
+    @property
+    def price(self) -> Decimal: ...
 
 
 @runtime_checkable
 class ImmutableMarketStateLike(Protocol):
     """Narrow structural boundary implemented by ``multi_asset.MarketState``."""
 
-    state_id: str
-    valuation_at: str
-    base_currency: str
+    @property
+    def state_id(self) -> str: ...
+
+    @property
+    def valuation_at(self) -> str: ...
+
+    @property
+    def base_currency(self) -> str: ...
 
     def state_hash(self) -> str: ...
 
@@ -128,6 +446,379 @@ class ImmutableMarketStateLike(Protocol):
     def convert(
         self, amount: Decimal, *, from_currency: str, to_currency: str
     ) -> Decimal: ...
+
+
+def build_common_market_projection(
+    market_state: ImmutableMarketStateLike,
+    *,
+    fallback_marks: Mapping[str, Decimal],
+) -> CommonMarketProjection:
+    """Project every price/factor exposed by the immutable shared state."""
+
+    parent_hash = market_state.state_hash()
+    _require_hash(parent_hash, "scenario.market_state_hash")
+    prices: dict[str, Decimal] = {}
+    price_kinds: dict[str, str] = {}
+    sources: dict[str, str] = {}
+
+    def add_source(kind: str, identifier: str, component: object) -> str:
+        source_key = f"{kind}:{identifier}"
+        source_hash = _component_hash(component, label=kind)
+        prior = sources.get(source_key)
+        if prior is not None and prior != source_hash:
+            raise ScenarioError(f"scenario_source_component_duplicate:{source_key}")
+        sources[source_key] = source_hash
+        return source_hash
+
+    def add_price(
+        instrument_id: str,
+        price: Decimal,
+        source_kind: str,
+    ) -> None:
+        _require_id(instrument_id, "scenario.market_price.instrument_id")
+        _decimal(price, "scenario.market_price.price", positive=True)
+        if instrument_id in prices:
+            raise ScenarioError(
+                f"scenario_market_price_target_duplicate:{instrument_id}"
+            )
+        prices[instrument_id] = price
+        price_kinds[instrument_id] = source_kind
+
+    spots = _objects(getattr(market_state, "spots", ()), "spots")
+    for spot in spots:
+        instrument_id = _attribute_id(
+            spot,
+            "instrument_id",
+            "scenario.spot.instrument_id",
+        )
+        add_source("spot", instrument_id, spot)
+        add_price(
+            instrument_id,
+            _attribute_decimal(
+                spot,
+                "price",
+                "scenario.spot.price",
+                positive=True,
+            ),
+            "market_state_spot",
+        )
+
+    rate_levels: dict[str, Decimal] = {}
+    rate_members: dict[str, tuple[str, ...]] = {}
+    for rate in _objects(getattr(market_state, "rates", ()), "rates"):
+        rate_id = _attribute_id(rate, "rate_id", "scenario.rate.rate_id")
+        add_source("rate", rate_id, rate)
+        rate_levels[rate_id] = _attribute_decimal(
+            rate,
+            "rate",
+            "scenario.rate.rate",
+        )
+        rate_members[rate_id] = (rate_id,)
+    for curve in _objects(getattr(market_state, "curves", ()), "curves"):
+        curve_id = _attribute_id(curve, "curve_id", "scenario.curve.curve_id")
+        add_source("yield_curve", curve_id, curve)
+        member_ids: list[str] = []
+        for point in _objects(getattr(curve, "points", ()), "curve_points"):
+            tenor_days = getattr(point, "tenor_days", None)
+            if (
+                isinstance(tenor_days, bool)
+                or not isinstance(tenor_days, int)
+                or tenor_days <= 0
+            ):
+                raise ScenarioError("scenario_curve_tenor_invalid")
+            member_id = f"{curve_id}@{tenor_days}d"
+            member_ids.append(member_id)
+            rate_levels[member_id] = _attribute_decimal(
+                point,
+                "rate",
+                "scenario.curve_point.rate",
+            )
+        if not member_ids:
+            raise ScenarioError(f"scenario_curve_points_missing:{curve_id}")
+        rate_members[curve_id] = tuple(sorted(member_ids))
+
+    dividend_yields: dict[str, Decimal] = {}
+    for assumption in _objects(
+        getattr(market_state, "dividend_yields", ()),
+        "dividend_yields",
+    ):
+        underlying_id = _attribute_id(
+            assumption,
+            "underlying_instrument_id",
+            "scenario.dividend_yield.underlying_instrument_id",
+        )
+        assumption_id = _attribute_id(
+            assumption,
+            "assumption_id",
+            "scenario.dividend_yield.assumption_id",
+        )
+        add_source("dividend_yield", assumption_id, assumption)
+        dividend_yields[underlying_id] = _attribute_decimal(
+            assumption,
+            "annualized_yield",
+            "scenario.dividend_yield.annualized_yield",
+        )
+
+    borrow_rates: dict[str, Decimal] = {}
+    for borrow in _objects(
+        getattr(market_state, "borrow_quotes", ()),
+        "borrow_quotes",
+    ):
+        instrument_id = _attribute_id(
+            borrow,
+            "instrument_id",
+            "scenario.borrow.instrument_id",
+        )
+        add_source("borrow", instrument_id, borrow)
+        borrow_rates[instrument_id] = _attribute_decimal(
+            borrow,
+            "annualized_rate",
+            "scenario.borrow.annualized_rate",
+            nonnegative=True,
+        )
+
+    funding_rates: dict[str, Decimal] = {}
+    for funding in _objects(
+        getattr(market_state, "funding_rates", ()),
+        "funding_rates",
+    ):
+        funding_id = _attribute_id(
+            funding,
+            "funding_rate_id",
+            "scenario.funding_rate.funding_rate_id",
+        )
+        add_source("funding_rate", funding_id, funding)
+        funding_rates[funding_id] = _attribute_decimal(
+            funding,
+            "annualized_rate",
+            "scenario.funding_rate.annualized_rate",
+        )
+
+    spreads: dict[str, Decimal] = {}
+    futures_members: dict[str, tuple[str, ...]] = {}
+    futures_underlyings: dict[str, str] = {}
+    for curve in _objects(
+        getattr(market_state, "futures_curves", ()),
+        "futures_curves",
+    ):
+        curve_id = _attribute_id(
+            curve,
+            "curve_id",
+            "scenario.futures_curve.curve_id",
+        )
+        add_source("futures_curve", curve_id, curve)
+        contract_ids: list[str] = []
+        for contract in _objects(
+            getattr(curve, "contracts", ()),
+            "futures_contracts",
+        ):
+            contract_id = _attribute_id(
+                contract,
+                "contract_id",
+                "scenario.futures_contract.contract_id",
+            )
+            contract_ids.append(contract_id)
+            futures_underlyings[contract_id] = _attribute_id(
+                contract,
+                "underlying_instrument_id",
+                "scenario.futures_contract.underlying_instrument_id",
+            )
+            add_price(
+                contract_id,
+                _attribute_decimal(
+                    contract,
+                    "mark_price",
+                    "scenario.futures_contract.mark_price",
+                    positive=True,
+                ),
+                "market_state_futures_contract",
+            )
+            bid = _attribute_decimal(
+                contract,
+                "bid",
+                "scenario.futures_contract.bid",
+                positive=True,
+            )
+            ask = _attribute_decimal(
+                contract,
+                "ask",
+                "scenario.futures_contract.ask",
+                positive=True,
+            )
+            spreads[contract_id] = ask - bid
+        if not contract_ids:
+            raise ScenarioError(f"scenario_futures_curve_contracts_missing:{curve_id}")
+        futures_members[curve_id] = tuple(sorted(contract_ids))
+
+    option_underlyings: dict[str, str] = {}
+    for chain in _objects(
+        getattr(market_state, "option_chains", ()),
+        "option_chains",
+    ):
+        chain_id = _attribute_id(
+            chain,
+            "chain_id",
+            "scenario.option_chain.chain_id",
+        )
+        add_source("option_chain", chain_id, chain)
+        chain_underlying_id = _attribute_id(
+            chain,
+            "underlying_instrument_id",
+            "scenario.option_chain.underlying_instrument_id",
+        )
+        analytics = {
+            _attribute_id(
+                item,
+                "contract_id",
+                "scenario.option_analytics.contract_id",
+            ): item
+            for item in _objects(
+                getattr(chain, "analytics", ()),
+                "option_analytics",
+            )
+        }
+        for quote in _objects(
+            getattr(chain, "quotes", ()),
+            "option_quotes",
+        ):
+            contract_id = _attribute_id(
+                quote,
+                "contract_id",
+                "scenario.option_quote.contract_id",
+            )
+            mark = analytics.get(contract_id)
+            if mark is None:
+                raise ScenarioError(f"scenario_option_analytics_missing:{contract_id}")
+            option_underlyings[contract_id] = chain_underlying_id
+            add_price(
+                contract_id,
+                _attribute_decimal(
+                    mark,
+                    "market_price",
+                    "scenario.option_analytics.market_price",
+                    positive=True,
+                ),
+                "market_state_option_analytics",
+            )
+            bid = _attribute_decimal(
+                quote,
+                "bid",
+                "scenario.option_quote.bid",
+                positive=True,
+            )
+            ask = _attribute_decimal(
+                quote,
+                "ask",
+                "scenario.option_quote.ask",
+                positive=True,
+            )
+            spreads[contract_id] = ask - bid
+
+    for liquidity in _objects(
+        getattr(market_state, "liquidity_quotes", ()),
+        "liquidity_quotes",
+    ):
+        instrument_id = _attribute_id(
+            liquidity,
+            "instrument_id",
+            "scenario.liquidity.instrument_id",
+        )
+        add_source("liquidity", instrument_id, liquidity)
+        bid = _attribute_decimal(
+            liquidity,
+            "bid",
+            "scenario.liquidity.bid",
+            positive=True,
+        )
+        ask = _attribute_decimal(
+            liquidity,
+            "ask",
+            "scenario.liquidity.ask",
+            positive=True,
+        )
+        spreads[instrument_id] = ask - bid
+
+    volatility_points: list[VolatilityPointProjection] = []
+    for surface in _objects(
+        getattr(market_state, "volatility_surfaces", ()),
+        "volatility_surfaces",
+    ):
+        surface_id = _attribute_id(
+            surface,
+            "surface_id",
+            "scenario.volatility_surface.surface_id",
+        )
+        underlying_id = _attribute_id(
+            surface,
+            "underlying_instrument_id",
+            "scenario.volatility_surface.underlying_instrument_id",
+        )
+        source_hash = add_source("volatility_surface", surface_id, surface)
+        for point in _objects(
+            getattr(surface, "points", ()),
+            "volatility_points",
+        ):
+            volatility = _attribute_decimal(
+                point,
+                "volatility",
+                "scenario.volatility_point.volatility",
+                nonnegative=True,
+            )
+            volatility_points.append(
+                VolatilityPointProjection(
+                    surface_id=surface_id,
+                    underlying_instrument_id=underlying_id,
+                    expiry_at=_attribute_text(
+                        point,
+                        "expiry_at",
+                        "scenario.volatility_point.expiry_at",
+                    ),
+                    strike=_attribute_decimal(
+                        point,
+                        "strike",
+                        "scenario.volatility_point.strike",
+                        positive=True,
+                    ),
+                    base_volatility=volatility,
+                    projected_volatility=volatility,
+                    source_component_hash=source_hash,
+                )
+            )
+
+    for instrument_id, mark in fallback_marks.items():
+        if instrument_id in prices:
+            continue
+        add_price(instrument_id, mark, "ledger_mark_fallback")
+
+    futures_basis_levels: dict[str, Decimal] = {}
+    for contract_id, underlying_id in futures_underlyings.items():
+        try:
+            futures_basis_levels[contract_id] = (
+                prices[contract_id] - prices[underlying_id]
+            )
+        except KeyError as exc:
+            raise ScenarioError(
+                f"scenario_futures_underlying_price_missing:{contract_id}"
+            ) from exc
+
+    return CommonMarketProjection(
+        parent_state_id=market_state.state_id,
+        parent_state_hash=parent_hash,
+        prices=tuple(prices.items()),
+        price_source_kinds=tuple(price_kinds.items()),
+        rate_levels=tuple(rate_levels.items()),
+        rate_target_members=tuple(rate_members.items()),
+        dividend_yields=tuple(dividend_yields.items()),
+        borrow_rates=tuple(borrow_rates.items()),
+        funding_rates=tuple(funding_rates.items()),
+        spreads=tuple(spreads.items()),
+        futures_curve_members=tuple(futures_members.items()),
+        futures_underlyings=tuple(futures_underlyings.items()),
+        futures_basis_levels=tuple(futures_basis_levels.items()),
+        option_underlyings=tuple(option_underlyings.items()),
+        volatility_points=tuple(volatility_points),
+        source_component_hashes=tuple(sources.items()),
+    )
 
 
 @runtime_checkable
@@ -152,7 +843,15 @@ class JointMarketShock:
     price_absolute_shifts: tuple[tuple[str, Decimal], ...] = ()
     fx_returns: tuple[tuple[str, Decimal], ...] = ()
     volatility_shifts: tuple[tuple[str, Decimal], ...] = ()
+    volatility_skew_shifts: tuple[tuple[str, Decimal], ...] = ()
+    volatility_term_shifts: tuple[tuple[str, Decimal], ...] = ()
     rate_shifts: tuple[tuple[str, Decimal], ...] = ()
+    dividend_yield_shifts: tuple[tuple[str, Decimal], ...] = ()
+    borrow_rate_shifts: tuple[tuple[str, Decimal], ...] = ()
+    funding_rate_shifts: tuple[tuple[str, Decimal], ...] = ()
+    futures_curve_returns: tuple[tuple[str, Decimal], ...] = ()
+    futures_basis_shifts: tuple[tuple[str, Decimal], ...] = ()
+    spread_multipliers: tuple[tuple[str, Decimal], ...] = ()
     liquidity_haircuts: tuple[tuple[str, Decimal], ...] = ()
     liquidity_cost_multiplier: Decimal = Decimal("1")
     margin_multiplier: Decimal = Decimal("1")
@@ -166,13 +865,29 @@ class JointMarketShock:
             "price_absolute_shifts",
             "fx_returns",
             "volatility_shifts",
+            "volatility_skew_shifts",
+            "volatility_term_shifts",
             "rate_shifts",
+            "dividend_yield_shifts",
+            "borrow_rate_shifts",
+            "funding_rate_shifts",
+            "futures_curve_returns",
+            "futures_basis_shifts",
         ):
             object.__setattr__(
                 self,
                 field_name,
                 _normalize_pairs(getattr(self, field_name), f"scenario.{field_name}"),
             )
+        object.__setattr__(
+            self,
+            "spread_multipliers",
+            _normalize_pairs(
+                self.spread_multipliers,
+                "scenario.spread_multipliers",
+                positive=True,
+            ),
+        )
         haircuts = _normalize_pairs(
             self.liquidity_haircuts,
             "scenario.liquidity_haircuts",
@@ -207,6 +922,8 @@ class JointMarketShock:
             raise ScenarioError("scenario_price_return_at_or_below_minus_one")
         if any(value <= -_ONE for _, value in self.fx_returns):
             raise ScenarioError("scenario_fx_return_at_or_below_minus_one")
+        if any(value <= -_ONE for _, value in self.futures_curve_returns):
+            raise ScenarioError("scenario_futures_curve_return_at_or_below_minus_one")
         object.__setattr__(
             self,
             "content_hash",
@@ -225,7 +942,15 @@ class JointMarketShock:
             "price_absolute_shifts": pairs(self.price_absolute_shifts),
             "fx_returns": pairs(self.fx_returns),
             "volatility_shifts": pairs(self.volatility_shifts),
+            "volatility_skew_shifts": pairs(self.volatility_skew_shifts),
+            "volatility_term_shifts": pairs(self.volatility_term_shifts),
             "rate_shifts": pairs(self.rate_shifts),
+            "dividend_yield_shifts": pairs(self.dividend_yield_shifts),
+            "borrow_rate_shifts": pairs(self.borrow_rate_shifts),
+            "funding_rate_shifts": pairs(self.funding_rate_shifts),
+            "futures_curve_returns": pairs(self.futures_curve_returns),
+            "futures_basis_shifts": pairs(self.futures_basis_shifts),
+            "spread_multipliers": pairs(self.spread_multipliers),
             "liquidity_haircuts": pairs(self.liquidity_haircuts),
             "liquidity_cost_multiplier": _decimal_text(self.liquidity_cost_multiplier),
             "margin_multiplier": _decimal_text(self.margin_multiplier),
@@ -235,25 +960,47 @@ class JointMarketShock:
 
 @dataclass(frozen=True, slots=True)
 class ShockedMarketState:
-    """Immutable derived state containing only scenario-adjusted projections."""
+    """Immutable full-source projection containing scenario-adjusted factors."""
 
     parent_state_id: str
     parent_state_hash: str
+    base_projection_hash: str
     valuation_at: str
     base_currency: str
     scenario_hash: str
     prices: tuple[tuple[str, Decimal], ...]
+    price_source_kinds: tuple[tuple[str, str], ...]
     fx_rates: tuple[tuple[str, Decimal], ...]
+    rate_levels: tuple[tuple[str, Decimal], ...]
+    dividend_yields: tuple[tuple[str, Decimal], ...]
+    borrow_rates: tuple[tuple[str, Decimal], ...]
+    funding_rates: tuple[tuple[str, Decimal], ...]
+    spreads: tuple[tuple[str, Decimal], ...]
+    futures_basis_levels: tuple[tuple[str, Decimal], ...]
+    volatility_points: tuple[VolatilityPointProjection, ...]
     volatility_shifts: tuple[tuple[str, Decimal], ...]
+    volatility_skew_shifts: tuple[tuple[str, Decimal], ...]
+    volatility_term_shifts: tuple[tuple[str, Decimal], ...]
     rate_shifts: tuple[tuple[str, Decimal], ...]
+    dividend_yield_shifts: tuple[tuple[str, Decimal], ...]
+    borrow_rate_shifts: tuple[tuple[str, Decimal], ...]
+    funding_rate_shifts: tuple[tuple[str, Decimal], ...]
+    futures_curve_returns: tuple[tuple[str, Decimal], ...]
+    futures_basis_shifts: tuple[tuple[str, Decimal], ...]
+    spread_multipliers: tuple[tuple[str, Decimal], ...]
     liquidity_haircuts: tuple[tuple[str, Decimal], ...]
     liquidity_cost_multiplier: Decimal
     margin_multiplier: Decimal
+    source_component_hashes: tuple[tuple[str, str], ...]
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         _require_id(self.parent_state_id, "shocked_state.parent_state_id")
         _require_hash(self.parent_state_hash, "shocked_state.parent_state_hash")
+        _require_hash(
+            self.base_projection_hash,
+            "shocked_state.base_projection_hash",
+        )
         _require_hash(self.scenario_hash, "shocked_state.scenario_hash")
         object.__setattr__(
             self,
@@ -268,19 +1015,62 @@ class ShockedMarketState:
         )
         object.__setattr__(
             self,
-            "fx_rates",
-            _normalize_pairs(self.fx_rates, "shocked_state.fx_rates", positive=True),
+            "price_source_kinds",
+            _normalize_text_pairs(
+                self.price_source_kinds,
+                "shocked_state.price_source_kinds",
+            ),
         )
+        if set(dict(self.price_source_kinds)) != set(dict(self.prices)):
+            raise ScenarioError("shocked_state_price_source_set_mismatch")
+        for field_name in (
+            "fx_rates",
+            "rate_levels",
+            "dividend_yields",
+            "borrow_rates",
+            "funding_rates",
+            "spreads",
+            "futures_basis_levels",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_pairs(
+                    getattr(self, field_name),
+                    f"shocked_state.{field_name}",
+                    positive=field_name == "fx_rates",
+                    nonnegative=field_name in {"borrow_rates", "spreads"},
+                ),
+            )
+        points = tuple(
+            sorted(
+                self.volatility_points,
+                key=lambda item: (item.surface_id, item.expiry_at, item.strike),
+            )
+        )
+        if any(not isinstance(item, VolatilityPointProjection) for item in points):
+            raise ScenarioError("shocked_state_volatility_point_invalid")
+        object.__setattr__(self, "volatility_points", points)
         for field_name in (
             "volatility_shifts",
+            "volatility_skew_shifts",
+            "volatility_term_shifts",
             "rate_shifts",
+            "dividend_yield_shifts",
+            "borrow_rate_shifts",
+            "funding_rate_shifts",
+            "futures_curve_returns",
+            "futures_basis_shifts",
+            "spread_multipliers",
             "liquidity_haircuts",
         ):
             object.__setattr__(
                 self,
                 field_name,
                 _normalize_pairs(
-                    getattr(self, field_name), f"shocked_state.{field_name}"
+                    getattr(self, field_name),
+                    f"shocked_state.{field_name}",
+                    positive=field_name == "spread_multipliers",
                 ),
             )
         _decimal(
@@ -293,6 +1083,13 @@ class ShockedMarketState:
             "shocked_state.margin_multiplier",
             positive=True,
         )
+        sources = tuple(sorted(self.source_component_hashes))
+        if len({key for key, _ in sources}) != len(sources):
+            raise ScenarioError("shocked_state_source_component_duplicate")
+        for key, source_hash in sources:
+            _require_id(key, "shocked_state.source_component.key")
+            _require_hash(source_hash, "shocked_state.source_component.hash")
+        object.__setattr__(self, "source_component_hashes", sources)
         object.__setattr__(
             self,
             "content_hash",
@@ -311,6 +1108,50 @@ class ShockedMarketState:
         except KeyError as exc:
             raise ScenarioError(f"scenario_fx_rate_missing:{currency}") from exc
 
+    def factor_value(self, factor_type: str, factor_id: str) -> Decimal:
+        """Return one projected economic factor with fail-closed typing."""
+
+        factors: dict[str, tuple[tuple[str, Decimal], ...]] = {
+            "rate": self.rate_levels,
+            "dividend_yield": self.dividend_yields,
+            "borrow_rate": self.borrow_rates,
+            "funding_rate": self.funding_rates,
+            "spread": self.spreads,
+            "futures_basis": self.futures_basis_levels,
+        }
+        try:
+            values = factors[factor_type]
+        except KeyError as exc:
+            raise ScenarioError(f"scenario_factor_type_unknown:{factor_type}") from exc
+        try:
+            return dict(values)[factor_id]
+        except KeyError as exc:
+            raise ScenarioError(
+                f"scenario_factor_missing:{factor_type}:{factor_id}"
+            ) from exc
+
+    def volatility_for(
+        self,
+        *,
+        surface_id: str,
+        expiry_at: str,
+        strike: Decimal,
+    ) -> Decimal:
+        expiry = _timestamp_text(expiry_at, "scenario.volatility.expiry_at")
+        matches = [
+            item.projected_volatility
+            for item in self.volatility_points
+            if item.surface_id == surface_id
+            and item.expiry_at == expiry
+            and item.strike == strike
+        ]
+        if len(matches) != 1:
+            raise ScenarioError(
+                "scenario_volatility_point_not_unique:"
+                f"{surface_id}:{expiry}:{_decimal_text(strike)}"
+            )
+        return matches[0]
+
     def identity_payload(self) -> dict[str, object]:
         def pairs(values: tuple[tuple[str, Decimal], ...]) -> list[dict[str, str]]:
             return [
@@ -320,16 +1161,42 @@ class ShockedMarketState:
         return {
             "parent_state_id": self.parent_state_id,
             "parent_state_hash": self.parent_state_hash,
+            "base_projection_hash": self.base_projection_hash,
             "valuation_at": self.valuation_at,
             "base_currency": self.base_currency,
             "scenario_hash": self.scenario_hash,
             "prices": pairs(self.prices),
+            "price_source_kinds": [
+                {"instrument_id": key, "source_kind": value}
+                for key, value in self.price_source_kinds
+            ],
             "fx_rates": pairs(self.fx_rates),
+            "rate_levels": pairs(self.rate_levels),
+            "dividend_yields": pairs(self.dividend_yields),
+            "borrow_rates": pairs(self.borrow_rates),
+            "funding_rates": pairs(self.funding_rates),
+            "spreads": pairs(self.spreads),
+            "futures_basis_levels": pairs(self.futures_basis_levels),
+            "volatility_points": [
+                item.identity_payload() for item in self.volatility_points
+            ],
             "volatility_shifts": pairs(self.volatility_shifts),
+            "volatility_skew_shifts": pairs(self.volatility_skew_shifts),
+            "volatility_term_shifts": pairs(self.volatility_term_shifts),
             "rate_shifts": pairs(self.rate_shifts),
+            "dividend_yield_shifts": pairs(self.dividend_yield_shifts),
+            "borrow_rate_shifts": pairs(self.borrow_rate_shifts),
+            "funding_rate_shifts": pairs(self.funding_rate_shifts),
+            "futures_curve_returns": pairs(self.futures_curve_returns),
+            "futures_basis_shifts": pairs(self.futures_basis_shifts),
+            "spread_multipliers": pairs(self.spread_multipliers),
             "liquidity_haircuts": pairs(self.liquidity_haircuts),
             "liquidity_cost_multiplier": _decimal_text(self.liquidity_cost_multiplier),
             "margin_multiplier": _decimal_text(self.margin_multiplier),
+            "source_component_hashes": [
+                {"component": key, "hash": value}
+                for key, value in self.source_component_hashes
+            ],
         }
 
 
@@ -464,12 +1331,26 @@ class JointScenarioEngine:
         if callable(require_usable):
             require_usable()
 
-        base_marks = self._base_marks(snapshot, market_state)
+        fallback_marks = {
+            position.instrument_id: position.mark_price
+            for position in snapshot.positions
+        }
+        base_projection = build_common_market_projection(
+            market_state,
+            fallback_marks=fallback_marks,
+        )
+        if base_projection.parent_state_hash != base_state_hash:
+            raise ScenarioError("scenario_common_projection_parent_hash_mismatch")
+        base_marks = self._base_marks(
+            snapshot,
+            market_state,
+            projection=base_projection,
+        )
         base_fx = self._base_fx(snapshot, market_state)
         shocked_state = self._shock_state(
             market_state=market_state,
             base_state_hash=base_state_hash,
-            base_marks=base_marks,
+            base_projection=base_projection,
             base_fx=base_fx,
             shock=shock,
             valuation_at=effective_valuation_at,
@@ -477,7 +1358,32 @@ class JointScenarioEngine:
         shocked_marks = dict(shocked_state.prices)
         return_shocks = set(dict(shock.price_returns))
         absolute_shocks = set(dict(shock.price_absolute_shifts))
-        factor_shock_present = bool(shock.volatility_shifts or shock.rate_shifts)
+        factor_shock_present = bool(
+            shock.volatility_shifts
+            or shock.volatility_skew_shifts
+            or shock.volatility_term_shifts
+            or shock.rate_shifts
+            or shock.dividend_yield_shifts
+            or shock.borrow_rate_shifts
+            or shock.funding_rate_shifts
+            or shock.futures_curve_returns
+            or shock.futures_basis_shifts
+            or shock.spread_multipliers
+        )
+        option_underlyings = dict(base_projection.option_underlyings)
+        shocked_price_targets = (
+            return_shocks
+            | absolute_shocks
+            | {
+                contract_id
+                for curve_id, _ in shock.futures_curve_returns
+                for contract_id in dict(base_projection.futures_curve_members).get(
+                    curve_id,
+                    (),
+                )
+            }
+            | set(dict(shock.futures_basis_shifts))
+        )
         repricer_names: dict[str, str] = {}
         for position in snapshot.positions:
             repricer = repricer_by_instrument.get(position.instrument_id)
@@ -493,9 +1399,13 @@ class JointScenarioEngine:
             elif (
                 position.asset_class is AssetClass.OPTION
                 and self.require_nonlinear_option_repricing
-                and factor_shock_present
                 and position.instrument_id not in return_shocks
                 and position.instrument_id not in absolute_shocks
+                and (
+                    factor_shock_present
+                    or option_underlyings.get(position.instrument_id)
+                    in shocked_price_targets
+                )
             ):
                 raise ScenarioError(
                     f"scenario_option_repricer_required:{position.instrument_id}"
@@ -582,16 +1492,21 @@ class JointScenarioEngine:
     def _base_marks(
         snapshot: PortfolioSnapshot,
         market_state: ImmutableMarketStateLike,
+        *,
+        projection: CommonMarketProjection | None = None,
     ) -> dict[str, Decimal]:
+        if projection is None:
+            projection = build_common_market_projection(
+                market_state,
+                fallback_marks={
+                    position.instrument_id: position.mark_price
+                    for position in snapshot.positions
+                },
+            )
+        projected_prices = dict(projection.prices)
         marks: dict[str, Decimal] = {}
         for position in snapshot.positions:
-            mark = position.mark_price
-            if position.asset_class is AssetClass.SPOT:
-                try:
-                    mark = market_state.spot_price(position.instrument_id).price
-                except (KeyError, ValueError):
-                    # A held synthetic/derived spot may be marked by the ledger.
-                    mark = position.mark_price
+            mark = projected_prices.get(position.instrument_id, position.mark_price)
             _decimal(mark, "scenario.base_mark", positive=True)
             marks[position.instrument_id] = mark
         return marks
@@ -622,12 +1537,26 @@ class JointScenarioEngine:
         *,
         market_state: ImmutableMarketStateLike,
         base_state_hash: str,
-        base_marks: Mapping[str, Decimal],
+        base_projection: CommonMarketProjection,
         base_fx: Mapping[str, Decimal],
         shock: JointMarketShock,
         valuation_at: str,
     ) -> ShockedMarketState:
-        prices = dict(base_marks)
+        prices = dict(base_projection.prices)
+        curve_members = dict(base_projection.futures_curve_members)
+        for curve_id, curve_return in shock.futures_curve_returns:
+            contracts = curve_members.get(curve_id)
+            if contracts is None:
+                raise ScenarioError(f"scenario_futures_curve_target_unknown:{curve_id}")
+            for contract_id in contracts:
+                prices[contract_id] *= _ONE + curve_return
+        futures_underlyings = dict(base_projection.futures_underlyings)
+        for contract_id, basis_shift in shock.futures_basis_shifts:
+            if contract_id not in futures_underlyings:
+                raise ScenarioError(
+                    f"scenario_futures_basis_target_unknown:{contract_id}"
+                )
+            prices[contract_id] += basis_shift
         for instrument_id, price_return in shock.price_returns:
             if instrument_id not in prices:
                 raise ScenarioError(f"scenario_price_target_not_held:{instrument_id}")
@@ -645,19 +1574,158 @@ class JointScenarioEngine:
             if currency == market_state.base_currency and fx_return != _ZERO:
                 raise ScenarioError("scenario_base_currency_fx_shock_forbidden")
             fx_rates[currency] *= _ONE + fx_return
+
+        def shifted_levels(
+            base_values: tuple[tuple[str, Decimal], ...],
+            shifts: tuple[tuple[str, Decimal], ...],
+            *,
+            label: str,
+            target_members: Mapping[str, tuple[str, ...]] | None = None,
+            nonnegative: bool = False,
+        ) -> tuple[tuple[str, Decimal], ...]:
+            values = dict(base_values)
+            members_by_target = target_members or {}
+            for target_id, shift in shifts:
+                member_ids = members_by_target.get(target_id)
+                if member_ids is None:
+                    member_ids = (target_id,) if target_id in values else None
+                if member_ids is None:
+                    raise ScenarioError(f"scenario_{label}_target_unknown:{target_id}")
+                for member_id in member_ids:
+                    values[member_id] += shift
+                    if nonnegative and values[member_id] < _ZERO:
+                        raise ScenarioError(
+                            f"scenario_{label}_projected_negative:{member_id}"
+                        )
+            return tuple(sorted(values.items()))
+
+        rate_levels = shifted_levels(
+            base_projection.rate_levels,
+            shock.rate_shifts,
+            label="rate",
+            target_members=dict(base_projection.rate_target_members),
+        )
+        dividend_yields = shifted_levels(
+            base_projection.dividend_yields,
+            shock.dividend_yield_shifts,
+            label="dividend_yield",
+        )
+        borrow_rates = shifted_levels(
+            base_projection.borrow_rates,
+            shock.borrow_rate_shifts,
+            label="borrow_rate",
+            nonnegative=True,
+        )
+        funding_rates = shifted_levels(
+            base_projection.funding_rates,
+            shock.funding_rate_shifts,
+            label="funding_rate",
+        )
+        spreads = dict(base_projection.spreads)
+        for instrument_id, multiplier in shock.spread_multipliers:
+            if instrument_id not in spreads:
+                raise ScenarioError(f"scenario_spread_target_unknown:{instrument_id}")
+            spreads[instrument_id] *= multiplier
+
+        surface_ids = {item.surface_id for item in base_projection.volatility_points}
+        for label, shifts in (
+            ("volatility", shock.volatility_shifts),
+            ("volatility_skew", shock.volatility_skew_shifts),
+            ("volatility_term", shock.volatility_term_shifts),
+        ):
+            for surface_id, _ in shifts:
+                if surface_id not in surface_ids:
+                    raise ScenarioError(f"scenario_{label}_target_unknown:{surface_id}")
+        parallel_by_surface = dict(shock.volatility_shifts)
+        skew_by_surface = dict(shock.volatility_skew_shifts)
+        term_by_surface = dict(shock.volatility_term_shifts)
+        projected_volatility: list[VolatilityPointProjection] = []
+        valuation_time = _timestamp(valuation_at, "scenario.valuation_at")
+        seconds_per_year = Decimal(365 * 24 * 60 * 60)
+        for point in base_projection.volatility_points:
+            try:
+                underlying_price = prices[point.underlying_instrument_id]
+            except KeyError as exc:
+                raise ScenarioError(
+                    "scenario_volatility_underlying_price_missing:"
+                    f"{point.surface_id}:{point.underlying_instrument_id}"
+                ) from exc
+            expiry_time = _timestamp(
+                point.expiry_at,
+                "scenario.volatility.expiry_at",
+            )
+            seconds_to_expiry = max(
+                Decimal(str((expiry_time - valuation_time).total_seconds())),
+                _ZERO,
+            )
+            year_fraction = seconds_to_expiry / seconds_per_year
+            relative_strike = (point.strike / underlying_price) - _ONE
+            projected_level = (
+                point.base_volatility
+                + parallel_by_surface.get(point.surface_id, _ZERO)
+                + skew_by_surface.get(point.surface_id, _ZERO) * relative_strike
+                + term_by_surface.get(point.surface_id, _ZERO) * year_fraction
+            )
+            if projected_level < _ZERO:
+                raise ScenarioError(
+                    "scenario_projected_volatility_negative:"
+                    f"{point.surface_id}:{point.expiry_at}:"
+                    f"{_decimal_text(point.strike)}"
+                )
+            projected_volatility.append(
+                VolatilityPointProjection(
+                    surface_id=point.surface_id,
+                    underlying_instrument_id=point.underlying_instrument_id,
+                    expiry_at=point.expiry_at,
+                    strike=point.strike,
+                    base_volatility=point.base_volatility,
+                    projected_volatility=projected_level,
+                    source_component_hash=point.source_component_hash,
+                )
+            )
+
+        futures_basis_levels: dict[str, Decimal] = {}
+        for contract_id, underlying_id in futures_underlyings.items():
+            futures_basis_levels[contract_id] = (
+                prices[contract_id] - prices[underlying_id]
+            )
+        price_targets = set(prices)
+        for instrument_id, _ in shock.liquidity_haircuts:
+            if instrument_id not in price_targets:
+                raise ScenarioError(
+                    f"scenario_liquidity_target_unknown:{instrument_id}"
+                )
         return ShockedMarketState(
             parent_state_id=market_state.state_id,
             parent_state_hash=base_state_hash,
+            base_projection_hash=base_projection.content_hash,
             valuation_at=valuation_at,
             base_currency=market_state.base_currency,
             scenario_hash=shock.content_hash,
             prices=tuple(sorted(prices.items())),
+            price_source_kinds=base_projection.price_source_kinds,
             fx_rates=tuple(sorted(fx_rates.items())),
+            rate_levels=rate_levels,
+            dividend_yields=dividend_yields,
+            borrow_rates=borrow_rates,
+            funding_rates=funding_rates,
+            spreads=tuple(sorted(spreads.items())),
+            futures_basis_levels=tuple(sorted(futures_basis_levels.items())),
+            volatility_points=tuple(projected_volatility),
             volatility_shifts=shock.volatility_shifts,
+            volatility_skew_shifts=shock.volatility_skew_shifts,
+            volatility_term_shifts=shock.volatility_term_shifts,
             rate_shifts=shock.rate_shifts,
+            dividend_yield_shifts=shock.dividend_yield_shifts,
+            borrow_rate_shifts=shock.borrow_rate_shifts,
+            funding_rate_shifts=shock.funding_rate_shifts,
+            futures_curve_returns=shock.futures_curve_returns,
+            futures_basis_shifts=shock.futures_basis_shifts,
+            spread_multipliers=shock.spread_multipliers,
             liquidity_haircuts=shock.liquidity_haircuts,
             liquidity_cost_multiplier=shock.liquidity_cost_multiplier,
             margin_multiplier=shock.margin_multiplier,
+            source_component_hashes=base_projection.source_component_hashes,
         )
 
 
@@ -1215,10 +2283,12 @@ class PathScenarioResult:
 class PathScenarioEngine:
     """Evaluate a bounded sequence of persistent incremental joint shocks.
 
-    Price and FX changes compound in path order, absolute price shifts apply
-    after that step's return, rate/volatility shifts add, and margin/liquidity
-    multipliers compound.  Positions and the ledger remain fixed; this is a
-    stress revaluation engine, not a trading or forced-liquidation simulator.
+    Price, FX, futures-curve and spread changes compound in path order;
+    absolute price/basis shifts apply after that step's return; rate,
+    volatility, dividend, borrow, and funding shifts add; and
+    margin/liquidity multipliers compound.  Positions and the ledger remain
+    fixed; this is a stress revaluation engine, not a trading or
+    forced-liquidation simulator.
     It therefore does not generate margin-transfer events, option hedges,
     futures rolls, early exercise, or liquidation orders.  Those lifecycle
     transitions must be prepared by their product engine as immutable ledger
@@ -1269,7 +2339,18 @@ class PathScenarioEngine:
         ):
             raise ScenarioError("path_engine_step_before_market_state")
 
-        base_marks = self.joint_engine._base_marks(snapshot, market_state)
+        base_projection = build_common_market_projection(
+            market_state,
+            fallback_marks={
+                position.instrument_id: position.mark_price
+                for position in snapshot.positions
+            },
+        )
+        base_marks = self.joint_engine._base_marks(
+            snapshot,
+            market_state,
+            projection=base_projection,
+        )
         base_fx = self.joint_engine._base_fx(snapshot, market_state)
         try:
             base_valuation = snapshot.valuation(fx_rates=base_fx, marks=base_marks)
@@ -1280,12 +2361,21 @@ class PathScenarioEngine:
         if base_valuation.nav <= _ZERO:
             raise ScenarioError("path_engine_base_nav_nonpositive")
 
-        price_levels = dict(base_marks)
+        base_price_levels = dict(base_projection.prices)
+        price_levels = dict(base_price_levels)
         touched_prices: set[str] = set()
         fx_levels = dict(base_fx)
         touched_fx: set[str] = set()
         volatility_shifts: dict[str, Decimal] = {}
+        volatility_skew_shifts: dict[str, Decimal] = {}
+        volatility_term_shifts: dict[str, Decimal] = {}
         rate_shifts: dict[str, Decimal] = {}
+        dividend_yield_shifts: dict[str, Decimal] = {}
+        borrow_rate_shifts: dict[str, Decimal] = {}
+        funding_rate_shifts: dict[str, Decimal] = {}
+        futures_curve_multipliers: dict[str, Decimal] = {}
+        futures_basis_shifts: dict[str, Decimal] = {}
+        spread_multipliers: dict[str, Decimal] = {}
         liquidity_haircuts: dict[str, Decimal] = {}
         liquidity_cost_multiplier = _ONE
         margin_multiplier = _ONE
@@ -1299,6 +2389,12 @@ class PathScenarioEngine:
 
         for step in scenario.steps:
             shock = step.shock
+            self._apply_futures_price_shock(
+                price_levels,
+                touched_prices,
+                base_projection,
+                shock,
+            )
             self._apply_price_shock(
                 price_levels,
                 touched_prices,
@@ -1311,12 +2407,52 @@ class PathScenarioEngine:
                 shock,
             )
             self._add_factor_shifts(volatility_shifts, shock.volatility_shifts)
+            self._add_factor_shifts(
+                volatility_skew_shifts,
+                shock.volatility_skew_shifts,
+            )
+            self._add_factor_shifts(
+                volatility_term_shifts,
+                shock.volatility_term_shifts,
+            )
             self._add_factor_shifts(rate_shifts, shock.rate_shifts)
+            self._add_factor_shifts(
+                dividend_yield_shifts,
+                shock.dividend_yield_shifts,
+            )
+            self._add_factor_shifts(
+                borrow_rate_shifts,
+                shock.borrow_rate_shifts,
+            )
+            self._add_factor_shifts(
+                funding_rate_shifts,
+                shock.funding_rate_shifts,
+            )
+            self._add_factor_shifts(
+                futures_basis_shifts,
+                shock.futures_basis_shifts,
+            )
+            self._compound_returns(
+                futures_curve_multipliers,
+                shock.futures_curve_returns,
+            )
+            self._compound_multipliers(
+                spread_multipliers,
+                shock.spread_multipliers,
+            )
             self._compound_haircuts(liquidity_haircuts, shock.liquidity_haircuts)
             liquidity_cost_multiplier *= shock.liquidity_cost_multiplier
             margin_multiplier *= shock.margin_multiplier
             source_hashes.update(shock.source_hashes)
             source_hashes.add(shock.content_hash)
+            factor_prices = dict(base_price_levels)
+            for curve_id, multiplier in futures_curve_multipliers.items():
+                for contract_id in dict(base_projection.futures_curve_members)[
+                    curve_id
+                ]:
+                    factor_prices[contract_id] *= multiplier
+            for contract_id, shift in futures_basis_shifts.items():
+                factor_prices[contract_id] += shift
             cumulative_shock = JointMarketShock(
                 scenario_id=(
                     f"{scenario.path_id}.step{step.sequence}.{step.step_id}.cumulative"
@@ -1325,10 +2461,10 @@ class PathScenarioEngine:
                     sorted(
                         (
                             instrument_id,
-                            price_levels[instrument_id] - base_marks[instrument_id],
+                            price_levels[instrument_id] - factor_prices[instrument_id],
                         )
                         for instrument_id in touched_prices
-                        if price_levels[instrument_id] != base_marks[instrument_id]
+                        if price_levels[instrument_id] != factor_prices[instrument_id]
                     )
                 ),
                 fx_returns=tuple(
@@ -1342,7 +2478,20 @@ class PathScenarioEngine:
                     )
                 ),
                 volatility_shifts=tuple(sorted(volatility_shifts.items())),
+                volatility_skew_shifts=tuple(sorted(volatility_skew_shifts.items())),
+                volatility_term_shifts=tuple(sorted(volatility_term_shifts.items())),
                 rate_shifts=tuple(sorted(rate_shifts.items())),
+                dividend_yield_shifts=tuple(sorted(dividend_yield_shifts.items())),
+                borrow_rate_shifts=tuple(sorted(borrow_rate_shifts.items())),
+                funding_rate_shifts=tuple(sorted(funding_rate_shifts.items())),
+                futures_curve_returns=tuple(
+                    sorted(
+                        (curve_id, multiplier - _ONE)
+                        for curve_id, multiplier in futures_curve_multipliers.items()
+                    )
+                ),
+                futures_basis_shifts=tuple(sorted(futures_basis_shifts.items())),
+                spread_multipliers=tuple(sorted(spread_multipliers.items())),
                 liquidity_haircuts=tuple(sorted(liquidity_haircuts.items())),
                 liquidity_cost_multiplier=liquidity_cost_multiplier,
                 margin_multiplier=margin_multiplier,
@@ -1469,6 +2618,30 @@ class PathScenarioEngine:
             raise ScenarioError("path_shocked_price_nonpositive")
 
     @staticmethod
+    def _apply_futures_price_shock(
+        levels: dict[str, Decimal],
+        touched: set[str],
+        projection: CommonMarketProjection,
+        shock: JointMarketShock,
+    ) -> None:
+        curve_members = dict(projection.futures_curve_members)
+        for curve_id, curve_return in shock.futures_curve_returns:
+            contracts = curve_members.get(curve_id)
+            if contracts is None:
+                raise ScenarioError(f"path_futures_curve_target_unknown:{curve_id}")
+            for contract_id in contracts:
+                levels[contract_id] *= _ONE + curve_return
+                touched.add(contract_id)
+        futures_contracts = dict(projection.futures_underlyings)
+        for contract_id, basis_shift in shock.futures_basis_shifts:
+            if contract_id not in futures_contracts:
+                raise ScenarioError(f"path_futures_basis_target_unknown:{contract_id}")
+            levels[contract_id] += basis_shift
+            touched.add(contract_id)
+        if any(value <= _ZERO for value in levels.values()):
+            raise ScenarioError("path_shocked_price_nonpositive")
+
+    @staticmethod
     def _apply_fx_shock(
         levels: dict[str, Decimal],
         touched: set[str],
@@ -1490,6 +2663,24 @@ class PathScenarioEngine:
     ) -> None:
         for factor_id, shift in increments:
             cumulative[factor_id] = cumulative.get(factor_id, _ZERO) + shift
+
+    @staticmethod
+    def _compound_returns(
+        cumulative: dict[str, Decimal],
+        increments: tuple[tuple[str, Decimal], ...],
+    ) -> None:
+        for factor_id, factor_return in increments:
+            cumulative[factor_id] = cumulative.get(factor_id, _ONE) * (
+                _ONE + factor_return
+            )
+
+    @staticmethod
+    def _compound_multipliers(
+        cumulative: dict[str, Decimal],
+        increments: tuple[tuple[str, Decimal], ...],
+    ) -> None:
+        for factor_id, multiplier in increments:
+            cumulative[factor_id] = cumulative.get(factor_id, _ONE) * multiplier
 
     @staticmethod
     def _compound_haircuts(

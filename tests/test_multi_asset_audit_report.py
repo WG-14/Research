@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+from collections import Counter
 from pathlib import Path
 
 
@@ -50,14 +52,37 @@ def test_final_audit_report_is_complete_consistent_and_current() -> None:
     assert all(item["status"] == "PASS" for item in result["critical_failures"])
     assert len(result["end_to_end_scenarios"]) == 5
     assert len(result["iterations"]) == 10
-    assert result["status_counts"] == {
-        "COMPLETE": 17,
-        "PARTIAL": 33,
-        "SUBSTANTIAL": 90,
-    }
-    assert result["final_score"] == 72.751474
-    assert result["complete"] is False
-    assert result["grade"] == "C"
+    expected_counts = dict(
+        sorted(Counter(item["status"] for item in result["criteria"]).items())
+    )
+    assert result["status_counts"] == expected_counts
+    expected_score = round(
+        sum(item["weighted_score"] for item in result["category_scores"].values()),
+        6,
+    )
+    assert result["final_score"] == expected_score
+    assert result["grade"] == module._grade(expected_score)  # type: ignore[attr-defined]
+    assert result["complete"] is (
+        all(item["score"] == 4 for item in result["criteria"])
+        and all(item["status"] == "PASS" for item in result["critical_failures"])
+        and all(item["score"] == 4 for item in result["end_to_end_scenarios"])
+        and all(
+            item["score_ratio"] >= 0.9 for item in result["category_scores"].values()
+        )
+    )
+    assert re.fullmatch(
+        r"sha256:[0-9a-f]{64}", result["evaluated_source_snapshot_hash"]
+    )
+    assert result["evaluated_source_snapshot_hash"] == (
+        module._source_snapshot_hash()  # type: ignore[attr-defined]
+    )
+    assert all(
+        item["implementation_evidence"] and item["title"] in item["finding"]
+        for item in result["criteria"]
+    )
+    assert (
+        len({item["implementation_evidence"][0] for item in result["criteria"]}) >= 125
+    )
     assert json.loads(result_bytes) == result
     assert result_bytes == module.RESULT_PATH.read_bytes()  # type: ignore[attr-defined]
     assert report_bytes == module.REPORT_PATH.read_bytes()  # type: ignore[attr-defined]

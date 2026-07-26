@@ -227,6 +227,18 @@ def _derivative_reproduce(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", required=True)
 
 
+def _multi_asset_execute(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--out", required=True)
+
+
+def _multi_asset_reproduce(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--expected", required=True)
+    parser.add_argument("--reproduction-id", required=True)
+    parser.add_argument("--out", required=True)
+
+
 def _call_existing(
     command: str, args: argparse.Namespace, context: ResearchAppContext
 ) -> int:
@@ -357,6 +369,16 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
         "research-derivative-reproduce",
         _derivative_reproduce,
         "rerun a typed derivative request and compare its immutable execution",
+    ),
+    (
+        "research-multi-asset-execute",
+        _multi_asset_execute,
+        "execute the strict built-in offline multi-asset research profile",
+    ),
+    (
+        "research-multi-asset-reproduce",
+        _multi_asset_reproduce,
+        "reproduce and compare a built-in multi-asset research execution",
     ),
 )
 

@@ -47,6 +47,8 @@ EXPECTED_GUI_POLICY = {
     "research-derivative-diff": "cli_only",
     "research-derivative-execute": "cli_only",
     "research-derivative-reproduce": "cli_only",
+    "research-multi-asset-execute": "cli_only",
+    "research-multi-asset-reproduce": "cli_only",
 }
 
 FORBIDDEN_WEB_IMPORT_ROOTS = {

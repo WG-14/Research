@@ -27,6 +27,8 @@ hashes needed to reproduce it.
 | Cross-product exposure | `research/multi_asset/exposure.py` | common positions, product valuation adapters, exposure totals, buckets and invariants |
 | Joint stress | `research/multi_asset/scenarios.py` | immutable price/FX/volatility/rate/liquidity/margin shocks and product repricers |
 | Scenario validation and publication | `research/multi_asset/study.py`, `research/multi_asset/evidence.py` | T-01--T-05 traces, study bindings, repeat receipts, atomic repository-external artifacts |
+| Public offline execution | `research/multi_asset/application.py`, `research/multi_asset/builtin_runner.py`, `research/multi_asset/research_package.py` | strict declarative experiment/request codecs, allowlisted built-in runner, bounded external evidence resolver, run/reproduction manifests |
+| Multi-leg execution and lifecycle projection | `research/multi_asset/multileg_execution.py` | simultaneous or sequential fills, partial unwind retention, common-ledger projection, delivered spot/future positions |
 
 The package `__init__` intentionally performs no eager re-export. Callers
 import the contract they use from its owning module, which keeps product
@@ -76,10 +78,17 @@ economic notional, not option premium.
 - Option lifecycle postings are rebound to the immutable source position and
   independently recompute intrinsic value, exercise quantity, cash, physical
   delivery, multiplier, currency, and full position closure at expiration.
+- Physical option settlement declares its convention explicitly. Spot delivery
+  exchanges strike principal; an option on a future creates a future position
+  at strike with no principal exchange. Delivered quantity multiplied by the
+  delivered instrument multiplier must equal the option contract multiplier.
 - Portfolio events form a hash chain. Cash, position, margin, collateral, NAV,
   available capital, and attributed P&L must satisfy ledger invariants; an
   independent report receipt must cross-reconcile the same hashes and amounts.
 - A validated study cannot be built when a required T-01--T-05 check fails.
+- The public application accepts only allowlisted, self-hashed, repository-
+  external evidence and a source-owned runner profile. Callers cannot inject a
+  runner object or silently replace the economic execution implementation.
 
 ## Repository and runtime boundary
 
@@ -107,6 +116,27 @@ scripts/platform verify-multi-asset-audit --json
 Focused contract tests are named `tests/test_multi_asset_*.py`. The required
 end-to-end test executes the spot, futures, options, integrated, and repeated
 study scenarios and publishes only beneath a temporary external Research path.
+
+The source-owned public profile is available through the normal offline CLI.
+Request, expected execution, and output paths must all be absolute,
+repository-external immutable JSON artifacts:
+
+```console
+scripts/platform research research-multi-asset-execute \
+  --request /absolute/external/multi-asset-request.json \
+  --out /absolute/external/multi-asset-execution.json
+
+scripts/platform research research-multi-asset-reproduce \
+  --request /absolute/external/multi-asset-request.json \
+  --expected /absolute/external/multi-asset-execution.json \
+  --reproduction-id reproduction.multi-asset.1 \
+  --out /absolute/external/multi-asset-reproduction.json
+```
+
+The request selects an allowlisted built-in profile; it cannot contain a
+Python type name or caller-provided runner. Execute runs every product path
+twice before publication. Reproduce performs a fresh execution, compares the
+economic study objects, and binds the comparison to both immutable manifests.
 
 ## Deliberate remaining limits
 

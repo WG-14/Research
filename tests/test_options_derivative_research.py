@@ -23,6 +23,7 @@ from market_research.research.derivatives.options import (
     MultiLegExecutionPolicy,
     MultiLegOrder,
     MultiLegState,
+    PhysicalSettlementConvention,
     OptionChainSnapshot,
     OptionContract,
     OptionFeatureSnapshot,
@@ -142,6 +143,17 @@ def _contract(
         deliverable_asset_id=(
             "asset_xyz" if settlement_type is SettlementType.PHYSICAL else None
         ),
+        physical_settlement_convention=(
+            PhysicalSettlementConvention.SPOT_STRIKE_EXCHANGE
+            if settlement_type is SettlementType.PHYSICAL
+            else None
+        ),
+        deliverable_quantity_per_contract=(
+            Decimal("100") if settlement_type is SettlementType.PHYSICAL else None
+        ),
+        deliverable_contract_multiplier=(
+            Decimal("1") if settlement_type is SettlementType.PHYSICAL else None
+        ),
     )
 
 
@@ -225,8 +237,16 @@ def test_contract_series_identity_and_lifecycle_time_boundaries() -> None:
     assert contract.content_hash.startswith("sha256:")
     with pytest.raises(DerivativeResearchError, match="time_order_invalid"):
         replace(contract, listing_at=contract.expiration_at)
-    with pytest.raises(DerivativeResearchError, match="deliverable_asset_required"):
+    with pytest.raises(DerivativeResearchError, match="deliverable_terms_required"):
         replace(contract, settlement_type=SettlementType.PHYSICAL)
+    physical = _contract(
+        "physical_contract_terms",
+        settlement_type=SettlementType.PHYSICAL,
+    )
+    with pytest.raises(DerivativeResearchError, match="deliverable_notional_mismatch"):
+        replace(physical, deliverable_quantity_per_contract=Decimal("99"))
+    with pytest.raises(DerivativeResearchError, match="cannot_declare_deliverable"):
+        replace(physical, settlement_type=SettlementType.CASH)
     with pytest.raises(DerivativeResearchError, match="must_be_decimal"):
         replace(contract, strike=100.0)  # type: ignore[arg-type]
 
@@ -764,6 +784,22 @@ def test_multi_leg_simultaneous_atomicity_and_sequential_legging() -> None:
         filled_at=NOW,
     )
     assert unwound.state is MultiLegState.UNWOUND
+
+    partially_unwound = unwind_multi_leg_execution(
+        filled,
+        unwind_group_id="group.unwind.partial",
+        quotes={
+            call.contract_id: _quote(call, bid=None),
+            put.contract_id: quotes[put.contract_id],
+        },
+        filled_at=NOW,
+    )
+    assert partially_unwound.state is MultiLegState.PARTIAL
+    assert partially_unwound.failure_code == "multileg_unwind_partial"
+    assert [
+        item.contract.contract_id for item in partially_unwound.committed_fills
+    ] == [put.contract_id]
+    assert partially_unwound.legging_exposure_contract_ids == (call.contract_id,)
 
 
 def test_net_greeks_payoff_expiry_mismatch_and_tail_capital() -> None:

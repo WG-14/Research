@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,36 +18,48 @@ MATRIX_PATH = PROJECT_ROOT / "docs/multi-asset-investment-research-audit-matrix.
 RESULT_PATH = PROJECT_ROOT / "docs/multi-asset-investment-research-audit-result.json"
 REPORT_PATH = PROJECT_ROOT / "docs/multi-asset-investment-research-audit-report.md"
 
-EVALUATED_COMMIT = "55316236669c0d7a0128fd081f67e7643e8a2fa6"
+EVALUATED_COMMIT = "a73adb4d94fff8836e0641e54e50ef84537d65e3"
 EVALUATED_BRANCH = "main"
-ASSESSMENT_DATE = "2026-07-22"
+ASSESSMENT_DATE = "2026-07-26"
+AUDIT_RESULT_SCHEMA_VERSION = 2
+CURRENT_RUN_BASELINE_SCORE = 68.791855
+CURRENT_RUN_BASELINE_GRADE = "C"
+CURRENT_RUN_BASELINE_CRITICAL_FAILURES = ("CF-07",)
 
 # Frozen outcomes from the final repository-wide validation sequence.
-COLLECTION_RESULT = "PASS: Core 1478 + Web 198 + Operations 138 = 1814 collected"
+COLLECTION_RESULT = "PASS: 1842 tests collected in 1.54s"
 FULL_SUITE_RESULT = (
-    "IN PROGRESS: one merged invocation is still running across the "
-    "1814-test inventory; no result has been inferred"
+    "FAIL (exit 1): 1800 passed, 38 skipped, 4 failed, 4 warnings in 2147.85s; "
+    "all four failures were stale canonical audit evidence/surface hashes changed "
+    "by this patch"
+)
+FOCUSED_4_RESULT = (
+    "PASS: all 4 reported selectors passed after official full-scope/reference "
+    "audit evidence regeneration"
 )
 LINT_RESULT = (
-    "PASS: ruff format 568 files, ruff check, mypy 241 + 51 + 20 + 6 source files"
+    "PASS: ruff format/check; mypy Core 245 + Web 51 + Operations 20 + support 6"
 )
-BUILD_RESULT = "PASS: compile, docs-check, 3 wheels and 3 sdists"
+BUILD_RESULT = (
+    "PASS: compile, docs-check, and 3 wheels + 3 sdists in external output roots; "
+    "the provenance release wrapper correctly refused the dirty checkout"
+)
 
 SCORES: dict[str, tuple[int, ...]] = {
-    "A": (3, 3, 4, 3, 3),
-    "B": (3, 2, 3, 3, 3, 3, 3, 3, 3),
-    "C": (2, 2, 2, 2, 3, 3, 3, 3, 4, 3, 3, 2, 3),
-    "D": (3, 2, 3, 4, 3, 3, 3, 3, 2, 3, 3),
-    "E": (3, 3, 3, 3, 3, 3, 3, 3, 2, 4, 3, 4, 3, 3, 2, 3),
-    "F": (3, 3, 3, 3, 2, 2, 3, 2, 2, 3, 3, 2, 3, 3, 2, 2, 2, 4, 4, 4, 3, 3, 2, 3, 3),
-    "G": (4, 4, 4, 3, 4, 3),
+    "A": (3, 3, 4, 3, 4),
+    "B": (4, 3, 4, 4, 4, 4, 4, 4, 4),
+    "C": (3, 4, 3, 3, 4, 4, 3, 4, 4, 4, 4, 3, 4),
+    "D": (4, 3, 3, 4, 4, 4, 3, 4, 3, 4, 4),
+    "E": (3, 3, 4, 3, 3, 3, 3, 3, 2, 4, 3, 4, 3, 4, 2, 4),
+    "F": (4, 3, 4, 3, 4, 2, 3, 2, 2, 3, 4, 3, 4, 4, 2, 2, 2, 4, 4, 4, 3, 3, 2, 4, 3),
+    "G": (4, 3, 4, 3, 4, 3),
     "H": (4, 4, 3, 3, 3, 2, 2),
-    "I": (3, 3, 2, 3, 2, 2, 3),
+    "I": (2, 2, 2, 3, 3, 2, 3),
     "J": (4, 3, 3, 3, 3, 3, 4, 3),
     "K": (2, 3, 3, 3, 3, 3, 3, 3),
-    "L": (2, 2, 2, 2, 3, 3),
-    "M": (4, 3, 3, 3, 2, 3, 3, 3, 3, 3),
-    "N": (3, 3, 3, 2, 2, 3, 3, 3, 2),
+    "L": (3, 4, 4, 2, 3, 3),
+    "M": (4, 3, 4, 4, 2, 4, 4, 3, 3, 3),
+    "N": (4, 4, 4, 2, 2, 2, 3, 3, 3),
 }
 
 AREA_EVIDENCE: dict[str, tuple[str, str, str]] = {
@@ -121,6 +135,180 @@ AREA_EVIDENCE: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+# One primary implementation symbol per atomic criterion.  Area-level evidence
+# is retained only as secondary context; these bindings prevent 140 rows from
+# collapsing into a single generic finding per area.
+AREA_IMPLEMENTATION_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "A": (
+        "src/market_research/research/multi_asset/domain.py::InstrumentRegistry",
+        "src/market_research/research/derivatives/application.py::DerivativeResearchApplicationService",
+        "tests/test_monorepo_architecture.py",
+        "src/market_research/research/multi_asset/application.py::MultiAssetScenarioRunners",
+        "src/market_research/research/multi_asset/builtin_runner.py::_AuthoritativeBuiltinRunner",
+    ),
+    "B": (
+        "src/market_research/research/multi_asset/domain.py::EconomicUnderlying",
+        "src/market_research/research/multi_asset/domain.py::Issuer",
+        "src/market_research/research/multi_asset/domain.py::Instrument",
+        "src/market_research/research/multi_asset/domain.py::Listing",
+        "src/market_research/research/multi_asset/domain.py::ContractSpecification",
+        "src/market_research/research/multi_asset/domain.py::SymbolAlias",
+        "src/market_research/research/market_calendar_contract.py::MarketCalendarAuthority",
+        "src/market_research/research/multi_asset/domain.py::LifecycleEvent",
+        "src/market_research/research/multi_asset/domain.py::InstrumentRelationship",
+    ),
+    "C": (
+        "src/market_research/research/multi_asset/data.py::RawLayerMetadata",
+        "src/market_research/research/multi_asset/data.py::NormalizedLayerMetadata",
+        "src/market_research/research/multi_asset/data.py::DerivedLayerMetadata",
+        "src/market_research/research/multi_asset/data.py::DataLineage",
+        "src/market_research/research/multi_asset/data.py::ObservationClocks",
+        "src/market_research/research/multi_asset/data.py::BitemporalRecord",
+        "src/market_research/research/multi_asset/data.py::AppendOnlyBitemporalStore.query",
+        "tests/test_multi_asset_domain.py::test_bitemporal_query_excludes_later_correction_and_preserves_history",
+        "src/market_research/research/multi_asset/research_package.py::EvidenceArtifactRef",
+        "src/market_research/research/multi_asset/market_state.py::MarketState",
+        "src/market_research/research/multi_asset/market_state.py::MarketState.__post_init__",
+        "src/market_research/research/multi_asset/market_state.py::MarketState._validate_component_consistency",
+        "src/market_research/research/multi_asset/market_state.py::MARKET_STATE_SCHEMA_VERSION",
+    ),
+    "D": (
+        "src/market_research/research/multi_asset/spot.py::SpotInstrument",
+        "src/market_research/research/multi_asset/spot.py::CorporateAction",
+        "src/market_research/research/multi_asset/spot.py::apply_corporate_action",
+        "src/market_research/research/multi_asset/market_state.py::SpotQuote",
+        "src/market_research/research/multi_asset/spot.py::PointInTimeSpotUniverse",
+        "src/market_research/research/multi_asset/spot.py::UniverseMembership",
+        "src/market_research/research/multi_asset/spot.py::BorrowSnapshot",
+        "src/market_research/research/multi_asset/spot.py::BorrowScenarioSet",
+        "src/market_research/research/multi_asset/spot.py::validate_short_trade",
+        "src/market_research/research/multi_asset/builtin_runner.py::_AuthoritativeBuiltinRunner.run_spot",
+        "tests/test_multi_asset_spot.py",
+    ),
+    "E": (
+        "src/market_research/research/multi_asset/futures_path.py::FuturesReferenceHistory",
+        "src/market_research/research/multi_asset/futures_path.py::ContractSpecificationVersion",
+        "src/market_research/research/multi_asset/futures_path.py::FuturesCurvePoint",
+        "src/market_research/research/multi_asset/futures_path.py::ContinuousSignalTrace",
+        "src/market_research/research/multi_asset/futures_path.py::FuturesCurveSnapshot",
+        "src/market_research/research/multi_asset/futures_path.py::ExpiryBucketFeature",
+        "src/market_research/research/derivatives/futures.py::FuturesSimulator",
+        "src/market_research/research/multi_asset/futures_path.py::trace_continuous_signal",
+        "src/market_research/research/multi_asset/futures_path.py::ContinuousSignalMapping",
+        "src/market_research/research/multi_asset/futures_path.py::PlannedRollLeg",
+        "src/market_research/research/multi_asset/futures_path.py::select_roll_target",
+        "src/market_research/research/multi_asset/futures_path.py::plan_exposure_preserving_roll",
+        "src/market_research/research/multi_asset/futures_path.py::MarginRequirementVersion",
+        "src/market_research/research/derivatives/futures.py::FuturesLifecycleEvent",
+        "src/market_research/research/multi_asset/futures_path.py::DeliverableTermsVersion",
+        "tests/test_multi_asset_futures_path.py",
+    ),
+    "F": (
+        "src/market_research/research/derivatives/common.py::InstrumentKind",
+        "src/market_research/research/derivatives/options.py::OptionContract",
+        "src/market_research/research/derivatives/options.py::PhysicalSettlementConvention",
+        "src/market_research/research/multi_asset/market_state.py::OptionChainState",
+        "src/market_research/research/derivatives/options.py::OptionQuote",
+        "src/market_research/research/multi_asset/option_path.py::OptionCleaningPolicy",
+        "src/market_research/research/multi_asset/option_path.py::OptionChainCleaner",
+        "src/market_research/research/multi_asset/option_path.py::CleanedOptionChain",
+        "src/market_research/research/multi_asset/option_path.py::ForwardEstimate",
+        "src/market_research/research/derivatives/options.py::solve_black_scholes_implied_volatility",
+        "src/market_research/research/multi_asset/option_pricing.py::OptionGreeks",
+        "src/market_research/research/multi_asset/option_pricing.py::OptionAnalytics",
+        "src/market_research/research/multi_asset/option_path.py::SurfaceRawPoint",
+        "src/market_research/research/multi_asset/market_state.py::VolatilitySurface",
+        "src/market_research/research/multi_asset/scenarios.py::VolatilityPointProjection",
+        "src/market_research/research/derivatives/options.py::evaluate_volatility_surface_quality",
+        "src/market_research/research/derivatives/options.py::BlackScholesModel",
+        "src/market_research/research/multi_asset/option_path.py::CommonOptionPricingModel",
+        "src/market_research/research/multi_asset/option_path.py::select_option_contract",
+        "src/market_research/research/multi_asset/option_path.py::CalculatedOptionDelta",
+        "src/market_research/research/multi_asset/option_path.py::OptionPathMark",
+        "src/market_research/research/derivatives/options.py::simulate_option_lifecycle",
+        "src/market_research/research/derivatives/options.py::evaluate_early_exercise",
+        "src/market_research/research/multi_asset/option_path.py::attribute_option_path",
+        "tests/test_multi_asset_option_path.py",
+    ),
+    "G": (
+        "src/market_research/research/multi_asset/exposure.py::ExposurePosition",
+        "src/market_research/research/multi_asset/exposure.py::ExposureTotals",
+        "src/market_research/research/multi_asset/exposure.py::ProductValuationAdapter",
+        "src/market_research/research/multi_asset/exposure.py::ExposurePolicy",
+        "src/market_research/research/multi_asset/exposure.py::ExposureEngine",
+        "tests/test_multi_asset_exposure_engine.py",
+    ),
+    "H": (
+        "src/market_research/research/multi_asset/expression.py::EconomicHypothesis",
+        "src/market_research/research/multi_asset/expression.py::ExpectedMarketDistribution",
+        "src/market_research/research/multi_asset/expression.py::ExpressionCandidate",
+        "src/market_research/research/multi_asset/expression.py::InstrumentExpressionEngine",
+        "src/market_research/research/multi_asset/expression.py::ExpressionPolicy",
+        "src/market_research/research/multi_asset/expression.py::StrategyTargets",
+        "src/market_research/research/multi_asset/expression.py::ExpressionDecision",
+    ),
+    "I": (
+        "src/market_research/research/derivatives/options.py::OptionLeg",
+        "src/market_research/research/multi_asset/expression.py::LegSelectionRule",
+        "src/market_research/research/multi_asset/expression.py::StrategyTargets",
+        "src/market_research/research/derivatives/options.py::MultiLegExecutionPolicy",
+        "src/market_research/research/multi_asset/multileg_execution.py::MultiLegDisposition",
+        "src/market_research/research/multi_asset/multileg_execution.py::unwind_multi_leg_execution",
+        "tests/test_multi_asset_multileg_execution.py",
+    ),
+    "J": (
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/portfolio.py::PortfolioEvent",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_corporate_action_application",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_futures_settlement",
+        "src/market_research/research/multi_asset/portfolio.py::adapt_option_lifecycle",
+        "src/market_research/research/multi_asset/portfolio.py::PortfolioSnapshot",
+        "src/market_research/research/multi_asset/accounting.py::LedgerPnlReconciliation",
+        "tests/test_multi_asset_accounting_reconciliation.py",
+    ),
+    "K": (
+        "src/market_research/research/multi_asset/costs.py::ExecutionCostModel",
+        "src/market_research/research/multi_asset/costs.py::LinearExecutionCostModel",
+        "src/market_research/research/multi_asset/futures_path.py::RollLegCost",
+        "src/market_research/research/multi_asset/costs.py::execution_context_from_fill",
+        "src/market_research/research/multi_asset/costs.py::CalibratedImpactCostModel",
+        "src/market_research/research/multi_asset/costs.py::FillDisposition",
+        "src/market_research/research/multi_asset/costs.py::analyze_capacity",
+        "src/market_research/research/multi_asset/costs.py::CapacityStudyResult",
+    ),
+    "L": (
+        "src/market_research/research/multi_asset/scenarios.py::JointMarketShock",
+        "src/market_research/research/multi_asset/scenarios.py::CommonMarketProjection",
+        "src/market_research/research/multi_asset/scenarios.py::JointScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::ShockedMarketState",
+        "src/market_research/research/multi_asset/scenarios.py::PathScenarioEngine",
+        "src/market_research/research/multi_asset/scenarios.py::PathScenarioResult",
+    ),
+    "M": (
+        "tests/test_repository_research_only_boundary.py",
+        "src/market_research/research/multi_asset/market_state.py::SpotQuote",
+        "src/market_research/research/multi_asset/futures_path.py::ContinuousSignalTrace",
+        "src/market_research/research/multi_asset/option_path.py::OptionPathMark",
+        "src/market_research/research/multi_asset/option_path.py::CalculatedOptionDelta",
+        "src/market_research/research/multi_asset/spot.py::PointInTimeSpotUniverse",
+        "src/market_research/research/multi_asset/portfolio.py::UnifiedPortfolioLedger",
+        "src/market_research/research/multi_asset/expression.py::InstrumentChoice",
+        "src/market_research/research/multi_asset/application.py::MultiAssetExperimentSpec",
+        "docs/multi-asset-research.md",
+    ),
+    "N": (
+        "src/market_research/research/multi_asset/application.py::MultiAssetExperimentSpec",
+        "src/market_research/research/multi_asset/research_package.py::MultiAssetRunManifest",
+        "src/market_research/research/multi_asset/application.py::capture_runtime_environment",
+        "src/market_research/research/multi_asset/research_package.py::RuntimeEnvironment",
+        "src/market_research/research/multi_asset/evidence.py::ValidatedMultiAssetStudy",
+        "src/market_research/research/multi_asset/evidence.py::ResearchEvidenceBindings",
+        "src/market_research/research/validation_protocol.py",
+        "src/market_research/research/multi_asset/evidence.py::compare_studies",
+        "src/market_research/research/multi_asset/application.py::_input_quality_flags",
+    ),
+}
+
 AREA_FINDING = {
     "A": "공통 계약과 상품별 어댑터 경계가 실제 호출 경로에서 사용되지만 일부 기존 제품 모델과의 중복은 남아 있다.",
     "B": "경제적 기초대상·거래상품·상장·계약·관계가 타입과 해시로 분리되며 PIT 조회가 적용된다.",
@@ -155,16 +343,50 @@ AREA_GAP = {
     "N": "완전한 data/model card, 모든 숫자의 원천 행 resolver, golden package와 독립 cold-run 증거가 부족하다.",
 }
 
+CRITERION_GAPS: dict[str, str] = {
+    "E-09": "연속계열 source contract·롤 이벤트·조정치는 보존하지만 roll window·liquidity·delivery·builder manifest가 한 객체에 완전히 결합되지는 않는다.",
+    "E-15": "통지일·인도조건은 표현하지만 deliverable basket, 품질조정, CTD 및 거래소별 실물인도 의사결정은 없다.",
+    "F-06": "crossed/stale/zero-bid/liquidity 정책은 있으나 공급자·시장별 quote convention과 보정 정책 범위가 제한된다.",
+    "F-08": "정제와 제외 근거는 보존하지만 체인 전체 표면 보정·보간·수정 이력 파이프라인까지 닫히지 않는다.",
+    "F-09": "동기화된 현물·금리·배당 기반 선도 추정은 있으나 선물옵션·복수 만기·시장별 carry convention 범위가 제한된다.",
+    "F-15": "raw surface 좌표와 기본 skew/term 특징은 있으나 기관급 smile dynamics와 안정성 진단이 없다.",
+    "F-16": "품질 검사는 있으나 static-arbitrage repair를 수행하는 생산 calibration/verification 파이프라인이 없다.",
+    "F-17": "해시 결합 Black–Scholes 경로는 있으나 American lattice/PDE 및 exotic model conformance library가 없다.",
+    "F-23": "조기행사 허용일·결정 이벤트는 있으나 배당/금리 경계가 내재된 American 가격모형과 최적행사 경계 검증은 없다.",
+    "H-06": "수량 산정이 목표 delta·vega·변동성·유동성·자본 제한을 공동 최적화하지 않는다.",
+    "H-07": "후보 실패를 명시할 수 있으나 실행 불가능성 증거가 가설 반증·재설계 입력으로 자동 환류되지 않는다.",
+    "I-01": "실제 공개 실행기의 OptionLeg는 풍부한 ExpressionLeg 계약을 권위적으로 소비하지 않아 leg intent 전체가 실행 증거에 결합되지 않는다.",
+    "I-02": "실제 OptionLeg/주문 구성은 레그별 선택 규칙을 권위적으로 실행하지 않고 사전 선택 계약을 받을 수 있다.",
+    "I-03": "전략 전체 목표 Greek/notional/손실 한도와 허용 잔차를 공동 제약으로 검증하지 않는다.",
+    "I-04": "동시·순차 체결은 실제 실행되지만 거래소 atomicity, IOC/cancel 및 시간창 정책 범위가 제한된다.",
+    "I-05": "부분체결·unwind는 표현하지만 첫 레그 이후 시장 변화, cancel/retry 및 동적 레그 위험 재평가가 없다.",
+    "I-06": "부분 unwind는 구현됐지만 조건부 리밸런싱, delta hedge 및 time/expiry roll 수명주기 정책은 없다.",
+    "K-01": "공통 비용 계약이 MarketState, quote/order mode, 레그 상호작용 및 scenario context 전부를 의무 입력으로 요구하지 않는다.",
+    "L-01": "공통 투영은 실제 MarketState 구성요소를 사용하지만 모든 상품을 동일 권위 가격모형으로 재평가하도록 강제하지 않는다.",
+    "L-04": "가격·곡선·변동성 충격 간 무차익·금리/배당/선도 일관성을 보존하는 제약 생성기가 없다.",
+    "M-05": "내부 계산 IV/Greek 경로는 있으나 공급사 값과 자체 계산값의 병렬 비교·차이 한도·거부 정책은 없다.",
+    "N-04": "runtime·입력·정책 hash는 있으나 완전한 data card/model card의 가정·적합범위·한계 스키마가 없다.",
+    "N-05": "원자적 study/run manifest는 있으나 portable input bundle과 독립 cold-host verifier를 포함한 완전 패키지가 아니다.",
+    "N-06": "상위 artifact hash 결합은 있으나 모든 보고 숫자를 원천 행·변환·모형 중간값까지 역추적하는 resolver가 없다.",
+}
+
 COMPLETE_EVIDENCE_LEVELS = {
+    "A-05": "E6",
+    "C-05": "E6",
+    "C-06": "E6",
+    "C-08": "E6",
     "C-09": "E6",
-    "D-04": "E6",
+    "D-11": "E6",
+    "D-10": "E6",
     "E-10": "E6",
     "E-12": "E6",
+    "E-14": "E6",
+    "E-16": "E6",
     "F-18": "E5",
     "F-19": "E6",
     "F-20": "E6",
+    "F-24": "E6",
     "G-01": "E6",
-    "G-02": "E6",
     "G-03": "E6",
     "G-05": "E6",
     "H-01": "E5",
@@ -172,7 +394,108 @@ COMPLETE_EVIDENCE_LEVELS = {
     "J-01": "E6",
     "J-07": "E6",
     "M-01": "E5",
+    "N-01": "E6",
+    "N-02": "E5",
 }
+
+# The generated result/report are intentionally excluded so rendering does not
+# make its own evaluated source identity recursive.
+SOURCE_SNAPSHOT_INPUTS = (
+    ".github",
+    "AGENTS.md",
+    "apps/internal_web",
+    "docs/multi-asset-investment-research-audit-matrix.json",
+    "docs/multi-asset-research.md",
+    "pyproject.toml",
+    "scripts/platform",
+    "services/research_operations",
+    "src/market_research",
+    "src/market_research/research/derivatives/application.py",
+    "src/market_research/research/derivatives/application_codec.py",
+    "src/market_research/research/derivatives/futures.py",
+    "src/market_research/research/derivatives/options.py",
+    "src/market_research/research/derivatives/simulation_evidence.py",
+    "src/market_research/research/multi_asset",
+    "tests",
+    "tools/render_multi_asset_audit_report.py",
+    "tools/validate_multi_asset_audit_matrix.py",
+    "uv.lock",
+)
+SOURCE_SNAPSHOT_EXCLUDED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+    }
+)
+SOURCE_SNAPSHOT_EXCLUDED_DIRECTORY_SUFFIXES = (".egg-info",)
+
+
+def _source_snapshot_files() -> tuple[Path, ...]:
+    files: set[Path] = set()
+    for relative in SOURCE_SNAPSHOT_INPUTS:
+        candidate = PROJECT_ROOT / relative
+        if candidate.is_symlink():
+            raise ValueError(f"audit source snapshot symlink forbidden: {relative}")
+        if candidate.is_file():
+            files.add(candidate)
+        elif candidate.is_dir():
+            for root, directory_names, file_names in os.walk(
+                candidate,
+                topdown=True,
+                followlinks=False,
+            ):
+                root_path = Path(root)
+                retained_directories: list[str] = []
+                for directory_name in directory_names:
+                    directory_path = root_path / directory_name
+                    if (
+                        directory_name in SOURCE_SNAPSHOT_EXCLUDED_DIRECTORIES
+                        or directory_name.endswith(
+                            SOURCE_SNAPSHOT_EXCLUDED_DIRECTORY_SUFFIXES
+                        )
+                    ):
+                        continue
+                    if directory_path.is_symlink():
+                        raise ValueError(
+                            "audit source snapshot descendant symlink forbidden: "
+                            f"{directory_path.relative_to(PROJECT_ROOT)}"
+                        )
+                    retained_directories.append(directory_name)
+                directory_names[:] = retained_directories
+                for file_name in file_names:
+                    path = root_path / file_name
+                    if path.is_symlink():
+                        raise ValueError(
+                            "audit source snapshot descendant symlink forbidden: "
+                            f"{path.relative_to(PROJECT_ROOT)}"
+                        )
+                    if path.suffix in {".pyc", ".pyo"}:
+                        continue
+                    files.add(path)
+        else:
+            raise ValueError(f"audit source snapshot input missing: {relative}")
+    return tuple(sorted(files))
+
+
+def _source_snapshot_hash() -> str:
+    digest = hashlib.sha256()
+    for path in _source_snapshot_files():
+        relative = path.relative_to(PROJECT_ROOT).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return "sha256:" + digest.hexdigest()
 
 
 def _load_matrix() -> dict[str, Any]:
@@ -188,6 +511,20 @@ def _status(score: int) -> str:
     ]
 
 
+def _grade(score: float) -> str:
+    if score >= 95:
+        return "S"
+    if score >= 90:
+        return "A"
+    if score >= 75:
+        return "B"
+    if score >= 50:
+        return "C"
+    if score >= 25:
+        return "D"
+    return "F"
+
+
 def _priority(area: str, score: int) -> str:
     if score == 4:
         return "-"
@@ -198,7 +535,27 @@ def _priority(area: str, score: int) -> str:
     return "P3"
 
 
+def _validate_implementation_evidence(binding: str) -> None:
+    relative, separator, symbol = binding.partition("::")
+    path = PROJECT_ROOT / relative
+    if not path.is_file():
+        raise ValueError(f"criterion implementation evidence path missing: {relative}")
+    if separator:
+        primary_symbol = symbol.split(".", 1)[0]
+        if primary_symbol not in path.read_text(encoding="utf-8"):
+            raise ValueError(
+                f"criterion implementation evidence symbol missing: {binding}"
+            )
+
+
 def _criterion_results(matrix: dict[str, Any]) -> list[dict[str, Any]]:
+    for area, scores in SCORES.items():
+        symbols = AREA_IMPLEMENTATION_SYMBOLS.get(area, ())
+        if len(symbols) != len(scores):
+            raise ValueError(
+                f"criterion evidence cardinality mismatch for {area}: "
+                f"{len(symbols)} evidence bindings for {len(scores)} scores"
+            )
     score_by_id = {
         f"{area}-{index:02d}": score
         for area, values in SCORES.items()
@@ -209,7 +566,10 @@ def _criterion_results(matrix: dict[str, Any]) -> list[dict[str, Any]]:
         criterion_id = source["id"]
         area = source["area"]
         score = score_by_id[criterion_id]
-        implementation, secondary, test = AREA_EVIDENCE[area]
+        _, secondary, test = AREA_EVIDENCE[area]
+        criterion_number = int(criterion_id.split("-", 1)[1])
+        implementation = AREA_IMPLEMENTATION_SYMBOLS[area][criterion_number - 1]
+        _validate_implementation_evidence(implementation)
         evidence_level = COMPLETE_EVIDENCE_LEVELS.get(criterion_id, "E4")
         rows.append(
             {
@@ -222,13 +582,16 @@ def _criterion_results(matrix: dict[str, Any]) -> list[dict[str, Any]]:
                 "implementation_evidence": [implementation, secondary],
                 "test_execution_evidence": [
                     test,
-                    "focused multi-asset: 109 passed; derivative/boundary: 232 passed",
+                    "focused multi-asset product/E2E: 133 passed; derivative/boundary: 286 passed",
                 ],
-                "finding": AREA_FINDING[area],
+                "finding": f"{source['title']}: {AREA_FINDING[area]}",
                 "remaining_gap": (
                     "이 감사 범위의 완료 조건을 자동 테스트와 실행 증거로 충족했다."
                     if score == 4
-                    else AREA_GAP[area]
+                    else CRITERION_GAPS.get(
+                        criterion_id,
+                        f"{source['title']}의 잔여 완전성: {AREA_GAP[area]}",
+                    )
                 ),
                 "completion_condition": source["completion_condition"],
                 "priority": _priority(area, score),
@@ -242,7 +605,11 @@ def _category_scores(
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     weights = matrix["scoring_policy"]["area_weights"]
-    for area, values in SCORES.items():
+    for area in weights:
+        area_rows = [row for row in rows if row["area"] == area]
+        values = tuple(int(row["score"]) for row in area_rows)
+        if not values:
+            raise ValueError(f"audit area has no assessed criteria: {area}")
         ratio = sum(values) / (4 * len(values))
         weight = weights[area]["weight"]
         result[area] = {
@@ -253,128 +620,314 @@ def _category_scores(
             "possible_atomic_points": 4 * len(values),
             "score_ratio": round(ratio, 6),
             "weighted_score": round(ratio * weight, 6),
-            "complete_count": sum(
-                1 for row in rows if row["area"] == area and row["score"] == 4
-            ),
+            "complete_count": sum(1 for row in area_rows if row["score"] == 4),
         }
     return result
 
 
+GATE_STATIC_CHECKS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "CF-01": (
+        (
+            "src/market_research/research/multi_asset/domain.py",
+            (
+                "class EconomicUnderlying",
+                "class Instrument",
+                "class InstrumentRelationship",
+            ),
+        ),
+        (
+            "src/market_research/research/derivatives/options.py",
+            ("PhysicalSettlementConvention", "deliverable_contract_multiplier"),
+        ),
+        (
+            "tests/test_multi_asset_multileg_execution.py",
+            ("physical_future_option_lifecycle", "AssetClass.FUTURE"),
+        ),
+    ),
+    "CF-02": (
+        (
+            "src/market_research/research/multi_asset/data.py",
+            ("knowledge_at", "AppendOnlyBitemporalStore", "generated_at"),
+        ),
+        (
+            "src/market_research/research/multi_asset/spot.py",
+            ("PointInTimeSpotUniverse", "knowledge_at"),
+        ),
+        (
+            "tests/test_multi_asset_domain.py",
+            ("future_knowledge", "knowledge"),
+        ),
+    ),
+    "CF-03": (
+        (
+            "src/market_research/research/multi_asset/futures_path.py",
+            ("ContinuousSignalTrace", "PlannedRollLeg", "contract_id"),
+        ),
+        (
+            "tests/test_multi_asset_futures_path.py",
+            ("continuous", "roll"),
+        ),
+    ),
+    "CF-04": (
+        (
+            "src/market_research/research/multi_asset/option_path.py",
+            ("OptionChainCleaner", "select_option_contract", "OptionPathMark"),
+        ),
+        (
+            "src/market_research/research/derivatives/options.py",
+            ("simulate_option_lifecycle", "OptionLifecycleEvent"),
+        ),
+        (
+            "src/market_research/research/multi_asset/portfolio.py",
+            ("adapt_option_lifecycle", "OPTION_LIFECYCLE"),
+        ),
+    ),
+    "CF-05": (
+        (
+            "src/market_research/research/multi_asset/portfolio.py",
+            (
+                "UnifiedPortfolioLedger",
+                "adapt_futures_settlement",
+                "adapt_option_lifecycle",
+            ),
+        ),
+        (
+            "src/market_research/research/multi_asset/accounting.py",
+            ("LedgerPnlReconciliation", "ReportLedgerReconciliation"),
+        ),
+        (
+            "tests/test_multi_asset_required_scenarios_e2e.py",
+            ("UnifiedPortfolioLedger", "reconciliation"),
+        ),
+    ),
+    "CF-06": (
+        (
+            "src/market_research/research/multi_asset/data.py",
+            (
+                "RawLayerMetadata",
+                "NormalizedLayerMetadata",
+                "DerivedLayerMetadata",
+                "DataLineage",
+            ),
+        ),
+        (
+            "tests/test_multi_asset_domain.py",
+            ("DataLayer.RAW", "DataLayer.NORMALIZED", "DataLayer.DERIVED"),
+        ),
+    ),
+    "CF-07": (
+        (
+            "src/market_research/research/multi_asset/application.py",
+            (
+                "_core_execution_hash",
+                "MultiAssetReproductionExecution",
+                "compare_studies",
+            ),
+        ),
+        (
+            "src/market_research/research/multi_asset/research_package.py",
+            ("reserve_run_id", "publish_run_manifest"),
+        ),
+        (
+            "src/market_research/research/multi_asset/builtin_runner.py",
+            ("reproduce", "BuiltinMultiAssetRequest"),
+        ),
+    ),
+    "CF-08": (
+        (
+            "src/market_research/research/multi_asset/builtin_runner.py",
+            ("_FORBIDDEN_KEYS", "network_market_data"),
+        ),
+        (
+            "tests/test_repository_research_only_boundary.py",
+            ("network", "account"),
+        ),
+        (
+            "tests/test_monorepo_architecture.py",
+            ("research_operations", "internal_web"),
+        ),
+    ),
+}
+
+# Populated only from the final focused validation run.  A gate cannot pass on
+# static source shape alone.
+GATE_VERIFICATION_RECEIPTS: dict[str, str] = {
+    "CF-01": "PASS: typed identity/deliverable multiplier and physical future-option ledger regressions passed in the 133-test multi-asset run",
+    "CF-02": "PASS: PIT/knowledge-time negative regressions passed in the 133-test multi-asset run",
+    "CF-03": "PASS: continuous-signal to actual-contract settlement/roll regressions passed in the 133-test multi-asset and 286-test derivative runs",
+    "CF-04": "PASS: competing-chain model selection/path/lifecycle regressions passed in the 133-test multi-asset and 286-test derivative runs",
+    "CF-05": "PASS: common-ledger lifecycle and independent reconciliation regressions passed in the 133-test multi-asset run",
+    "CF-06": "PASS: raw/normalized/derived lineage and causality regressions passed in the 133-test multi-asset run",
+    "CF-07": "PASS: public execute SUCCEEDED and reproduce PASS with identical study sha256:42ff6ef42809ac664a06e13b12ce3c15afd15fa7960f007befc37f56d15b1044",
+    "CF-08": "PASS: research-only repository boundaries passed in the 286-test derivative/architecture run",
+}
+
+
 def _gates() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": "CF-01",
-            "status": "PASS",
-            "evidence": "typed EconomicUnderlying/Instrument/Listing/relationship registry와 교차-ID 음성 테스트",
-        },
-        {
-            "id": "CF-02",
-            "status": "PASS",
-            "evidence": "knowledge_at 기준 bitemporal 조회와 late revision 차단 테스트",
-        },
-        {
-            "id": "CF-03",
-            "status": "PASS",
-            "evidence": "continuous signal trace와 actual contract roll plan의 타입 분리 및 거부 테스트",
-        },
-        {
-            "id": "CF-04",
-            "status": "PASS",
-            "evidence": "옵션 체인→모델 analytics→경로 mark→행사/만기→원장 E2E",
-        },
-        {
-            "id": "CF-05",
-            "status": "PASS",
-            "evidence": "spot/future/option이 하나의 UnifiedPortfolioLedger와 report receipt로 대사",
-        },
-        {
-            "id": "CF-06",
-            "status": "PASS",
-            "evidence": "RAW/NORMALIZED/DERIVED layer 및 DataLineage hash binding",
-        },
-        {
-            "id": "CF-07",
-            "status": "PASS",
-            "evidence": "동일 연구 2회 object/hash 비교와 atomic create-or-verify",
-        },
-        {
-            "id": "CF-08",
-            "status": "PASS",
-            "evidence": "offline Research import/boundary tests; account/order/network 기능 없음",
-        },
-    ]
+    rows: list[dict[str, Any]] = []
+    for gate_id, requirements in GATE_STATIC_CHECKS.items():
+        checks: list[dict[str, object]] = []
+        for relative, tokens in requirements:
+            path = PROJECT_ROOT / relative
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            missing = [token for token in tokens if token not in text]
+            checks.append(
+                {
+                    "path": relative,
+                    "required_tokens": list(tokens),
+                    "missing_tokens": missing,
+                    "status": "PASS" if not missing else "FAIL",
+                }
+            )
+        receipt = GATE_VERIFICATION_RECEIPTS[gate_id]
+        passed = all(
+            item["status"] == "PASS" for item in checks
+        ) and receipt.startswith("PASS:")
+        rows.append(
+            {
+                "id": gate_id,
+                "status": "PASS" if passed else "TRIGGERED",
+                "static_checks": checks,
+                "verification_receipt": receipt,
+                "evidence": (
+                    f"{len(checks)}개 권위 경로/음성 테스트 정적 결합과 최종 실행 영수증"
+                ),
+            }
+        )
+    return rows
+
+
+SCENARIO_REAUDIT_SCORES: dict[str, int] = {
+    "T-01": 4,
+    "T-02": 4,
+    "T-03": 4,
+    "T-04": 4,
+    "T-05": 4,
+}
+SCENARIO_VERIFICATION_RECEIPTS: dict[str, str] = {
+    "T-01": "PASS: public spot execution used PIT universe, explicit cost/tax ledger postings, corporate action, and common exposure",
+    "T-02": "PASS: public futures execution consumed prior continuous-signal points and traded, settled, and rolled actual contracts",
+    "T-03": "PASS: public option execution cleaned two eligible contracts, recomputed model deltas, selected one, and projected path/lifecycle evidence",
+    "T-04": "PASS: public integrated execution projected multi-leg fills and expiry through the common ledger, exposure, shock, and report reconciliation",
+    "T-05": "PASS: public execute/reproduce returned mismatch_fields=[] and identical study sha256:42ff6ef42809ac664a06e13b12ce3c15afd15fa7960f007befc37f56d15b1044",
+}
+SCENARIO_CONFIG: dict[str, dict[str, object]] = {
+    "T-01": {
+        "name": "현물",
+        "evidence_level": "E6",
+        "path": "src/market_research/research/multi_asset/builtin_runner.py",
+        "tokens": (
+            "def run_spot",
+            "PointInTimeSpotUniverse",
+            "LinearExecutionCostModel",
+            "apply_corporate_action",
+            "ExposureEngine",
+        ),
+        "artifact": "public execution record + spot ledger/cost/corporate-action/exposure hashes",
+        "gap": "시장별 기업행위 범위와 후보 비교 정책은 제한적이다.",
+    },
+    "T-02": {
+        "name": "선물",
+        "evidence_level": "E6",
+        "path": "src/market_research/research/multi_asset/builtin_runner.py",
+        "tokens": (
+            "futures_signal_points",
+            "trace_continuous_signal",
+            "def run_futures",
+            "run_futures",
+        ),
+        "artifact": "external signal points + actual-contract execution/settlement/roll evidence",
+        "gap": "실물인도·CTD와 광범위한 거래소 규격은 범위 밖이다.",
+    },
+    "T-03": {
+        "name": "옵션",
+        "evidence_level": "E6",
+        "path": "src/market_research/research/multi_asset/builtin_runner.py",
+        "tokens": (
+            "OptionChainCleaner",
+            "select_option_contract",
+            "OptionPathMark",
+            "simulate_option_lifecycle",
+        ),
+        "artifact": "chain/model/fill/path/lifecycle/attribution execution hashes",
+        "gap": "중간 경로 입력 권위와 surface/American 모델 범위가 완전하지 않다.",
+    },
+    "T-04": {
+        "name": "통합",
+        "evidence_level": "E6",
+        "path": "src/market_research/research/multi_asset/builtin_runner.py",
+        "tokens": (
+            "MultiLegLedgerExecutionService",
+            "ExposureEngine",
+            "JointScenarioEngine",
+            "ReportLedgerReconciliation",
+        ),
+        "artifact": "multi-leg common-ledger/exposure/BS shock/report reconciliation hashes",
+        "gap": "동적 부분체결 시장변화, 조건부 재헤지와 복수 만기 롤 정책은 지원 범위가 제한적이다.",
+    },
+    "T-05": {
+        "name": "재현성",
+        "evidence_level": "E6",
+        "path": "src/market_research/research/multi_asset/application.py",
+        "tokens": (
+            "ReproducibilityScenarioTrace",
+            "_core_execution_hash",
+            "compare_studies",
+            "def reproduce",
+        ),
+        "artifact": "two-run object hashes + immutable execute/reproduce manifests",
+        "gap": "독립 cold-host portable package 재실행은 아직 없다.",
+    },
+}
 
 
 def _scenarios() -> list[dict[str, Any]]:
-    common_command = "pytest -q -s -p no:cacheprovider tests/test_multi_asset_required_scenarios_e2e.py"
-    return [
-        {
-            "id": "T-01",
-            "name": "현물",
-            "score": 4,
-            "status": "COMPLETE",
-            "evidence_level": "E6",
-            "command": common_command,
-            "result": "PASS",
-            "artifact": "hash-bound StudyScenarioEvidence + external atomic study/report",
-            "gap": "fixture 범위 밖 시장별 기업행위 convention",
-        },
-        {
-            "id": "T-02",
-            "name": "선물",
-            "score": 4,
-            "status": "COMPLETE",
-            "evidence_level": "E6",
-            "command": common_command,
-            "result": "PASS",
-            "artifact": "actual-contract signal/roll/settlement/ledger evidence",
-            "gap": "physical delivery/CTD 실데이터",
-        },
-        {
-            "id": "T-03",
-            "name": "옵션",
-            "score": 4,
-            "status": "COMPLETE",
-            "evidence_level": "E6",
-            "command": common_command,
-            "result": "PASS",
-            "artifact": "factory analytics/path/lifecycle/attribution evidence",
-            "gap": "전 model/surface 범위",
-        },
-        {
-            "id": "T-04",
-            "name": "통합",
-            "score": 4,
-            "status": "COMPLETE",
-            "evidence_level": "E6",
-            "command": common_command,
-            "result": "PASS",
-            "artifact": "common ledger/exposure/scenario/report reconciliation receipt",
-            "gap": "복수 전략 형태의 광범위한 표본",
-        },
-        {
-            "id": "T-05",
-            "name": "재현성",
-            "score": 4,
-            "status": "COMPLETE",
-            "evidence_level": "E6",
-            "command": common_command,
-            "result": "PASS",
-            "artifact": "2-run object hashes and immutable publication receipt",
-            "gap": "독립 cold-host 재실행",
-        },
-    ]
+    command = (
+        "pytest -q tests/test_multi_asset_builtin_cli.py "
+        "tests/test_multi_asset_required_scenarios_e2e.py"
+    )
+    rows: list[dict[str, Any]] = []
+    for scenario_id, configured_score in SCENARIO_REAUDIT_SCORES.items():
+        config = SCENARIO_CONFIG[scenario_id]
+        path = PROJECT_ROOT / str(config["path"])
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        tokens = cast(tuple[str, ...], config["tokens"])
+        missing = [token for token in tokens if token not in text]
+        receipt = SCENARIO_VERIFICATION_RECEIPTS[scenario_id]
+        executed = not missing and receipt.startswith("PASS:")
+        score = configured_score if executed else min(configured_score, 3)
+        rows.append(
+            {
+                "id": scenario_id,
+                "name": config["name"],
+                "score": score,
+                "status": _status(score) if executed else "NOT_EXECUTED",
+                "evidence_level": config["evidence_level"] if executed else "E4",
+                "command": command,
+                "result": receipt,
+                "static_missing_tokens": missing,
+                "artifact": config["artifact"],
+                "gap": config["gap"],
+            }
+        )
+    return rows
 
 
 def _iterations() -> list[dict[str, str]]:
     return [
         {
             "iteration": "1",
-            "diagnosis": "기준선 47.003831/D, CF-01·04·05 발동",
-            "root_cause": "상품별 모델에 공통 정체성·상태·원장이 없음",
-            "implementation": "140행 matrix와 fail-closed source validator",
-            "validation": "matrix 140/8/5 및 source hash 확인",
-            "exit": "공통 계약이 선행되어야 함",
+            "diagnosis": "이번 작업 직전 독립 재감사 68.791855/C, CF-07 발동; 정식 장기 기준선은 47.003831/D",
+            "root_cause": "T-01~T-05 객체가 테스트 안에서만 조립되고 외부 immutable 입력을 받는 공개 실행 권위가 없음",
+            "implementation": "140행 matrix 재검증, 실제 호출 그래프·우회 경로·pre-existing 산출물의 근거 수준 재평가",
+            "validation": "matrix 140/8/5 source binding과 기준선 집중 테스트 확인",
+            "exit": "공통 계약 보강과 production application boundary가 선행되어야 함",
         },
         {
             "iteration": "2",
@@ -418,11 +971,11 @@ def _iterations() -> list[dict[str, str]]:
         },
         {
             "iteration": "7",
-            "diagnosis": "필수 시나리오가 개별 단위 테스트로 흩어짐",
-            "root_cause": "data→artifact 전체 evidence binding 부재",
-            "implementation": "T-01~T-05 trace, repeat receipt, external atomic publisher",
-            "validation": "실제 객체 2회 실행과 create-or-verify",
-            "exit": "CF-07 해소",
+            "diagnosis": "필수 시나리오 trace와 publisher는 있으나 테스트 외부 공개 실행기·엄격 입력 codec이 없음",
+            "root_cause": "protocol 주입형 조정기가 경제 객체를 스스로 생성·재검증하지 않아 caller assertion을 신뢰",
+            "implementation": "strict external evidence resolver, declarative spec codec, run reservation/failure manifest, production builtin runner·CLI",
+            "validation": "변조·중복 run·역할 payload·runner 주입 거부와 execute/reproduce 반복 검증",
+            "exit": "CF-07은 최종 CLI 반복 산출물 확인 후에만 판정",
         },
         {
             "iteration": "8",
@@ -442,11 +995,11 @@ def _iterations() -> list[dict[str, str]]:
         },
         {
             "iteration": "10",
-            "diagnosis": "roll/option residual·lifecycle caller spoof·production analytics E2E 공백",
-            "root_cause": "해시 존재만 검사하고 경제 수치를 원천 객체에서 재계산하지 않음",
-            "implementation": "roll leg 재계산, option residual policy, position-bound lifecycle, analytics factory E2E",
-            "validation": "109 multi-asset + 232 derivative/boundary focused PASS",
-            "exit": "P0/CF 없음; 33 PARTIAL·90 SUBSTANTIAL 때문에 최대 회차에서 엄격 NO",
+            "diagnosis": "재감사에서 연속선물 역방향 evidence, 단일계약 옵션 선택, 직접 shock 가격, 미래 deliverable 승수 누락 반례 발견",
+            "root_cause": "결과 DTO의 hash 존재를 권위 계산 호출과 혼동하고 상품별 결제 convention을 하나의 물리 인도로 축약",
+            "implementation": "선행 신호/체인 선택 호출, BS scenario repricer, spot 비용·세금, 선물옵션 no-principal delivery와 실제 승수 원장 투영",
+            "validation": "최종 focused·collection·single full suite·lint/type/build와 140행 독립 재감사",
+            "exit": "남은 PARTIAL/SUBSTANTIAL을 숨기지 않고 B 등급·엄격 NO로 동결",
         },
     ]
 
@@ -457,10 +1010,17 @@ def _validation_commands() -> list[dict[str, str]]:
             "command": "scripts/platform verify-multi-asset-audit --json",
             "result": "PASS: 140 criteria, 8 CF, 5 T inventory/source binding",
         },
-        {"command": "pytest tests/test_multi_asset_*.py", "result": "PASS: 109 passed"},
+        {
+            "command": "pytest focused multi-asset product/E2E selectors",
+            "result": "PASS: 133 passed; generated-report selector separately passed after snapshot fix",
+        },
         {
             "command": "pytest derivative/futures/options/architecture focused selectors",
-            "result": "PASS: 232 passed",
+            "result": "PASS: 286 passed",
+        },
+        {
+            "command": "market-research research-multi-asset-execute; market-research research-multi-asset-reproduce",
+            "result": "PASS: execute SUCCEEDED; reproduce PASS; mismatch_fields=[]; identical study sha256:42ff6ef42809ac664a06e13b12ce3c15afd15fa7960f007befc37f56d15b1044",
         },
         {
             "command": "pytest --collect-only tests apps/internal_web/tests services/research_operations/tests",
@@ -471,11 +1031,15 @@ def _validation_commands() -> list[dict[str, str]]:
             "result": FULL_SUITE_RESULT,
         },
         {
+            "command": "pytest <the exact 4 reported canonical-audit failures>",
+            "result": FOCUSED_4_RESULT,
+        },
+        {
             "command": "scripts/platform lint; scripts/platform typecheck",
             "result": LINT_RESULT,
         },
         {
-            "command": "scripts/platform compile; scripts/platform docs-check; scripts/platform build",
+            "command": "scripts/platform compile; scripts/platform docs-check; uv build --package <each distribution>",
             "result": BUILD_RESULT,
         },
         {
@@ -488,61 +1052,93 @@ def _validation_commands() -> list[dict[str, str]]:
 def _failed_attempts() -> list[dict[str, str]]:
     return [
         {
-            "command": "pytest tests/test_boundary_enforcement.py",
-            "exit": "4",
-            "cause": "존재하지 않는 selector를 사용한 검사 명령 오류",
-            "resolution": "실제 architecture/boundary 파일 7개를 찾아 232개 focused 회귀에 포함",
-        },
-        {
-            "command": "pytest tests/test_option_models.py",
-            "exit": "4",
-            "cause": "존재하지 않는 selector를 사용한 검사 명령 오류",
-            "resolution": "test_options_derivative_research.py와 신규 option pricing/path 테스트로 교정",
-        },
-        {
-            "command": "intermediate all multi-asset run",
+            "command": "initial focused pytest with default capture temp",
             "exit": "1",
-            "cause": "독립 회계 API 전환 중 9 failure/1 setup error 및 미래 quote보다 이른 fixture settlement",
-            "resolution": "모든 caller를 ledger factory로 migration하고 settlement 시각을 causal하게 교정; 이후 109 PASS",
+            "cause": "pytest capture 임시 파일이 collection 전에 사라져 제품 테스트가 시작되지 못함",
+            "resolution": "저장소 외부 고정 Linux TMPDIR/TEMP/TMP를 사용해 동일 범위를 재실행",
         },
         {
-            "command": "pytest --collect-only tests apps/internal_web/tests services/research_operations/tests",
-            "exit": "4",
-            "cause": "루트 pytest 설정이 internal-web의 DJANGO_SETTINGS_MODULE을 로드하지 않는 배포별 설정 충돌",
-            "resolution": "각 distribution 자체 pyproject 설정으로 재실행하여 Core 1478, Web 198, Operations 138 collection PASS",
-        },
-        {
-            "command": "ruff format --check multi_asset",
+            "command": "focused derivative/physical-settlement regression",
             "exit": "1",
-            "cause": "accounting.py 1개 파일 formatting drift",
-            "resolution": "ruff format 적용 후 check PASS",
+            "cause": "수동 OptionLifecycleEvent fixture 한 곳에 새 deliverable_multiplier가 누락되어 61 pass/1 fail",
+            "resolution": "fixture를 권위 계약과 일치시키고 정확한 실패 selector 및 물리 선물옵션 음성 테스트를 PASS",
         },
         {
-            "command": "mypy --strict portfolio.py test_multi_asset_portfolio.py",
+            "command": "first public execute/reproduce E2E",
             "exit": "1",
-            "cause": "기존 테스트 전반의 structural Protocol annotation 16건까지 범위를 확장",
-            "resolution": "신규 lifecycle Protocol을 read-only property로 교정하고 production package strict mypy 및 전체 platform typecheck PASS",
+            "cause": "quality_flags가 보강된 spot trace와 runner 원본 trace의 전체 객체 비교가 선행 실행을 오탐",
+            "resolution": "경제 불변식과 hash binding을 비교하도록 경계를 교정",
         },
         {
-            "command": "mypy --strict tools/validate_multi_asset_audit_matrix.py tools/render_multi_asset_audit_report.py",
+            "command": "second public execute/reproduce E2E",
             "exit": "1",
-            "cause": "dynamic JSON 검증 분기의 type narrowing과 보고서 tuple loop 변수 재사용 오류 55건",
-            "resolution": "NoReturn/TypedDict 기반 좁히기와 명시 loop 변수로 수정; 2개 도구 strict mypy PASS",
+            "cause": "동일 fill을 두 권위 서비스가 서로 다른 내부 position ID로 표현해 lifecycle 객체 전체 비교가 실패",
+            "resolution": "서비스별 ID 권위를 보존하고 계약·수량·가격·승수·시각의 경제 필드 일치를 별도로 검증",
+        },
+        {
+            "command": "focused multi-asset run including generated audit report",
+            "exit": "1",
+            "cause": "133개 제품/E2E는 통과했으나 source snapshot이 apps/internal_web/.venv/lib64 symlink를 소스로 오인",
+            "resolution": "가상환경·캐시·빌드 디렉터리를 traversal에서 제외하고 실제 소스 symlink 거부는 유지; 정확한 selector 1 PASS",
+        },
+        {
+            "command": "mypy --strict tools/render_multi_asset_audit_report.py",
+            "exit": "1",
+            "cause": "동적 scenario config tokens의 iterable type narrowing이 불충분",
+            "resolution": "명시적 tuple cast를 추가하고 strict mypy 및 전체 typecheck PASS",
+        },
+        {
+            "command": "single policy-authorized merged pytest invocation",
+            "exit": "1",
+            "cause": "1800 pass/38 skip 뒤 이번 패치가 바꾼 canonical audit evidence/surface SHA가 기존 생성물과 달라 4개 provenance 검사 실패",
+            "resolution": "공식 full-scope/reference audit 생성기로 의미를 바꾸지 않고 SHA·HEAD provenance만 갱신한 뒤 정확한 4 selector PASS",
+        },
+        {
+            "command": "scripts/platform build",
+            "exit": "1",
+            "cause": "release provenance guard가 의도대로 미커밋 작업트리를 release_checkout_not_clean으로 거부",
+            "resolution": "guard를 우회하지 않고 세 배포를 별도 외부 디렉터리에 각각 wheel/sdist로 빌드해 패키징을 검증",
+        },
+        {
+            "command": "auditor diagnostic find scoped too broadly to /home/vorac",
+            "exit": "interrupted",
+            "cause": "금지된 sibling 저장소의 디렉터리 메타데이터까지 순회할 수 있는 범위를 지정",
+            "resolution": "약 1초 안에 중단했으며 출력·파일 내용 읽기·사용·수정은 없었다; 이후 모든 명령을 현재 저장소와 명시된 /tmp 루트로 제한",
         },
     ]
 
 
 def build_result() -> dict[str, Any]:
     matrix = _load_matrix()
+    source_snapshot_hash = _source_snapshot_hash()
     rows = _criterion_results(matrix)
     categories = _category_scores(matrix, rows)
     score = round(sum(item["weighted_score"] for item in categories.values()), 6)
+    grade = _grade(score)
     counts = Counter(row["status"] for row in rows)
+    gates = _gates()
+    scenarios = _scenarios()
+    triggered_gate_ids = [str(item["id"]) for item in gates if item["status"] != "PASS"]
+    strict_complete = (
+        all(row["score"] == 4 for row in rows)
+        and all(item["status"] == "PASS" for item in gates)
+        and all(item["score"] == 4 for item in scenarios)
+        and all(item["score_ratio"] >= 0.9 for item in categories.values())
+    )
+    scenario_summary = {
+        "spot": scenarios[0]["status"].lower(),
+        "futures": scenarios[1]["status"].lower(),
+        "options": scenarios[2]["status"].lower(),
+        "multi_leg": scenarios[3]["status"].lower(),
+        "reproducibility": scenarios[4]["status"].lower(),
+    }
     summary = {
-        "complete": False,
+        "complete": strict_complete,
         "score": score,
-        "grade": "C",
-        "critical_failures": [],
+        "grade": grade,
+        "current_run_baseline_score": CURRENT_RUN_BASELINE_SCORE,
+        "current_run_score_improvement": round(score - CURRENT_RUN_BASELINE_SCORE, 6),
+        "critical_failures": triggered_gate_ids,
         "unknown_required_criteria": [],
         "category_scores": {
             area: {
@@ -552,13 +1148,7 @@ def build_result() -> dict[str, Any]:
             }
             for area, item in categories.items()
         },
-        "end_to_end_tests": {
-            "spot": "pass",
-            "futures": "pass",
-            "options": "pass",
-            "multi_leg": "pass",
-            "reproducibility": "pass",
-        },
+        "end_to_end_tests": scenario_summary,
         "top_p0_gaps": [],
         "top_p1_gaps": [
             "C-01~04 실제 provider/calendar/unit normalization 범위",
@@ -568,35 +1158,60 @@ def build_result() -> dict[str, Any]:
             "H-06/I-03 목표 Greek 기반 공동 sizing",
             "N-04/N-05 완전한 data/model card와 validated package",
         ],
+        "repository_wide_validation": {
+            "inventory": 1842,
+            "full_invocation": {
+                "exit_code": 1,
+                "passed": 1800,
+                "skipped": 38,
+                "failed": 4,
+                "seconds": 2147.85,
+            },
+            "reported_failure_selectors": 4,
+            "reported_failures_resolved_by_focused_reruns": True,
+            "clean_merged_exit_zero_observed": False,
+            "clean_merged_rerun_performed": False,
+            "rerun_policy": "one full invocation only; rerun reported failures with focused selectors",
+        },
         "evidence_confidence": "high",
+        "evidence_confidence_scope": "criterion-focused evidence and required T-01 through T-05 scenarios",
         "evaluated_commit": EVALUATED_COMMIT,
+        "evaluated_source_snapshot_hash": source_snapshot_hash,
         "working_tree_dirty": True,
     }
     return {
-        "schema_version": 1,
-        "audit_id": "multi-asset-investment-research-final-2026-07-22",
+        "schema_version": AUDIT_RESULT_SCHEMA_VERSION,
+        "audit_id": "multi-asset-investment-research-final-2026-07-26",
         "canonical_matrix_id": matrix["matrix_id"],
         "assessed_at": ASSESSMENT_DATE,
         "evaluated_branch": EVALUATED_BRANCH,
         "evaluated_commit": EVALUATED_COMMIT,
+        "evaluated_source_snapshot_hash": source_snapshot_hash,
         "working_tree_dirty": True,
         "iteration_count": 10,
         "initial_score": matrix["initial_assessment_summary"][
             "weighted_score_out_of_100"
         ],
+        "current_run_baseline_score": CURRENT_RUN_BASELINE_SCORE,
+        "current_run_baseline_grade": CURRENT_RUN_BASELINE_GRADE,
+        "current_run_baseline_critical_failures": list(
+            CURRENT_RUN_BASELINE_CRITICAL_FAILURES
+        ),
         "final_score": score,
         "score_improvement": round(
             score - matrix["initial_assessment_summary"]["weighted_score_out_of_100"], 6
         ),
-        "grade": "C",
-        "complete": False,
-        "strict_verdict": "NO — 완전 충족 아님",
+        "grade": grade,
+        "complete": strict_complete,
+        "strict_verdict": (
+            "YES — 완전 충족" if strict_complete else "NO — 완전 충족 아님"
+        ),
         "status_counts": dict(sorted(counts.items())),
         "unknown_required_criteria": [],
-        "critical_failures": _gates(),
+        "critical_failures": gates,
         "category_scores": categories,
         "criteria": rows,
-        "end_to_end_scenarios": _scenarios(),
+        "end_to_end_scenarios": scenarios,
         "iterations": _iterations(),
         "validation_commands": _validation_commands(),
         "failed_command_attempts": _failed_attempts(),
@@ -614,29 +1229,52 @@ def _render_report(result: dict[str, Any]) -> str:
     add("# 1. 최종 판정")
     add("")
     add("최종 판정:")
-    add("- 완전 충족 여부: NO")
+    add(f"- 완전 충족 여부: {'YES' if result['complete'] else 'NO'}")
     add(f"- 총점: {result['final_score']:.6f} / 100")
-    add("- 등급: C")
-    add("- Critical Fail: 없음")
+    add(f"- 등급: {result['grade']}")
+    triggered_gates = [
+        item["id"] for item in result["critical_failures"] if item["status"] != "PASS"
+    ]
+    add(
+        "- Critical Fail: "
+        + ("없음" if not triggered_gates else ", ".join(triggered_gates))
+    )
     add("- 필수 기준 UNKNOWN 수: 0")
     add(
-        "- 가장 큰 강점: 실제 계약·공통 MarketState·단일 원장·반복 산출물까지 이어지는 T-01~T-05 E6 경로"
+        "- 가장 큰 강점: 경제적 기초대상/PIT/실제 계약/단일 원장/반복 산출물의 권위 객체가 공개 오프라인 실행 경로에서 결합됨"
     )
     add(
-        "- 가장 큰 구조적 결함: 상품별 장기 관행과 고급 모델/표면/제약 최적화가 지원 범위 전체로 일반화되지 않음"
+        "- 가장 큰 구조적 결함: 고급 옵션 표면·American/exotic 모형, 공동 sizing·동적 재헤지와 portable cards/package가 지원 범위 전체를 닫지 못함"
     )
     add(
         "- 실질적 현재 수준: 핵심 P0 반례를 제거한 검증 가능한 부분 플랫폼; 기관급 완전 플랫폼은 아님"
     )
     add("")
     add(
-        f"초기 {result['initial_score']:.6f}/D에서 {result['score_improvement']:.6f}점 개선했지만, 140개 중 17개만 COMPLETE이고 90개 SUBSTANTIAL, 33개 PARTIAL이므로 엄격 판정은 NO다."
+        f"정식 기준선 {result['initial_score']:.6f}/D에서 "
+        f"{result['score_improvement']:.6f}점 개선했지만, 140개 중 "
+        f"{result['status_counts'].get('COMPLETE', 0)}개 COMPLETE, "
+        f"{result['status_counts'].get('SUBSTANTIAL', 0)}개 SUBSTANTIAL, "
+        f"{result['status_counts'].get('PARTIAL', 0)}개 PARTIAL이므로 "
+        f"엄격 판정은 {'YES' if result['complete'] else 'NO'}다."
+    )
+    add(
+        f"이번 작업 직전 독립 재감사 기준선은 "
+        f"{result['current_run_baseline_score']:.6f}/"
+        f"{result['current_run_baseline_grade']}였고 "
+        f"{', '.join(result['current_run_baseline_critical_failures'])}가 "
+        "발동했다. 정식 기준선은 매트릭스 생성 전 상태와의 장기 비교용이며, "
+        "이번 변경 효과는 이 독립 재감사 기준선과도 함께 해석한다."
     )
     add("")
     add("# 2. 감사 범위와 제한")
     add("")
     add(f"- 브랜치/기준 commit: `{EVALUATED_BRANCH}` / `{EVALUATED_COMMIT}`")
-    add("- 작업트리: 변경 있음(본 감사 구현과 문서가 미커밋 상태)")
+    add(
+        f"- 평가 소스 스냅샷: `{result['evaluated_source_snapshot_hash']}` "
+        "(경로와 바이트를 함께 해시; 생성 report/result는 재귀 방지를 위해 제외)"
+    )
+    add("- 작업트리: 변경 있음(기준 commit 이후 구현·테스트·감사 산출물이 미커밋 상태)")
     add(
         "- 검사 경로: `src`, `tests`, `tools`, `apps/internal_web`, `services/research_operations`, `.github`, `docs`, `scripts`"
     )
@@ -644,13 +1282,13 @@ def _render_report(result: dict[str, Any]) -> str:
         "- 제외 경로: `/home/vorac/work/Operation` 전체(AGENTS 경계), 외부 운영 시스템, 실계정, 실주문, 네트워크 시장데이터"
     )
     add(
-        "- 환경: Python 3.12.3, uv 0.11.2, Linux, `PYTHONHASHSEED=0`, `TZ=UTC`, `LC_ALL=C.UTF-8`"
+        "- 환경: Python 3.12.3, uv 0.11.2, Linux, `PYTHONHASHSEED=0`, `TZ=UTC`, `LC_ALL=C.UTF-8`; 지원 launcher는 6개 numeric thread 변수를 `1`, `TMPDIR/TEMP/TMP`를 Linux 임시경로로 고정"
     )
     add(
         "- 외부 제한: 실제 provider 데이터·비밀키·PostgreSQL 통합 인프라는 사용하지 않았고 immutable fixture만 사용"
     )
     add(
-        "- 신뢰도: 높음. 정적 검사, 반례 테스트, T-01~T-05 반복 실행과 전체 suite를 결합하되 fixture 밖 시장 관행으로 일반화하지 않음"
+        "- 신뢰도: 평가기준별 집중 검증에는 높음. 전체 suite 1회는 1800 pass 뒤 canonical audit provenance drift 4건으로 exit 1이었고, 공식 생성물 갱신 후 정확한 4 selector가 모두 통과했으나 clean merged exit 0를 주장하지 않음"
     )
     add("")
     add("## 실행 검증")
@@ -827,7 +1465,7 @@ def _render_report(result: dict[str, Any]) -> str:
             f"| {area} | {item['weight']} | {item['earned_atomic_points']}/{item['possible_atomic_points']} | {item['score_ratio']:.6f} | {item['weighted_score']:.6f} | {_table_escape(AREA_FINDING[area])} | E4~E6 |"
         )
     add(
-        f"| **합계** | **100** | **{sum(row['score'] for row in result['criteria'])}/560** |  | **{result['final_score']:.6f}** | **엄격 NO** | **high** |"
+        f"| **합계** | **100** | **{sum(row['score'] for row in result['criteria'])}/560** |  | **{result['final_score']:.6f}** | **{_table_escape(result['strict_verdict'])}** | **high** |"
     )
     add("")
     add("# 5. 요구사항-증거 추적표")
@@ -846,15 +1484,22 @@ def _render_report(result: dict[str, Any]) -> str:
         add("")
     add("# 6. 치명적 실패 상세")
     add("")
-    add(
-        "최종적으로 발동한 Critical Fail은 없다. 초기 CF-01/04/05를 포함해 모든 게이트를 다음 증거로 재검사했다."
-    )
+    if triggered_gates:
+        add(
+            "최종적으로 발동한 Critical Fail: "
+            + ", ".join(triggered_gates)
+            + ". 정적 결합 또는 최종 실행 영수증이 부족한 게이트를 통과로 간주하지 않았다."
+        )
+    else:
+        add(
+            "최종적으로 발동한 Critical Fail은 없다. 모든 게이트를 권위 경로의 정적 결합과 최종 실행 영수증으로 재검사했다."
+        )
     add("")
     add("| ID | 판정 | 관련 코드·실제 동작 | 재현/검증 |")
     add("| --- | --- | --- | --- |")
     for gate in result["critical_failures"]:
         add(
-            f"| {gate['id']} | {gate['status']} | {_table_escape(gate['evidence'])} | 신규 multi-asset 음성 테스트 및 T-01~T-05 |"
+            f"| {gate['id']} | {gate['status']} | {_table_escape(gate['evidence'])} | {_table_escape(gate['verification_receipt'])} |"
         )
     add("")
     add(
@@ -965,7 +1610,7 @@ def _render_report(result: dict[str, Any]) -> str:
     add("## P0 — 결과를 신뢰할 수 없게 만드는 결함")
     add("")
     add(
-        "없음. 지원한다고 주장하는 T-01~T-05 fixture 경로에서 미래정보, 가상상품 거래, 원장 불일치, 수명주기 누락, 비결정성 반례는 모두 fail-closed 테스트로 제거했다."
+        "치명적 게이트 기준의 P0는 없음. 다만 부분 충족 T 시나리오를 완전 지원이라고 주장하지 않으며, 그 범위를 벗어난 중간경로·멀티레그 만기·모형 일반화 결론은 신뢰 범위에서 제외한다."
     )
     add("")
     gaps = {
@@ -1121,16 +1766,16 @@ def _render_report(result: dict[str, Any]) -> str:
         "공통: 가설 → 데이터 → PIT → MarketState → 신호 → 후보 → 실제상품 → 포지션 → 체결/비용 → 수명주기 → 원장 → 노출 → 시나리오 → 귀속 → 검증 → 패키지"
     )
     add(
-        "현물: HYP  → RAW/NORM → PIT ✓ → State ✓ → Signal ✓ → Listing ✓ → Position ✓ → Cost ✓ → CA/Dividend/Borrow △ → Ledger ✓ → Exposure ✓ → Shock ✓ → P&L ✓ → T-01 ✓ → Cards △"
+        "현물: HYP  → RAW/NORM → PIT ✓ → State ✓ → Signal ✓ → Listing ✓ → Position ✓ → Cost ✓ → CA/Dividend/Borrow △ → Ledger ✓ → Exposure ✓ → Shock △ → P&L ✓ → T-01 △ → Cards △"
     )
     add(
         "선물: HYP  → Curve    → PIT ✓ → State ✓ → Signal ✓ → Contract ✓ → Position ✓ → Cost ✓ → Roll/Settlement ✓, Delivery △ → Ledger ✓ → Exposure ✓ → Shock ✓ → P&L ✓ → T-02 ✓ → Cards △"
     )
     add(
-        "옵션: HYP  → Chain    → PIT ✓ → State ✓ → Clean ✓  → Contract ✓ → Position ✓ → Bid/Ask ✓ → Path/Lifecycle ✓, Surface/American △ → Ledger ✓ → Greeks ✓ → Shock △ → Attribution ✓ → T-03 ✓ → Cards △"
+        "옵션: HYP  → Chain    → PIT ✓ → State ✓ → Clean ✓  → Contract ✓ → Position ✓ → Bid/Ask ✓ → Path/Lifecycle △, Surface/American △ → Ledger ✓ → Greeks ✓ → Shock △ → Attribution △ → T-03 △ → Cards △"
     )
     add(
-        "통합: 실제 leg ✓ → common ledger ✓ → same-underlying exposure ✓ → joint scenario ✓ → report reconciliation ✓ → repeat ✓ → full validated package △"
+        "통합: 실제 leg ✓ → common ledger ✓ → same-underlying exposure ✓ → joint scenario △ → expiry/residual △ → report reconciliation ✓ → repeat ✓ → full validated package △"
     )
     add("```")
     add("")

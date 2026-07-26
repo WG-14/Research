@@ -1052,35 +1052,6 @@ class DerivativeResearchApplicationService:
                         command.decision.to_contract_id,
                         command.decision.decision_at,
                     )
-                    position = ledger.position_for(command.decision.from_contract_id)
-                    if position is None:
-                        raise DerivativeResearchError(
-                            "roll_execution_source_position_missing"
-                        )
-                    close_side = (
-                        OrderSide.SELL if position.quantity > 0 else OrderSide.BUY
-                    )
-                    open_side = (
-                        OrderSide.BUY if position.quantity > 0 else OrderSide.SELL
-                    )
-                    orders.extend(
-                        (
-                            FuturesOrderIntent(
-                                intent_id=f"{command.execution_id}.close",
-                                contract_id=command.decision.from_contract_id,
-                                side=close_side,
-                                quantity=abs(position.quantity),
-                                decision_at=command.decision.decision_at,
-                            ),
-                            FuturesOrderIntent(
-                                intent_id=f"{command.execution_id}.open",
-                                contract_id=command.decision.to_contract_id,
-                                side=open_side,
-                                quantity=abs(position.quantity),
-                                decision_at=command.decision.decision_at,
-                            ),
-                        )
-                    )
                     step = request.simulator.roll(
                         ledger,
                         command.decision,
@@ -1088,6 +1059,16 @@ class DerivativeResearchApplicationService:
                         new_quote,
                         execution_id=command.execution_id,
                         step_id=command.step_id,
+                    )
+                    if step.roll_quantity_plan is None:
+                        raise DerivativeResearchError(
+                            "roll_execution_quantity_plan_missing"
+                        )
+                    orders.extend(
+                        step.roll_quantity_plan.order_intents(
+                            execution_id=command.execution_id,
+                            decision_at=command.decision.decision_at,
+                        )
                     )
                 elif isinstance(command, FuturesExpirationCommand):
                     quote = request.chain.quote_for(command.contract_id, command.as_of)

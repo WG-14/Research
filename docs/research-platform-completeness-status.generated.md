@@ -8,7 +8,7 @@
 - Receipt-verified criteria: **0/431**
 - Open findings: **450**
 - Rubric SHA-256: `13ab8fbd3c37a3095ca9fd2c69818c4cb7d5f85fdf96f9f27fedb626ba17d635`
-- Manifest SHA-256: `e8be7ce090d793f031f1b7b613b561b7bb9fb271ef0ae1ea6f43cf178effbcf0`
+- Manifest SHA-256: `f9500a05e964f0cfcd7777366b407c4af98443301e60ecf29535994dc28e5fbd`
 
 A declared score never substitutes for hash-bound path and command-receipt evidence. All 431 criteria remain in the denominator; unsupported and not-applicable capabilities fail this completion gate.
 

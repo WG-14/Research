@@ -15,13 +15,15 @@ from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TypeAlias
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..hashing import sha256_prefixed
 
 
-MULTI_ASSET_DATA_SCHEMA_VERSION = 2
+MULTI_ASSET_DATA_SCHEMA_VERSION = 3
 _STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CURRENCY = re.compile(r"^[A-Z]{3}$")
 _SOURCE_MODES = frozenset({"EXTERNALLY_PREPARED_IMMUTABLE", "MANUAL_REVIEWED_IMPORT"})
 
 
@@ -33,6 +35,235 @@ class DataLayer(StrEnum):
     RAW = "RAW"
     NORMALIZED = "NORMALIZED"
     DERIVED = "DERIVED"
+
+
+def _quality_flags(values: tuple[str, ...], field: str) -> tuple[str, ...]:
+    canonical = tuple(sorted(values))
+    if len(canonical) != len(set(canonical)):
+        raise MultiAssetDataError(f"{field}_duplicate")
+    for value in canonical:
+        _require_id(value, field)
+    return canonical
+
+
+@dataclass(frozen=True, slots=True)
+class RawLayerMetadata:
+    """Provider-shape evidence retained without normalizing the payload."""
+
+    provider_record_id: str
+    provider_symbol: str
+    source_object_id: str
+    collection_batch_id: str
+    original_schema_id: str
+    provider_version: str
+    payload_checksum: str
+    quality_flags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "provider_record_id",
+            "provider_symbol",
+            "source_object_id",
+            "collection_batch_id",
+            "original_schema_id",
+            "provider_version",
+        ):
+            _require_id(getattr(self, field_name), f"raw_metadata.{field_name}")
+        _require_hash(self.payload_checksum, "raw_metadata.payload_checksum")
+        object.__setattr__(
+            self,
+            "quality_flags",
+            _quality_flags(self.quality_flags, "raw_metadata.quality_flag"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "provider_record_id": self.provider_record_id,
+            "provider_symbol": self.provider_symbol,
+            "source_object_id": self.source_object_id,
+            "collection_batch_id": self.collection_batch_id,
+            "original_schema_id": self.original_schema_id,
+            "provider_version": self.provider_version,
+            "payload_checksum": self.payload_checksum,
+            "quality_flags": list(self.quality_flags),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedLayerMetadata:
+    """Explicit dimensional, session, and quality normalization decisions."""
+
+    internal_instrument_id: str
+    source_timezone: str
+    target_timezone: str
+    source_price_unit: str
+    target_price_unit: str
+    source_quantity_unit: str
+    target_quantity_unit: str
+    currency: str
+    exchange_session_id: str
+    provider_priority: int
+    duplicate_resolution: str
+    unit_conversion_id: str
+    missing_value: bool
+    outlier: bool
+    revised: bool
+    quality_flags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "internal_instrument_id",
+            "source_price_unit",
+            "target_price_unit",
+            "source_quantity_unit",
+            "target_quantity_unit",
+            "exchange_session_id",
+            "duplicate_resolution",
+            "unit_conversion_id",
+        ):
+            _require_id(
+                getattr(self, field_name),
+                f"normalized_metadata.{field_name}",
+            )
+        _require_currency(
+            self.currency,
+            "normalized_metadata.currency",
+        )
+        for field_name in ("source_timezone", "target_timezone"):
+            value = getattr(self, field_name)
+            try:
+                ZoneInfo(value)
+            except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+                raise MultiAssetDataError(
+                    f"normalized_metadata.{field_name}_unknown"
+                ) from exc
+        if self.target_timezone != "UTC":
+            raise MultiAssetDataError("normalized_metadata_target_timezone_must_be_utc")
+        if (
+            isinstance(self.provider_priority, bool)
+            or not isinstance(self.provider_priority, int)
+            or self.provider_priority < 1
+        ):
+            raise MultiAssetDataError("normalized_metadata.provider_priority_invalid")
+        if self.duplicate_resolution not in {
+            "UNIQUE",
+            "HIGHEST_PRIORITY",
+            "LATEST_AVAILABLE",
+        }:
+            raise MultiAssetDataError(
+                "normalized_metadata.duplicate_resolution_unknown"
+            )
+        for field_name in ("missing_value", "outlier", "revised"):
+            if not isinstance(getattr(self, field_name), bool):
+                raise MultiAssetDataError(
+                    f"normalized_metadata.{field_name}_must_be_boolean"
+                )
+        flags = set(self.quality_flags)
+        if self.missing_value:
+            flags.add("missing_value")
+        if self.outlier:
+            flags.add("outlier")
+        if self.revised:
+            flags.add("revised")
+        object.__setattr__(
+            self,
+            "quality_flags",
+            _quality_flags(
+                tuple(flags),
+                "normalized_metadata.quality_flag",
+            ),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "internal_instrument_id": self.internal_instrument_id,
+            "source_timezone": self.source_timezone,
+            "target_timezone": self.target_timezone,
+            "source_price_unit": self.source_price_unit,
+            "target_price_unit": self.target_price_unit,
+            "source_quantity_unit": self.source_quantity_unit,
+            "target_quantity_unit": self.target_quantity_unit,
+            "currency": self.currency,
+            "exchange_session_id": self.exchange_session_id,
+            "provider_priority": self.provider_priority,
+            "duplicate_resolution": self.duplicate_resolution,
+            "unit_conversion_id": self.unit_conversion_id,
+            "missing_value": self.missing_value,
+            "outlier": self.outlier,
+            "revised": self.revised,
+            "quality_flags": list(self.quality_flags),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedLayerMetadata:
+    """Versioned research transformation and generated-value evidence."""
+
+    model_id: str
+    model_version: str
+    input_snapshot_hash: str
+    generated_at: str
+    code_version: str
+    code_hash: str
+    quality_flags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for field_name in ("model_id", "model_version", "code_version"):
+            _require_id(getattr(self, field_name), f"derived_metadata.{field_name}")
+        _require_hash(
+            self.input_snapshot_hash,
+            "derived_metadata.input_snapshot_hash",
+        )
+        _require_hash(self.code_hash, "derived_metadata.code_hash")
+        object.__setattr__(
+            self,
+            "generated_at",
+            _timestamp_text(self.generated_at, "derived_metadata.generated_at"),
+        )
+        object.__setattr__(
+            self,
+            "quality_flags",
+            _quality_flags(
+                self.quality_flags,
+                "derived_metadata.quality_flag",
+            ),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "input_snapshot_hash": self.input_snapshot_hash,
+            "generated_at": self.generated_at,
+            "code_version": self.code_version,
+            "code_hash": self.code_hash,
+            "quality_flags": list(self.quality_flags),
+        }
+
+
+LayerMetadata: TypeAlias = (
+    RawLayerMetadata | NormalizedLayerMetadata | DerivedLayerMetadata
+)
+
+
+def derived_input_snapshot_hash(
+    upstream_record_hashes: tuple[str, ...],
+) -> str:
+    """Bind a derived value to its exact, canonical upstream record set."""
+
+    hashes = tuple(sorted(upstream_record_hashes))
+    if not hashes:
+        raise MultiAssetDataError("derived_input_snapshot_upstream_required")
+    for item in hashes:
+        _require_hash(item, "derived_input_snapshot.upstream_record_hash")
+    if len(set(hashes)) != len(hashes):
+        raise MultiAssetDataError("derived_input_snapshot_upstream_duplicate")
+    if len(hashes) == 1:
+        return hashes[0]
+    return sha256_prefixed(
+        list(hashes),
+        label="multi_asset_derived_input_snapshot",
+    )
 
 
 def _timestamp(value: str, field: str) -> datetime:
@@ -57,6 +288,11 @@ def _require_id(value: str, field: str) -> None:
 def _require_hash(value: str, field: str) -> None:
     if not isinstance(value, str) or not _HASH.fullmatch(value):
         raise MultiAssetDataError(f"{field}_invalid_hash")
+
+
+def _require_currency(value: str, field: str) -> None:
+    if not isinstance(value, str) or not _CURRENCY.fullmatch(value):
+        raise MultiAssetDataError(f"{field}_invalid_currency")
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -226,6 +462,7 @@ class BitemporalRecord:
     clocks: ObservationClocks
     payload: Mapping[str, object]
     lineage: DataLineage
+    layer_metadata: LayerMetadata
     supersedes_hash: str | None = None
     correction_reason: str | None = None
     schema_version: int = MULTI_ASSET_DATA_SCHEMA_VERSION
@@ -234,7 +471,11 @@ class BitemporalRecord:
         if self.schema_version != MULTI_ASSET_DATA_SCHEMA_VERSION:
             raise MultiAssetDataError("data_record_schema_unsupported")
         _require_id(self.record_id, "record.record_id")
-        if isinstance(self.version, bool) or self.version < 1:
+        if (
+            isinstance(self.version, bool)
+            or not isinstance(self.version, int)
+            or self.version < 1
+        ):
             raise MultiAssetDataError("record.version_invalid")
         if not isinstance(self.layer, DataLayer):
             raise MultiAssetDataError("record.layer_invalid")
@@ -244,6 +485,31 @@ class BitemporalRecord:
         if not isinstance(frozen_payload, Mapping):
             raise MultiAssetDataError("record.payload_must_be_object")
         object.__setattr__(self, "payload", frozen_payload)
+        expected_metadata_type: type[
+            RawLayerMetadata | NormalizedLayerMetadata | DerivedLayerMetadata
+        ] = {
+            DataLayer.RAW: RawLayerMetadata,
+            DataLayer.NORMALIZED: NormalizedLayerMetadata,
+            DataLayer.DERIVED: DerivedLayerMetadata,
+        }[self.layer]
+        if not isinstance(self.layer_metadata, expected_metadata_type):
+            raise MultiAssetDataError(
+                f"{self.layer.value.lower()}_record_layer_metadata_mismatch"
+            )
+        if isinstance(self.layer_metadata, RawLayerMetadata):
+            if self.layer_metadata.payload_checksum != self.payload_hash():
+                raise MultiAssetDataError("raw_record_payload_checksum_mismatch")
+        if isinstance(self.layer_metadata, NormalizedLayerMetadata):
+            if self.layer_metadata.internal_instrument_id != self.instrument_id:
+                raise MultiAssetDataError(
+                    "normalized_record_internal_instrument_mismatch"
+                )
+        if isinstance(self.layer_metadata, DerivedLayerMetadata):
+            if _timestamp(
+                self.layer_metadata.generated_at,
+                "derived_metadata.generated_at",
+            ) > _timestamp(self.clocks.knowledge_at, "clocks.knowledge_at"):
+                raise MultiAssetDataError("derived_record_known_before_generation")
         if self.version == 1:
             if self.supersedes_hash is not None or self.correction_reason is not None:
                 raise MultiAssetDataError("record_initial_version_correction_invalid")
@@ -255,6 +521,8 @@ class BitemporalRecord:
                 raise MultiAssetDataError("record_correction_reason_required")
         if self.layer is DataLayer.RAW and self.lineage.upstream_record_hashes:
             raise MultiAssetDataError("raw_record_upstream_forbidden")
+        if self.layer is DataLayer.RAW and self.lineage.transformation_id is not None:
+            raise MultiAssetDataError("raw_record_transformation_forbidden")
         if self.layer is not DataLayer.RAW:
             if not self.lineage.upstream_record_hashes:
                 raise MultiAssetDataError("processed_record_upstream_required")
@@ -283,6 +551,7 @@ class BitemporalRecord:
             "payload_hash": self.payload_hash(),
             "lineage": self.lineage.as_dict(),
             "lineage_hash": self.lineage.lineage_hash(),
+            "layer_metadata": self.layer_metadata.as_dict(),
             "supersedes_hash": self.supersedes_hash,
             "correction_reason": self.correction_reason,
         }
@@ -356,6 +625,20 @@ class AppendOnlyBitemporalStore:
                 )
             upstream_records.append(upstream)
         upstream_layers = {item.layer for item in upstream_records}
+        if upstream_records and any(
+            _timestamp(
+                record.clocks.knowledge_at,
+                "record.clocks.knowledge_at",
+            )
+            < _timestamp(
+                upstream.clocks.ingested_at,
+                "upstream.clocks.ingested_at",
+            )
+            for upstream in upstream_records
+        ):
+            raise MultiAssetDataError(
+                "processed_record_known_before_upstream_available"
+            )
         if record.layer is DataLayer.NORMALIZED and (
             not upstream_layers or upstream_layers != {DataLayer.RAW}
         ):
@@ -367,6 +650,28 @@ class AppendOnlyBitemporalStore:
             raise MultiAssetDataError(
                 "derived_lineage_must_reference_processed_records"
             )
+        if record.layer is DataLayer.DERIVED:
+            if not isinstance(record.layer_metadata, DerivedLayerMetadata):
+                raise MultiAssetDataError("derived_record_layer_metadata_mismatch")
+            if any(
+                _timestamp(
+                    record.layer_metadata.generated_at,
+                    "derived_metadata.generated_at",
+                )
+                < _timestamp(
+                    upstream.clocks.ingested_at,
+                    "upstream.clocks.ingested_at",
+                )
+                for upstream in upstream_records
+            ):
+                raise MultiAssetDataError(
+                    "derived_record_generated_before_upstream_available"
+                )
+            expected_snapshot_hash = derived_input_snapshot_hash(
+                record.lineage.upstream_record_hashes
+            )
+            if record.layer_metadata.input_snapshot_hash != expected_snapshot_hash:
+                raise MultiAssetDataError("derived_input_snapshot_hash_mismatch")
 
     def append(self, record: BitemporalRecord) -> AppendOnlyBitemporalStore:
         """Return a new store; the original append stream remains unchanged."""
@@ -420,6 +725,15 @@ class AppendOnlyBitemporalStore:
                 for name, cutoff in cutoffs.items()
             ):
                 continue
+            if (
+                isinstance(record.layer_metadata, DerivedLayerMetadata)
+                and _timestamp(
+                    record.layer_metadata.generated_at,
+                    "derived_metadata.generated_at",
+                )
+                > cutoffs["knowledge_at"]
+            ):
+                continue
             eligible.append(record)
         latest: dict[tuple[DataLayer, str], BitemporalRecord] = {}
         for record in eligible:
@@ -463,6 +777,80 @@ class AppendOnlyBitemporalStore:
                 key=lambda item: (item.layer.value, item.version),
             )
         )
+
+    def record_for_hash(self, record_hash: str) -> BitemporalRecord:
+        """Resolve one exact immutable record or fail closed."""
+
+        _require_hash(record_hash, "record_lookup.record_hash")
+        matches = [item for item in self.records if item.record_hash() == record_hash]
+        if len(matches) != 1:
+            raise MultiAssetDataError("record_hash_not_unique")
+        return matches[0]
+
+    def lineage_ancestors(self, record_hash: str) -> tuple[BitemporalRecord, ...]:
+        """Return every transitive input in deterministic dependency order."""
+
+        root = self.record_for_hash(record_hash)
+        by_hash = {item.record_hash(): item for item in self.records}
+        visited: set[str] = set()
+        ordered: list[BitemporalRecord] = []
+
+        def visit(record: BitemporalRecord) -> None:
+            for upstream_hash in record.lineage.upstream_record_hashes:
+                if upstream_hash in visited:
+                    continue
+                upstream = by_hash.get(upstream_hash)
+                if upstream is None:
+                    raise MultiAssetDataError(
+                        f"lineage_upstream_record_missing:{upstream_hash}"
+                    )
+                visit(upstream)
+                visited.add(upstream_hash)
+                ordered.append(upstream)
+
+        visit(root)
+        return tuple(ordered)
+
+    def lineage_descendants(self, record_hash: str) -> tuple[BitemporalRecord, ...]:
+        """Return deterministic reverse-impact analysis for one source record."""
+
+        self.record_for_hash(record_hash)
+        affected: set[str] = {record_hash}
+        descendants: list[BitemporalRecord] = []
+        changed = True
+        while changed:
+            changed = False
+            for record in self.records:
+                current_hash = record.record_hash()
+                if current_hash in affected:
+                    continue
+                if affected.intersection(record.lineage.upstream_record_hashes):
+                    affected.add(current_hash)
+                    descendants.append(record)
+                    changed = True
+        # Store order is already a validated topological order because every
+        # upstream hash must precede the record that consumes it.
+        return tuple(descendants)
+
+    def trace_to_raw(self, record_hash: str) -> tuple[BitemporalRecord, ...]:
+        """Resolve the complete raw evidence set for a normalized/derived value."""
+
+        root = self.record_for_hash(record_hash)
+        records = (*self.lineage_ancestors(record_hash), root)
+        raw = tuple(item for item in records if item.layer is DataLayer.RAW)
+        if not raw:
+            raise MultiAssetDataError("lineage_raw_source_missing")
+        return tuple(sorted(raw, key=lambda item: item.record_hash()))
+
+    def propagated_quality_flags(self, record_hash: str) -> tuple[str, ...]:
+        """Compose source and transformation quality issues without caller input."""
+
+        root = self.record_for_hash(record_hash)
+        records = (*self.lineage_ancestors(record_hash), root)
+        flags = {
+            flag for record in records for flag in record.layer_metadata.quality_flags
+        }
+        return tuple(sorted(flags))
 
     def as_dict(self) -> dict[str, object]:
         return {

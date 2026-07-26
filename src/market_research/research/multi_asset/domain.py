@@ -19,7 +19,7 @@ from ..hashing import sha256_prefixed
 from ..instrument_kinds import InstrumentKind
 
 
-MULTI_ASSET_DOMAIN_SCHEMA_VERSION = 2
+MULTI_ASSET_DOMAIN_SCHEMA_VERSION = 3
 _STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _CURRENCY = re.compile(r"^[A-Z][A-Z0-9]{2,11}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -34,6 +34,14 @@ class SettlementType(StrEnum):
     PHYSICAL = "PHYSICAL"
 
 
+class InstrumentTradingStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    SUSPENDED = "SUSPENDED"
+    DELISTED = "DELISTED"
+    EXPIRED = "EXPIRED"
+    NON_TRADABLE_REFERENCE = "NON_TRADABLE_REFERENCE"
+
+
 class LifecycleEventType(StrEnum):
     LISTING = "LISTING"
     DELISTING = "DELISTING"
@@ -44,7 +52,12 @@ class LifecycleEventType(StrEnum):
     EXPIRY = "EXPIRY"
     EXERCISE = "EXERCISE"
     ASSIGNMENT = "ASSIGNMENT"
+    SETTLEMENT = "SETTLEMENT"
+    DELIVERY = "DELIVERY"
     CONTRACT_ADJUSTMENT = "CONTRACT_ADJUSTMENT"
+    SPINOFF = "SPINOFF"
+    TENDER_OFFER = "TENDER_OFFER"
+    LIQUIDATION = "LIQUIDATION"
 
 
 class InstrumentRelationshipType(StrEnum):
@@ -263,6 +276,8 @@ class Instrument:
     validity: EffectivePeriod
     source: SourceReference
     issuer_id: str | None = None
+    trading_status: InstrumentTradingStatus = InstrumentTradingStatus.ACTIVE
+    primary_listing_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_id(self.instrument_id, "instrument.instrument_id")
@@ -277,6 +292,13 @@ class Instrument:
         _require_id(self.unit, "instrument.unit")
         if self.issuer_id is not None:
             _require_id(self.issuer_id, "instrument.issuer_id")
+        if not isinstance(self.trading_status, InstrumentTradingStatus):
+            raise ProductMasterError("instrument.trading_status_invalid")
+        if self.primary_listing_id is not None:
+            _require_id(
+                self.primary_listing_id,
+                "instrument.primary_listing_id",
+            )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -285,6 +307,8 @@ class Instrument:
             "name": self.name,
             "economic_underlying_id": self.economic_underlying_id,
             "issuer_id": self.issuer_id,
+            "trading_status": self.trading_status.value,
+            "primary_listing_id": self.primary_listing_id,
             "currency": self.currency,
             "unit": self.unit,
             "validity": self.validity.as_dict(),
@@ -309,6 +333,9 @@ class Listing:
     calendar_id: str
     validity: EffectivePeriod
     source: SourceReference
+    market_segment: str = "PRIMARY"
+    session_id: str = "REGULAR"
+    lot_size: Decimal = Decimal("1")
 
     def __post_init__(self) -> None:
         _require_id(self.listing_id, "listing.listing_id")
@@ -320,6 +347,9 @@ class Listing:
         _require_id(self.price_unit, "listing.price_unit")
         _require_id(self.quantity_unit, "listing.quantity_unit")
         _require_id(self.calendar_id, "listing.calendar_id")
+        _require_id(self.market_segment, "listing.market_segment")
+        _require_id(self.session_id, "listing.session_id")
+        _positive_decimal(self.lot_size, "listing.lot_size")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -331,6 +361,9 @@ class Listing:
             "price_unit": self.price_unit,
             "quantity_unit": self.quantity_unit,
             "calendar_id": self.calendar_id,
+            "market_segment": self.market_segment,
+            "session_id": self.session_id,
+            "lot_size": _decimal_text(self.lot_size),
             "validity": self.validity.as_dict(),
             "source": self.source.as_dict(),
         }
@@ -349,6 +382,11 @@ class ContractSpecification:
     source: SourceReference
     last_trade_at: str | None = None
     exercise_style: str | None = None
+    minimum_tick: Decimal | None = None
+    tick_value: Decimal | None = None
+    trading_currency: str | None = None
+    calendar_id: str | None = None
+    lifecycle_rule_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_id(
@@ -387,6 +425,36 @@ class ContractSpecification:
             "EUROPEAN",
         }:
             raise ProductMasterError("contract_specification.exercise_style_invalid")
+        if (self.minimum_tick is None) != (self.tick_value is None):
+            raise ProductMasterError("contract_specification_tick_binding_incomplete")
+        if self.minimum_tick is not None:
+            _positive_decimal(
+                self.minimum_tick,
+                "contract_specification.minimum_tick",
+            )
+            if self.tick_value is None:
+                raise ProductMasterError(
+                    "contract_specification_tick_binding_incomplete"
+                )
+            _positive_decimal(
+                self.tick_value,
+                "contract_specification.tick_value",
+            )
+        if self.trading_currency is not None:
+            _require_currency(
+                self.trading_currency,
+                "contract_specification.trading_currency",
+            )
+        if self.calendar_id is not None:
+            _require_id(
+                self.calendar_id,
+                "contract_specification.calendar_id",
+            )
+        if self.lifecycle_rule_id is not None:
+            _require_id(
+                self.lifecycle_rule_id,
+                "contract_specification.lifecycle_rule_id",
+            )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -399,6 +467,17 @@ class ContractSpecification:
             "expiry_at": self.expiry_at,
             "last_trade_at": self.last_trade_at,
             "exercise_style": self.exercise_style,
+            "minimum_tick": (
+                _decimal_text(self.minimum_tick)
+                if self.minimum_tick is not None
+                else None
+            ),
+            "tick_value": (
+                _decimal_text(self.tick_value) if self.tick_value is not None else None
+            ),
+            "trading_currency": self.trading_currency,
+            "calendar_id": self.calendar_id,
+            "lifecycle_rule_id": self.lifecycle_rule_id,
             "validity": self.validity.as_dict(),
             "source": self.source.as_dict(),
         }
@@ -445,6 +524,12 @@ class LifecycleEvent:
     source: SourceReference
     replacement_instrument_id: str | None = None
     contract_specification_id: str | None = None
+    announced_at: str | None = None
+    record_at: str | None = None
+    payment_at: str | None = None
+    quantity_ratio: Decimal | None = None
+    cash_amount: Decimal | None = None
+    currency: str | None = None
 
     def __post_init__(self) -> None:
         _require_id(self.event_id, "lifecycle_event.event_id")
@@ -457,10 +542,11 @@ class LifecycleEvent:
         object.__setattr__(self, "knowledge_at", knowledge)
         if not self.validity.contains(effective):
             raise ProductMasterError("lifecycle_event_effective_outside_validity")
-        if _timestamp(self.source.observed_at, "source.observed_at") < _timestamp(
-            knowledge, "lifecycle_event.knowledge_at"
-        ):
-            raise ProductMasterError("lifecycle_event_observed_before_knowledge")
+        if _timestamp(
+            knowledge,
+            "lifecycle_event.knowledge_at",
+        ) < _timestamp(self.source.observed_at, "source.observed_at"):
+            raise ProductMasterError("lifecycle_event_knowledge_before_source_observed")
         if self.replacement_instrument_id is not None:
             _require_id(
                 self.replacement_instrument_id,
@@ -473,6 +559,79 @@ class LifecycleEvent:
                 self.contract_specification_id,
                 "lifecycle_event.contract_specification_id",
             )
+        for field_name in ("announced_at", "record_at", "payment_at"):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            canonical = _timestamp_text(
+                value,
+                f"lifecycle_event.{field_name}",
+            )
+            if field_name == "announced_at" and _timestamp(
+                canonical,
+                "lifecycle_event.announced_at",
+            ) > _timestamp(effective, "lifecycle_event.effective_at"):
+                raise ProductMasterError("lifecycle_event_announced_after_effective")
+            if field_name == "announced_at" and _timestamp(
+                knowledge,
+                "lifecycle_event.knowledge_at",
+            ) < _timestamp(
+                canonical,
+                "lifecycle_event.announced_at",
+            ):
+                raise ProductMasterError(
+                    "lifecycle_event_knowledge_before_announcement"
+                )
+            object.__setattr__(self, field_name, canonical)
+        if (
+            self.record_at is not None
+            and self.payment_at is not None
+            and _timestamp(
+                self.record_at,
+                "lifecycle_event.record_at",
+            )
+            > _timestamp(
+                self.payment_at,
+                "lifecycle_event.payment_at",
+            )
+        ):
+            raise ProductMasterError("lifecycle_event_record_after_payment")
+        if self.quantity_ratio is not None:
+            _positive_decimal(
+                self.quantity_ratio,
+                "lifecycle_event.quantity_ratio",
+            )
+        if (self.cash_amount is None) != (self.currency is None):
+            raise ProductMasterError("lifecycle_event_cash_currency_binding_incomplete")
+        if self.cash_amount is not None:
+            if (
+                not isinstance(self.cash_amount, Decimal)
+                or not self.cash_amount.is_finite()
+                or self.cash_amount < 0
+            ):
+                raise ProductMasterError(
+                    "lifecycle_event.cash_amount_must_be_nonnegative_decimal"
+                )
+            if self.currency is None:
+                raise ProductMasterError(
+                    "lifecycle_event_cash_currency_binding_incomplete"
+                )
+            _require_currency(self.currency, "lifecycle_event.currency")
+        if (
+            self.event_type is LifecycleEventType.CASH_DISTRIBUTION
+            and self.cash_amount is None
+        ):
+            raise ProductMasterError("cash_distribution_amount_required")
+        if (
+            self.event_type
+            in {
+                LifecycleEventType.SPLIT,
+                LifecycleEventType.MERGER,
+                LifecycleEventType.SPINOFF,
+            }
+            and self.quantity_ratio is None
+        ):
+            raise ProductMasterError("lifecycle_event_quantity_ratio_required")
 
     def known_at(self, as_of: str) -> bool:
         return _timestamp(self.knowledge_at, "lifecycle_event.knowledge_at") <= (
@@ -488,6 +647,20 @@ class LifecycleEvent:
             "knowledge_at": self.knowledge_at,
             "replacement_instrument_id": self.replacement_instrument_id,
             "contract_specification_id": self.contract_specification_id,
+            "announced_at": self.announced_at,
+            "record_at": self.record_at,
+            "payment_at": self.payment_at,
+            "quantity_ratio": (
+                _decimal_text(self.quantity_ratio)
+                if self.quantity_ratio is not None
+                else None
+            ),
+            "cash_amount": (
+                _decimal_text(self.cash_amount)
+                if self.cash_amount is not None
+                else None
+            ),
+            "currency": self.currency,
             "validity": self.validity.as_dict(),
             "source": self.source.as_dict(),
         }
@@ -680,7 +853,6 @@ class InstrumentRegistry:
                 raise ProductMasterError(
                     f"instrument_issuer_reference_invalid:{instrument.instrument_id}"
                 )
-
         for listing in self.listings:
             if not _covering(
                 listing.validity,
@@ -689,6 +861,31 @@ class InstrumentRegistry:
             ):
                 raise ProductMasterError(
                     f"listing_instrument_reference_invalid:{listing.listing_id}"
+                )
+            listing_instrument = next(
+                item
+                for item in instruments[listing.instrument_id]
+                if item.validity.covers(listing.validity)
+            )
+            if listing.trading_currency != listing_instrument.currency:
+                raise ProductMasterError(
+                    f"listing_trading_currency_mismatch:{listing.listing_id}"
+                )
+        for instrument in self.instruments:
+            if instrument.primary_listing_id is None:
+                continue
+            primary_candidates = listings.get(
+                instrument.primary_listing_id,
+                (),
+            )
+            if (
+                len(primary_candidates) != 1
+                or primary_candidates[0].instrument_id != instrument.instrument_id
+                or not primary_candidates[0].validity.covers(instrument.validity)
+            ):
+                raise ProductMasterError(
+                    "instrument_primary_listing_reference_invalid:"
+                    f"{instrument.instrument_id}"
                 )
 
         for specification in self.contract_specifications:
@@ -699,6 +896,28 @@ class InstrumentRegistry:
             ):
                 raise ProductMasterError(
                     "contract_specification_instrument_reference_invalid:"
+                    f"{specification.contract_specification_id}"
+                )
+            specification_instrument = next(
+                item
+                for item in instruments[specification.instrument_id]
+                if item.validity.covers(specification.validity)
+            )
+            if (
+                specification.trading_currency is not None
+                and specification.trading_currency != specification_instrument.currency
+            ):
+                raise ProductMasterError(
+                    "contract_specification_trading_currency_mismatch:"
+                    f"{specification.contract_specification_id}"
+                )
+            if (
+                specification.minimum_tick is not None
+                and specification.tick_value
+                != specification.minimum_tick * specification.contract_multiplier
+            ):
+                raise ProductMasterError(
+                    "contract_specification_tick_value_mismatch:"
                     f"{specification.contract_specification_id}"
                 )
 
@@ -845,6 +1064,54 @@ class InstrumentRegistry:
                         f"derivative_contract_specification_required:"
                         f"{instrument.instrument_id}"
                     )
+                specification = specs[0]
+                required_economic_terms = (
+                    specification.minimum_tick,
+                    specification.tick_value,
+                    specification.trading_currency,
+                    specification.calendar_id,
+                    specification.lifecycle_rule_id,
+                )
+                if any(item is None for item in required_economic_terms):
+                    raise ProductMasterError(
+                        "derivative_contract_specification_economic_terms_required:"
+                        f"{instrument.instrument_id}"
+                    )
+                if (
+                    instrument.kind is InstrumentKind.OPTION
+                    and specification.exercise_style is None
+                ):
+                    raise ProductMasterError(
+                        "option_contract_specification_exercise_style_required:"
+                        f"{instrument.instrument_id}"
+                    )
+                if (
+                    instrument.kind is InstrumentKind.FUTURE
+                    and specification.exercise_style is not None
+                ):
+                    raise ProductMasterError(
+                        "future_contract_specification_exercise_style_forbidden:"
+                        f"{instrument.instrument_id}"
+                    )
+                required_underlying_type = (
+                    InstrumentRelationshipType.FUTURE_UNDERLYING
+                    if instrument.kind is InstrumentKind.FUTURE
+                    else InstrumentRelationshipType.OPTION_UNDERLYING
+                )
+                underlying_relations = [
+                    item
+                    for item in relations_by_source.get(
+                        instrument.instrument_id,
+                        (),
+                    )
+                    if item.relationship_type is required_underlying_type
+                    and item.validity.overlaps(specification.validity)
+                ]
+                if len(underlying_relations) != 1:
+                    raise ProductMasterError(
+                        "derivative_underlying_relationship_required:"
+                        f"{instrument.instrument_id}"
+                    )
             elif specs:
                 raise ProductMasterError(
                     f"non_derivative_contract_specification_forbidden:"
@@ -935,6 +1202,62 @@ class InstrumentRegistry:
         )
         instrument = self._instrument_effective_as_of(instrument_id, as_of)
         if instrument is None or not instrument.source.known_at(cutoff):
+            return None
+        return instrument
+
+    def tradable_instrument_as_of(
+        self,
+        instrument_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> Instrument | None:
+        """Resolve only an instrument that was tradable as known at the cutoff."""
+
+        cutoff = self._knowledge_cutoff(
+            as_of,
+            knowledge_at,
+            "tradable_instrument_lookup",
+        )
+        instrument = self.instrument_as_of(
+            instrument_id,
+            as_of,
+            knowledge_at=cutoff,
+        )
+        if (
+            instrument is None
+            or instrument.trading_status is not InstrumentTradingStatus.ACTIVE
+        ):
+            return None
+        active_listings = tuple(
+            listing
+            for listing in self.listings
+            if listing.instrument_id == instrument_id
+            and listing.validity.contains(as_of)
+            and listing.source.known_at(cutoff)
+            and (
+                instrument.primary_listing_id is None
+                or listing.listing_id == instrument.primary_listing_id
+            )
+        )
+        if not active_listings:
+            return None
+        terminal_events = {
+            LifecycleEventType.DELISTING,
+            LifecycleEventType.EXPIRY,
+        }
+        if any(
+            event.instrument_id == instrument_id
+            and event.event_type in terminal_events
+            and event.known_at(cutoff)
+            and event.source.known_at(cutoff)
+            and _timestamp(
+                event.effective_at,
+                "lifecycle_event.effective_at",
+            )
+            <= _timestamp(as_of, "tradable_instrument_lookup.as_of")
+            for event in self.lifecycle_events
+        ):
             return None
         return instrument
 
@@ -1108,6 +1431,275 @@ class InstrumentRegistry:
 
     def contract_hash(self) -> str:
         return sha256_prefixed(self.as_dict(), label="multi_asset_product_master")
+
+
+@dataclass(frozen=True, slots=True)
+class ProductMasterRevision:
+    """One immutable product-master snapshot in an append-only revision chain.
+
+    ``recorded_at`` is the transaction-time clock for the snapshot itself.
+    Effective-time selection remains the responsibility of the contained
+    :class:`InstrumentRegistry`, whose entities retain their own validity
+    periods and source-observation clocks.
+    """
+
+    revision_id: str
+    recorded_at: str
+    registry: InstrumentRegistry
+    supersedes_hash: str | None = None
+    revision_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_id(self.revision_id, "product_master_revision.revision_id")
+        object.__setattr__(
+            self,
+            "recorded_at",
+            _timestamp_text(
+                self.recorded_at,
+                "product_master_revision.recorded_at",
+            ),
+        )
+        if not isinstance(self.registry, InstrumentRegistry):
+            raise ProductMasterError("product_master_revision.registry_invalid")
+        if self.supersedes_hash is not None:
+            _require_hash(
+                self.supersedes_hash,
+                "product_master_revision.supersedes_hash",
+            )
+            if self.revision_reason is None:
+                raise ProductMasterError(
+                    "product_master_revision.revision_reason_required"
+                )
+        elif self.revision_reason is not None:
+            raise ProductMasterError("product_master_revision.initial_reason_forbidden")
+        if self.revision_reason is not None:
+            _require_text(
+                self.revision_reason,
+                "product_master_revision.revision_reason",
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "revision_id": self.revision_id,
+            "recorded_at": self.recorded_at,
+            "registry_hash": self.registry.contract_hash(),
+            "supersedes_hash": self.supersedes_hash,
+            "revision_reason": self.revision_reason,
+        }
+
+    def revision_hash(self) -> str:
+        return sha256_prefixed(
+            self.as_dict(),
+            label="multi_asset_product_master_revision",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductMasterHistory:
+    """Bitemporal product-master authority retaining pre-correction values."""
+
+    revisions: tuple[ProductMasterRevision, ...]
+
+    def __post_init__(self) -> None:
+        revisions = tuple(self.revisions)
+        if not revisions:
+            raise ProductMasterError("product_master_history_empty")
+        object.__setattr__(self, "revisions", revisions)
+        revision_ids: set[str] = set()
+        revision_hashes: set[str] = set()
+        previous: ProductMasterRevision | None = None
+        for revision in revisions:
+            if revision.revision_id in revision_ids:
+                raise ProductMasterError(
+                    f"product_master_revision_id_duplicate:{revision.revision_id}"
+                )
+            revision_hash = revision.revision_hash()
+            if revision_hash in revision_hashes:
+                raise ProductMasterError(
+                    f"product_master_revision_hash_duplicate:{revision_hash}"
+                )
+            if previous is None:
+                if revision.supersedes_hash is not None:
+                    raise ProductMasterError(
+                        "product_master_initial_revision_supersedes_forbidden"
+                    )
+            else:
+                if _timestamp(
+                    revision.recorded_at,
+                    "product_master_revision.recorded_at",
+                ) <= _timestamp(
+                    previous.recorded_at,
+                    "product_master_revision.previous_recorded_at",
+                ):
+                    raise ProductMasterError(
+                        "product_master_revision_time_not_increasing"
+                    )
+                if revision.supersedes_hash != previous.revision_hash():
+                    raise ProductMasterError("product_master_revision_chain_broken")
+            revision_ids.add(revision.revision_id)
+            revision_hashes.add(revision_hash)
+            previous = revision
+
+    def revision_as_known(
+        self,
+        knowledge_at: str,
+    ) -> ProductMasterRevision | None:
+        cutoff = _timestamp(
+            knowledge_at,
+            "product_master_history.knowledge_at",
+        )
+        known = [
+            revision
+            for revision in self.revisions
+            if _timestamp(
+                revision.recorded_at,
+                "product_master_revision.recorded_at",
+            )
+            <= cutoff
+        ]
+        return known[-1] if known else None
+
+    def registry_as_known(self, knowledge_at: str) -> InstrumentRegistry | None:
+        revision = self.revision_as_known(knowledge_at)
+        return None if revision is None else revision.registry
+
+    def contract_hash_as_known(self, knowledge_at: str) -> str:
+        """Hash only revisions available by the transaction-time cutoff."""
+
+        cutoff = _timestamp(
+            knowledge_at,
+            "product_master_history.knowledge_at",
+        )
+        known = tuple(
+            revision
+            for revision in self.revisions
+            if _timestamp(
+                revision.recorded_at,
+                "product_master_revision.recorded_at",
+            )
+            <= cutoff
+        )
+        if not known:
+            raise ProductMasterError("product_master_snapshot_not_known")
+        return sha256_prefixed(
+            {
+                "revisions": [revision.as_dict() for revision in known],
+                "revision_hashes": [revision.revision_hash() for revision in known],
+            },
+            label="multi_asset_product_master_history_as_known",
+        )
+
+    def instrument_as_of(
+        self,
+        instrument_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> Instrument | None:
+        cutoff = as_of if knowledge_at is None else knowledge_at
+        registry = self.registry_as_known(cutoff)
+        if registry is None:
+            return None
+        return registry.instrument_as_of(
+            instrument_id,
+            as_of,
+            knowledge_at=cutoff,
+        )
+
+    def tradable_instrument_as_of(
+        self,
+        instrument_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> Instrument | None:
+        cutoff = as_of if knowledge_at is None else knowledge_at
+        registry = self.registry_as_known(cutoff)
+        if registry is None:
+            return None
+        return registry.tradable_instrument_as_of(
+            instrument_id,
+            as_of,
+            knowledge_at=cutoff,
+        )
+
+    def resolve_symbol(
+        self,
+        *,
+        provider_id: str,
+        symbol: str,
+        as_of: str,
+        knowledge_at: str | None = None,
+    ) -> Instrument:
+        cutoff = as_of if knowledge_at is None else knowledge_at
+        registry = self.registry_as_known(cutoff)
+        if registry is None:
+            raise ProductMasterError("product_master_snapshot_not_known")
+        return registry.resolve_symbol(
+            provider_id=provider_id,
+            symbol=symbol,
+            as_of=as_of,
+            knowledge_at=cutoff,
+        )
+
+    def relationship_targets(
+        self,
+        *,
+        source_instrument_id: str,
+        relationship_type: InstrumentRelationshipType,
+        as_of: str,
+        knowledge_at: str | None = None,
+    ) -> tuple[Instrument, ...]:
+        cutoff = as_of if knowledge_at is None else knowledge_at
+        registry = self.registry_as_known(cutoff)
+        if registry is None:
+            raise ProductMasterError("product_master_snapshot_not_known")
+        return registry.relationship_targets(
+            source_instrument_id=source_instrument_id,
+            relationship_type=relationship_type,
+            as_of=as_of,
+            knowledge_at=cutoff,
+        )
+
+    def contract_specification_as_of(
+        self,
+        instrument_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> ContractSpecification | None:
+        cutoff = as_of if knowledge_at is None else knowledge_at
+        registry = self.registry_as_known(cutoff)
+        if registry is None:
+            return None
+        return registry.contract_specification_as_of(
+            instrument_id,
+            as_of,
+            knowledge_at=cutoff,
+        )
+
+    def lifecycle_events_known_at(
+        self,
+        as_of: str,
+    ) -> tuple[LifecycleEvent, ...]:
+        registry = self.registry_as_known(as_of)
+        if registry is None:
+            return ()
+        return registry.lifecycle_events_known_at(as_of)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "revisions": [revision.as_dict() for revision in self.revisions],
+            "revision_hashes": [
+                revision.revision_hash() for revision in self.revisions
+            ],
+        }
+
+    def contract_hash(self) -> str:
+        return sha256_prefixed(
+            self.as_dict(),
+            label="multi_asset_product_master_history",
+        )
 
 
 ProductMasterRegistry = InstrumentRegistry

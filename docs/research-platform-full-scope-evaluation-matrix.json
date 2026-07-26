@@ -95573,7 +95573,7 @@
           },
           {
             "path": "src/market_research/application/capabilities.py",
-            "sha256": "63ab2cbad0457e8d298e5f44157bab49514a3468d5bbb3f713031db51bac2903"
+            "sha256": "3879d0f386bc698fd82c808f1f658156f2d48c02fc3856eb6ce17ea192058eaf"
           },
           {
             "path": "src/market_research/application/platform_contracts.py",
@@ -95581,11 +95581,11 @@
           },
           {
             "path": "tests/test_internal_web_architecture_contract.py",
-            "sha256": "f702e3ca8b459690937827a3f5d7a7228254800b27fc7f56486515d5a6ec2c17"
+            "sha256": "d5793071d1b19f544b069e578234ec1ceca23ade0e0694f50af34af7cee9b109"
           },
           {
             "path": "tests/test_research_cli_boundary.py",
-            "sha256": "7352ca53bedd506786b868fe6c60a534df65567c7bab44c052dd00c968929b22"
+            "sha256": "c93a982e5af563488efa058c1fb580415ff4e4bae0b143fcee0f5fe503e5635b"
           },
           {
             "path": "tests/test_research_only_capability_guard.py",
@@ -95814,11 +95814,11 @@
           },
           {
             "path": "tests/test_futures_derivative_research.py",
-            "sha256": "b05a9d0ebe0708e88ed61033ff87dc2bfc7a5733628be342284e4698ae7512a6"
+            "sha256": "950a77eec6881980a33295990926a7168a216a80c492c468e2ce51daad9b19f5"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           }
         ],
         "commands": [
@@ -97073,15 +97073,15 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/futures.py",
-            "sha256": "e43b07d3983d1f2797fe6688eb2c462afe57b47f918dd8f2c13fdc9857d159db"
+            "sha256": "21bd7142295efd4ed1794fc68c599a2a9e507faf6f9fcf69ee7d1676e20860e6"
           },
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -97089,19 +97089,19 @@
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_futures_derivative_research.py",
-            "sha256": "b05a9d0ebe0708e88ed61033ff87dc2bfc7a5733628be342284e4698ae7512a6"
+            "sha256": "950a77eec6881980a33295990926a7168a216a80c492c468e2ce51daad9b19f5"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -97499,11 +97499,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/futures.py",
-            "sha256": "e43b07d3983d1f2797fe6688eb2c462afe57b47f918dd8f2c13fdc9857d159db"
+            "sha256": "21bd7142295efd4ed1794fc68c599a2a9e507faf6f9fcf69ee7d1676e20860e6"
           },
           {
             "path": "tests/test_futures_derivative_research.py",
-            "sha256": "b05a9d0ebe0708e88ed61033ff87dc2bfc7a5733628be342284e4698ae7512a6"
+            "sha256": "950a77eec6881980a33295990926a7168a216a80c492c468e2ce51daad9b19f5"
           }
         ],
         "commands": [
@@ -97696,11 +97696,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/futures.py",
-            "sha256": "e43b07d3983d1f2797fe6688eb2c462afe57b47f918dd8f2c13fdc9857d159db"
+            "sha256": "21bd7142295efd4ed1794fc68c599a2a9e507faf6f9fcf69ee7d1676e20860e6"
           },
           {
             "path": "tests/test_futures_derivative_research.py",
-            "sha256": "b05a9d0ebe0708e88ed61033ff87dc2bfc7a5733628be342284e4698ae7512a6"
+            "sha256": "950a77eec6881980a33295990926a7168a216a80c492c468e2ce51daad9b19f5"
           }
         ],
         "commands": [
@@ -97933,11 +97933,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/futures.py",
-            "sha256": "e43b07d3983d1f2797fe6688eb2c462afe57b47f918dd8f2c13fdc9857d159db"
+            "sha256": "21bd7142295efd4ed1794fc68c599a2a9e507faf6f9fcf69ee7d1676e20860e6"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -97945,19 +97945,19 @@
           },
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_futures_derivative_research.py",
-            "sha256": "b05a9d0ebe0708e88ed61033ff87dc2bfc7a5733628be342284e4698ae7512a6"
+            "sha256": "950a77eec6881980a33295990926a7168a216a80c492c468e2ce51daad9b19f5"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -97965,7 +97965,7 @@
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_simulation_evidence.py",
@@ -98172,11 +98172,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_product_chain_evidence.py",
@@ -98403,11 +98403,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -98415,15 +98415,15 @@
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -98654,11 +98654,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -98666,15 +98666,15 @@
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -98905,11 +98905,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -98917,15 +98917,15 @@
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -99156,11 +99156,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -99168,15 +99168,15 @@
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -99407,11 +99407,11 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -99419,15 +99419,15 @@
           },
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -99677,7 +99677,7 @@
         "paths": [
           {
             "path": "src/market_research/research/derivatives/simulation_evidence.py",
-            "sha256": "280f08442d00c54516ffcf95470bb06e1c751eb69c8240a0e6656ea8485e810c"
+            "sha256": "2d03bd8659f9575743c8cb8c0d7da4d9e61dde8ad39fdcce1fd2c5531a297484"
           },
           {
             "path": "src/market_research/research/derivatives/evidence.py",
@@ -99685,7 +99685,7 @@
           },
           {
             "path": "src/market_research/research/derivatives/application.py",
-            "sha256": "b791a294b55fea19cea01fc81ee0ec6db7e6744c248007b6c111034a19024f6c"
+            "sha256": "6dd13cc7bf3ff1388767414c48aee4e322cd95f27caf3159910397451e2ee658"
           },
           {
             "path": "src/market_research/research/derivatives/application_codec.py",
@@ -99693,7 +99693,7 @@
           },
           {
             "path": "src/market_research/research/derivatives/options.py",
-            "sha256": "869305550989ba6377e6d4b17b5b1127f3b1806d962dbf6cd5718900de872402"
+            "sha256": "28e4bb739d671ba86ddf0db365bd09f64e3ba529c8297865657461ecedd86895"
           },
           {
             "path": "tests/test_derivative_simulation_evidence.py",
@@ -99705,7 +99705,7 @@
           },
           {
             "path": "tests/test_derivative_application_service.py",
-            "sha256": "c14e5ea859d690d44ceb4b10a48d2a372c82b5b4e638373823efeda6c2361f25"
+            "sha256": "4d87b9d9a8449862269af45ad7cfa9e96b343958ae7b91f684094964393a9f5b"
           },
           {
             "path": "tests/test_derivative_application_cli.py",
@@ -99713,7 +99713,7 @@
           },
           {
             "path": "tests/test_options_derivative_research.py",
-            "sha256": "158651ded243d97a5269e8e7ed5a4ab8629167386d31fbe3265252dbf8e58895"
+            "sha256": "bb3f77941eabf02ae3d1bee5646371abb2afe4a80e94c950bdcdcf74db3ce758"
           }
         ],
         "commands": [

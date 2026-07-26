@@ -51,6 +51,8 @@ RESEARCH_COMMANDS = {
     "research-derivative-diff",
     "research-derivative-execute",
     "research-derivative-reproduce",
+    "research-multi-asset-execute",
+    "research-multi-asset-reproduce",
 }
 
 FORBIDDEN_OPERATIONAL_COMMANDS = {

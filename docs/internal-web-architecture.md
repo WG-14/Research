@@ -153,6 +153,8 @@ Every Research CLI command has exactly one GUI policy:
 | `research-derivative-diff` | `cli_only` | Compares immutable derivative packages as an expert evidence diagnostic. |
 | `research-derivative-execute` | `cli_only` | Runs an allowlisted offline derivative simulation from repository-external immutable JSON; it exposes no broker or account authority. |
 | `research-derivative-reproduce` | `cli_only` | Independently reruns a typed offline request and compares execution hashes without exposing external paths through the GUI. |
+| `research-multi-asset-execute` | `cli_only` | Runs only the fixed source-owned offline multi-asset profile from a repository-external hash-bound request. |
+| `research-multi-asset-reproduce` | `cli_only` | Reruns the fixed multi-asset profile and compares immutable study evidence without exposing external paths through the GUI. |
 | `research.explore` | `required` | Bounded, path-free exploration of immutable research evidence with read auditing. |
 
 GUI-only exploration, list, detail, and download capabilities are bounded
