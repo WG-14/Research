@@ -53,6 +53,9 @@ RESEARCH_COMMANDS = {
     "research-derivative-reproduce",
     "research-multi-asset-execute",
     "research-multi-asset-reproduce",
+    "research-multi-asset-build-package",
+    "research-multi-asset-verify-package",
+    "research-multi-asset-reproduce-package",
 }
 
 FORBIDDEN_OPERATIONAL_COMMANDS = {

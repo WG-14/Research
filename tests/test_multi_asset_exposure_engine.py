@@ -12,6 +12,7 @@ from market_research.research.multi_asset.domain import (
     InstrumentRegistry,
 )
 from market_research.research.multi_asset.exposure import (
+    ExtendedExposureDimension,
     ExposureDimension,
     ExposureEngine,
     ExposureEngineError,
@@ -19,10 +20,14 @@ from market_research.research.multi_asset.exposure import (
     FuturesValuationAdapter,
     LiquidityBucket,
     OptionValuationAdapter,
+    OffsetPolicyV3,
+    OffsetRecognition,
+    PositionRiskSupplement,
     ProductCatalog,
     SpotValuationAdapter,
     UnitValuation,
     _build_totals,
+    build_extended_portfolio_exposure,
 )
 from market_research.research.multi_asset.market_state import (
     LiquidityQuote,
@@ -201,6 +206,102 @@ def test_engine_revalues_positions_and_calculates_cross_asset_totals() -> None:
     assert snapshot.evidence.source_positions_hash.startswith("sha256:")
     assert snapshot.evidence.content_hash.startswith("sha256:")
     assert snapshot.content_hash.startswith("sha256:")
+
+
+def test_extended_exposure_aggregates_cross_greeks_and_versioned_offsets() -> None:
+    snapshot = _engine().evaluate(
+        snapshot_id="exposure_extended",
+        positions=_positions(),
+        market_state=_state(),
+    )
+    supplements = tuple(
+        PositionRiskSupplement(
+            position_id=item.position_id,
+            position_hash=item.position_hash,
+            valuation_hash=item.valuation_hash,
+            beta_equivalent=Decimal(index),
+            duration=Decimal(index) / Decimal("10"),
+            dv01=Decimal(index) * Decimal("2"),
+            fx_exposure=item.net_notional_base,
+            commodity_units=item.quantity * item.multiplier,
+            vanna=Decimal(index) * Decimal("3"),
+            volga=Decimal(index) * Decimal("4"),
+            charm=-Decimal(index),
+            factor_ids=("factor:btc",),
+            funding_bucket="funding:usd",
+            tenor_bucket="tenor:front",
+            volatility_bucket=(
+                "vol:option"
+                if item.instrument_kind.value == "OPTION"
+                else "vol:none"
+            ),
+            source_hashes=(_hash(f"supplement-{index}"),),
+        )
+        for index, item in enumerate(snapshot.positions, start=1)
+    )
+    full = build_extended_portfolio_exposure(
+        snapshot,
+        supplements=supplements,
+        offset_policy=OffsetPolicyV3(
+            policy_id="offset.full",
+            version="1",
+            exact_underlying_recognition=OffsetRecognition.FULL,
+        ),
+    )
+    none = build_extended_portfolio_exposure(
+        snapshot,
+        supplements=supplements,
+        offset_policy=OffsetPolicyV3(
+            policy_id="offset.none",
+            version="1",
+            exact_underlying_recognition=OffsetRecognition.NONE,
+        ),
+    )
+    partial = build_extended_portfolio_exposure(
+        snapshot,
+        supplements=supplements,
+        offset_policy=OffsetPolicyV3(
+            policy_id="offset.partial",
+            version="1",
+            exact_underlying_recognition=OffsetRecognition.PARTIAL,
+        ),
+    )
+
+    assert full.totals.vanna == Decimal("30")
+    assert full.totals.volga == Decimal("40")
+    assert full.totals.charm == Decimal("-10")
+    assert full.totals.offset_delta_equivalent > Decimal("0")
+    assert none.totals.offset_delta_equivalent == Decimal("0")
+    assert partial.totals.offset_delta_equivalent == (
+        full.totals.offset_delta_equivalent / Decimal("2")
+    )
+    assert {item.dimension for item in full.buckets} == set(
+        ExtendedExposureDimension
+    )
+    assert full.content_hash == build_extended_portfolio_exposure(
+        snapshot,
+        supplements=supplements,
+        offset_policy=OffsetPolicyV3(
+            policy_id="offset.full",
+            version="1",
+            exact_underlying_recognition=OffsetRecognition.FULL,
+        ),
+    ).content_hash
+
+    with pytest.raises(
+        ExposureEngineError, match="supplement_binding_mismatch"
+    ):
+        build_extended_portfolio_exposure(
+            snapshot,
+            supplements=(
+                replace(supplements[0], position_hash=_hash("wrong-binding")),
+                *supplements[1:],
+            ),
+            offset_policy=OffsetPolicyV3(
+                policy_id="offset.invalid",
+                version="1",
+            ),
+        )
 
 
 def test_offset_notional_never_nets_unrelated_economic_underlyings() -> None:

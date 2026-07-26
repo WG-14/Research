@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from enum import Enum
 import re
 from typing import Mapping, Sequence
@@ -47,6 +47,7 @@ class CorporateActionType(str, Enum):
     SPLIT = "SPLIT"
     REVERSE_SPLIT = "REVERSE_SPLIT"
     RIGHTS_ISSUE = "RIGHTS_ISSUE"
+    RIGHTS_SUBSCRIPTION = "RIGHTS_SUBSCRIPTION"
     BONUS_ISSUE = "BONUS_ISSUE"
     EX_RIGHTS = "EX_RIGHTS"
     SPIN_OFF = "SPIN_OFF"
@@ -65,6 +66,12 @@ class SpotPostingType(str, Enum):
     REPLACEMENT_DELIVERY = "REPLACEMENT_DELIVERY"
     LIQUIDATION_CASHFLOW = "LIQUIDATION_CASHFLOW"
     BORROW_COST = "BORROW_COST"
+    BORROW_RECALL = "BORROW_RECALL"
+    FORCED_BUY_IN = "FORCED_BUY_IN"
+    RIGHTS_ENTITLEMENT = "RIGHTS_ENTITLEMENT"
+    RIGHTS_SUBSCRIPTION = "RIGHTS_SUBSCRIPTION"
+    CASH_IN_LIEU = "CASH_IN_LIEU"
+    MERGER_CASH = "MERGER_CASH"
     TRADE_REJECTION = "TRADE_REJECTION"
 
 
@@ -73,6 +80,13 @@ class BorrowScenario(str, Enum):
     BASE = "BASE"
     CONSERVATIVE = "CONSERVATIVE"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+class BorrowRecallReason(str, Enum):
+    LENDER_RECALL = "LENDER_RECALL"
+    BORROW_UNAVAILABLE = "BORROW_UNAVAILABLE"
+    MAXIMUM_HOLDING_BREACH = "MAXIMUM_HOLDING_BREACH"
+    CORPORATE_ACTION = "CORPORATE_ACTION"
 
 
 def _require_text(value: str, field_name: str) -> None:
@@ -178,6 +192,13 @@ class CorporateAction:
     replacement_instrument_id: str | None = None
     child_instrument_id: str | None = None
     child_cost_basis_fraction: Decimal = ZERO
+    rights_instrument_id: str | None = None
+    subscription_price: Decimal = ZERO
+    subscription_fraction: Decimal = ONE
+    cash_basis_fraction: Decimal = ZERO
+    whole_share_only: bool = False
+    cash_in_lieu_price: Decimal = ZERO
+    terms_policy_hash: str | None = None
     affected_derivative_contract_ids: tuple[str, ...] = ()
     derivative_adjustment_policy_id: str | None = None
     supersedes_hash: str | None = None
@@ -213,6 +234,18 @@ class CorporateAction:
             raise SpotResearchError("tax_rate must be in [0, 1]")
         if not ZERO <= self.child_cost_basis_fraction <= ONE:
             raise SpotResearchError("child cost basis fraction must be in [0, 1]")
+        if not ZERO <= self.cash_basis_fraction <= ONE:
+            raise SpotResearchError("cash basis fraction must be in [0, 1]")
+        if (
+            self.subscription_price < ZERO
+            or not ZERO <= self.subscription_fraction <= ONE
+            or self.cash_in_lieu_price < ZERO
+        ):
+            raise SpotResearchError("rights/fractional terms are invalid")
+        if not isinstance(self.whole_share_only, bool):
+            raise SpotResearchError("whole_share_only must be boolean")
+        if self.terms_policy_hash is not None:
+            _require_hash(self.terms_policy_hash, "terms_policy_hash")
         dividend_types = {
             CorporateActionType.CASH_DIVIDEND,
             CorporateActionType.SPECIAL_DIVIDEND,
@@ -250,6 +283,37 @@ class CorporateAction:
         ):
             raise SpotResearchError(
                 "replacement action requires replacement instrument"
+            )
+        if self.action_type is CorporateActionType.RIGHTS_ISSUE:
+            if (
+                self.rights_instrument_id is None
+                or self.subscription_price <= ZERO
+                or self.currency is None
+                or self.record_at is None
+                or self.ex_at is None
+                or self.payment_at is None
+                or self.terms_policy_hash is None
+            ):
+                raise SpotResearchError(
+                    "rights issue requires entitlement, subscription, dates and policy"
+                )
+        if self.action_type is CorporateActionType.RIGHTS_SUBSCRIPTION:
+            if (
+                self.replacement_instrument_id is None
+                or self.subscription_price <= ZERO
+                or self.currency is None
+                or self.terms_policy_hash is None
+            ):
+                raise SpotResearchError(
+                    "rights subscription requires shares, price, currency and policy"
+                )
+        if self.whole_share_only and self.cash_in_lieu_price <= ZERO:
+            raise SpotResearchError(
+                "whole-share policy requires cash-in-lieu price"
+            )
+        if self.cash_in_lieu_price > ZERO and self.currency is None:
+            raise SpotResearchError(
+                "cash-in-lieu price requires currency"
             )
         if self.action_type is CorporateActionType.SPIN_OFF:
             if self.child_instrument_id is None:
@@ -464,6 +528,46 @@ def _replace_position(
     return updated
 
 
+def _whole_and_fractional_quantity(
+    quantity: Decimal,
+    action: CorporateAction,
+) -> tuple[Decimal, Decimal]:
+    if not action.whole_share_only:
+        return quantity, ZERO
+    whole = quantity.to_integral_value(rounding=ROUND_DOWN)
+    return whole, quantity - whole
+
+
+def _cash_in_lieu_posting(
+    *,
+    action: CorporateAction,
+    applied_at: datetime,
+    position: SpotPosition,
+    fractional_quantity: Decimal,
+    suffix: str,
+    cost_basis: Decimal = ZERO,
+) -> SpotPosting | None:
+    if fractional_quantity == ZERO:
+        return None
+    if action.currency is None or action.cash_in_lieu_price <= ZERO:
+        raise SpotResearchError("fractional quantity has no cash-in-lieu terms")
+    gross = fractional_quantity * action.cash_in_lieu_price
+    tax = max(gross - cost_basis, ZERO) * action.tax_rate
+    return SpotPosting(
+        posting_id=f"{action.action_id}:cash-in-lieu:{suffix}",
+        posting_type=SpotPostingType.CASH_IN_LIEU,
+        occurred_at=applied_at,
+        instrument_id=position.instrument_id,
+        quantity_delta=ZERO,
+        cash_delta=gross - tax,
+        currency=action.currency,
+        tax_amount=tax,
+        source_hash=action.content_hash,
+        entitlement_quantity=fractional_quantity,
+        entitlement_at=action.record_at or action.effective_at,
+    )
+
+
 def apply_corporate_action(
     book: SpotBook,
     action: CorporateAction,
@@ -480,18 +584,18 @@ def apply_corporate_action(
     }
     if action.action_type in dividend_types and entitlement_book is None:
         raise SpotResearchError("dividend record-date entitlement book is required")
-    if action.action_type in {
-        CorporateActionType.RIGHTS_ISSUE,
-        CorporateActionType.EX_RIGHTS,
-    }:
-        raise SpotResearchError("rights action requires explicit entitlement model")
+    if (
+        action.action_type is CorporateActionType.RIGHTS_ISSUE
+        and entitlement_book is None
+    ):
+        raise SpotResearchError("rights issue requires record-date entitlement book")
     position = book.position(action.instrument_id)
     entitlement_position = (
         entitlement_book.position(action.instrument_id)
         if entitlement_book is not None
         else None
     )
-    if action.action_type in dividend_types:
+    if action.action_type in dividend_types | {CorporateActionType.RIGHTS_ISSUE}:
         position_for_action = entitlement_position
     else:
         position_for_action = position
@@ -520,12 +624,22 @@ def apply_corporate_action(
         CorporateActionType.BONUS_ISSUE,
     }
     if action.action_type in transform_types:
-        new_quantity = position.quantity * action.ratio
+        exact_quantity = position.quantity * action.ratio
+        new_quantity, fractional_quantity = _whole_and_fractional_quantity(
+            exact_quantity,
+            action,
+        )
+        fractional_basis = (
+            position.total_cost_basis
+            * abs(fractional_quantity / exact_quantity)
+            if exact_quantity != ZERO
+            else ZERO
+        )
         positions = _replace_position(
             positions,
             instrument_id=position.instrument_id,
             quantity=new_quantity,
-            total_cost_basis=position.total_cost_basis,
+            total_cost_basis=position.total_cost_basis - fractional_basis,
             currency=position.currency,
         )
         postings.append(
@@ -540,6 +654,154 @@ def apply_corporate_action(
                 tax_amount=ZERO,
                 source_hash=action.content_hash,
                 related_derivative_contract_ids=action.affected_derivative_contract_ids,
+            )
+        )
+        cash_in_lieu = _cash_in_lieu_posting(
+            action=action,
+            applied_at=applied_at,
+            position=position,
+            fractional_quantity=fractional_quantity,
+            suffix="position",
+            cost_basis=fractional_basis,
+        )
+        if cash_in_lieu is not None:
+            cash[cash_in_lieu.currency] = (
+                cash.get(cash_in_lieu.currency, ZERO) + cash_in_lieu.cash_delta
+            )
+            postings.append(cash_in_lieu)
+    elif action.action_type is CorporateActionType.RIGHTS_ISSUE:
+        assert action.rights_instrument_id is not None
+        assert entitlement_position is not None
+        rights_exact = entitlement_position.quantity * action.ratio
+        rights_quantity, fractional_quantity = _whole_and_fractional_quantity(
+            rights_exact,
+            action,
+        )
+        existing_rights = positions.get(action.rights_instrument_id)
+        positions = _replace_position(
+            positions,
+            instrument_id=action.rights_instrument_id,
+            quantity=rights_quantity
+            + (existing_rights.quantity if existing_rights is not None else ZERO),
+            total_cost_basis=(
+                existing_rights.total_cost_basis
+                if existing_rights is not None
+                else ZERO
+            ),
+            currency=position.currency,
+        )
+        postings.append(
+            SpotPosting(
+                posting_id=f"{action.action_id}:rights",
+                posting_type=SpotPostingType.RIGHTS_ENTITLEMENT,
+                occurred_at=applied_at,
+                instrument_id=position.instrument_id,
+                quantity_delta=ZERO,
+                cash_delta=ZERO,
+                currency=position.currency,
+                tax_amount=ZERO,
+                source_hash=action.content_hash,
+                related_instrument_id=action.rights_instrument_id,
+                related_quantity_delta=rights_quantity,
+                related_total_cost_basis=ZERO,
+                entitlement_quantity=entitlement_position.quantity,
+                entitlement_at=action.record_at,
+            )
+        )
+        cash_in_lieu = _cash_in_lieu_posting(
+            action=action,
+            applied_at=applied_at,
+            position=position,
+            fractional_quantity=fractional_quantity,
+            suffix="rights",
+        )
+        if cash_in_lieu is not None:
+            cash[cash_in_lieu.currency] = (
+                cash.get(cash_in_lieu.currency, ZERO) + cash_in_lieu.cash_delta
+            )
+            postings.append(cash_in_lieu)
+    elif action.action_type is CorporateActionType.RIGHTS_SUBSCRIPTION:
+        assert action.replacement_instrument_id is not None
+        assert action.currency is not None
+        if position.quantity <= ZERO:
+            raise SpotResearchError(
+                "rights subscription requires a positive rights position"
+            )
+        consumed_rights = position.quantity * action.subscription_fraction
+        exact_new_quantity = consumed_rights * action.ratio
+        new_quantity, fractional_quantity = _whole_and_fractional_quantity(
+            exact_new_quantity,
+            action,
+        )
+        subscription_cash = new_quantity * action.subscription_price
+        remaining_rights = position.quantity - consumed_rights
+        remaining_rights_basis = position.total_cost_basis * (
+            remaining_rights / position.quantity
+        )
+        positions = _replace_position(
+            positions,
+            instrument_id=position.instrument_id,
+            quantity=remaining_rights,
+            total_cost_basis=remaining_rights_basis,
+            currency=position.currency,
+        )
+        existing_shares = positions.get(action.replacement_instrument_id)
+        positions = _replace_position(
+            positions,
+            instrument_id=action.replacement_instrument_id,
+            quantity=new_quantity
+            + (existing_shares.quantity if existing_shares is not None else ZERO),
+            total_cost_basis=subscription_cash
+            + (
+                existing_shares.total_cost_basis
+                if existing_shares is not None
+                else ZERO
+            ),
+            currency=action.currency,
+        )
+        cash[action.currency] = cash.get(action.currency, ZERO) - subscription_cash
+        postings.append(
+            SpotPosting(
+                posting_id=f"{action.action_id}:subscription",
+                posting_type=SpotPostingType.RIGHTS_SUBSCRIPTION,
+                occurred_at=applied_at,
+                instrument_id=position.instrument_id,
+                quantity_delta=-consumed_rights,
+                cash_delta=-subscription_cash,
+                currency=action.currency,
+                tax_amount=ZERO,
+                source_hash=action.content_hash,
+                related_instrument_id=action.replacement_instrument_id,
+                related_quantity_delta=new_quantity,
+                related_total_cost_basis=subscription_cash,
+                entitlement_quantity=consumed_rights,
+                entitlement_at=action.effective_at,
+            )
+        )
+        cash_in_lieu = _cash_in_lieu_posting(
+            action=action,
+            applied_at=applied_at,
+            position=position,
+            fractional_quantity=fractional_quantity,
+            suffix="subscription",
+        )
+        if cash_in_lieu is not None:
+            cash[cash_in_lieu.currency] = (
+                cash.get(cash_in_lieu.currency, ZERO) + cash_in_lieu.cash_delta
+            )
+            postings.append(cash_in_lieu)
+    elif action.action_type is CorporateActionType.EX_RIGHTS:
+        postings.append(
+            SpotPosting(
+                posting_id=f"{action.action_id}:ex-rights",
+                posting_type=SpotPostingType.POSITION_TRANSFORM,
+                occurred_at=applied_at,
+                instrument_id=position.instrument_id,
+                quantity_delta=ZERO,
+                cash_delta=ZERO,
+                currency=position.currency,
+                tax_amount=ZERO,
+                source_hash=action.content_hash,
             )
         )
     elif action.action_type in {
@@ -575,8 +837,17 @@ def apply_corporate_action(
         )
     elif action.action_type is CorporateActionType.SPIN_OFF:
         assert action.child_instrument_id is not None
-        child_quantity = position.quantity * action.ratio
+        child_exact = position.quantity * action.ratio
+        child_quantity, fractional_quantity = _whole_and_fractional_quantity(
+            child_exact,
+            action,
+        )
         child_basis = position.total_cost_basis * action.child_cost_basis_fraction
+        delivered_basis = (
+            child_basis * child_quantity / child_exact
+            if child_exact != ZERO
+            else ZERO
+        )
         positions[position.instrument_id] = replace(
             position,
             total_cost_basis=position.total_cost_basis - child_basis,
@@ -585,7 +856,7 @@ def apply_corporate_action(
             positions,
             instrument_id=action.child_instrument_id,
             quantity=child_quantity,
-            total_cost_basis=child_basis,
+            total_cost_basis=delivered_basis,
             currency=position.currency,
         )
         postings.append(
@@ -601,16 +872,42 @@ def apply_corporate_action(
                 source_hash=action.content_hash,
                 related_instrument_id=action.child_instrument_id,
                 related_quantity_delta=child_quantity,
-                related_total_cost_basis=child_basis,
+                related_total_cost_basis=delivered_basis,
                 related_derivative_contract_ids=action.affected_derivative_contract_ids,
             )
         )
+        cash_in_lieu = _cash_in_lieu_posting(
+            action=action,
+            applied_at=applied_at,
+            position=position,
+            fractional_quantity=fractional_quantity,
+            suffix="spinoff",
+            cost_basis=child_basis - delivered_basis,
+        )
+        if cash_in_lieu is not None:
+            cash[cash_in_lieu.currency] = (
+                cash.get(cash_in_lieu.currency, ZERO) + cash_in_lieu.cash_delta
+            )
+            postings.append(cash_in_lieu)
     elif action.action_type in {
         CorporateActionType.MERGER,
         CorporateActionType.REPLACEMENT,
     }:
         assert action.replacement_instrument_id is not None
-        replacement_quantity = position.quantity * action.ratio
+        replacement_exact = position.quantity * action.ratio
+        replacement_quantity, fractional_quantity = (
+            _whole_and_fractional_quantity(
+                replacement_exact,
+                action,
+            )
+        )
+        cash_basis = position.total_cost_basis * action.cash_basis_fraction
+        stock_basis = position.total_cost_basis - cash_basis
+        replacement_basis = (
+            stock_basis * replacement_quantity / replacement_exact
+            if replacement_exact != ZERO
+            else ZERO
+        )
         positions = _replace_position(
             positions,
             instrument_id=position.instrument_id,
@@ -622,7 +919,7 @@ def apply_corporate_action(
             positions,
             instrument_id=action.replacement_instrument_id,
             quantity=replacement_quantity,
-            total_cost_basis=position.total_cost_basis,
+            total_cost_basis=replacement_basis,
             currency=position.currency,
         )
         postings.append(
@@ -638,10 +935,47 @@ def apply_corporate_action(
                 source_hash=action.content_hash,
                 related_instrument_id=action.replacement_instrument_id,
                 related_quantity_delta=replacement_quantity,
-                related_total_cost_basis=position.total_cost_basis,
+                related_total_cost_basis=replacement_basis,
                 related_derivative_contract_ids=action.affected_derivative_contract_ids,
             )
         )
+        if action.cash_per_share != ZERO:
+            if action.currency is None:
+                raise SpotResearchError(
+                    "cash-and-stock merger requires currency"
+                )
+            gross_cash = position.quantity * action.cash_per_share
+            tax = max(gross_cash - cash_basis, ZERO) * action.tax_rate
+            cash_delta = gross_cash - tax
+            cash[action.currency] = cash.get(action.currency, ZERO) + cash_delta
+            postings.append(
+                SpotPosting(
+                    posting_id=f"{action.action_id}:merger-cash",
+                    posting_type=SpotPostingType.MERGER_CASH,
+                    occurred_at=applied_at,
+                    instrument_id=position.instrument_id,
+                    quantity_delta=ZERO,
+                    cash_delta=cash_delta,
+                    currency=action.currency,
+                    tax_amount=tax,
+                    source_hash=action.content_hash,
+                    entitlement_quantity=position.quantity,
+                    entitlement_at=action.effective_at,
+                )
+            )
+        cash_in_lieu = _cash_in_lieu_posting(
+            action=action,
+            applied_at=applied_at,
+            position=position,
+            fractional_quantity=fractional_quantity,
+            suffix="merger",
+            cost_basis=stock_basis - replacement_basis,
+        )
+        if cash_in_lieu is not None:
+            cash[cash_in_lieu.currency] = (
+                cash.get(cash_in_lieu.currency, ZERO) + cash_in_lieu.cash_delta
+            )
+            postings.append(cash_in_lieu)
     elif action.action_type in {
         CorporateActionType.TENDER_OFFER,
         CorporateActionType.LIQUIDATION,
@@ -829,6 +1163,9 @@ class BorrowSnapshot:
     hard_to_borrow: bool
     maximum_holding_days: int | None
     source_hash: str
+    revision: int = 1
+    supersedes_hash: str | None = None
+    correction_reason: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("snapshot_id", "instrument_id", "source_hash"):
@@ -848,6 +1185,23 @@ class BorrowSnapshot:
             raise SpotResearchError("unborrowable snapshot must have zero capacity")
         if self.maximum_holding_days is not None and self.maximum_holding_days <= 0:
             raise SpotResearchError("maximum_holding_days must be positive")
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 1
+        ):
+            raise SpotResearchError("borrow revision must be positive")
+        if self.revision == 1:
+            if self.supersedes_hash is not None or self.correction_reason is not None:
+                raise SpotResearchError(
+                    "initial borrow revision cannot supersede"
+                )
+        elif self.supersedes_hash is None or self.correction_reason is None:
+            raise SpotResearchError("borrow correction binding required")
+        if self.supersedes_hash is not None:
+            _require_hash(self.supersedes_hash, "supersedes_hash")
+        if self.correction_reason is not None:
+            _require_text(self.correction_reason, "correction_reason")
 
     def valid_at(self, *, effective_at: datetime, knowledge_at: datetime) -> bool:
         return (
@@ -864,6 +1218,34 @@ class BorrowSnapshot:
 class BorrowScenarioSet:
     def __init__(self, snapshots: Sequence[BorrowSnapshot]) -> None:
         self._snapshots = tuple(snapshots)
+        revisions: dict[str, list[BorrowSnapshot]] = {}
+        for item in snapshots:
+            revisions.setdefault(item.snapshot_id, []).append(item)
+        for snapshot_id, history in revisions.items():
+            ordered = sorted(history, key=lambda item: item.revision)
+            if [item.revision for item in ordered] != list(
+                range(1, len(ordered) + 1)
+            ):
+                raise SpotResearchError(
+                    f"borrow revisions are not contiguous: {snapshot_id}"
+                )
+            for previous, current in zip(ordered, ordered[1:]):
+                if current.instrument_id != previous.instrument_id:
+                    raise SpotResearchError(
+                        "borrow correction instrument changed"
+                    )
+                if current.scenario is not previous.scenario:
+                    raise SpotResearchError(
+                        "borrow correction scenario changed"
+                    )
+                if current.known_at <= previous.known_at:
+                    raise SpotResearchError(
+                        "borrow correction knowledge must increase"
+                    )
+                if current.supersedes_hash != previous.content_hash:
+                    raise SpotResearchError(
+                        "borrow correction chain is broken"
+                    )
         by_instrument: dict[str, set[BorrowScenario]] = {}
         for item in snapshots:
             by_instrument.setdefault(item.instrument_id, set()).add(item.scenario)
@@ -893,7 +1275,15 @@ class BorrowScenarioSet:
         ]
         if not candidates:
             raise SpotResearchError("no point-in-time borrow snapshot")
-        return max(candidates, key=lambda item: (item.effective_from, item.known_at))
+        latest_by_id: dict[str, BorrowSnapshot] = {}
+        for item in candidates:
+            previous = latest_by_id.get(item.snapshot_id)
+            if previous is None or item.revision > previous.revision:
+                latest_by_id[item.snapshot_id] = item
+        return max(
+            latest_by_id.values(),
+            key=lambda item: (item.effective_from, item.known_at, item.revision),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -906,6 +1296,220 @@ class ShortTradeDecision:
     borrow_snapshot_hash: str
     effective_at: datetime
     knowledge_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BorrowRecall:
+    """Revisioned external recall notice used only by the research simulator."""
+
+    recall_id: str
+    revision: int
+    instrument_id: str
+    reason: BorrowRecallReason
+    announced_at: datetime
+    known_at: datetime
+    effective_at: datetime
+    cover_deadline_at: datetime
+    recalled_quantity: Decimal | None
+    penalty_per_unit: Decimal
+    source_hash: str
+    supersedes_hash: str | None = None
+    correction_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        for field in ("recall_id", "instrument_id"):
+            _require_text(getattr(self, field), field)
+        if not isinstance(self.reason, BorrowRecallReason):
+            raise SpotResearchError("borrow recall reason invalid")
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 1
+        ):
+            raise SpotResearchError("borrow recall revision invalid")
+        for field in (
+            "announced_at",
+            "known_at",
+            "effective_at",
+            "cover_deadline_at",
+        ):
+            _require_utc(getattr(self, field), field)
+        if not (
+            self.announced_at
+            <= self.known_at
+            <= self.effective_at
+            <= self.cover_deadline_at
+        ):
+            raise SpotResearchError("borrow recall clock order invalid")
+        if self.recalled_quantity is not None and self.recalled_quantity <= ZERO:
+            raise SpotResearchError("recalled quantity must be positive")
+        if self.penalty_per_unit < ZERO:
+            raise SpotResearchError("recall penalty cannot be negative")
+        _require_hash(self.source_hash, "source_hash")
+        if self.revision == 1:
+            if self.supersedes_hash is not None or self.correction_reason is not None:
+                raise SpotResearchError(
+                    "initial recall revision cannot supersede"
+                )
+        elif self.supersedes_hash is None or self.correction_reason is None:
+            raise SpotResearchError("recall correction binding required")
+        if self.supersedes_hash is not None:
+            _require_hash(self.supersedes_hash, "supersedes_hash")
+        if self.correction_reason is not None:
+            _require_text(self.correction_reason, "correction_reason")
+
+    @property
+    def content_hash(self) -> str:
+        return _hash(asdict(self), label="spot-borrow-recall")
+
+
+class BorrowRecallRevisionStore:
+    """Append-only recall terms with point-in-time correction selection."""
+
+    def __init__(self, recalls: Sequence[BorrowRecall] = ()) -> None:
+        self._recalls: list[BorrowRecall] = []
+        for recall in recalls:
+            self.append(recall)
+
+    def append(self, recall: BorrowRecall) -> None:
+        history = [
+            item for item in self._recalls if item.recall_id == recall.recall_id
+        ]
+        if not history:
+            if recall.revision != 1:
+                raise SpotResearchError("first recall revision must be one")
+        else:
+            previous = max(history, key=lambda item: item.revision)
+            if (
+                recall.revision != previous.revision + 1
+                or recall.known_at <= previous.known_at
+                or recall.supersedes_hash != previous.content_hash
+            ):
+                raise SpotResearchError("borrow recall revision chain invalid")
+            if recall.instrument_id != previous.instrument_id:
+                raise SpotResearchError("borrow recall instrument changed")
+        self._recalls.append(recall)
+
+    def as_of(self, knowledge_at: datetime) -> tuple[BorrowRecall, ...]:
+        _require_utc(knowledge_at, "knowledge_at")
+        latest: dict[str, BorrowRecall] = {}
+        for recall in self._recalls:
+            if recall.known_at > knowledge_at:
+                continue
+            previous = latest.get(recall.recall_id)
+            if previous is None or recall.revision > previous.revision:
+                latest[recall.recall_id] = recall
+        return tuple(sorted(latest.values(), key=lambda item: item.recall_id))
+
+
+@dataclass(frozen=True, slots=True)
+class BorrowRecallApplication:
+    recall_hash: str
+    execution_quote_hash: str
+    book_before_hash: str
+    book_after_hash: str
+    book_before: SpotBook
+    book_after: SpotBook
+    covered_quantity: Decimal
+    execution_price: Decimal
+    postings: tuple[SpotPosting, ...]
+
+    def __post_init__(self) -> None:
+        for field in (
+            "recall_hash",
+            "execution_quote_hash",
+            "book_before_hash",
+            "book_after_hash",
+        ):
+            _require_hash(getattr(self, field), field)
+        if self.covered_quantity < ZERO or self.execution_price <= ZERO:
+            raise SpotResearchError("borrow recall application values invalid")
+
+
+def apply_borrow_recall(
+    book: SpotBook,
+    recall: BorrowRecall,
+    *,
+    applied_at: datetime,
+    execution_price: Decimal,
+    execution_quote_hash: str,
+    commission_per_unit: Decimal = ZERO,
+) -> BorrowRecallApplication:
+    """Force-close a recalled short and preserve price/cost/source evidence."""
+
+    _require_utc(applied_at, "applied_at")
+    _require_hash(execution_quote_hash, "execution_quote_hash")
+    if recall.known_at > applied_at or recall.effective_at > applied_at:
+        raise SpotResearchError("borrow recall not known or effective")
+    if applied_at > recall.cover_deadline_at:
+        raise SpotResearchError("borrow recall applied after cover deadline")
+    if execution_price <= ZERO or commission_per_unit < ZERO:
+        raise SpotResearchError("forced buy-in execution inputs invalid")
+    position = book.position(recall.instrument_id)
+    if position is None or position.quantity >= ZERO:
+        raise SpotResearchError("borrow recall requires an open short")
+    open_short = abs(position.quantity)
+    covered = min(open_short, recall.recalled_quantity or open_short)
+    total_cost = covered * (
+        execution_price + recall.penalty_per_unit + commission_per_unit
+    )
+    released_basis = position.total_cost_basis * covered / open_short
+    positions = {item.instrument_id: item for item in book.positions}
+    positions = _replace_position(
+        positions,
+        instrument_id=position.instrument_id,
+        quantity=position.quantity + covered,
+        total_cost_basis=position.total_cost_basis - released_basis,
+        currency=position.currency,
+    )
+    cash = {item.currency: item.amount for item in book.cash}
+    cash[position.currency] = cash.get(position.currency, ZERO) - total_cost
+    recall_posting = SpotPosting(
+        posting_id=f"{recall.recall_id}:notice",
+        posting_type=SpotPostingType.BORROW_RECALL,
+        occurred_at=applied_at,
+        instrument_id=position.instrument_id,
+        quantity_delta=ZERO,
+        cash_delta=ZERO,
+        currency=position.currency,
+        tax_amount=ZERO,
+        source_hash=recall.content_hash,
+        entitlement_quantity=covered,
+        entitlement_at=recall.effective_at,
+    )
+    buy_in_posting = SpotPosting(
+        posting_id=f"{recall.recall_id}:forced-buy-in",
+        posting_type=SpotPostingType.FORCED_BUY_IN,
+        occurred_at=applied_at,
+        instrument_id=position.instrument_id,
+        quantity_delta=covered,
+        cash_delta=-total_cost,
+        currency=position.currency,
+        tax_amount=ZERO,
+        source_hash=execution_quote_hash,
+        entitlement_quantity=covered,
+        entitlement_at=recall.effective_at,
+    )
+    after = SpotBook(
+        positions=tuple(
+            sorted(positions.values(), key=lambda item: item.instrument_id)
+        ),
+        cash=tuple(
+            CashBalance(currency=currency, amount=amount)
+            for currency, amount in sorted(cash.items())
+        ),
+    )
+    return BorrowRecallApplication(
+        recall_hash=recall.content_hash,
+        execution_quote_hash=execution_quote_hash,
+        book_before_hash=_book_hash(book),
+        book_after_hash=_book_hash(after),
+        book_before=book,
+        book_after=after,
+        covered_quantity=covered,
+        execution_price=execution_price,
+        postings=(recall_posting, buy_in_posting),
+    )
 
 
 def validate_short_trade(
@@ -997,6 +1601,10 @@ def accrue_borrow_cost(
 
 
 __all__ = [
+    "BorrowRecall",
+    "BorrowRecallApplication",
+    "BorrowRecallReason",
+    "BorrowRecallRevisionStore",
     "BorrowScenario",
     "BorrowScenarioSet",
     "BorrowSnapshot",
@@ -1016,6 +1624,7 @@ __all__ = [
     "SpotResearchError",
     "UniverseMembership",
     "accrue_borrow_cost",
+    "apply_borrow_recall",
     "apply_corporate_action",
     "validate_short_trade",
 ]

@@ -1,0 +1,433 @@
+{
+  "schema_version": 1,
+  "manifest_kind": "multi_asset_migrations",
+  "manifest_id": "multi_asset_migrations_v1",
+  "migrations": [
+    {
+      "migration_id": "migrate_calendar_unit_v1",
+      "authority_id": "calendar_unit",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "CalendarMap"
+        },
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "UnitMap"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "CalendarRegistry",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "UnitRegistry",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "ProviderNormalizationService",
+          "required_symbols": [
+            "CalendarRegistry",
+            "UnitRegistry"
+          ]
+        }
+      ],
+      "deprecation_policy": "Unversioned unit or calendar maps are rejected; every provider policy names immutable registry hashes."
+    },
+    {
+      "migration_id": "migrate_data_v1",
+      "authority_id": "data",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "BitemporalDataStore"
+        },
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "MutableMarketDataStore"
+        },
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "PointInTimeDataStore"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "AppendOnlyBitemporalStore",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "BitemporalRecord",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "ProviderNormalizationService",
+          "required_symbols": [
+            "AppendOnlyBitemporalStore",
+            "BitemporalRecord"
+          ]
+        }
+      ],
+      "deprecation_policy": "Compatibility aliases may remain only in the declaring data module; production callers use the append-only canonical names."
+    },
+    {
+      "migration_id": "migrate_evidence_v1",
+      "authority_id": "evidence",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.evidence",
+          "symbol": "SelfCertifiedStudy"
+        },
+        {
+          "module": "market_research.research.multi_asset.evidence_graph",
+          "symbol": "UnboundEvidenceGraph"
+        },
+        {
+          "module": "market_research.research.multi_asset.validated_package",
+          "symbol": "UnvalidatedResearchReport"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.cards",
+          "symbol": "DataCard",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.cards",
+          "symbol": "ModelCard",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.evidence_graph",
+          "symbol": "EvidenceGraph",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.study",
+          "symbol": "build_validated_multi_asset_study",
+          "kind": "function"
+        },
+        {
+          "module": "market_research.research.multi_asset.validated_package",
+          "symbol": "build_validated_package",
+          "kind": "function"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.cli",
+          "symbol": "cmd_research_multi_asset_build_package",
+          "required_symbols": [
+            "build_validated_package"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.application",
+          "symbol": "MultiAssetResearchApplicationService.execute",
+          "required_symbols": [
+            "build_validated_multi_asset_study"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.validated_package",
+          "symbol": "PortablePackageBuildRequest",
+          "required_symbols": [
+            "DataCard",
+            "EvidenceGraph",
+            "ModelCard"
+          ]
+        }
+      ],
+      "deprecation_policy": "No PASS receipt may be accepted from a caller; validated studies and packages are recomputed by source-owned factories."
+    },
+    {
+      "migration_id": "migrate_exposure_v1",
+      "authority_id": "exposure",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "ProductExposureEngine"
+        },
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "ProductionExposureEngine"
+        },
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "SeparateExposureBook"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "ExposureEngine",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "PortfolioExposureSnapshot",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_spot_exposure_authority",
+          "required_symbols": [
+            "ExposureEngine",
+            "PortfolioExposureSnapshot"
+          ]
+        }
+      ],
+      "deprecation_policy": "Product-specific exposure books are forbidden; all product adapters feed one common exposure snapshot."
+    },
+    {
+      "migration_id": "migrate_identity_v1",
+      "authority_id": "identity",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "AssetRegistry"
+        },
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "ProductMasterRegistry"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "InstrumentRegistry",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_integrated_option_market_authority",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_spot_exposure_authority",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        }
+      ],
+      "deprecation_policy": "Compatibility aliases may remain only in the declaring domain module; production callers use InstrumentRegistry."
+    },
+    {
+      "migration_id": "migrate_ledger_v1",
+      "authority_id": "ledger",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "OptionsLedger"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "PerProductLedger"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "SpotLedger"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.accounting",
+          "symbol": "LedgerPnlReconciliation",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "UnifiedPortfolioLedger",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_report_ledger_reconciliation",
+          "required_symbols": [
+            "LedgerPnlReconciliation",
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.multileg_execution",
+          "symbol": "MultiLegLedgerExecutionService",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        }
+      ],
+      "deprecation_policy": "A class ending in Ledger is rejected unless it is the unified portfolio ledger named by the boundary manifest."
+    },
+    {
+      "migration_id": "migrate_lifecycle_v1",
+      "authority_id": "lifecycle",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "ProductLifecycleLedger"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "OptionLifecycleLedger"
+        },
+        {
+          "module": "market_research.research.multi_asset.spot",
+          "symbol": "CorporateActionLedger"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "LifecycleEvent",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "adapt_option_lifecycle",
+          "kind": "function"
+        },
+        {
+          "module": "market_research.research.multi_asset.spot",
+          "symbol": "apply_corporate_action",
+          "kind": "function"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_AuthoritativeBuiltinRunner.run_option",
+          "required_symbols": [
+            "adapt_option_lifecycle"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_AuthoritativeBuiltinRunner.run_spot",
+          "required_symbols": [
+            "apply_corporate_action"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "ProductMasterHistory",
+          "required_symbols": [
+            "LifecycleEvent"
+          ]
+        }
+      ],
+      "deprecation_policy": "Lifecycle semantics remain typed product adapters, but every economic effect is projected into the unified ledger."
+    },
+    {
+      "migration_id": "migrate_market_state_v1",
+      "authority_id": "market_state",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.market_state",
+          "symbol": "SharedMarketState"
+        },
+        {
+          "module": "market_research.research.multi_asset.market_state",
+          "symbol": "UntypedMarketSnapshot"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.market_state",
+          "symbol": "MarketState",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.market_state",
+          "symbol": "OptionChainState",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_integrated_option_market_authority",
+          "required_symbols": [
+            "MarketState",
+            "OptionChainState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "ExposureEngine",
+          "required_symbols": [
+            "MarketState"
+          ]
+        }
+      ],
+      "deprecation_policy": "Compatibility aliases may remain only in the declaring market-state module; production callers use typed MarketState components."
+    },
+    {
+      "migration_id": "migrate_valuation_v1",
+      "authority_id": "valuation",
+      "status": "migrated",
+      "legacy_symbols": [
+        {
+          "module": "market_research.research.multi_asset.option_analytics",
+          "symbol": "DirectSupplierGreeks"
+        },
+        {
+          "module": "market_research.research.multi_asset.option_analytics",
+          "symbol": "SupplierAnalyticsMark"
+        }
+      ],
+      "replacements": [
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "OptionValuationAdapter",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.option_analytics",
+          "symbol": "AuthoritativeOptionAnalyticsFactory",
+          "kind": "class"
+        }
+      ],
+      "production_callers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_integrated_option_market_authority",
+          "required_symbols": [
+            "AuthoritativeOptionAnalyticsFactory",
+            "OptionValuationAdapter"
+          ]
+        }
+      ],
+      "deprecation_policy": "Supplier IV and Greeks are comparison observations only; public marks come from the source-owned factory and closed model registry."
+    }
+  ],
+  "content_hash": "sha256:d9f7a3aaa8b62aad9a31ce1f8075c0e17921dc3a20dbc8605284776e57ec3208"
+}

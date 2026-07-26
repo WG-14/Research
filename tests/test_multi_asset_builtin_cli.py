@@ -641,7 +641,12 @@ def _builtin_request(
     request = BuiltinMultiAssetRequest(
         run_id="run:builtin-cli:first",
         spec=spec,
-        evidence_references=_references(paths=paths, spec=spec),
+        evidence_references=_references(
+            paths=paths,
+            spec=spec,
+            research_inputs_document=inputs.as_dict(),
+            research_inputs_schema_id="builtin-multi-asset-scenario-inputs",
+        ),
         inputs=inputs,
     )
     settings = ResearchSettings(

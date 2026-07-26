@@ -7,6 +7,9 @@ from decimal import Decimal
 import pytest
 
 from market_research.research.multi_asset.spot import (
+    BorrowRecall,
+    BorrowRecallReason,
+    BorrowRecallRevisionStore,
     BorrowScenario,
     BorrowScenarioSet,
     BorrowSnapshot,
@@ -22,6 +25,7 @@ from market_research.research.multi_asset.spot import (
     SpotResearchError,
     UniverseMembership,
     accrue_borrow_cost,
+    apply_borrow_recall,
     apply_corporate_action,
     validate_short_trade,
 )
@@ -395,3 +399,256 @@ def test_borrow_model_requires_all_four_missing_data_scenarios() -> None:
     )
     with pytest.raises(SpotResearchError, match="coverage incomplete"):
         BorrowScenarioSet((base,))
+
+
+def test_rights_entitlement_subscription_and_fractional_cash_are_economic() -> None:
+    rights_issue = CorporateAction(
+        action_id="action:rights-issue",
+        revision=1,
+        action_type=CorporateActionType.RIGHTS_ISSUE,
+        instrument_id="instrument:old",
+        announced_at=T0,
+        known_at=T0 + timedelta(hours=1),
+        record_at=T0 + timedelta(days=1),
+        ex_at=T0 + timedelta(days=2),
+        payment_at=T0 + timedelta(days=3),
+        effective_at=T0 + timedelta(days=3),
+        source_id="source:exchange",
+        source_record_hash=HASH_A,
+        currency="USD",
+        ratio=Decimal("0.1"),
+        tax_rate=Decimal("0"),
+        rights_instrument_id="instrument:right",
+        subscription_price=Decimal("20"),
+        whole_share_only=True,
+        cash_in_lieu_price=Decimal("0.5"),
+        terms_policy_hash=HASH_B,
+    )
+    entitlement_book = _book("105")
+    issued = apply_corporate_action(
+        entitlement_book,
+        rights_issue,
+        applied_at=T0 + timedelta(days=3),
+        entitlement_book=entitlement_book,
+    )
+    rights = issued.book_after.position("instrument:right")
+    assert rights is not None
+    assert rights.quantity == Decimal("10")
+    assert issued.book_after.cash_amount("USD") == Decimal("2000.25")
+    assert [item.posting_type.value for item in issued.postings] == [
+        "RIGHTS_ENTITLEMENT",
+        "CASH_IN_LIEU",
+    ]
+
+    subscription = CorporateAction(
+        action_id="action:rights-subscription",
+        revision=1,
+        action_type=CorporateActionType.RIGHTS_SUBSCRIPTION,
+        instrument_id="instrument:right",
+        announced_at=T0,
+        known_at=T0 + timedelta(hours=1),
+        record_at=None,
+        ex_at=None,
+        payment_at=T0 + timedelta(days=4),
+        effective_at=T0 + timedelta(days=4),
+        source_id="source:exchange",
+        source_record_hash=HASH_B,
+        currency="USD",
+        ratio=Decimal("1"),
+        replacement_instrument_id="instrument:old",
+        subscription_price=Decimal("20"),
+        subscription_fraction=Decimal("1"),
+        terms_policy_hash=HASH_A,
+    )
+    subscribed = apply_corporate_action(
+        issued.book_after,
+        subscription,
+        applied_at=T0 + timedelta(days=4),
+    )
+    assert subscribed.book_after.position("instrument:right") is None
+    shares = subscribed.book_after.position("instrument:old")
+    assert shares is not None
+    assert shares.quantity == Decimal("115")
+    assert shares.total_cost_basis == Decimal("8200")
+    assert subscribed.book_after.cash_amount("USD") == Decimal("1800.25")
+
+
+def test_cash_and_stock_merger_preserves_fractional_and_basis_evidence() -> None:
+    merger = CorporateAction(
+        action_id="action:mixed-merger",
+        revision=1,
+        action_type=CorporateActionType.MERGER,
+        instrument_id="instrument:old",
+        announced_at=T0,
+        known_at=T0 + timedelta(hours=1),
+        record_at=T0 + timedelta(days=1),
+        ex_at=T0 + timedelta(days=2),
+        payment_at=T0 + timedelta(days=3),
+        effective_at=T0 + timedelta(days=3),
+        source_id="source:exchange",
+        source_record_hash=HASH_A,
+        currency="USD",
+        cash_per_share=Decimal("10"),
+        ratio=Decimal("0.5"),
+        tax_rate=Decimal("0.1"),
+        replacement_instrument_id="instrument:new",
+        cash_basis_fraction=Decimal("0.25"),
+        whole_share_only=True,
+        cash_in_lieu_price=Decimal("50"),
+        terms_policy_hash=HASH_B,
+    )
+    result = apply_corporate_action(
+        _book("3"),
+        merger,
+        applied_at=T0 + timedelta(days=3),
+    )
+    replacement = result.book_after.position("instrument:new")
+    assert replacement is not None
+    assert replacement.quantity == Decimal("1")
+    assert replacement.total_cost_basis == Decimal("4000")
+    assert result.book_after.position("instrument:old") is None
+    assert result.book_after.cash_amount("USD") == Decimal("2055")
+    assert {item.posting_type.value for item in result.postings} == {
+        "REPLACEMENT_DELIVERY",
+        "MERGER_CASH",
+        "CASH_IN_LIEU",
+    }
+
+
+@pytest.mark.parametrize(
+    ("action_type", "ratio", "expected_quantity"),
+    [
+        (CorporateActionType.REVERSE_SPLIT, "0.5", "50"),
+        (CorporateActionType.STOCK_DIVIDEND, "1.1", "110"),
+        (CorporateActionType.BONUS_ISSUE, "1.2", "120"),
+    ],
+)
+def test_all_quantity_corporate_actions_preserve_total_basis(
+    action_type: CorporateActionType,
+    ratio: str,
+    expected_quantity: str,
+) -> None:
+    result = apply_corporate_action(
+        _book(),
+        _action(action_type, ratio=ratio),
+        applied_at=T0 + timedelta(days=2),
+    )
+    position = result.book_after.position("instrument:old")
+    assert position is not None
+    assert position.quantity == Decimal(expected_quantity)
+    assert position.total_cost_basis == Decimal("8000")
+
+
+def test_tender_liquidation_replacement_delisting_and_ex_rights_are_typed() -> None:
+    tender = _action(
+        CorporateActionType.TENDER_OFFER,
+        ratio="0.25",
+        cash="90",
+        tax="0.1",
+    )
+    tender = replace(tender, currency="USD")
+    tendered = apply_corporate_action(
+        _book(), tender, applied_at=T0 + timedelta(days=2)
+    ).book_after
+    assert tendered.position("instrument:old") == SpotPosition(
+        instrument_id="instrument:old",
+        quantity=Decimal("75"),
+        total_cost_basis=Decimal("6000"),
+        currency="USD",
+    )
+    assert tendered.cash_amount("USD") == Decimal("4225")
+
+    liquidation = replace(
+        _action(CorporateActionType.LIQUIDATION, cash="70"),
+        currency="USD",
+    )
+    liquidated = apply_corporate_action(
+        _book(), liquidation, applied_at=T0 + timedelta(days=2)
+    ).book_after
+    assert liquidated.position("instrument:old") is None
+    assert liquidated.cash_amount("USD") == Decimal("9000")
+
+    replacement = _action(
+        CorporateActionType.REPLACEMENT,
+        ratio="1",
+        replacement="instrument:new",
+    )
+    replaced = apply_corporate_action(
+        _book(), replacement, applied_at=T0 + timedelta(days=2)
+    ).book_after
+    assert replaced.position("instrument:new") is not None
+    assert replaced.position("instrument:old") is None
+
+    for action_type in (
+        CorporateActionType.DELISTING,
+        CorporateActionType.EX_RIGHTS,
+    ):
+        action = _action(
+            action_type,
+            ratio="0.9" if action_type is CorporateActionType.EX_RIGHTS else "1",
+        )
+        result = apply_corporate_action(
+            _book(), action, applied_at=T0 + timedelta(days=2)
+        )
+        assert result.book_after == _book()
+        assert result.postings[0].quantity_delta == Decimal("0")
+
+
+def test_borrow_recall_revision_and_forced_buy_in_reconcile_short_book() -> None:
+    recall = BorrowRecall(
+        recall_id="recall:lender:1",
+        revision=1,
+        instrument_id="instrument:old",
+        reason=BorrowRecallReason.LENDER_RECALL,
+        announced_at=T0,
+        known_at=T0 + timedelta(minutes=1),
+        effective_at=T0 + timedelta(days=1),
+        cover_deadline_at=T0 + timedelta(days=2),
+        recalled_quantity=Decimal("4"),
+        penalty_per_unit=Decimal("1"),
+        source_hash=HASH_A,
+    )
+    application = apply_borrow_recall(
+        _book("-10"),
+        recall,
+        applied_at=T0 + timedelta(days=1),
+        execution_price=Decimal("90"),
+        execution_quote_hash=HASH_B,
+        commission_per_unit=Decimal("0.5"),
+    )
+    remaining = application.book_after.position("instrument:old")
+    assert remaining is not None
+    assert remaining.quantity == Decimal("-6")
+    assert remaining.total_cost_basis == Decimal("4800")
+    assert application.covered_quantity == Decimal("4")
+    assert application.book_after.cash_amount("USD") == Decimal("1634")
+    assert [item.posting_type.value for item in application.postings] == [
+        "BORROW_RECALL",
+        "FORCED_BUY_IN",
+    ]
+
+    correction = replace(
+        recall,
+        revision=2,
+        known_at=T0 + timedelta(hours=2),
+        effective_at=T0 + timedelta(days=1, hours=1),
+        recalled_quantity=Decimal("10"),
+        supersedes_hash=recall.content_hash,
+        correction_reason="lender expanded recall",
+    )
+    store = BorrowRecallRevisionStore((recall, correction))
+    assert store.as_of(T0 + timedelta(hours=1)) == (recall,)
+    assert store.as_of(T0 + timedelta(hours=3)) == (correction,)
+    with pytest.raises(SpotResearchError, match="revision chain"):
+        BorrowRecallRevisionStore(
+            (recall, replace(correction, supersedes_hash=HASH_B))
+        )
+
+    with pytest.raises(SpotResearchError, match="open short"):
+        apply_borrow_recall(
+            _book("10"),
+            recall,
+            applied_at=T0 + timedelta(days=1),
+            execution_price=Decimal("90"),
+            execution_quote_hash=HASH_B,
+        )

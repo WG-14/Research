@@ -8,6 +8,7 @@ import pytest
 
 from market_research.research.multi_asset.expression import (
     DEFAULT_EXPRESSION_POLICY,
+    DeterministicJointOptimizer,
     DesiredEconomicPayoff,
     Direction,
     EconomicHypothesis,
@@ -17,8 +18,11 @@ from market_research.research.multi_asset.expression import (
     ExpressionKind,
     InstrumentChoice,
     InstrumentExpressionEngine,
+    JointOptimizationConstraints,
+    JointOptimizationProblem,
     LegRole,
     LegSelectionRule,
+    OptimizationLeg,
     ProductKind,
     ScenarioRange,
     StrategyTargets,
@@ -356,3 +360,137 @@ def test_hypothesis_is_product_independent_and_probability_is_validated() -> Non
                 ),
             ),
         )
+
+
+def test_joint_integer_optimizer_enforces_all_targets_and_reports_infeasibility() -> (
+    None
+):
+    call = _choice(
+        "option:call",
+        ProductKind.OPTION,
+        option_right="CALL",
+        strike=Decimal("100"),
+        delta=Decimal("0.5"),
+    )
+    put = _choice(
+        "option:put",
+        ProductKind.OPTION,
+        option_right="PUT",
+        strike=Decimal("100"),
+        delta=Decimal("0.5"),
+    )
+
+    def leg(
+        choice: InstrumentChoice,
+        direction: Direction,
+    ) -> OptimizationLeg:
+        return OptimizationLeg(
+            choice=choice,
+            selection_rule=LegSelectionRule(
+                product_kind=ProductKind.OPTION,
+                minimum_days_to_expiry=30,
+                maximum_days_to_expiry=120,
+                target_delta=Decimal("0.5"),
+                target_vega=Decimal("0.15"),
+                target_moneyness=Decimal("1"),
+                minimum_liquidity_score=Decimal("0.5"),
+            ),
+            direction=direction,
+            role=(
+                LegRole.PRIMARY
+                if direction is Direction.LONG
+                else LegRole.HEDGE
+            ),
+            minimum_quantity=1,
+            maximum_quantity=3,
+            unit_delta=Decimal("10"),
+            unit_gamma=Decimal("2"),
+            unit_vega=Decimal("3"),
+            unit_theta=Decimal("-1"),
+            unit_maximum_loss=Decimal("100"),
+            unit_capital=Decimal("50"),
+            unit_margin=Decimal("25"),
+            unit_turnover=Decimal("5"),
+            concentration_group=choice.instrument_id,
+        )
+
+    constraints = JointOptimizationConstraints(
+        target_delta=Decimal("0"),
+        target_gamma=Decimal("0"),
+        target_vega=Decimal("0"),
+        target_theta=Decimal("0"),
+        target_notional=Decimal("20000"),
+        maximum_loss=Decimal("250"),
+        capital_limit=Decimal("150"),
+        margin_limit=Decimal("60"),
+        turnover_limit=Decimal("20"),
+        maximum_concentration=Decimal("0.5"),
+        minimum_liquidity_score=Decimal("0.7"),
+        ratio_tolerance=Decimal("0"),
+    )
+    problem = JointOptimizationProblem(
+        problem_id="joint.option.hedge",
+        hypothesis_hash=_hypothesis().content_hash,
+        payoff_hash="sha256:" + "1" * 64,
+        policy_hash=DEFAULT_EXPRESSION_POLICY.content_hash,
+        as_of=AS_OF,
+        legs=(leg(call, Direction.LONG), leg(put, Direction.SHORT)),
+        constraints=constraints,
+    )
+    optimizer = DeterministicJointOptimizer()
+    first = optimizer.optimize(problem)
+    second = optimizer.optimize(problem)
+
+    assert first.feasible
+    assert first.quantities == (("option:call", 1), ("option:put", 1))
+    assert first.metrics is not None
+    assert first.metrics.delta == Decimal("0")
+    assert first.metrics.gross_notional == Decimal("20000")
+    assert first.content_hash == second.content_hash
+    decision = first.as_expression_decision(as_of=AS_OF)
+    assert decision.hypothesis_hash == problem.hypothesis_hash
+    assert decision.payoff_hash == problem.payoff_hash
+    assert decision.policy_hash == problem.policy_hash
+    assert replace(
+        leg(call, Direction.LONG),
+        minimum_quantity=1,
+        maximum_quantity=3,
+        quantity_step=2,
+    ).quantities == (1, 3)
+
+    infeasible = optimizer.optimize(
+        replace(
+            problem,
+            problem_id="joint.option.infeasible",
+            constraints=replace(constraints, margin_limit=Decimal("0")),
+            content_hash="",
+        )
+    )
+    assert not infeasible.feasible
+    assert dict(infeasible.infeasibility_reasons)[
+        "MARGIN_LIMIT_EXCEEDED"
+    ] > 0
+    assert "HYPOTHESIS_MARGIN_BUDGET_INFEASIBLE" in (
+        infeasible.hypothesis_feedback
+    )
+
+    bypass = replace(
+        problem,
+        problem_id="joint.option.rule-bypass",
+        legs=(
+            replace(
+                problem.legs[0],
+                selection_rule=replace(
+                    problem.legs[0].selection_rule,
+                    product_kind=ProductKind.SPOT,
+                ),
+            ),
+            problem.legs[1],
+        ),
+        content_hash="",
+    )
+    rejected = optimizer.optimize(bypass)
+    assert not rejected.feasible
+    assert "LEG_PRODUCT_KIND_MISMATCH" in dict(
+        rejected.infeasibility_reasons
+    )

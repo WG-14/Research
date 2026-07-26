@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_FLOOR
 from enum import Enum
+from itertools import product
 from typing import Iterable, Mapping, Sequence
 
 from market_research.research.hashing import sha256_prefixed
@@ -796,6 +797,660 @@ class InstrumentExpressionEngine:
         return tuple(result)
 
 
+@dataclass(frozen=True, slots=True)
+class OptimizationLeg:
+    """One independently selectable leg in a bounded integer search.
+
+    Per-unit sensitivities are economic magnitudes for a long unit.  The
+    optimizer applies ``direction.sign`` itself, so a caller cannot make a
+    short leg appear long by pre-signing selected fields.
+    """
+
+    choice: InstrumentChoice
+    selection_rule: LegSelectionRule
+    direction: Direction
+    role: LegRole
+    minimum_quantity: int
+    maximum_quantity: int
+    quantity_step: int = 1
+    target_ratio: Decimal = ONE
+    unit_delta: Decimal = ZERO
+    unit_gamma: Decimal = ZERO
+    unit_vega: Decimal = ZERO
+    unit_theta: Decimal = ZERO
+    unit_maximum_loss: Decimal = ZERO
+    unit_capital: Decimal = ZERO
+    unit_margin: Decimal = ZERO
+    unit_turnover: Decimal = ZERO
+    concentration_group: str = "PORTFOLIO"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.choice, InstrumentChoice):
+            raise ExpressionValidationError("optimization_leg_choice_required")
+        if not isinstance(self.selection_rule, LegSelectionRule):
+            raise ExpressionValidationError("optimization_leg_rule_required")
+        if not isinstance(self.direction, Direction) or not isinstance(
+            self.role, LegRole
+        ):
+            raise ExpressionValidationError("optimization_leg_enum_invalid")
+        for name in ("minimum_quantity", "maximum_quantity", "quantity_step"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ExpressionValidationError(
+                    f"optimization_leg_{name}_must_be_integer"
+                )
+        if (
+            self.minimum_quantity < 0
+            or self.maximum_quantity < self.minimum_quantity
+            or self.quantity_step <= 0
+        ):
+            raise ExpressionValidationError("optimization_leg_quantity_range_invalid")
+        if (self.maximum_quantity - self.minimum_quantity) % self.quantity_step != 0:
+            raise ExpressionValidationError("optimization_leg_quantity_step_mismatch")
+        if self.target_ratio <= ZERO:
+            raise ExpressionValidationError("optimization_leg_target_ratio_invalid")
+        for name in (
+            "unit_delta",
+            "unit_gamma",
+            "unit_vega",
+            "unit_theta",
+            "unit_maximum_loss",
+            "unit_capital",
+            "unit_margin",
+            "unit_turnover",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ExpressionValidationError(f"optimization_leg_{name}_invalid")
+            if name in {
+                "unit_maximum_loss",
+                "unit_capital",
+                "unit_margin",
+                "unit_turnover",
+            } and value < ZERO:
+                raise ExpressionValidationError(
+                    f"optimization_leg_{name}_must_be_nonnegative"
+                )
+        _require_text(self.concentration_group, "concentration_group")
+
+    @property
+    def quantities(self) -> tuple[int, ...]:
+        return tuple(
+            range(
+                self.minimum_quantity,
+                self.maximum_quantity + 1,
+                self.quantity_step,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JointOptimizationConstraints:
+    """Strategy-wide targets and hard capital/risk boundaries."""
+
+    target_delta: Decimal | None = None
+    delta_tolerance: Decimal = ZERO
+    target_gamma: Decimal | None = None
+    gamma_tolerance: Decimal = ZERO
+    target_vega: Decimal | None = None
+    vega_tolerance: Decimal = ZERO
+    target_theta: Decimal | None = None
+    theta_tolerance: Decimal = ZERO
+    target_notional: Decimal | None = None
+    notional_tolerance: Decimal = ZERO
+    maximum_loss: Decimal | None = None
+    capital_limit: Decimal | None = None
+    margin_limit: Decimal | None = None
+    turnover_limit: Decimal | None = None
+    maximum_concentration: Decimal | None = None
+    minimum_liquidity_score: Decimal = ZERO
+    ratio_tolerance: Decimal = ZERO
+
+    def __post_init__(self) -> None:
+        for name in (
+            "target_delta",
+            "delta_tolerance",
+            "target_gamma",
+            "gamma_tolerance",
+            "target_vega",
+            "vega_tolerance",
+            "target_theta",
+            "theta_tolerance",
+            "target_notional",
+            "notional_tolerance",
+            "maximum_loss",
+            "capital_limit",
+            "margin_limit",
+            "turnover_limit",
+            "maximum_concentration",
+            "minimum_liquidity_score",
+            "ratio_tolerance",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ExpressionValidationError(
+                    f"optimization_constraints_{name}_invalid"
+                )
+        for name in (
+            "delta_tolerance",
+            "gamma_tolerance",
+            "vega_tolerance",
+            "theta_tolerance",
+            "notional_tolerance",
+            "maximum_loss",
+            "capital_limit",
+            "margin_limit",
+            "turnover_limit",
+            "ratio_tolerance",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < ZERO:
+                raise ExpressionValidationError(
+                    f"optimization_constraints_{name}_must_be_nonnegative"
+                )
+        for name in ("maximum_concentration", "minimum_liquidity_score"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_fraction(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class JointOptimizationProblem:
+    problem_id: str
+    hypothesis_hash: str
+    payoff_hash: str
+    policy_hash: str
+    as_of: datetime
+    legs: tuple[OptimizationLeg, ...]
+    constraints: JointOptimizationConstraints
+    maximum_combinations: int = 250_000
+    content_hash: str = ""
+
+    def __post_init__(self) -> None:
+        for name in ("problem_id", "hypothesis_hash", "payoff_hash", "policy_hash"):
+            _require_text(getattr(self, name), name)
+        _require_utc(self.as_of, "as_of")
+        if not self.legs:
+            raise ExpressionValidationError("optimization_problem_legs_required")
+        ids = [item.choice.instrument_id for item in self.legs]
+        if len(ids) != len(set(ids)):
+            raise ExpressionValidationError(
+                "optimization_problem_instrument_ids_duplicate"
+            )
+        if not isinstance(self.constraints, JointOptimizationConstraints):
+            raise ExpressionValidationError(
+                "optimization_problem_constraints_required"
+            )
+        if (
+            isinstance(self.maximum_combinations, bool)
+            or not isinstance(self.maximum_combinations, int)
+            or self.maximum_combinations <= 0
+        ):
+            raise ExpressionValidationError(
+                "optimization_problem_maximum_combinations_invalid"
+            )
+        combinations = 1
+        for leg in self.legs:
+            combinations *= len(leg.quantities)
+            if combinations > self.maximum_combinations:
+                raise ExpressionValidationError(
+                    "optimization_problem_combination_limit_exceeded"
+                )
+        expected = _content_hash(
+            {
+                "problem_id": self.problem_id,
+                "hypothesis_hash": self.hypothesis_hash,
+                "payoff_hash": self.payoff_hash,
+                "policy_hash": self.policy_hash,
+                "as_of": self.as_of,
+                "legs": [asdict(item) for item in self.legs],
+                "constraints": asdict(self.constraints),
+                "maximum_combinations": self.maximum_combinations,
+            },
+            label="joint-optimization-problem",
+        )
+        if self.content_hash and self.content_hash != expected:
+            raise ExpressionValidationError(
+                "optimization_problem_content_hash_mismatch"
+            )
+        object.__setattr__(self, "content_hash", expected)
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizationMetrics:
+    delta: Decimal
+    gamma: Decimal
+    vega: Decimal
+    theta: Decimal
+    gross_notional: Decimal
+    maximum_loss: Decimal
+    capital: Decimal
+    margin: Decimal
+    turnover: Decimal
+    concentration: Decimal
+    minimum_liquidity_score: Decimal
+
+    def as_pairs(self) -> tuple[tuple[str, Decimal], ...]:
+        return tuple(
+            (name, getattr(self, name))
+            for name in (
+                "delta",
+                "gamma",
+                "vega",
+                "theta",
+                "gross_notional",
+                "maximum_loss",
+                "capital",
+                "margin",
+                "turnover",
+                "concentration",
+                "minimum_liquidity_score",
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JointOptimizationResult:
+    problem_hash: str
+    hypothesis_hash: str
+    payoff_hash: str
+    policy_hash: str
+    feasible: bool
+    quantities: tuple[tuple[str, int], ...]
+    selected_legs: tuple[ExpressionLeg, ...]
+    metrics: OptimizationMetrics | None
+    objective: Decimal | None
+    evaluated_combinations: int
+    infeasibility_reasons: tuple[tuple[str, int], ...]
+    hypothesis_feedback: tuple[str, ...]
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "problem_hash",
+            "hypothesis_hash",
+            "payoff_hash",
+            "policy_hash",
+            "content_hash",
+        ):
+            _require_text(getattr(self, name), f"optimization_result.{name}")
+        if self.feasible != bool(self.selected_legs):
+            raise ExpressionValidationError("optimization_result_feasibility_mismatch")
+        if self.feasible != (self.metrics is not None and self.objective is not None):
+            raise ExpressionValidationError("optimization_result_metrics_mismatch")
+
+    def as_expression_decision(self, *, as_of: datetime) -> ExpressionDecision:
+        _require_utc(as_of, "as_of")
+        if self.feasible and self.metrics is not None:
+            evaluation = CandidateEvaluation(
+                candidate_id=self.problem_hash,
+                feasible=True,
+                rejection_reasons=(),
+                comparison_values=self.metrics.as_pairs(),
+                score=-self.objective if self.objective is not None else ZERO,
+            )
+            return ExpressionDecision(
+                hypothesis_hash=self.hypothesis_hash,
+                payoff_hash=self.payoff_hash,
+                policy_hash=self.policy_hash,
+                as_of=as_of,
+                candidate_evaluations=(evaluation,),
+                selected_candidate_id=self.problem_hash,
+                selected_legs=self.selected_legs,
+                failure_evidence=(),
+            )
+        evaluation = CandidateEvaluation(
+            candidate_id=self.problem_hash,
+            feasible=False,
+            rejection_reasons=tuple(key for key, _ in self.infeasibility_reasons),
+            comparison_values=(),
+            score=None,
+        )
+        return ExpressionDecision(
+            hypothesis_hash=self.hypothesis_hash,
+            payoff_hash=self.payoff_hash,
+            policy_hash=self.policy_hash,
+            as_of=as_of,
+            candidate_evaluations=(evaluation,),
+            selected_candidate_id=None,
+            selected_legs=(),
+            failure_evidence=self.hypothesis_feedback,
+        )
+
+
+class DeterministicJointOptimizer:
+    """Exhaustive bounded integer optimizer with stable tie breaking."""
+
+    def optimize(self, problem: JointOptimizationProblem) -> JointOptimizationResult:
+        if not isinstance(problem, JointOptimizationProblem):
+            raise ExpressionValidationError("joint_optimizer_problem_required")
+        static_reasons: dict[str, int] = {}
+        for leg in problem.legs:
+            for reason in _selection_rule_reasons(
+                leg.choice,
+                leg.selection_rule,
+                as_of=problem.as_of,
+            ):
+                static_reasons[reason] = static_reasons.get(reason, 0) + 1
+        if static_reasons:
+            return _infeasible_optimization_result(
+                problem, static_reasons, evaluated=0
+            )
+
+        rejection_counts: dict[str, int] = {}
+        feasible: list[
+            tuple[
+                Decimal,
+                tuple[int, ...],
+                OptimizationMetrics,
+            ]
+        ] = []
+        evaluated = 0
+        for quantities in product(*(leg.quantities for leg in problem.legs)):
+            evaluated += 1
+            if not any(quantities):
+                _count_reasons(rejection_counts, ("EMPTY_PORTFOLIO",))
+                continue
+            metrics = _optimization_metrics(problem.legs, quantities)
+            reasons = _constraint_reasons(
+                problem.legs,
+                quantities,
+                metrics,
+                problem.constraints,
+            )
+            if reasons:
+                _count_reasons(rejection_counts, reasons)
+                continue
+            objective = _optimization_objective(metrics, problem.constraints)
+            feasible.append((objective, tuple(quantities), metrics))
+        if not feasible:
+            return _infeasible_optimization_result(
+                problem, rejection_counts, evaluated=evaluated
+            )
+        objective, quantities, metrics = min(
+            feasible,
+            key=lambda item: (
+                item[0],
+                sum(item[1]),
+                item[1],
+                tuple(leg.choice.instrument_id for leg in problem.legs),
+            ),
+        )
+        selected = tuple(
+            ExpressionLeg(
+                selection_rule=leg.selection_rule,
+                instrument_id=leg.choice.instrument_id,
+                direction=leg.direction,
+                quantity=Decimal(quantity),
+                ratio=leg.target_ratio,
+                currency=leg.choice.currency,
+                role=leg.role,
+            )
+            for leg, quantity in zip(problem.legs, quantities, strict=True)
+            if quantity > 0
+        )
+        quantity_pairs = tuple(
+            (leg.choice.instrument_id, quantity)
+            for leg, quantity in zip(problem.legs, quantities, strict=True)
+        )
+        payload = {
+            "problem_hash": problem.content_hash,
+            "feasible": True,
+            "quantities": quantity_pairs,
+            "metrics": metrics.as_pairs(),
+            "objective": objective,
+            "evaluated_combinations": evaluated,
+        }
+        result_hash = _content_hash(payload, label="joint-optimization-result")
+        return JointOptimizationResult(
+            problem_hash=problem.content_hash,
+            hypothesis_hash=problem.hypothesis_hash,
+            payoff_hash=problem.payoff_hash,
+            policy_hash=problem.policy_hash,
+            feasible=True,
+            quantities=quantity_pairs,
+            selected_legs=selected,
+            metrics=metrics,
+            objective=objective,
+            evaluated_combinations=evaluated,
+            infeasibility_reasons=(),
+            hypothesis_feedback=(),
+            content_hash=result_hash,
+        )
+
+
+def _selection_rule_reasons(
+    choice: InstrumentChoice,
+    rule: LegSelectionRule,
+    *,
+    as_of: datetime,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if choice.product_kind is not rule.product_kind:
+        reasons.append("LEG_PRODUCT_KIND_MISMATCH")
+    if choice.known_at > as_of:
+        reasons.append("LEG_FUTURE_KNOWLEDGE")
+    if choice.liquidity_score < rule.minimum_liquidity_score:
+        reasons.append("LEG_LIQUIDITY_BELOW_RULE")
+    if choice.expiry is not None:
+        days = (choice.expiry - as_of).total_seconds() / 86_400
+        if (
+            rule.minimum_days_to_expiry is not None
+            and days < rule.minimum_days_to_expiry
+        ):
+            reasons.append("LEG_EXPIRY_BELOW_RULE")
+        if (
+            rule.maximum_days_to_expiry is not None
+            and days > rule.maximum_days_to_expiry
+        ):
+            reasons.append("LEG_EXPIRY_ABOVE_RULE")
+    elif (
+        rule.minimum_days_to_expiry is not None
+        or rule.maximum_days_to_expiry is not None
+    ):
+        reasons.append("LEG_EXPIRY_REQUIRED_BY_RULE")
+    if rule.target_delta is not None and choice.delta != rule.target_delta:
+        reasons.append("LEG_DELTA_TARGET_MISMATCH")
+    if rule.target_vega is not None and choice.vega != rule.target_vega:
+        reasons.append("LEG_VEGA_TARGET_MISMATCH")
+    if rule.target_moneyness is not None:
+        underlying_reference = (
+            choice.economic_notional_per_unit / choice.contract_multiplier
+        )
+        if choice.strike is None or underlying_reference == ZERO:
+            reasons.append("LEG_MONEYNESS_UNAVAILABLE")
+        elif choice.strike / underlying_reference != rule.target_moneyness:
+            reasons.append("LEG_MONEYNESS_TARGET_MISMATCH")
+    return tuple(sorted(set(reasons)))
+
+
+def _optimization_metrics(
+    legs: tuple[OptimizationLeg, ...],
+    quantities: tuple[int, ...],
+) -> OptimizationMetrics:
+    def signed(name: str) -> Decimal:
+        return sum(
+            (
+                Decimal(quantity) * leg.direction.sign * getattr(leg, name)
+                for leg, quantity in zip(legs, quantities, strict=True)
+            ),
+            ZERO,
+        )
+
+    gross_by_group: dict[str, Decimal] = {}
+    gross = ZERO
+    minimum_liquidity = ONE
+    for leg, quantity in zip(legs, quantities, strict=True):
+        if quantity <= 0:
+            continue
+        leg_notional = Decimal(quantity) * leg.choice.unit_notional
+        gross += leg_notional
+        gross_by_group[leg.concentration_group] = (
+            gross_by_group.get(leg.concentration_group, ZERO) + leg_notional
+        )
+        minimum_liquidity = min(minimum_liquidity, leg.choice.liquidity_score)
+    concentration = (
+        max(gross_by_group.values(), default=ZERO) / gross if gross > ZERO else ZERO
+    )
+    return OptimizationMetrics(
+        delta=signed("unit_delta"),
+        gamma=signed("unit_gamma"),
+        vega=signed("unit_vega"),
+        theta=signed("unit_theta"),
+        gross_notional=gross,
+        maximum_loss=sum(
+            (
+                Decimal(quantity) * leg.unit_maximum_loss
+                for leg, quantity in zip(legs, quantities, strict=True)
+            ),
+            ZERO,
+        ),
+        capital=sum(
+            (
+                Decimal(quantity) * leg.unit_capital
+                for leg, quantity in zip(legs, quantities, strict=True)
+            ),
+            ZERO,
+        ),
+        margin=sum(
+            (
+                Decimal(quantity) * leg.unit_margin
+                for leg, quantity in zip(legs, quantities, strict=True)
+            ),
+            ZERO,
+        ),
+        turnover=sum(
+            (
+                Decimal(quantity) * leg.unit_turnover
+                for leg, quantity in zip(legs, quantities, strict=True)
+            ),
+            ZERO,
+        ),
+        concentration=concentration,
+        minimum_liquidity_score=minimum_liquidity,
+    )
+
+
+def _constraint_reasons(
+    legs: tuple[OptimizationLeg, ...],
+    quantities: tuple[int, ...],
+    metrics: OptimizationMetrics,
+    constraints: JointOptimizationConstraints,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    for metric_name, target_name, tolerance_name in (
+        ("delta", "target_delta", "delta_tolerance"),
+        ("gamma", "target_gamma", "gamma_tolerance"),
+        ("vega", "target_vega", "vega_tolerance"),
+        ("theta", "target_theta", "theta_tolerance"),
+        ("gross_notional", "target_notional", "notional_tolerance"),
+    ):
+        target = getattr(constraints, target_name)
+        if target is not None and abs(getattr(metrics, metric_name) - target) > getattr(
+            constraints, tolerance_name
+        ):
+            reasons.append(f"{metric_name.upper()}_TARGET_UNSATISFIED")
+    for metric_name, limit_name in (
+        ("maximum_loss", "maximum_loss"),
+        ("capital", "capital_limit"),
+        ("margin", "margin_limit"),
+        ("turnover", "turnover_limit"),
+        ("concentration", "maximum_concentration"),
+    ):
+        limit = getattr(constraints, limit_name)
+        if limit is not None and getattr(metrics, metric_name) > limit:
+            reasons.append(f"{metric_name.upper()}_LIMIT_EXCEEDED")
+    if metrics.minimum_liquidity_score < constraints.minimum_liquidity_score:
+        reasons.append("LIQUIDITY_LIMIT_UNSATISFIED")
+    active = [
+        (Decimal(quantity) / leg.target_ratio)
+        for leg, quantity in zip(legs, quantities, strict=True)
+        if quantity > 0
+    ]
+    if active and max(active) - min(active) > constraints.ratio_tolerance:
+        reasons.append("LEG_RATIO_UNSATISFIED")
+    return tuple(sorted(set(reasons)))
+
+
+def _optimization_objective(
+    metrics: OptimizationMetrics,
+    constraints: JointOptimizationConstraints,
+) -> Decimal:
+    residual = ZERO
+    for metric_name, target_name in (
+        ("delta", "target_delta"),
+        ("gamma", "target_gamma"),
+        ("vega", "target_vega"),
+        ("theta", "target_theta"),
+        ("gross_notional", "target_notional"),
+    ):
+        target = getattr(constraints, target_name)
+        if target is not None:
+            residual += abs(getattr(metrics, metric_name) - target)
+    return (
+        residual
+        + metrics.maximum_loss
+        + metrics.margin
+        + metrics.turnover
+        + metrics.concentration
+    )
+
+
+def _count_reasons(counts: dict[str, int], reasons: Iterable[str]) -> None:
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+
+
+def _infeasible_optimization_result(
+    problem: JointOptimizationProblem,
+    counts: Mapping[str, int],
+    *,
+    evaluated: int,
+) -> JointOptimizationResult:
+    reasons = tuple(sorted(counts.items()))
+    feedback_map = {
+        "DELTA_TARGET_UNSATISFIED": "HYPOTHESIS_DELTA_EXPRESSION_INFEASIBLE",
+        "GAMMA_TARGET_UNSATISFIED": "HYPOTHESIS_CONVEXITY_EXPRESSION_INFEASIBLE",
+        "VEGA_TARGET_UNSATISFIED": "HYPOTHESIS_VOLATILITY_EXPRESSION_INFEASIBLE",
+        "MAXIMUM_LOSS_LIMIT_EXCEEDED": "HYPOTHESIS_DOWNSIDE_BUDGET_INFEASIBLE",
+        "CAPITAL_LIMIT_EXCEEDED": "HYPOTHESIS_CAPITAL_BUDGET_INFEASIBLE",
+        "MARGIN_LIMIT_EXCEEDED": "HYPOTHESIS_MARGIN_BUDGET_INFEASIBLE",
+        "LIQUIDITY_LIMIT_UNSATISFIED": "HYPOTHESIS_CAPACITY_INFEASIBLE",
+    }
+    feedback = tuple(
+        sorted(
+            {
+                feedback_map.get(reason, f"HYPOTHESIS_EXPRESSION_FAILED:{reason}")
+                for reason, _count in reasons
+            }
+        )
+    )
+    payload = {
+        "problem_hash": problem.content_hash,
+        "feasible": False,
+        "evaluated_combinations": evaluated,
+        "infeasibility_reasons": reasons,
+        "hypothesis_feedback": feedback,
+    }
+    return JointOptimizationResult(
+        problem_hash=problem.content_hash,
+        hypothesis_hash=problem.hypothesis_hash,
+        payoff_hash=problem.payoff_hash,
+        policy_hash=problem.policy_hash,
+        feasible=False,
+        quantities=(),
+        selected_legs=(),
+        metrics=None,
+        objective=None,
+        evaluated_combinations=evaluated,
+        infeasibility_reasons=reasons,
+        hypothesis_feedback=feedback,
+        content_hash=_content_hash(payload, label="joint-optimization-result"),
+    )
+
+
 DEFAULT_EXPRESSION_POLICY = ExpressionPolicy(
     policy_id="common-expression-v1",
     version="1.0.0",
@@ -837,10 +1492,16 @@ __all__ = [
     "ExpressionValidationError",
     "InstrumentChoice",
     "InstrumentExpressionEngine",
+    "JointOptimizationConstraints",
+    "JointOptimizationProblem",
+    "JointOptimizationResult",
     "LegRole",
     "LegSelectionRule",
     "LegState",
+    "OptimizationLeg",
+    "OptimizationMetrics",
     "ProductKind",
     "ScenarioRange",
     "StrategyTargets",
+    "DeterministicJointOptimizer",
 ]

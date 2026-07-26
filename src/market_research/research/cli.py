@@ -8,7 +8,10 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from market_research.storage_io import write_json_atomic
+from market_research.storage_io import (
+    write_json_atomic,
+    write_json_atomic_create_or_verify,
+)
 from market_research.application import (
     ActorContext,
     GovernanceSubjectRef,
@@ -364,6 +367,122 @@ def cmd_research_export_strategy_package(
         f"[RESEARCH-EXPORT-STRATEGY-PACKAGE] content_hash={package['content_hash']}"
     )
     return 0
+
+
+def cmd_research_multi_asset_build_package(
+    *,
+    context: "ResearchAppContext",
+    descriptor_path: str,
+    out_path: str,
+) -> int:
+    """Build one immutable portable multi-asset package from external inputs."""
+
+    from .multi_asset.validated_package import (
+        ValidatedPackageError,
+        build_validated_package,
+        load_package_build_request,
+    )
+
+    try:
+        request = load_package_build_request(
+            descriptor_path,
+            project_root=context.paths.project_root,
+        )
+        target = context.paths.external_output_path(
+            out_path,
+            label="multi_asset_validated_package",
+        )
+        published = build_validated_package(
+            request,
+            target,
+            project_root=context.paths.project_root,
+        )
+    except (OSError, ValueError, ValidatedPackageError) as exc:
+        context.printer(f"[RESEARCH-MULTI-ASSET-BUILD-PACKAGE] error={exc}")
+        return 1
+    context.run_result_hash = published.manifest.content_hash
+    context.printer(
+        json.dumps(
+            {
+                "status": "BUILT" if published.created else "VERIFIED_EXISTING",
+                "package_path": str(published.path),
+                "manifest_hash": published.manifest.content_hash,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def cmd_research_multi_asset_verify_package(
+    *,
+    context: "ResearchAppContext",
+    package_path: str,
+    out_path: str | None = None,
+) -> int:
+    """Verify a portable package without executing the research repository."""
+
+    from .multi_asset.validated_package import (
+        ValidatedPackageError,
+        verify_validated_package,
+    )
+
+    try:
+        package = context.paths.external_output_path(
+            package_path,
+            label="multi_asset_validated_package",
+        )
+        receipt = verify_validated_package(package)
+        if out_path is not None:
+            target = context.paths.external_output_path(
+                out_path,
+                label="multi_asset_package_verification_receipt",
+            )
+            write_json_atomic_create_or_verify(target, receipt.as_dict())
+    except (OSError, ValueError, ValidatedPackageError) as exc:
+        context.printer(f"[RESEARCH-MULTI-ASSET-VERIFY-PACKAGE] error={exc}")
+        return 1
+    context.run_result_hash = receipt.manifest_hash
+    context.printer(
+        json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True)
+    )
+    return 0
+
+
+def cmd_research_multi_asset_reproduce_package(
+    *,
+    context: "ResearchAppContext",
+    package_path: str,
+    out_path: str | None = None,
+) -> int:
+    """Recompute a package study/report twice and compare canonical outputs."""
+
+    from .multi_asset.validated_package import (
+        ValidatedPackageError,
+        reproduce_validated_package,
+    )
+
+    try:
+        package = context.paths.external_output_path(
+            package_path,
+            label="multi_asset_validated_package",
+        )
+        receipt = reproduce_validated_package(package)
+        if out_path is not None:
+            target = context.paths.external_output_path(
+                out_path,
+                label="multi_asset_package_reproduction_receipt",
+            )
+            write_json_atomic_create_or_verify(target, receipt.as_dict())
+    except (OSError, ValueError, ValidatedPackageError) as exc:
+        context.printer(f"[RESEARCH-MULTI-ASSET-REPRODUCE-PACKAGE] error={exc}")
+        return 1
+    context.run_result_hash = receipt.manifest_hash
+    context.printer(
+        json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True)
+    )
+    return 0 if receipt.status == "PASS" else 1
 
 
 def cmd_research_compare(

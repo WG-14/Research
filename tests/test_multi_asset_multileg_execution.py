@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
+
+import pytest
 
 from market_research.research.derivatives.common import AvailabilityTimes
 from market_research.research.derivatives.options import (
@@ -19,10 +23,26 @@ from market_research.research.derivatives.options import (
     simulate_option_lifecycle,
 )
 from market_research.research.multi_asset.multileg_execution import (
+    DynamicExecutionAttempt,
+    DynamicExecutionPolicy,
+    DynamicMultiLegExecutionPlan,
+    DynamicMultiLegExecutionService,
+    DynamicTimeInForce,
+    ExpressionCompilePolicy,
+    ExpressionExecutionCompiler,
     MultiLegDisposition,
     MultiLegLedgerCommand,
     MultiLegLedgerExecutionService,
     SequentialPartialAction,
+)
+from market_research.research.multi_asset.expression import (
+    CandidateEvaluation,
+    Direction,
+    ExpressionDecision,
+    ExpressionLeg,
+    LegRole,
+    LegSelectionRule,
+    ProductKind,
 )
 from market_research.research.multi_asset.portfolio import (
     AssetClass,
@@ -407,3 +427,210 @@ def test_physical_future_option_lifecycle_creates_future_in_same_ledger() -> Non
     assert lifecycle_ledger_event.deliverable_asset_class is AssetClass.FUTURE
     assert lifecycle_ledger_event.deliverable_multiplier == Decimal("50")
     assert lifecycle_ledger_event.source_hashes == (lifecycle.content_hash,)
+
+
+def test_expression_compiler_prevents_leg_bypass_and_dynamic_aon_retries() -> None:
+    call = _contract("option.call.compiled")
+    put = _contract("option.put.compiled", option_type=OptionType.PUT)
+    rule = LegSelectionRule(
+        product_kind=ProductKind.OPTION,
+        minimum_days_to_expiry=1,
+        maximum_days_to_expiry=365,
+        minimum_liquidity_score=Decimal("0.5"),
+    )
+    decision = ExpressionDecision(
+        hypothesis_hash=_hash("h"),
+        payoff_hash=_hash("p"),
+        policy_hash=_hash("r"),
+        as_of=datetime.fromisoformat(NOW),
+        candidate_evaluations=(
+            CandidateEvaluation(
+                candidate_id="candidate.compiled",
+                feasible=True,
+                rejection_reasons=(),
+                comparison_values=(),
+                score=Decimal("1"),
+            ),
+        ),
+        selected_candidate_id="candidate.compiled",
+        selected_legs=(
+            ExpressionLeg(
+                selection_rule=rule,
+                instrument_id=call.contract_id,
+                direction=Direction.LONG,
+                quantity=Decimal("1"),
+                ratio=Decimal("1"),
+                currency="USD",
+                role=LegRole.PRIMARY,
+            ),
+            ExpressionLeg(
+                selection_rule=rule,
+                instrument_id=put.contract_id,
+                direction=Direction.SHORT,
+                quantity=Decimal("1"),
+                ratio=Decimal("1"),
+                currency="USD",
+                role=LegRole.HEDGE,
+            ),
+        ),
+        failure_evidence=(),
+    )
+    compiler = ExpressionExecutionCompiler(
+        ExpressionCompilePolicy(
+            compiler_id="compiler.option",
+            version="1",
+            execution_policy=MultiLegExecutionPolicy.SIMULTANEOUS,
+            maximum_leg_time_skew_seconds=1,
+            allow_partial=False,
+            sequential_partial_action=SequentialPartialAction.UNWIND,
+        )
+    )
+
+    def compile_attempt(
+        execution_id: str,
+        *,
+        fill_at: str,
+        ask_size: str,
+    ):
+        quotes = {
+            call.contract_id: _quote(call, ask_size=ask_size),
+            put.contract_id: _quote(
+                put, bid="4", ask="4.2", ask_size=ask_size, bid_size=ask_size
+            ),
+        }
+        return compiler.compile(
+            execution_id=execution_id,
+            decision=decision,
+            contracts={call.contract_id: call, put.contract_id: put},
+            quotes=quotes,
+            fill_times={
+                f"{execution_id}.leg.1": fill_at,
+                f"{execution_id}.leg.2": fill_at,
+            },
+        )
+
+    first = compile_attempt(
+        "execution.compiler.first",
+        fill_at=NOW,
+        ask_size="0.5",
+    )
+    second_time = "2026-01-02T12:00:12+00:00"
+    second = compile_attempt(
+        "execution.compiler.second",
+        fill_at=second_time,
+        ask_size="10",
+    )
+    assert tuple(
+        item.quantity for item in first.command.order.legs
+    ) == tuple(item.quantity for item in decision.selected_legs)
+    assert first.decision_hash == decision.content_hash
+
+    with pytest.raises(ValueError, match="contract_coverage_mismatch"):
+        compiler.compile(
+            execution_id="execution.compiler.bypass",
+            decision=decision,
+            contracts={call.contract_id: call},
+            quotes={
+                call.contract_id: _quote(call),
+                put.contract_id: _quote(put),
+            },
+            fill_times={
+                "execution.compiler.bypass.leg.1": NOW,
+                "execution.compiler.bypass.leg.2": NOW,
+            },
+        )
+
+    policy = DynamicExecutionPolicy(
+        policy_id="dynamic.aon.retry",
+        version="1",
+        time_in_force=DynamicTimeInForce.ALL_OR_NONE,
+        maximum_attempts=2,
+        timeout_seconds=10,
+        retry_delay_seconds=1,
+        accept_partial=False,
+        maximum_interleg_move_bps=Decimal("100"),
+    )
+    plan = DynamicMultiLegExecutionPlan(
+        plan_id="plan.compiler.retry",
+        decision_hash=decision.content_hash,
+        policy=policy,
+        attempts=(
+            DynamicExecutionAttempt(
+                attempt_number=1,
+                compiled=first,
+                market_state_hash=_hash("a"),
+                quote_state_hash=_hash("b"),
+            ),
+            DynamicExecutionAttempt(
+                attempt_number=2,
+                compiled=second,
+                market_state_hash=_hash("c"),
+                quote_state_hash=_hash("d"),
+            ),
+        ),
+    )
+    rebound_plan = replace(
+        plan,
+        attempts=(
+            replace(plan.attempts[0], market_state_hash=_hash("e")),
+            plan.attempts[1],
+        ),
+    )
+    assert rebound_plan.content_hash != plan.content_hash
+    result = DynamicMultiLegExecutionService().execute(
+        plan,
+        ledger=_ledger("ledger.compiler.retry"),
+        fx_rates={"USD": Decimal("1")},
+    )
+    assert len(result.attempts) == 2
+    assert result.attempts[0].disposition is MultiLegDisposition.ATOMIC_REJECTED
+    assert result.final_execution.disposition is MultiLegDisposition.FILLED
+    assert result.attempts[0].ledger_before_hash == (
+        result.attempts[0].ledger_after_hash
+    )
+    assert result.content_hash == DynamicMultiLegExecutionService().execute(
+        plan,
+        ledger=_ledger("ledger.compiler.retry"),
+        fx_rates={"USD": Decimal("1")},
+    ).content_hash
+
+    changed_decision = replace(
+        decision,
+        selected_legs=(
+            replace(decision.selected_legs[0], quantity=Decimal("2")),
+            decision.selected_legs[1],
+        ),
+    )
+    changed = compiler.compile(
+        execution_id="execution.compiler.changed",
+        decision=changed_decision,
+        contracts={call.contract_id: call, put.contract_id: put},
+        quotes={
+            call.contract_id: _quote(call),
+            put.contract_id: _quote(put),
+        },
+        fill_times={
+            "execution.compiler.changed.leg.1": second_time,
+            "execution.compiler.changed.leg.2": second_time,
+        },
+    )
+    with pytest.raises(ValueError, match="decision_binding_mismatch"):
+        DynamicMultiLegExecutionPlan(
+            plan_id="plan.compiler.bypass",
+            decision_hash=decision.content_hash,
+            policy=policy,
+            attempts=(
+                    DynamicExecutionAttempt(
+                        attempt_number=1,
+                        compiled=first,
+                        market_state_hash=_hash("a"),
+                        quote_state_hash=_hash("b"),
+                    ),
+                    DynamicExecutionAttempt(
+                        attempt_number=2,
+                        compiled=changed,
+                        market_state_hash=_hash("c"),
+                        quote_state_hash=_hash("d"),
+                    ),
+            ),
+        )

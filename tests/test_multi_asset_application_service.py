@@ -55,6 +55,9 @@ from market_research.research.multi_asset.research_package import (
     bytes_sha256,
     encode_evidence_artifact,
     evidence_artifact_schema_hash,
+    research_input_document_hash,
+    research_input_source_row_hash,
+    research_input_source_rows_hash,
 )
 from market_research.research.multi_asset.study import (
     FuturesScenarioTrace,
@@ -443,8 +446,30 @@ def _references(
     *,
     paths: ResearchPathManager,
     spec: MultiAssetExperimentSpec,
+    research_inputs_document: dict[str, object] | None = None,
+    research_inputs_schema_id: str = "multi-asset-runner-inputs",
 ) -> tuple[EvidenceArtifactRef, ...]:
     runtime = capture_runtime_environment(paths.project_root)
+    input_document = (
+        {
+            "schema_version": 1,
+            "runner_input_contract": "deterministic-test-runner",
+            "experiment_spec_hash": spec.content_hash,
+        }
+        if research_inputs_document is None
+        else research_inputs_document
+    )
+    source_row: dict[str, object] = {
+        "row_id": "row:research-inputs:1",
+        "row_kind": "CANONICAL_RESEARCH_INPUTS",
+        "event_at": spec.frozen_at,
+        "knowledge_at": spec.frozen_at,
+        "source_id": "externally-prepared-test-fixture",
+        "source_schema_version": "v1",
+        "payload": input_document,
+    }
+    source_row["content_hash"] = research_input_source_row_hash(source_row)
+    source_rows = [source_row]
     refs = [
         _artifact_ref(
             paths=paths,
@@ -460,6 +485,23 @@ def _references(
                 "event_start_at": "2025-01-01T00:00:00Z",
                 "event_end_at": "2025-01-03T14:59:00Z",
                 "knowledge_cutoff_at": "2025-01-03T14:59:00Z",
+            },
+        ),
+        _artifact_ref(
+            paths=paths,
+            role=EvidenceArtifactRole.RESEARCH_INPUTS,
+            logical_id="research-inputs:multi-asset",
+            version="v1",
+            payload={
+                "artifact_kind": "IMMUTABLE_RESEARCH_INPUTS",
+                "input_schema_id": research_inputs_schema_id,
+                "input_schema_version": 1,
+                "input_document": input_document,
+                "input_document_hash": research_input_document_hash(
+                    input_document
+                ),
+                "source_rows": source_rows,
+                "source_rows_hash": research_input_source_rows_hash(source_rows),
             },
         ),
         _artifact_ref(
@@ -610,6 +652,7 @@ def test_production_application_resolves_runs_publishes_and_reproduces(
         "INPUT:MARKET_STATE:SOURCE_COMPLETE",
         "INPUT:POLICY:SOURCE_COMPLETE",
         "INPUT:PRODUCT_REGISTRY:SOURCE_COMPLETE",
+        "INPUT:RESEARCH_INPUTS:SOURCE_COMPLETE",
     )
     assert all(
         Path(unquote(urlsplit(item.uri).path)).is_file()

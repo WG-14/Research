@@ -21,12 +21,17 @@ from market_research.research.multi_asset.portfolio import (
     trade_event,
 )
 from market_research.research.multi_asset.scenarios import (
+    GeneratedScenarioPath,
     JointMarketShock,
     PathRiskLimits,
     PathScenarioEngine,
     PathShockStep,
     PathStressScenario,
     ScenarioError,
+    ScenarioFactorObservation,
+    ScenarioPathFactory,
+    ScenarioPathGenerationSpec,
+    ScenarioPathMode,
 )
 
 
@@ -320,4 +325,87 @@ def test_path_shock_rejects_unheld_target_without_partial_evidence() -> None:
             snapshot,
             market_state=state,
             scenario=scenario,
+        )
+
+
+def test_historical_bootstrap_and_stochastic_path_factory_is_reproducible() -> None:
+    observations = tuple(
+        ScenarioFactorObservation(
+            observation_id=f"observation.{index}",
+            observed_at=f"2026-05-0{index}T09:00:00+00:00",
+            regime_id="normal",
+            price_returns=(("AAPL", Decimal(str(index)) / Decimal("100")),),
+            fx_returns=(("EUR", Decimal(str(index)) / Decimal("1000")),),
+            volatility_shifts=(
+                ("AAPL.VOL", Decimal(str(index)) / Decimal("1000")),
+            ),
+            rate_shifts=(("USD", Decimal(str(index)) / Decimal("10000")),),
+            spread_multipliers=(
+                ("AAPL", Decimal("1") + Decimal(str(index)) / Decimal("10")),
+            ),
+            margin_multiplier=(
+                Decimal("1") + Decimal(str(index)) / Decimal("20")
+            ),
+            source_hash=("sha256:" + str(index) * 64),
+        )
+        for index in range(1, 5)
+    )
+    factory = ScenarioPathFactory()
+    for mode in ScenarioPathMode:
+        spec = ScenarioPathGenerationSpec(
+            path_id=f"path.{mode.value.lower()}",
+            mode=mode,
+            step_count=3,
+            seed=1729,
+            window_start="2026-05-01T00:00:00+00:00",
+            window_end="2026-05-31T23:59:59+00:00",
+            regime_id="normal",
+            model_hash=_HASH_2,
+            block_length=2,
+        )
+        first = factory.generate(spec, observations=observations)
+        second = factory.generate(spec, observations=observations)
+        assert isinstance(first, GeneratedScenarioPath)
+        assert first.content_hash == second.content_hash
+        assert first.events[0].predecessor_hash == first.chain_root_hash
+        assert first.events[1].predecessor_hash == first.events[0].content_hash
+        assert all(
+            spec.model_hash in event.shock.source_hashes
+            for event in first.events
+        )
+
+    bootstrap = factory.generate(
+        ScenarioPathGenerationSpec(
+            path_id="path.bootstrap.converted",
+            mode=ScenarioPathMode.BOOTSTRAP,
+            step_count=3,
+            seed=7,
+            window_start="2026-05-01T00:00:00+00:00",
+            window_end="2026-05-31T23:59:59+00:00",
+            regime_id="normal",
+            model_hash=_HASH_2,
+            block_length=2,
+        ),
+        observations=observations,
+    )
+    converted = bootstrap.to_stress_scenario(
+        expected_base_state_hash=_market_state().state_hash(),
+        expected_ledger_hash=_snapshot().ledger_hash,
+        effective_times=(
+            "2026-06-02T11:00:00+00:00",
+            "2026-06-03T11:00:00+00:00",
+            "2026-06-04T11:00:00+00:00",
+        ),
+        risk_limits=PathRiskLimits(maximum_drawdown_fraction=Decimal("0.5")),
+    )
+    assert len(converted.steps) == 3
+
+    with pytest.raises(ScenarioError, match="window_regime_empty"):
+        factory.generate(
+            replace(
+                bootstrap.specification,
+                path_id="path.missing.regime",
+                regime_id="crisis",
+            ),
+            observations=observations,
         )

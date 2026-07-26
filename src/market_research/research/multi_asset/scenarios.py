@@ -7,9 +7,11 @@ hash is retained in the scenario evidence.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
+from enum import StrEnum
 from typing import Iterable, Mapping, Protocol, runtime_checkable
 
 from market_research.research.hashing import sha256_prefixed
@@ -2690,3 +2692,858 @@ class PathScenarioEngine:
         for instrument_id, haircut in increments:
             prior = cumulative.get(instrument_id, _ZERO)
             cumulative[instrument_id] = _ONE - ((_ONE - prior) * (_ONE - haircut))
+
+
+@dataclass(frozen=True, slots=True)
+class EconomicProjectionPolicy:
+    policy_id: str
+    version: str
+    maximum_absolute_basis_fraction: Decimal
+    maximum_volatility_curvature: Decimal
+    require_derivative_repricers: bool = True
+    require_liquidation_costs_for_liquidity_shock: bool = True
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.policy_id, "economic_policy.policy_id")
+        _require_id(self.version, "economic_policy.version")
+        _decimal(
+            self.maximum_absolute_basis_fraction,
+            "economic_policy.maximum_absolute_basis_fraction",
+            nonnegative=True,
+        )
+        _decimal(
+            self.maximum_volatility_curvature,
+            "economic_policy.maximum_volatility_curvature",
+            nonnegative=True,
+        )
+        for name in (
+            "require_derivative_repricers",
+            "require_liquidation_costs_for_liquidity_shock",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ScenarioError(f"economic_policy_{name}_invalid")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "policy_id": self.policy_id,
+                    "version": self.version,
+                    "maximum_absolute_basis_fraction": _decimal_text(
+                        self.maximum_absolute_basis_fraction
+                    ),
+                    "maximum_volatility_curvature": _decimal_text(
+                        self.maximum_volatility_curvature
+                    ),
+                    "require_derivative_repricers": (
+                        self.require_derivative_repricers
+                    ),
+                    "require_liquidation_costs_for_liquidity_shock": (
+                        self.require_liquidation_costs_for_liquidity_shock
+                    ),
+                },
+                label="economic_projection_policy",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EconomicConstraintEvidence:
+    scenario_result_hash: str
+    policy_hash: str
+    futures_basis_fractions: tuple[tuple[str, Decimal], ...]
+    derivative_repricer_hash: str
+    volatility_constraint_hash: str
+    liquidity_constraint_hash: str
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "scenario_result_hash",
+            "policy_hash",
+            "derivative_repricer_hash",
+            "volatility_constraint_hash",
+            "liquidity_constraint_hash",
+        ):
+            _require_hash(getattr(self, name), f"economic_evidence.{name}")
+        if tuple(sorted(self.futures_basis_fractions)) != (
+            self.futures_basis_fractions
+        ):
+            raise ScenarioError("economic_evidence_basis_not_sorted")
+        if len({key for key, _value in self.futures_basis_fractions}) != len(
+            self.futures_basis_fractions
+        ):
+            raise ScenarioError("economic_evidence_basis_duplicate")
+        for contract_id, fraction in self.futures_basis_fractions:
+            _require_id(contract_id, "economic_evidence.contract_id")
+            _decimal(fraction, "economic_evidence.basis_fraction")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "scenario_result_hash": self.scenario_result_hash,
+                    "policy_hash": self.policy_hash,
+                    "futures_basis_fractions": [
+                        {
+                            "contract_id": key,
+                            "basis_fraction": _decimal_text(value),
+                        }
+                        for key, value in self.futures_basis_fractions
+                    ],
+                    "derivative_repricer_hash": self.derivative_repricer_hash,
+                    "volatility_constraint_hash": (
+                        self.volatility_constraint_hash
+                    ),
+                    "liquidity_constraint_hash": self.liquidity_constraint_hash,
+                },
+                label="economic_constraint_evidence",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConstrainedScenarioResult:
+    result: JointScenarioResult
+    economic_evidence: EconomicConstraintEvidence
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, JointScenarioResult) or not isinstance(
+            self.economic_evidence, EconomicConstraintEvidence
+        ):
+            raise ScenarioError("constrained_scenario_result_types_invalid")
+        if self.economic_evidence.scenario_result_hash != self.result.content_hash:
+            raise ScenarioError("constrained_scenario_result_binding_mismatch")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "scenario_result_hash": self.result.content_hash,
+                    "economic_evidence_hash": self.economic_evidence.content_hash,
+                },
+                label="constrained_scenario_result",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConstrainedJointScenarioEngine:
+    """Reprice first, then fail closed on cross-product economic constraints."""
+
+    policy: EconomicProjectionPolicy
+    joint_engine: JointScenarioEngine = field(default_factory=JointScenarioEngine)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy, EconomicProjectionPolicy):
+            raise ScenarioError("constrained_scenario_policy_required")
+        if not isinstance(self.joint_engine, JointScenarioEngine):
+            raise ScenarioError("constrained_scenario_joint_engine_required")
+
+    def evaluate(
+        self,
+        snapshot: PortfolioSnapshot,
+        *,
+        market_state: ImmutableMarketStateLike,
+        shock: JointMarketShock,
+        repricers: Mapping[str, PositionRepricer] | None = None,
+        base_liquidation_costs: Mapping[str, Decimal] | None = None,
+        scenario_valuation_at: str | None = None,
+    ) -> ConstrainedScenarioResult:
+        if not isinstance(self.policy, EconomicProjectionPolicy):
+            raise ScenarioError("constrained_scenario_policy_required")
+        result = self.joint_engine.evaluate(
+            snapshot,
+            market_state=market_state,
+            shock=shock,
+            repricers=repricers,
+            base_liquidation_costs=base_liquidation_costs,
+            scenario_valuation_at=scenario_valuation_at,
+        )
+        state = result.shocked_state
+        prices = dict(state.prices)
+        futures_underlyings = dict(
+            build_common_market_projection(
+                market_state,
+                fallback_marks={
+                    item.instrument_id: item.mark_price
+                    for item in snapshot.positions
+                },
+            ).futures_underlyings
+        )
+        basis_rows: list[tuple[str, Decimal]] = []
+        for contract_id, underlying_id in sorted(futures_underlyings.items()):
+            if contract_id not in prices or underlying_id not in prices:
+                raise ScenarioError(
+                    f"economic_constraint_future_underlying_missing:{contract_id}"
+                )
+            fraction = (prices[contract_id] - prices[underlying_id]) / prices[
+                underlying_id
+            ]
+            if abs(fraction) > self.policy.maximum_absolute_basis_fraction:
+                raise ScenarioError(
+                    f"economic_constraint_future_basis_exceeded:{contract_id}"
+                )
+            basis_rows.append((contract_id, fraction))
+
+        repricer_rows = tuple(
+            sorted(
+                (
+                    item.instrument_id,
+                    item.asset_class.value,
+                    item.repricer,
+                )
+                for item in result.position_results
+            )
+        )
+        derivative_factor_shock = bool(
+            shock.price_returns
+            or shock.price_absolute_shifts
+            or shock.rate_shifts
+            or shock.dividend_yield_shifts
+            or shock.volatility_shifts
+            or shock.volatility_skew_shifts
+            or shock.volatility_term_shifts
+            or shock.futures_curve_returns
+            or shock.futures_basis_shifts
+        )
+        if (
+            self.policy.require_derivative_repricers
+            and derivative_factor_shock
+            and any(
+                asset_class in {AssetClass.FUTURE.value, AssetClass.OPTION.value}
+                and repricer == "direct_mark_shock"
+                for _instrument_id, asset_class, repricer in repricer_rows
+            )
+        ):
+            raise ScenarioError("economic_constraint_derivative_repricer_required")
+        derivative_hash = sha256_prefixed(
+            repricer_rows, label="economic_derivative_repricing"
+        )
+
+        _validate_volatility_no_arbitrage(
+            state,
+            maximum_curvature=self.policy.maximum_volatility_curvature,
+        )
+        volatility_hash = sha256_prefixed(
+            [
+                {
+                    "surface_id": item.surface_id,
+                    "underlying_id": item.underlying_instrument_id,
+                    "expiry_at": item.expiry_at,
+                    "strike": _decimal_text(item.strike),
+                    "volatility": _decimal_text(item.projected_volatility),
+                }
+                for item in state.volatility_points
+            ],
+            label="economic_volatility_constraints",
+        )
+        liquidity_shock = bool(
+            shock.liquidity_haircuts
+            or shock.spread_multipliers
+            or shock.liquidity_cost_multiplier != _ONE
+        )
+        if (
+            liquidity_shock
+            and self.policy.require_liquidation_costs_for_liquidity_shock
+            and not base_liquidation_costs
+        ):
+            raise ScenarioError(
+                "economic_constraint_liquidation_cost_evidence_required"
+            )
+        liquidity_hash = sha256_prefixed(
+            {
+                "liquidity_shock": liquidity_shock,
+                "liquidity_reserve": _decimal_text(result.liquidity_reserve),
+                "base_liquidation_costs": [
+                    {
+                        "instrument_id": key,
+                        "cost": _decimal_text(value),
+                    }
+                    for key, value in sorted((base_liquidation_costs or {}).items())
+                ],
+            },
+            label="economic_liquidity_constraints",
+        )
+        evidence = EconomicConstraintEvidence(
+            scenario_result_hash=result.content_hash,
+            policy_hash=self.policy.content_hash,
+            futures_basis_fractions=tuple(basis_rows),
+            derivative_repricer_hash=derivative_hash,
+            volatility_constraint_hash=volatility_hash,
+            liquidity_constraint_hash=liquidity_hash,
+        )
+        return ConstrainedScenarioResult(result=result, economic_evidence=evidence)
+
+
+def _validate_volatility_no_arbitrage(
+    state: ShockedMarketState,
+    *,
+    maximum_curvature: Decimal,
+) -> None:
+    valuation_at = _timestamp(state.valuation_at, "economic_state.valuation_at")
+    by_underlying_strike: dict[
+        tuple[str, Decimal], list[VolatilityPointProjection]
+    ] = {}
+    by_underlying_expiry: dict[
+        tuple[str, str], list[VolatilityPointProjection]
+    ] = {}
+    for point in state.volatility_points:
+        by_underlying_strike.setdefault(
+            (point.underlying_instrument_id, point.strike), []
+        ).append(point)
+        by_underlying_expiry.setdefault(
+            (point.underlying_instrument_id, point.expiry_at), []
+        ).append(point)
+    for points in by_underlying_strike.values():
+        previous_total_variance: Decimal | None = None
+        for point in sorted(points, key=lambda item: item.expiry_at):
+            days = Decimal(
+                str(
+                    (
+                        _timestamp(point.expiry_at, "economic_vol.expiry")
+                        - valuation_at
+                    ).total_seconds()
+                    / 86_400
+                )
+            )
+            if days <= _ZERO:
+                raise ScenarioError("economic_constraint_volatility_expired_point")
+            total_variance = point.projected_volatility**2 * days / Decimal("365")
+            if (
+                previous_total_variance is not None
+                and total_variance < previous_total_variance
+            ):
+                raise ScenarioError(
+                    "economic_constraint_volatility_calendar_arbitrage"
+                )
+            previous_total_variance = total_variance
+    for points in by_underlying_expiry.values():
+        ordered = sorted(points, key=lambda item: item.strike)
+        for left, middle, right in zip(
+            ordered, ordered[1:], ordered[2:], strict=False
+        ):
+            left_width = middle.strike - left.strike
+            right_width = right.strike - middle.strike
+            if left_width <= _ZERO or right_width <= _ZERO:
+                raise ScenarioError("economic_constraint_volatility_strike_duplicate")
+            left_slope = (
+                middle.projected_volatility - left.projected_volatility
+            ) / left_width
+            right_slope = (
+                right.projected_volatility - middle.projected_volatility
+            ) / right_width
+            if abs(right_slope - left_slope) > maximum_curvature:
+                raise ScenarioError(
+                    "economic_constraint_volatility_butterfly_curvature"
+                )
+
+
+class ScenarioPathMode(StrEnum):
+    DETERMINISTIC = "DETERMINISTIC"
+    HISTORICAL = "HISTORICAL"
+    BOOTSTRAP = "BOOTSTRAP"
+    STOCHASTIC = "STOCHASTIC"
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioFactorObservation:
+    observation_id: str
+    observed_at: str
+    regime_id: str
+    price_returns: tuple[tuple[str, Decimal], ...] = ()
+    fx_returns: tuple[tuple[str, Decimal], ...] = ()
+    volatility_shifts: tuple[tuple[str, Decimal], ...] = ()
+    rate_shifts: tuple[tuple[str, Decimal], ...] = ()
+    funding_rate_shifts: tuple[tuple[str, Decimal], ...] = ()
+    spread_multipliers: tuple[tuple[str, Decimal], ...] = ()
+    liquidity_haircuts: tuple[tuple[str, Decimal], ...] = ()
+    margin_multiplier: Decimal = _ONE
+    source_hash: str = ""
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.observation_id, "scenario_observation.observation_id")
+        object.__setattr__(
+            self,
+            "observed_at",
+            _timestamp_text(
+                self.observed_at, "scenario_observation.observed_at"
+            ),
+        )
+        _require_id(self.regime_id, "scenario_observation.regime_id")
+        for name in (
+            "price_returns",
+            "fx_returns",
+            "volatility_shifts",
+            "rate_shifts",
+            "funding_rate_shifts",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _normalize_pairs(
+                    getattr(self, name), f"scenario_observation.{name}"
+                ),
+            )
+        if any(
+            value <= -_ONE
+            for name in ("price_returns", "fx_returns")
+            for _key, value in getattr(self, name)
+        ):
+            raise ScenarioError("scenario_observation_return_at_or_below_minus_one")
+        object.__setattr__(
+            self,
+            "spread_multipliers",
+            _normalize_pairs(
+                self.spread_multipliers,
+                "scenario_observation.spread_multipliers",
+                positive=True,
+            ),
+        )
+        haircuts = _normalize_pairs(
+            self.liquidity_haircuts,
+            "scenario_observation.liquidity_haircuts",
+            nonnegative=True,
+        )
+        if any(value > _ONE for _, value in haircuts):
+            raise ScenarioError("scenario_observation_haircut_above_one")
+        object.__setattr__(self, "liquidity_haircuts", haircuts)
+        _decimal(
+            self.margin_multiplier,
+            "scenario_observation.margin_multiplier",
+            positive=True,
+        )
+        _require_hash(self.source_hash, "scenario_observation.source_hash")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "observation_id": self.observation_id,
+                    "observed_at": self.observed_at,
+                    "regime_id": self.regime_id,
+                    **{
+                        name: [
+                            {"key": key, "value": _decimal_text(value)}
+                            for key, value in getattr(self, name)
+                        ]
+                        for name in (
+                            "price_returns",
+                            "fx_returns",
+                            "volatility_shifts",
+                            "rate_shifts",
+                            "funding_rate_shifts",
+                            "spread_multipliers",
+                            "liquidity_haircuts",
+                        )
+                    },
+                    "margin_multiplier": _decimal_text(self.margin_multiplier),
+                    "source_hash": self.source_hash,
+                },
+                label="scenario_factor_observation",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioPathGenerationSpec:
+    path_id: str
+    mode: ScenarioPathMode
+    step_count: int
+    seed: int
+    window_start: str
+    window_end: str
+    regime_id: str
+    model_hash: str
+    block_length: int = 1
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.path_id, "scenario_generation.path_id")
+        if not isinstance(self.mode, ScenarioPathMode):
+            raise ScenarioError("scenario_generation_mode_invalid")
+        for name in ("step_count", "seed", "block_length"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ScenarioError(f"scenario_generation_{name}_invalid")
+        if self.step_count <= 0 or self.step_count > _HARD_MAX_PATH_STEPS:
+            raise ScenarioError("scenario_generation_step_count_invalid")
+        if self.block_length <= 0 or self.block_length > self.step_count:
+            raise ScenarioError("scenario_generation_block_length_invalid")
+        start = _timestamp(self.window_start, "scenario_generation.window_start")
+        end = _timestamp(self.window_end, "scenario_generation.window_end")
+        if start > end:
+            raise ScenarioError("scenario_generation_window_inverted")
+        object.__setattr__(
+            self,
+            "window_start",
+            start.isoformat(),
+        )
+        object.__setattr__(
+            self,
+            "window_end",
+            end.isoformat(),
+        )
+        _require_id(self.regime_id, "scenario_generation.regime_id")
+        _require_hash(self.model_hash, "scenario_generation.model_hash")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "path_id": self.path_id,
+                    "mode": self.mode.value,
+                    "step_count": self.step_count,
+                    "seed": self.seed,
+                    "window_start": self.window_start,
+                    "window_end": self.window_end,
+                    "regime_id": self.regime_id,
+                    "model_hash": self.model_hash,
+                    "block_length": self.block_length,
+                },
+                label="scenario_path_generation_spec",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedScenarioEvent:
+    sequence: int
+    event_id: str
+    predecessor_hash: str
+    shock: JointMarketShock
+    observation_hashes: tuple[str, ...]
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.sequence <= 0 or isinstance(self.sequence, bool):
+            raise ScenarioError("generated_scenario_sequence_invalid")
+        _require_id(self.event_id, "generated_scenario.event_id")
+        _require_hash(
+            self.predecessor_hash, "generated_scenario.predecessor_hash"
+        )
+        if not isinstance(self.shock, JointMarketShock):
+            raise ScenarioError("generated_scenario_shock_invalid")
+        if tuple(sorted(set(self.observation_hashes))) != self.observation_hashes:
+            raise ScenarioError("generated_scenario_observation_hashes_invalid")
+        if not self.observation_hashes:
+            raise ScenarioError("generated_scenario_observation_hashes_required")
+        for item in self.observation_hashes:
+            _require_hash(item, "generated_scenario.observation_hash")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "sequence": self.sequence,
+                    "event_id": self.event_id,
+                    "predecessor_hash": self.predecessor_hash,
+                    "shock_hash": self.shock.content_hash,
+                    "observation_hashes": list(self.observation_hashes),
+                },
+                label="generated_scenario_event",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedScenarioPath:
+    specification: ScenarioPathGenerationSpec
+    chain_root_hash: str
+    events: tuple[GeneratedScenarioEvent, ...]
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.specification, ScenarioPathGenerationSpec):
+            raise ScenarioError("generated_scenario_specification_invalid")
+        if any(
+            not isinstance(item, GeneratedScenarioEvent) for item in self.events
+        ):
+            raise ScenarioError("generated_scenario_event_invalid")
+        expected_root = sha256_prefixed(
+            {
+                "specification_hash": self.specification.content_hash,
+                "model_hash": self.specification.model_hash,
+                "seed": self.specification.seed,
+                "window": [
+                    self.specification.window_start,
+                    self.specification.window_end,
+                ],
+                "regime_id": self.specification.regime_id,
+            },
+            label="generated_scenario_chain_root",
+        )
+        if self.chain_root_hash != expected_root:
+            raise ScenarioError("generated_scenario_chain_root_mismatch")
+        if len(self.events) != self.specification.step_count:
+            raise ScenarioError("generated_scenario_event_count_mismatch")
+        predecessor = self.chain_root_hash
+        for expected, event in enumerate(self.events, start=1):
+            if event.sequence != expected or event.predecessor_hash != predecessor:
+                raise ScenarioError("generated_scenario_event_chain_broken")
+            predecessor = event.content_hash
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "specification_hash": self.specification.content_hash,
+                    "chain_root_hash": self.chain_root_hash,
+                    "event_hashes": [item.content_hash for item in self.events],
+                },
+                label="generated_scenario_path",
+            ),
+        )
+
+    def to_stress_scenario(
+        self,
+        *,
+        expected_base_state_hash: str,
+        expected_ledger_hash: str,
+        effective_times: tuple[str, ...],
+        risk_limits: PathRiskLimits,
+    ) -> PathStressScenario:
+        if len(effective_times) != len(self.events):
+            raise ScenarioError("generated_scenario_effective_time_count_mismatch")
+        steps: list[PathShockStep] = []
+        predecessor = expected_base_state_hash
+        for event, effective_at in zip(
+            self.events, effective_times, strict=True
+        ):
+            step = PathShockStep(
+                sequence=event.sequence,
+                step_id=event.event_id,
+                effective_at=effective_at,
+                predecessor_hash=predecessor,
+                shock=event.shock,
+            )
+            steps.append(step)
+            predecessor = step.content_hash
+        return PathStressScenario(
+            path_id=self.specification.path_id,
+            expected_base_state_hash=expected_base_state_hash,
+            expected_ledger_hash=expected_ledger_hash,
+            steps=tuple(steps),
+            risk_limits=risk_limits,
+        )
+
+
+class ScenarioPathFactory:
+    """Create deterministic, historical, bootstrap or stochastic shock paths."""
+
+    def generate(
+        self,
+        specification: ScenarioPathGenerationSpec,
+        *,
+        observations: tuple[ScenarioFactorObservation, ...],
+    ) -> GeneratedScenarioPath:
+        if not isinstance(specification, ScenarioPathGenerationSpec):
+            raise ScenarioError("scenario_generation_specification_invalid")
+        if not observations:
+            raise ScenarioError("scenario_generation_observations_required")
+        if any(
+            not isinstance(item, ScenarioFactorObservation)
+            for item in observations
+        ):
+            raise ScenarioError("scenario_generation_observation_invalid")
+        ordered = tuple(sorted(observations, key=lambda item: item.observed_at))
+        if len({item.observation_id for item in ordered}) != len(ordered):
+            raise ScenarioError("scenario_generation_observation_id_duplicate")
+        start = _timestamp(
+            specification.window_start, "scenario_generation.window_start"
+        )
+        end = _timestamp(
+            specification.window_end, "scenario_generation.window_end"
+        )
+        eligible = tuple(
+            item
+            for item in ordered
+            if start
+            <= _timestamp(item.observed_at, "scenario_observation.observed_at")
+            <= end
+            and item.regime_id == specification.regime_id
+        )
+        if not eligible:
+            raise ScenarioError("scenario_generation_window_regime_empty")
+        selected = _select_scenario_observations(
+            specification, eligible=eligible
+        )
+        chain_root = sha256_prefixed(
+            {
+                "specification_hash": specification.content_hash,
+                "model_hash": specification.model_hash,
+                "seed": specification.seed,
+                "window": [
+                    specification.window_start,
+                    specification.window_end,
+                ],
+                "regime_id": specification.regime_id,
+            },
+            label="generated_scenario_chain_root",
+        )
+        events: list[GeneratedScenarioEvent] = []
+        predecessor = chain_root
+        for sequence, (shock, source_hashes) in enumerate(selected, start=1):
+            event = GeneratedScenarioEvent(
+                sequence=sequence,
+                event_id=f"{specification.path_id}.step.{sequence}",
+                predecessor_hash=predecessor,
+                shock=shock,
+                observation_hashes=tuple(sorted(set(source_hashes))),
+            )
+            events.append(event)
+            predecessor = event.content_hash
+        return GeneratedScenarioPath(
+            specification=specification,
+            chain_root_hash=chain_root,
+            events=tuple(events),
+        )
+
+
+def _select_scenario_observations(
+    specification: ScenarioPathGenerationSpec,
+    *,
+    eligible: tuple[ScenarioFactorObservation, ...],
+) -> tuple[tuple[JointMarketShock, tuple[str, ...]], ...]:
+    rng = random.Random(specification.seed)
+    chosen: list[ScenarioFactorObservation] = []
+    if specification.mode in {
+        ScenarioPathMode.DETERMINISTIC,
+        ScenarioPathMode.HISTORICAL,
+    }:
+        if len(eligible) < specification.step_count:
+            raise ScenarioError("scenario_generation_history_too_short")
+        chosen = list(eligible[-specification.step_count :])
+    elif specification.mode is ScenarioPathMode.BOOTSTRAP:
+        while len(chosen) < specification.step_count:
+            start = rng.randrange(len(eligible))
+            for offset in range(specification.block_length):
+                chosen.append(eligible[(start + offset) % len(eligible)])
+                if len(chosen) == specification.step_count:
+                    break
+    else:
+        return _stochastic_scenario_shocks(
+            specification, eligible=eligible, rng=rng
+        )
+    return tuple(
+        (
+            _observation_to_shock(
+                item,
+                scenario_id=f"{specification.path_id}.shock.{index}",
+                model_hash=specification.model_hash,
+            ),
+            (item.content_hash,),
+        )
+        for index, item in enumerate(chosen, start=1)
+    )
+
+
+def _observation_to_shock(
+    observation: ScenarioFactorObservation,
+    *,
+    scenario_id: str,
+    model_hash: str,
+) -> JointMarketShock:
+    return JointMarketShock(
+        scenario_id=scenario_id,
+        price_returns=observation.price_returns,
+        fx_returns=observation.fx_returns,
+        volatility_shifts=observation.volatility_shifts,
+        rate_shifts=observation.rate_shifts,
+        funding_rate_shifts=observation.funding_rate_shifts,
+        spread_multipliers=observation.spread_multipliers,
+        liquidity_haircuts=observation.liquidity_haircuts,
+        margin_multiplier=observation.margin_multiplier,
+        source_hashes=tuple(
+            sorted((observation.content_hash, observation.source_hash, model_hash))
+        ),
+    )
+
+
+def _stochastic_scenario_shocks(
+    specification: ScenarioPathGenerationSpec,
+    *,
+    eligible: tuple[ScenarioFactorObservation, ...],
+    rng: random.Random,
+) -> tuple[tuple[JointMarketShock, tuple[str, ...]], ...]:
+    source_hashes = tuple(sorted(item.content_hash for item in eligible))
+
+    def draw_pairs(
+        field_name: str,
+        *,
+        floor: Decimal | None = None,
+        ceiling: Decimal | None = None,
+    ) -> tuple[
+        tuple[str, Decimal], ...
+    ]:
+        values_by_key: dict[str, list[Decimal]] = {}
+        for observation in eligible:
+            for key, value in getattr(observation, field_name):
+                values_by_key.setdefault(key, []).append(value)
+        result: list[tuple[str, Decimal]] = []
+        common_z = rng.gauss(0.0, 1.0)
+        for key, values in sorted(values_by_key.items()):
+            mean = sum(values, start=_ZERO) / Decimal(len(values))
+            variance = (
+                sum(((item - mean) ** 2 for item in values), start=_ZERO)
+                / Decimal(max(len(values) - 1, 1))
+            )
+            std = variance.sqrt()
+            z = Decimal(str((common_z + rng.gauss(0.0, 1.0)) / 2))
+            drawn = mean + std * z
+            if floor is not None:
+                drawn = max(drawn, floor)
+            if ceiling is not None:
+                drawn = min(drawn, ceiling)
+            result.append((key, drawn))
+        return tuple(result)
+
+    results: list[tuple[JointMarketShock, tuple[str, ...]]] = []
+    for index in range(1, specification.step_count + 1):
+        price_returns = draw_pairs("price_returns", floor=Decimal("-0.999999"))
+        fx_returns = draw_pairs("fx_returns", floor=Decimal("-0.999999"))
+        volatility = draw_pairs("volatility_shifts")
+        rates = draw_pairs("rate_shifts")
+        funding = draw_pairs("funding_rate_shifts")
+        # Positive multiplicative dimensions are sampled in level space and
+        # clamped strictly above zero; the model hash makes this explicit.
+        spreads = draw_pairs("spread_multipliers", floor=Decimal("0.000001"))
+        liquidity = draw_pairs(
+            "liquidity_haircuts",
+            floor=_ZERO,
+            ceiling=_ONE,
+        )
+        margins = [item.margin_multiplier for item in eligible]
+        mean_margin = sum(margins, start=_ZERO) / Decimal(len(margins))
+        margin_variance = (
+            sum(
+                ((item - mean_margin) ** 2 for item in margins),
+                start=_ZERO,
+            )
+            / Decimal(max(len(margins) - 1, 1))
+        )
+        margin_multiplier = max(
+            Decimal("0.000001"),
+            mean_margin
+            + margin_variance.sqrt()
+            * Decimal(str(rng.gauss(0.0, 1.0))),
+        )
+        shock = JointMarketShock(
+            scenario_id=f"{specification.path_id}.shock.{index}",
+            price_returns=price_returns,
+            fx_returns=fx_returns,
+            volatility_shifts=volatility,
+            rate_shifts=rates,
+            funding_rate_shifts=funding,
+            spread_multipliers=spreads,
+            liquidity_haircuts=liquidity,
+            margin_multiplier=margin_multiplier,
+            source_hashes=tuple(
+                sorted((*source_hashes, specification.model_hash))
+            ),
+        )
+        results.append((shock, source_hashes))
+    return tuple(results)

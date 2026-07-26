@@ -45,22 +45,31 @@ from market_research.research.multi_asset.market_state import (
     VolatilitySurface,
 )
 from market_research.research.multi_asset.portfolio import (
+    CollateralAssetBalance,
+    CollateralWaterfallPolicy,
+    InvariantAccountingFactory,
     AssetClass,
     CashDelta,
     ExternalFlowConversionEvidence,
     PortfolioAccountingError,
     PortfolioEventDraft,
     PortfolioEventType,
+    TaxLotMethod,
     UnifiedPortfolioLedger,
     adapt_futures_fill,
     adapt_futures_settlement,
+    adapt_borrow_recall_application,
     adapt_corporate_action_application,
     adapt_option_fill,
     adapt_option_lifecycle,
     adapt_spot_posting,
+    allocate_collateral_waterfall,
     collateral_income_event,
     funding_event,
     mark_event,
+    project_tax_lots,
+    publish_advanced_accounting_bundle,
+    revalue_funding_fx,
     trade_event,
 )
 from market_research.research.multi_asset.scenarios import (
@@ -70,6 +79,8 @@ from market_research.research.multi_asset.scenarios import (
     ShockedMarketState,
 )
 from market_research.research.multi_asset.spot import (
+    BorrowRecall,
+    BorrowRecallReason,
     BorrowScenario,
     BorrowSnapshot,
     CashBalance as SpotCashBalance,
@@ -78,6 +89,7 @@ from market_research.research.multi_asset.spot import (
     SpotBook,
     SpotPosition,
     accrue_borrow_cost,
+    apply_borrow_recall,
     apply_corporate_action,
 )
 
@@ -1108,6 +1120,286 @@ def test_spot_corporate_actions_borrow_and_income_reconcile_end_to_end() -> None
     assert valuation.reconciled
 
 
+def test_rights_subscription_and_mixed_merger_preserve_bound_accounting() -> None:
+    book = SpotBook(
+        positions=(
+            SpotPosition(
+                instrument_id="SPOT.OLD",
+                quantity=Decimal("3"),
+                total_cost_basis=Decimal("240"),
+                currency="USD",
+            ),
+        ),
+        cash=(SpotCashBalance(currency="USD", amount=Decimal("1000")),),
+    )
+    ledger = UnifiedPortfolioLedger.open(
+        ledger_id="portfolio.spot.rights-merger",
+        base_currency="USD",
+    ).publish_many(
+        (
+            funding_event(
+                event_id="rights.funding",
+                occurred_at="2026-06-01T09:00:00+00:00",
+                cash_deltas=(CashDelta("USD", Decimal("1240")),),
+            ),
+            trade_event(
+                event_id="rights.open",
+                occurred_at="2026-06-01T10:00:00+00:00",
+                asset_class=AssetClass.SPOT,
+                instrument_id="SPOT.OLD",
+                currency="USD",
+                quantity_delta=Decimal("3"),
+                price=Decimal("80"),
+            ),
+        )
+    )
+    rights_issue = CorporateAction(
+        action_id="action.rights.issue",
+        revision=1,
+        action_type=CorporateActionType.RIGHTS_ISSUE,
+        instrument_id="SPOT.OLD",
+        announced_at=_SPOT_T0,
+        known_at=_SPOT_T0,
+        record_at=_SPOT_T0 + timedelta(days=1),
+        ex_at=_SPOT_T0 + timedelta(days=1),
+        payment_at=_SPOT_T0 + timedelta(days=2),
+        effective_at=_SPOT_T0 + timedelta(days=2),
+        source_id="source.exchange",
+        source_record_hash=_HASH_2,
+        currency="USD",
+        ratio=Decimal("0.5"),
+        rights_instrument_id="SPOT.RIGHT",
+        subscription_price=Decimal("60"),
+        terms_policy_hash=_HASH,
+    )
+    rights_application = apply_corporate_action(
+        book,
+        rights_issue,
+        applied_at=rights_issue.effective_at,
+        entitlement_book=book,
+    )
+    rights_events = adapt_corporate_action_application(
+        rights_application,
+        mark_prices_after={"SPOT.RIGHT": Decimal("10")},
+    )
+    assert len(rights_events) == 1
+    assert rights_events[0].event_type is PortfolioEventType.REPLACEMENT_DELIVERY
+    assert rights_issue.content_hash in rights_events[0].source_hashes
+    ledger = ledger.publish_many(rights_events)
+    book = rights_application.book_after
+    rights_valuation = ledger.replay().valuation(fx_rates={"USD": Decimal("1")})
+    assert rights_valuation.nav == Decimal("1255")
+    assert rights_valuation.unrealized_pnl == Decimal("15")
+    assert rights_valuation.reconciled
+
+    subscription = CorporateAction(
+        action_id="action.rights.subscription",
+        revision=1,
+        action_type=CorporateActionType.RIGHTS_SUBSCRIPTION,
+        instrument_id="SPOT.RIGHT",
+        announced_at=_SPOT_T0,
+        known_at=_SPOT_T0,
+        record_at=None,
+        ex_at=None,
+        payment_at=None,
+        effective_at=_SPOT_T0 + timedelta(days=3),
+        source_id="source.exchange",
+        source_record_hash=_HASH_2,
+        currency="USD",
+        ratio=Decimal("1"),
+        replacement_instrument_id="SPOT.NEW",
+        subscription_price=Decimal("60"),
+        terms_policy_hash=_HASH,
+    )
+    subscription_application = apply_corporate_action(
+        book,
+        subscription,
+        applied_at=subscription.effective_at,
+    )
+    subscription_events = adapt_corporate_action_application(
+        subscription_application,
+        mark_prices_after={"SPOT.NEW": Decimal("70")},
+    )
+    assert {item.event_type for item in subscription_events} == {
+        PortfolioEventType.POSITION_TRANSFORMATION,
+        PortfolioEventType.REPLACEMENT_DELIVERY,
+        PortfolioEventType.CORPORATE_CASH,
+    }
+    assert all(
+        subscription.content_hash in item.source_hashes
+        for item in subscription_events
+    )
+    ledger = ledger.publish_many(subscription_events)
+    book = subscription_application.book_after
+    subscribed = ledger.replay()
+    subscribed_positions = {
+        item.instrument_id: item for item in subscribed.spot_positions
+    }
+    assert "SPOT.RIGHT" not in subscribed_positions
+    assert subscribed_positions["SPOT.NEW"].quantity == Decimal("1.5")
+    assert subscribed_positions["SPOT.NEW"].average_price == Decimal("60")
+    assert subscribed_positions["SPOT.NEW"].mark_price == Decimal("70")
+    assert subscribed.valuation(fx_rates={"USD": Decimal("1")}).reconciled
+
+    merger = replace(
+        _spot_action(
+            CorporateActionType.MERGER,
+            action_id="action.mixed.merger",
+            instrument_id="SPOT.NEW",
+            effective_day=4,
+            ratio="2",
+            cash_per_share="5",
+            tax_rate="0.10",
+            replacement="SPOT.MERGED",
+        ),
+        currency="USD",
+        cash_basis_fraction=Decimal("0.25"),
+    )
+    merger_application = apply_corporate_action(
+        book,
+        merger,
+        applied_at=merger.effective_at,
+    )
+    merger_events = adapt_corporate_action_application(
+        merger_application,
+        mark_prices_after={"SPOT.MERGED": Decimal("26.25")},
+    )
+    assert {item.event_type for item in merger_events} == {
+        PortfolioEventType.POSITION_TRANSFORMATION,
+        PortfolioEventType.REPLACEMENT_DELIVERY,
+        PortfolioEventType.CORPORATE_CASH,
+    }
+    ledger = ledger.publish_many(merger_events)
+    merged = ledger.replay()
+    merged_positions = {item.instrument_id: item for item in merged.spot_positions}
+    assert "SPOT.NEW" not in merged_positions
+    assert merged_positions["SPOT.MERGED"].quantity == Decimal("3")
+    assert merged_positions["SPOT.MERGED"].average_price == Decimal("22.5")
+    assert merged_positions["SPOT.MERGED"].mark_price == Decimal("26.25")
+    valuation = merged.valuation(fx_rates={"USD": Decimal("1")})
+    assert valuation.nav == Decimal("1236.25")
+    assert valuation.realized_pnl == Decimal("-15.0")
+    assert valuation.unrealized_pnl == Decimal("11.25")
+    assert valuation.reconciled
+
+    tampered_book = replace(
+        merger_application.book_after,
+        cash=(
+            *merger_application.book_after.cash,
+            SpotCashBalance(currency="EUR", amount=Decimal("1")),
+        ),
+    )
+    with pytest.raises(
+        PortfolioAccountingError,
+        match="corporate_action_application_book_hash_mismatch",
+    ):
+        adapt_corporate_action_application(
+            replace(merger_application, book_after=tampered_book),
+        )
+
+
+def test_borrow_recall_forced_buy_in_reconciles_and_rejects_tampering() -> None:
+    book = SpotBook(
+        positions=(
+            SpotPosition(
+                instrument_id="SPOT.SHORT",
+                quantity=Decimal("-10"),
+                total_cost_basis=Decimal("1000"),
+                currency="USD",
+            ),
+        ),
+        cash=(SpotCashBalance(currency="USD", amount=Decimal("2000")),),
+    )
+    ledger = UnifiedPortfolioLedger.open(
+        ledger_id="portfolio.spot.borrow-recall",
+        base_currency="USD",
+    ).publish_many(
+        (
+            funding_event(
+                event_id="borrow-recall.funding",
+                occurred_at="2026-06-01T09:00:00+00:00",
+                cash_deltas=(CashDelta("USD", Decimal("1000")),),
+            ),
+            trade_event(
+                event_id="borrow-recall.short-open",
+                occurred_at="2026-06-01T10:00:00+00:00",
+                asset_class=AssetClass.SPOT,
+                instrument_id="SPOT.SHORT",
+                currency="USD",
+                quantity_delta=Decimal("-10"),
+                price=Decimal("100"),
+            ),
+        )
+    )
+    recall = BorrowRecall(
+        recall_id="borrow.recall.1",
+        revision=1,
+        instrument_id="SPOT.SHORT",
+        reason=BorrowRecallReason.LENDER_RECALL,
+        announced_at=_SPOT_T0,
+        known_at=_SPOT_T0,
+        effective_at=_SPOT_T0 + timedelta(days=1),
+        cover_deadline_at=_SPOT_T0 + timedelta(days=2),
+        recalled_quantity=Decimal("4"),
+        penalty_per_unit=Decimal("2"),
+        source_hash=_HASH,
+    )
+    application = apply_borrow_recall(
+        book,
+        recall,
+        applied_at=recall.effective_at,
+        execution_price=Decimal("120"),
+        execution_quote_hash=_HASH_2,
+        commission_per_unit=Decimal("1"),
+    )
+    drafts = adapt_borrow_recall_application(application)
+    assert [item.event_type for item in drafts] == [
+        PortfolioEventType.EXECUTION_ATTEMPT,
+        PortfolioEventType.SPOT_TRADE,
+        PortfolioEventType.EXECUTION_COST,
+    ]
+    assert all(
+        recall.content_hash in item.source_hashes
+        and _HASH_2 in item.source_hashes
+        for item in drafts
+    )
+    ledger = ledger.publish_many(drafts)
+    snapshot = ledger.replay()
+    short = snapshot.spot_positions[0]
+    assert short.instrument_id == "SPOT.SHORT"
+    assert short.quantity == Decimal("-6")
+    assert short.average_price == Decimal("100")
+    assert snapshot.cash[0].amount == Decimal("1508")
+    valuation = snapshot.valuation(fx_rates={"USD": Decimal("1")})
+    assert valuation.nav == Decimal("788")
+    assert valuation.realized_pnl == Decimal("-80")
+    assert valuation.unrealized_pnl == Decimal("-120")
+    assert valuation.costs == Decimal("12")
+    assert valuation.reconciled
+
+    with pytest.raises(
+        PortfolioAccountingError,
+        match="borrow_recall_posting_economics_invalid",
+    ):
+        adapt_borrow_recall_application(
+            replace(application, covered_quantity=Decimal("5")),
+        )
+    tampered_book = replace(
+        application.book_after,
+        cash=(
+            *application.book_after.cash,
+            SpotCashBalance(currency="EUR", amount=Decimal("1")),
+        ),
+    )
+    with pytest.raises(
+        PortfolioAccountingError,
+        match="borrow_recall_book_hash_mismatch",
+    ):
+        adapt_borrow_recall_application(
+            replace(application, book_after=tampered_book),
+        )
+
+
 def test_fx_attribution_is_independent_and_cannot_hide_reconciliation_error() -> None:
     ledger = UnifiedPortfolioLedger.open(
         ledger_id="ledger.fx-independent",
@@ -1199,3 +1491,137 @@ def test_nonbase_funding_without_event_time_conversion_evidence_fails_closed() -
                 cash_deltas=(CashDelta("EUR", Decimal("100")),),
             )
         )
+
+
+def test_tax_lots_collateral_waterfall_and_factory_only_default_evidence() -> None:
+    ledger = UnifiedPortfolioLedger.open(
+        ledger_id="ledger.tax-lot.waterfall",
+        base_currency="USD",
+    ).publish(
+        funding_event(
+            event_id="funding.tax-lot",
+            occurred_at="2026-01-01T00:00:00+00:00",
+            cash_deltas=(CashDelta("USD", Decimal("1000")),),
+        )
+    )
+    for event_id, occurred_at, quantity, price in (
+        ("trade.buy.1", "2026-01-01T00:01:00+00:00", "2", "100"),
+        ("trade.buy.2", "2026-01-01T00:02:00+00:00", "2", "120"),
+        ("trade.sell", "2026-01-01T00:03:00+00:00", "-3", "130"),
+    ):
+        ledger = ledger.publish(
+            trade_event(
+                event_id=event_id,
+                occurred_at=occurred_at,
+                asset_class=AssetClass.SPOT,
+                instrument_id="asset.tax-lot",
+                currency="USD",
+                quantity_delta=Decimal(quantity),
+                price=Decimal(price),
+            )
+        )
+    fifo = project_tax_lots(ledger, method=TaxLotMethod.FIFO)
+    average = project_tax_lots(ledger, method=TaxLotMethod.AVERAGE)
+
+    assert sum(
+        (item.realized_pnl for item in fifo.realizations), Decimal("0")
+    ) == Decimal("70")
+    assert fifo.open_lots[0].quantity == Decimal("1")
+    assert fifo.open_lots[0].unit_cost == Decimal("120")
+    assert sum(
+        (item.realized_pnl for item in average.realizations), Decimal("0")
+    ) == Decimal("60")
+    assert average.open_lots[0].unit_cost == Decimal("110")
+    assert fifo.content_hash == project_tax_lots(
+        ledger, method=TaxLotMethod.FIFO
+    ).content_hash
+
+    policy = CollateralWaterfallPolicy(
+        policy_id="collateral.waterfall",
+        version="1",
+        maximum_single_asset_fraction=Decimal("0.75"),
+        allow_default_shortfall=True,
+    )
+    waterfall = allocate_collateral_waterfall(
+        required_credit_base=Decimal("200"),
+        assets=(
+            CollateralAssetBalance(
+                asset_id="cash.usd",
+                currency="USD",
+                market_value=Decimal("100"),
+                haircut=Decimal("0"),
+                eligible=True,
+                priority=1,
+                source_hash=_HASH,
+            ),
+            CollateralAssetBalance(
+                asset_id="bond.eur",
+                currency="EUR",
+                market_value=Decimal("50"),
+                haircut=Decimal("0.20"),
+                eligible=True,
+                priority=2,
+                source_hash=_HASH_2,
+            ),
+        ),
+        fx_rates={"USD": Decimal("1"), "EUR": Decimal("1.25")},
+        policy=policy,
+    )
+    assert waterfall.provided_credit_base == Decimal("150")
+    assert waterfall.default_shortfall_base == Decimal("50")
+
+    factory = InvariantAccountingFactory(
+        factory_id="accounting.invariant",
+        version="1",
+    )
+    bundle = factory.audit_bundle(
+        event_id="default.waterfall",
+        event_type=PortfolioEventType.DEFAULT,
+        occurred_at="2026-01-01T00:04:00+00:00",
+        economic_event_hashes=(waterfall.content_hash,),
+        details={"shortfall_base": "50"},
+    )
+    after = publish_advanced_accounting_bundle(ledger, bundle)
+    assert after.replay().positions == ledger.replay().positions
+    assert after.events[-1].event_type is PortfolioEventType.DEFAULT
+    assert waterfall.content_hash in after.events[-1].source_hashes
+
+    with pytest.raises(
+        PortfolioAccountingError, match="factory_receipt_required"
+    ):
+        PortfolioEventDraft(
+            event_id="default.bypass",
+            event_type=PortfolioEventType.DEFAULT,
+            occurred_at="2026-01-01T00:05:00+00:00",
+        )
+
+
+def test_funding_fx_lock_and_revaluation_are_hash_bound() -> None:
+    occurred_at = "2026-01-01T00:00:00+00:00"
+    ledger = UnifiedPortfolioLedger.open(
+        ledger_id="ledger.funding.fx-lock",
+        base_currency="USD",
+    ).publish(
+        funding_event(
+            event_id="funding.fx-lock",
+            occurred_at=occurred_at,
+            cash_deltas=(CashDelta("EUR", Decimal("100")),),
+            conversion_evidence=_eur_flow_evidence(
+                occurred_at,
+                rate=Decimal("1.10"),
+            ),
+        )
+    )
+    receipt = revalue_funding_fx(
+        ledger,
+        current_fx_rates={"EUR": Decimal("1.20")},
+        current_fx_source_hash=_HASH_2,
+    )
+    assert receipt.currencies[0].locked_principal_base == Decimal("110")
+    assert receipt.currencies[0].current_principal_base == Decimal("120")
+    assert receipt.total_translation_pnl == Decimal("10")
+    assert receipt.content_hash == revalue_funding_fx(
+        ledger,
+        current_fx_rates={"EUR": Decimal("1.20")},
+        current_fx_source_hash=_HASH_2,
+    ).content_hash

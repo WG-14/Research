@@ -155,6 +155,9 @@ Every Research CLI command has exactly one GUI policy:
 | `research-derivative-reproduce` | `cli_only` | Independently reruns a typed offline request and compares execution hashes without exposing external paths through the GUI. |
 | `research-multi-asset-execute` | `cli_only` | Runs only the fixed source-owned offline multi-asset profile from a repository-external hash-bound request. |
 | `research-multi-asset-reproduce` | `cli_only` | Reruns the fixed multi-asset profile and compares immutable study evidence without exposing external paths through the GUI. |
+| `research-multi-asset-build-package` | `cli_only` | Builds a content-addressed portable evidence package from repository-external immutable inputs. |
+| `research-multi-asset-verify-package` | `cli_only` | Verifies package structure, hashes, cards, graph edges, and replay inputs without exposing paths through the GUI. |
+| `research-multi-asset-reproduce-package` | `cli_only` | Replays the package with its bundled standard-library verifier and compares deterministic study and report hashes. |
 | `research.explore` | `required` | Bounded, path-free exploration of immutable research evidence with read auditing. |
 
 GUI-only exploration, list, detail, and download capabilities are bounded

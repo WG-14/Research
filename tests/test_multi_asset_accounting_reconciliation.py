@@ -11,6 +11,7 @@ from market_research.research.hashing import canonical_json_bytes, sha256_prefix
 from market_research.research.multi_asset.accounting import (
     REPORT_ANALYSIS_OBJECT_NAMES,
     AccountingReconciliationError,
+    AdvancedAccountingReconciliation,
     FxRevaluationReceipt,
     LedgerPnlReconciliation,
     PitFxObservation,
@@ -23,10 +24,16 @@ from market_research.research.multi_asset.portfolio import (
     AssetClass,
     CashDelta,
     ExternalFlowConversionEvidence,
+    InvariantAccountingFactory,
     PortfolioAccountingError,
+    PortfolioEventType,
+    TaxLotMethod,
     UnifiedPortfolioLedger,
     funding_event,
     mark_event,
+    project_tax_lots,
+    publish_advanced_accounting_bundle,
+    revalue_funding_fx,
     trade_event,
 )
 
@@ -231,6 +238,60 @@ def test_usd_projection_factory_reconciles_ledger_and_report() -> None:
     assert report.report_rows() == ledger.report_rows()
     assert report.analysis_object_hashes() == ledger.analysis_object_hashes()
     assert receipt.content_hash.startswith("sha256:")
+
+
+def test_advanced_accounting_receipt_binds_lots_and_funding_audit_prefix() -> None:
+    opening, economic_ledger = _usd_projection()
+    funding_fx = revalue_funding_fx(
+        economic_ledger,
+        current_fx_rates={},
+        current_fx_source_hash=_hash("funding-fx-current"),
+    )
+    bundle = InvariantAccountingFactory(
+        factory_id="advanced.accounting",
+        version="1",
+    ).audit_bundle(
+        event_id="funding.fx.audit",
+        event_type=PortfolioEventType.FUNDING_FX_REVALUATION,
+        occurred_at=CLOSED_AT,
+        economic_event_hashes=(funding_fx.content_hash,),
+        details={"translation_pnl": "0"},
+    )
+    audited_ledger = publish_advanced_accounting_bundle(
+        economic_ledger,
+        bundle,
+    )
+    receipt = AdvancedAccountingReconciliation.from_ledger_evidence(
+        ledger=audited_ledger,
+        ledger_reconciliation=_reconcile(opening, audited_ledger),
+        tax_lots=project_tax_lots(
+            audited_ledger,
+            method=TaxLotMethod.FIFO,
+        ),
+        funding_fx=funding_fx,
+    )
+    assert receipt.funding_fx_revaluation_hash == funding_fx.content_hash
+    assert receipt.advanced_event_hashes == (
+        audited_ledger.events[-1].content_hash,
+    )
+    assert receipt.content_hash.startswith("sha256:")
+
+    with pytest.raises(
+        AccountingReconciliationError,
+        match="funding_fx_ledger_mismatch",
+    ):
+        AdvancedAccountingReconciliation.from_ledger_evidence(
+            ledger=audited_ledger,
+            ledger_reconciliation=_reconcile(opening, audited_ledger),
+            tax_lots=project_tax_lots(
+                audited_ledger,
+                method=TaxLotMethod.FIFO,
+            ),
+            funding_fx=replace(
+                funding_fx,
+                ledger_hash=_hash("unrelated-ledger"),
+            ),
+        )
 
 
 def test_eur_100_at_110_then_120_separates_principal_and_fx_pnl() -> None:

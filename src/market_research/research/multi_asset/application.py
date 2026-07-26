@@ -1031,6 +1031,7 @@ def _validate_evidence_authority(
     if not market_states:
         raise MultiAssetExperimentError("evidence_authority.market_state_required")
     for role in (
+        EvidenceArtifactRole.RESEARCH_INPUTS,
         EvidenceArtifactRole.PRODUCT_REGISTRY,
         EvidenceArtifactRole.HYPOTHESIS,
         EvidenceArtifactRole.CODE,
@@ -1146,6 +1147,10 @@ def _bindings(
             EvidenceArtifactRole.CONFIGURATION,
         ).reference.content_hash,
         seed=spec.seed,
+        research_inputs_hash=_one_role(
+            artifacts,
+            EvidenceArtifactRole.RESEARCH_INPUTS,
+        ).reference.content_hash,
     )
 
 

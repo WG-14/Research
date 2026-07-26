@@ -49,6 +49,9 @@ EXPECTED_GUI_POLICY = {
     "research-derivative-reproduce": "cli_only",
     "research-multi-asset-execute": "cli_only",
     "research-multi-asset-reproduce": "cli_only",
+    "research-multi-asset-build-package": "cli_only",
+    "research-multi-asset-verify-package": "cli_only",
+    "research-multi-asset-reproduce-package": "cli_only",
 }
 
 FORBIDDEN_WEB_IMPORT_ROOTS = {

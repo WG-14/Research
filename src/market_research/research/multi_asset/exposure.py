@@ -1822,3 +1822,570 @@ class ExposureEngine:
 
 CommonPosition = ExposurePosition
 ProductionExposureEngine = ExposureEngine
+
+
+# ---------------------------------------------------------------------------
+# Version 3 supplemental risk vector
+# ---------------------------------------------------------------------------
+#
+# The v2 engine above remains the compatibility authority for product
+# revaluation.  Product adapters can attach the supplemental sensitivities
+# below to the exact v2 position/valuation hashes.  Keeping this as a
+# hash-bound supplement avoids silently treating unavailable higher-order
+# Greeks as zero and lets callers distinguish N/A from a measured zero.
+
+EXTENDED_EXPOSURE_SCHEMA_VERSION = 3
+
+
+class OffsetRecognition(StrEnum):
+    FULL = "FULL"
+    PARTIAL = "PARTIAL"
+    NONE = "NONE"
+
+
+class ExtendedExposureDimension(StrEnum):
+    FACTOR = "FACTOR"
+    FUNDING = "FUNDING"
+    TENOR = "TENOR"
+    VOLATILITY = "VOLATILITY"
+
+
+@dataclass(frozen=True, slots=True)
+class PositionRiskSupplement:
+    """Additional cash sensitivities bound to an evaluated v2 position.
+
+    Every numeric field is already expressed in the snapshot base currency.
+    A value is optional when the product has no meaningful measure; a measured
+    zero must be supplied explicitly as ``Decimal("0")``.
+    """
+
+    position_id: str
+    position_hash: str
+    valuation_hash: str
+    beta_equivalent: Decimal | None = None
+    duration: Decimal | None = None
+    dv01: Decimal | None = None
+    fx_exposure: Decimal | None = None
+    commodity_units: Decimal | None = None
+    vanna: Decimal | None = None
+    volga: Decimal | None = None
+    charm: Decimal | None = None
+    factor_ids: tuple[str, ...] = ()
+    funding_bucket: str = "UNFUNDED"
+    tenor_bucket: str = "NON_EXPIRING"
+    volatility_bucket: str = "NON_OPTION"
+    source_hashes: tuple[str, ...] = ()
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.position_id, "risk_supplement.position_id")
+        _require_hash(self.position_hash, "risk_supplement.position_hash")
+        _require_hash(self.valuation_hash, "risk_supplement.valuation_hash")
+        for name in (
+            "beta_equivalent",
+            "duration",
+            "dv01",
+            "fx_exposure",
+            "commodity_units",
+            "vanna",
+            "volga",
+            "charm",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _decimal(value, f"risk_supplement.{name}")
+        factors = tuple(sorted(set(self.factor_ids)))
+        if factors != self.factor_ids:
+            raise ExposureEngineError("risk_supplement_factor_ids_not_sorted_unique")
+        for factor_id in factors:
+            _require_bucket_key(factor_id, "risk_supplement.factor_id")
+        for name in ("funding_bucket", "tenor_bucket", "volatility_bucket"):
+            _require_bucket_key(getattr(self, name), f"risk_supplement.{name}")
+        sources = tuple(sorted(set(self.source_hashes)))
+        if sources != self.source_hashes:
+            raise ExposureEngineError(
+                "risk_supplement_source_hashes_not_sorted_unique"
+            )
+        for source_hash in sources:
+            _require_hash(source_hash, "risk_supplement.source_hash")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                self.identity_payload(), label="multi_asset_position_risk_supplement"
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "position_id": self.position_id,
+            "position_hash": self.position_hash,
+            "valuation_hash": self.valuation_hash,
+            **{
+                name: (
+                    None
+                    if getattr(self, name) is None
+                    else _decimal_text(getattr(self, name))
+                )
+                for name in (
+                    "beta_equivalent",
+                    "duration",
+                    "dv01",
+                    "fx_exposure",
+                    "commodity_units",
+                    "vanna",
+                    "volga",
+                    "charm",
+                )
+            },
+            "factor_ids": list(self.factor_ids),
+            "funding_bucket": self.funding_bucket,
+            "tenor_bucket": self.tenor_bucket,
+            "volatility_bucket": self.volatility_bucket,
+            "source_hashes": list(self.source_hashes),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OffsetRule:
+    """Versioned recognition between two economic underlying identifiers."""
+
+    left_underlying_id: str
+    right_underlying_id: str
+    recognition: OffsetRecognition
+    partial_fraction: Decimal = _ZERO
+    rationale: str = "reviewed_economic_relationship"
+    source_hashes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("left_underlying_id", "right_underlying_id", "rationale"):
+            _require_id(getattr(self, name), f"offset_rule.{name}")
+        if self.left_underlying_id >= self.right_underlying_id:
+            raise ExposureEngineError("offset_rule_pair_must_be_canonical")
+        if not isinstance(self.recognition, OffsetRecognition):
+            raise ExposureEngineError("offset_rule_recognition_invalid")
+        _decimal(
+            self.partial_fraction,
+            "offset_rule.partial_fraction",
+            nonnegative=True,
+        )
+        if self.partial_fraction > _ONE:
+            raise ExposureEngineError("offset_rule_partial_fraction_above_one")
+        expected = {
+            OffsetRecognition.FULL: _ONE,
+            OffsetRecognition.NONE: _ZERO,
+        }.get(self.recognition)
+        if expected is not None and self.partial_fraction != expected:
+            raise ExposureEngineError("offset_rule_fraction_recognition_mismatch")
+        if (
+            self.recognition is OffsetRecognition.PARTIAL
+            and not _ZERO < self.partial_fraction < _ONE
+        ):
+            raise ExposureEngineError("offset_rule_partial_fraction_invalid")
+        if tuple(sorted(set(self.source_hashes))) != self.source_hashes:
+            raise ExposureEngineError("offset_rule_source_hashes_not_sorted_unique")
+        for source_hash in self.source_hashes:
+            _require_hash(source_hash, "offset_rule.source_hash")
+
+    @property
+    def pair(self) -> tuple[str, str]:
+        return (self.left_underlying_id, self.right_underlying_id)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "left_underlying_id": self.left_underlying_id,
+            "right_underlying_id": self.right_underlying_id,
+            "recognition": self.recognition.value,
+            "partial_fraction": _decimal_text(self.partial_fraction),
+            "rationale": self.rationale,
+            "source_hashes": list(self.source_hashes),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OffsetPolicyV3:
+    policy_id: str
+    version: str
+    rules: tuple[OffsetRule, ...] = ()
+    exact_underlying_recognition: OffsetRecognition = OffsetRecognition.FULL
+    schema_version: int = EXTENDED_EXPOSURE_SCHEMA_VERSION
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_id(self.policy_id, "offset_policy.policy_id")
+        _require_id(self.version, "offset_policy.version")
+        if self.schema_version != EXTENDED_EXPOSURE_SCHEMA_VERSION:
+            raise ExposureEngineError("offset_policy_schema_unsupported")
+        if not isinstance(self.exact_underlying_recognition, OffsetRecognition):
+            raise ExposureEngineError("offset_policy_exact_recognition_invalid")
+        ordered = tuple(
+            sorted(
+                self.rules,
+                key=lambda item: (item.left_underlying_id, item.right_underlying_id),
+            )
+        )
+        if ordered != self.rules or len({item.pair for item in ordered}) != len(ordered):
+            raise ExposureEngineError("offset_policy_rules_not_sorted_unique")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(self.identity_payload(), label="exposure_offset_policy_v3"),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "policy_id": self.policy_id,
+            "version": self.version,
+            "exact_underlying_recognition": self.exact_underlying_recognition.value,
+            "rules": [item.as_dict() for item in self.rules],
+        }
+
+    def fraction(self, left: str, right: str) -> tuple[OffsetRecognition, Decimal]:
+        if left == right:
+            recognition = self.exact_underlying_recognition
+            return recognition, {
+                OffsetRecognition.FULL: _ONE,
+                OffsetRecognition.PARTIAL: Decimal("0.5"),
+                OffsetRecognition.NONE: _ZERO,
+            }[recognition]
+        pair = tuple(sorted((left, right)))
+        match = next((item for item in self.rules if item.pair == pair), None)
+        if match is None:
+            return OffsetRecognition.NONE, _ZERO
+        return match.recognition, match.partial_fraction
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendedRiskTotals:
+    beta_equivalent: Decimal
+    duration: Decimal
+    dv01: Decimal
+    fx_exposure: Decimal
+    commodity_units: Decimal
+    vanna: Decimal
+    volga: Decimal
+    charm: Decimal
+    offset_delta_equivalent: Decimal = _ZERO
+
+    def __post_init__(self) -> None:
+        for name in (
+            "beta_equivalent",
+            "duration",
+            "dv01",
+            "fx_exposure",
+            "commodity_units",
+            "vanna",
+            "volga",
+            "charm",
+            "offset_delta_equivalent",
+        ):
+            _decimal(
+                getattr(self, name),
+                f"extended_risk_totals.{name}",
+                nonnegative=name == "offset_delta_equivalent",
+            )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            name: _decimal_text(getattr(self, name))
+            for name in (
+                "beta_equivalent",
+                "duration",
+                "dv01",
+                "fx_exposure",
+                "commodity_units",
+                "vanna",
+                "volga",
+                "charm",
+                "offset_delta_equivalent",
+            )
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendedRiskBucket:
+    dimension: ExtendedExposureDimension
+    key: str
+    position_ids: tuple[str, ...]
+    delta: Decimal
+    gamma: Decimal
+    vega: Decimal
+    theta: Decimal
+    vanna: Decimal
+    volga: Decimal
+    charm: Decimal
+    gross_notional: Decimal
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dimension, ExtendedExposureDimension):
+            raise ExposureEngineError("extended_bucket_dimension_invalid")
+        _require_bucket_key(self.key, "extended_bucket.key")
+        if (
+            tuple(sorted(set(self.position_ids))) != self.position_ids
+            or not self.position_ids
+        ):
+            raise ExposureEngineError("extended_bucket_position_ids_invalid")
+        for name in (
+            "delta",
+            "gamma",
+            "vega",
+            "theta",
+            "vanna",
+            "volga",
+            "charm",
+            "gross_notional",
+        ):
+            _decimal(
+                getattr(self, name),
+                f"extended_bucket.{name}",
+                nonnegative=name == "gross_notional",
+            )
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(self.identity_payload(), label="extended_risk_bucket"),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "dimension": self.dimension.value,
+            "key": self.key,
+            "position_ids": list(self.position_ids),
+            **{
+                name: _decimal_text(getattr(self, name))
+                for name in (
+                    "delta",
+                    "gamma",
+                    "vega",
+                    "theta",
+                    "vanna",
+                    "volga",
+                    "charm",
+                    "gross_notional",
+                )
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendedPortfolioExposure:
+    base_snapshot_hash: str
+    supplement_hashes: tuple[str, ...]
+    offset_policy_hash: str
+    totals: ExtendedRiskTotals
+    buckets: tuple[ExtendedRiskBucket, ...]
+    offset_recognition_counts: tuple[tuple[str, int], ...]
+    schema_version: int = EXTENDED_EXPOSURE_SCHEMA_VERSION
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_hash(self.base_snapshot_hash, "extended_exposure.base_snapshot_hash")
+        _require_hash(self.offset_policy_hash, "extended_exposure.offset_policy_hash")
+        if self.schema_version != EXTENDED_EXPOSURE_SCHEMA_VERSION:
+            raise ExposureEngineError("extended_exposure_schema_unsupported")
+        if tuple(sorted(set(self.supplement_hashes))) != self.supplement_hashes:
+            raise ExposureEngineError("extended_exposure_supplement_hashes_invalid")
+        for item in self.supplement_hashes:
+            _require_hash(item, "extended_exposure.supplement_hash")
+        if tuple(sorted(self.offset_recognition_counts)) != (
+            self.offset_recognition_counts
+        ):
+            raise ExposureEngineError("extended_exposure_offset_counts_not_sorted")
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                self.identity_payload(), label="extended_portfolio_exposure_v3"
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "base_snapshot_hash": self.base_snapshot_hash,
+            "supplement_hashes": list(self.supplement_hashes),
+            "offset_policy_hash": self.offset_policy_hash,
+            "totals": self.totals.as_dict(),
+            "bucket_hashes": [item.content_hash for item in self.buckets],
+            "offset_recognition_counts": [
+                {"recognition": key, "count": value}
+                for key, value in self.offset_recognition_counts
+            ],
+        }
+
+
+def build_extended_portfolio_exposure(
+    snapshot: PortfolioExposureSnapshot,
+    *,
+    supplements: Sequence[PositionRiskSupplement],
+    offset_policy: OffsetPolicyV3,
+) -> ExtendedPortfolioExposure:
+    """Aggregate higher-order risk and relation-aware delta offsets.
+
+    Coverage is deliberately exact.  A product with unavailable supplemental
+    measures still needs a supplement containing explicit ``None`` values; a
+    caller cannot silently omit a difficult leg from the portfolio result.
+    """
+
+    if not isinstance(snapshot, PortfolioExposureSnapshot):
+        raise ExposureEngineError("extended_exposure_snapshot_required")
+    if not isinstance(offset_policy, OffsetPolicyV3):
+        raise ExposureEngineError("extended_exposure_offset_policy_required")
+    ordered_supplements = tuple(sorted(supplements, key=lambda item: item.position_id))
+    positions = {item.position_id: item for item in snapshot.positions}
+    if set(positions) != {item.position_id for item in ordered_supplements}:
+        raise ExposureEngineError("extended_exposure_supplement_coverage_mismatch")
+    by_position: dict[str, PositionRiskSupplement] = {}
+    for supplement in ordered_supplements:
+        position = positions[supplement.position_id]
+        if (
+            supplement.position_hash != position.position_hash
+            or supplement.valuation_hash != position.valuation_hash
+        ):
+            raise ExposureEngineError(
+                f"extended_exposure_supplement_binding_mismatch:{position.position_id}"
+            )
+        by_position[position.position_id] = supplement
+
+    def supplemental_sum(name: str) -> Decimal:
+        return sum(
+            (
+                getattr(item, name)
+                for item in ordered_supplements
+                if getattr(item, name) is not None
+            ),
+            start=_ZERO,
+        )
+
+    offset, counts = _recognized_delta_offset(
+        tuple(snapshot.positions), offset_policy=offset_policy
+    )
+    totals = ExtendedRiskTotals(
+        beta_equivalent=supplemental_sum("beta_equivalent"),
+        duration=supplemental_sum("duration"),
+        dv01=supplemental_sum("dv01"),
+        fx_exposure=supplemental_sum("fx_exposure"),
+        commodity_units=supplemental_sum("commodity_units"),
+        vanna=supplemental_sum("vanna"),
+        volga=supplemental_sum("volga"),
+        charm=supplemental_sum("charm"),
+        offset_delta_equivalent=offset,
+    )
+    buckets: list[ExtendedRiskBucket] = []
+    for dimension in ExtendedExposureDimension:
+        grouped: dict[str, list[EvaluatedPositionExposure]] = {}
+        for position in snapshot.positions:
+            supplement = by_position[position.position_id]
+            keys = {
+                ExtendedExposureDimension.FACTOR: supplement.factor_ids
+                or (position.underlying_id,),
+                ExtendedExposureDimension.FUNDING: (supplement.funding_bucket,),
+                ExtendedExposureDimension.TENOR: (supplement.tenor_bucket,),
+                ExtendedExposureDimension.VOLATILITY: (
+                    supplement.volatility_bucket,
+                ),
+            }[dimension]
+            for key in keys:
+                grouped.setdefault(key, []).append(position)
+        for key, members in sorted(grouped.items()):
+            member_supplements = [by_position[item.position_id] for item in members]
+            buckets.append(
+                ExtendedRiskBucket(
+                    dimension=dimension,
+                    key=key,
+                    position_ids=tuple(sorted(item.position_id for item in members)),
+                    delta=sum((item.delta_base for item in members), start=_ZERO),
+                    gamma=sum((item.gamma_base for item in members), start=_ZERO),
+                    vega=sum((item.vega_base for item in members), start=_ZERO),
+                    theta=sum((item.theta_base for item in members), start=_ZERO),
+                    vanna=sum(
+                        (
+                            item.vanna
+                            for item in member_supplements
+                            if item.vanna is not None
+                        ),
+                        start=_ZERO,
+                    ),
+                    volga=sum(
+                        (
+                            item.volga
+                            for item in member_supplements
+                            if item.volga is not None
+                        ),
+                        start=_ZERO,
+                    ),
+                    charm=sum(
+                        (
+                            item.charm
+                            for item in member_supplements
+                            if item.charm is not None
+                        ),
+                        start=_ZERO,
+                    ),
+                    gross_notional=sum(
+                        (item.gross_notional_base for item in members), start=_ZERO
+                    ),
+                )
+            )
+    return ExtendedPortfolioExposure(
+        base_snapshot_hash=snapshot.content_hash,
+        supplement_hashes=tuple(
+            sorted(item.content_hash for item in ordered_supplements)
+        ),
+        offset_policy_hash=offset_policy.content_hash,
+        totals=totals,
+        buckets=tuple(buckets),
+        offset_recognition_counts=tuple(sorted(counts.items())),
+    )
+
+
+def _recognized_delta_offset(
+    positions: tuple[EvaluatedPositionExposure, ...],
+    *,
+    offset_policy: OffsetPolicyV3,
+) -> tuple[Decimal, dict[str, int]]:
+    """Match opposite delta deterministically without double counting."""
+
+    remaining = {item.position_id: abs(item.delta_base) for item in positions}
+    counts = {item.value: 0 for item in OffsetRecognition}
+    credit = _ZERO
+    pairs: list[
+        tuple[
+            Decimal,
+            str,
+            str,
+            EvaluatedPositionExposure,
+            EvaluatedPositionExposure,
+            OffsetRecognition,
+        ]
+    ] = []
+    ordered = tuple(sorted(positions, key=lambda item: item.position_id))
+    for index, left in enumerate(ordered):
+        for right in ordered[index + 1 :]:
+            if left.delta_base * right.delta_base >= _ZERO:
+                continue
+            recognition, fraction = offset_policy.fraction(
+                left.underlying_id, right.underlying_id
+            )
+            pairs.append(
+                (
+                    -fraction,
+                    left.position_id,
+                    right.position_id,
+                    left,
+                    right,
+                    recognition,
+                )
+            )
+    for _rank, _left_id, _right_id, left, right, recognition in sorted(pairs):
+        counts[recognition.value] += 1
+        _recognized, fraction = offset_policy.fraction(
+            left.underlying_id, right.underlying_id
+        )
+        matched = min(remaining[left.position_id], remaining[right.position_id])
+        credit += matched * fraction
+        remaining[left.position_id] -= matched
+        remaining[right.position_id] -= matched
+    return credit, counts

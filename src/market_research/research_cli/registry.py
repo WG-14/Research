@@ -239,6 +239,18 @@ def _multi_asset_reproduce(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", required=True)
 
 
+def _multi_asset_build_package(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--descriptor", required=True)
+    parser.add_argument("--out", required=True)
+
+
+def _multi_asset_verify_or_reproduce_package(
+    parser: argparse.ArgumentParser,
+) -> None:
+    parser.add_argument("--package", required=True)
+    parser.add_argument("--out")
+
+
 def _call_existing(
     command: str, args: argparse.Namespace, context: ResearchAppContext
 ) -> int:
@@ -379,6 +391,21 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
         "research-multi-asset-reproduce",
         _multi_asset_reproduce,
         "reproduce and compare a built-in multi-asset research execution",
+    ),
+    (
+        "research-multi-asset-build-package",
+        _multi_asset_build_package,
+        "build a portable content-addressed validated multi-asset package",
+    ),
+    (
+        "research-multi-asset-verify-package",
+        _multi_asset_verify_or_reproduce_package,
+        "verify a portable multi-asset package from bundled evidence only",
+    ),
+    (
+        "research-multi-asset-reproduce-package",
+        _multi_asset_verify_or_reproduce_package,
+        "recompute and compare a portable package study and report twice",
     ),
 )
 

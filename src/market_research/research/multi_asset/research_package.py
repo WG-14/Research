@@ -54,6 +54,7 @@ class MultiAssetResearchPackageError(ValueError):
 
 class EvidenceArtifactRole(StrEnum):
     DATASET = "DATASET"
+    RESEARCH_INPUTS = "RESEARCH_INPUTS"
     PRODUCT_REGISTRY = "PRODUCT_REGISTRY"
     MARKET_STATE = "MARKET_STATE"
     HYPOTHESIS = "HYPOTHESIS"
@@ -61,6 +62,46 @@ class EvidenceArtifactRole(StrEnum):
     CODE = "CODE"
     ENVIRONMENT = "ENVIRONMENT"
     CONFIGURATION = "CONFIGURATION"
+
+
+RESEARCH_INPUT_SOURCE_ROW_FIELDS = frozenset(
+    {
+        "row_id",
+        "row_kind",
+        "event_at",
+        "knowledge_at",
+        "source_id",
+        "source_schema_version",
+        "payload",
+        "content_hash",
+    }
+)
+
+
+def research_input_source_row_hash(row: Mapping[str, object]) -> str:
+    """Hash one externally prepared source row without trusting its receipt."""
+
+    identity = {
+        key: value
+        for key, value in row.items()
+        if key != "content_hash"
+    }
+    return evidence_hash(identity, label="research-input-source-row")
+
+
+def research_input_document_hash(document: Mapping[str, object]) -> str:
+    """Hash the canonical typed input document used by a production runner."""
+
+    return evidence_hash(document, label="immutable-research-input-document")
+
+
+def research_input_source_rows_hash(rows: Sequence[Mapping[str, object]]) -> str:
+    """Bind an ordered source-row set after every row receipt is recomputed."""
+
+    return evidence_hash(
+        [research_input_source_row_hash(row) for row in rows],
+        label="immutable-research-input-source-rows",
+    )
 
 
 class RunStatus(StrEnum):
@@ -211,6 +252,117 @@ def _validate_role_payload(
         if knowledge_cutoff < event_end:
             raise MultiAssetResearchPackageError(
                 "evidence_artifact_dataset_knowledge_before_event_end"
+            )
+        return
+
+    if role is EvidenceArtifactRole.RESEARCH_INPUTS:
+        expected_fields = frozenset(
+            {
+                "artifact_kind",
+                "input_schema_id",
+                "input_schema_version",
+                "input_document",
+                "input_document_hash",
+                "source_rows",
+                "source_rows_hash",
+            }
+        )
+        if frozenset(payload) != expected_fields:
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_fields_invalid"
+            )
+        if payload["artifact_kind"] != "IMMUTABLE_RESEARCH_INPUTS":
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_kind_invalid"
+            )
+        _require_stable_id(
+            payload["input_schema_id"],
+            "evidence_artifact.research_inputs.input_schema_id",
+        )
+        schema_version = payload["input_schema_version"]
+        if (
+            isinstance(schema_version, bool)
+            or not isinstance(schema_version, int)
+            or schema_version < 1
+        ):
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_schema_version_invalid"
+            )
+        document = payload["input_document"]
+        if not isinstance(document, dict) or not document:
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_document_invalid"
+            )
+        _require_hash(
+            payload["input_document_hash"],
+            "evidence_artifact.research_inputs.input_document_hash",
+        )
+        if payload["input_document_hash"] != research_input_document_hash(document):
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_document_hash_mismatch"
+            )
+        raw_rows = payload["source_rows"]
+        if not isinstance(raw_rows, list) or not raw_rows:
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_source_rows_required"
+            )
+        rows: list[Mapping[str, object]] = []
+        row_ids: list[str] = []
+        row_hashes: list[str] = []
+        for index, raw_row in enumerate(raw_rows):
+            if (
+                not isinstance(raw_row, dict)
+                or frozenset(raw_row) != RESEARCH_INPUT_SOURCE_ROW_FIELDS
+            ):
+                raise MultiAssetResearchPackageError(
+                    "evidence_artifact_research_inputs_source_row_fields_invalid"
+                )
+            prefix = f"evidence_artifact.research_inputs.source_rows.{index}"
+            for field_name in (
+                "row_id",
+                "row_kind",
+                "source_id",
+                "source_schema_version",
+            ):
+                _require_stable_id(raw_row[field_name], f"{prefix}.{field_name}")
+            event_at = _timestamp(raw_row["event_at"], f"{prefix}.event_at")
+            knowledge_at = _timestamp(
+                raw_row["knowledge_at"],
+                f"{prefix}.knowledge_at",
+            )
+            if knowledge_at < event_at:
+                raise MultiAssetResearchPackageError(
+                    "evidence_artifact_research_inputs_source_row_future_event"
+                )
+            row_payload = raw_row["payload"]
+            if not isinstance(row_payload, dict) or not row_payload:
+                raise MultiAssetResearchPackageError(
+                    "evidence_artifact_research_inputs_source_row_payload_invalid"
+                )
+            _require_hash(raw_row["content_hash"], f"{prefix}.content_hash")
+            actual_hash = research_input_source_row_hash(raw_row)
+            if raw_row["content_hash"] != actual_hash:
+                raise MultiAssetResearchPackageError(
+                    "evidence_artifact_research_inputs_source_row_hash_mismatch"
+                )
+            rows.append(raw_row)
+            row_ids.append(cast(str, raw_row["row_id"]))
+            row_hashes.append(actual_hash)
+        if row_ids != sorted(row_ids) or len(row_ids) != len(set(row_ids)):
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_source_rows_order_invalid"
+            )
+        if len(row_hashes) != len(set(row_hashes)):
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_source_rows_duplicate"
+            )
+        _require_hash(
+            payload["source_rows_hash"],
+            "evidence_artifact.research_inputs.source_rows_hash",
+        )
+        if payload["source_rows_hash"] != research_input_source_rows_hash(rows):
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_research_inputs_source_rows_hash_mismatch"
             )
         return
 
@@ -1111,6 +1263,7 @@ __all__ = [
     "EvidenceArtifactRef",
     "EvidenceArtifactRole",
     "MULTI_ASSET_RUN_MANIFEST_SCHEMA_VERSION",
+    "RESEARCH_INPUT_SOURCE_ROW_FIELDS",
     "MultiAssetResearchPackageError",
     "MultiAssetRunManifest",
     "PublishedRunClaim",
@@ -1123,5 +1276,8 @@ __all__ = [
     "evidence_artifact_schema_hash",
     "publish_failure_run_manifest",
     "publish_run_manifest",
+    "research_input_document_hash",
+    "research_input_source_row_hash",
+    "research_input_source_rows_hash",
     "reserve_run_id",
 ]

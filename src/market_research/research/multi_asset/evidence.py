@@ -136,6 +136,7 @@ class ResearchEvidenceBindings:
     environment_hash: str
     configuration_hash: str
     seed: int
+    research_inputs_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not self.dataset_snapshot_hashes or not self.market_state_hashes:
@@ -161,11 +162,13 @@ class ResearchEvidenceBindings:
             "configuration_hash",
         ):
             _require_hash(str(getattr(self, field_name)), field_name)
+        if self.research_inputs_hash is not None:
+            _require_hash(self.research_inputs_hash, "research_inputs_hash")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise MultiAssetEvidenceError("seed must be an integer")
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "dataset_snapshot_hashes": list(self.dataset_snapshot_hashes),
             "product_registry_hash": self.product_registry_hash,
             "market_state_hashes": list(self.market_state_hashes),
@@ -176,6 +179,9 @@ class ResearchEvidenceBindings:
             "configuration_hash": self.configuration_hash,
             "seed": self.seed,
         }
+        if self.research_inputs_hash is not None:
+            payload["research_inputs_hash"] = self.research_inputs_hash
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

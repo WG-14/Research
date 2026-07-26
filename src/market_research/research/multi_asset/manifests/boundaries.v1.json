@@ -1,0 +1,681 @@
+{
+  "schema_version": 1,
+  "manifest_kind": "multi_asset_boundaries",
+  "manifest_id": "multi_asset_boundaries_v1",
+  "package_prefix": "market_research.research.multi_asset",
+  "generated_document": "docs/multi-asset-responsibility-map.generated.md",
+  "modules": [
+    {
+      "module": "market_research.research.multi_asset",
+      "layer": "package_boundary",
+      "authority_ids": [],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.accounting",
+      "layer": "accounting_reconciliation",
+      "authority_ids": [
+        "evidence",
+        "ledger"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.application",
+      "layer": "application_orchestration",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.architecture_manifest",
+      "layer": "architecture_governance",
+      "authority_ids": [],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.builtin_runner",
+      "layer": "source_owned_orchestration",
+      "authority_ids": [
+        "evidence",
+        "exposure",
+        "identity",
+        "ledger",
+        "lifecycle",
+        "market_state",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.cards",
+      "layer": "portable_evidence",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.costs",
+      "layer": "execution_assumptions",
+      "authority_ids": [
+        "valuation"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.data",
+      "layer": "data_contract",
+      "authority_ids": [
+        "data"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.domain",
+      "layer": "economic_domain",
+      "authority_ids": [
+        "identity",
+        "lifecycle"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.evidence",
+      "layer": "study_evidence",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.evidence_graph",
+      "layer": "portable_evidence",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.exposure",
+      "layer": "portfolio_risk",
+      "authority_ids": [
+        "exposure",
+        "identity",
+        "market_state",
+        "valuation"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.expression",
+      "layer": "instrument_expression",
+      "authority_ids": [
+        "identity",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.futures_delivery",
+      "layer": "product_master_and_lifecycle",
+      "authority_ids": [
+        "calendar_unit",
+        "identity",
+        "lifecycle",
+        "valuation"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.futures_path",
+      "layer": "product_adapter",
+      "authority_ids": [
+        "lifecycle",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.market_state",
+      "layer": "market_state_contract",
+      "authority_ids": [
+        "market_state"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.multileg_execution",
+      "layer": "execution_projection",
+      "authority_ids": [
+        "exposure",
+        "ledger",
+        "lifecycle",
+        "market_state"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.normalization",
+      "layer": "input_normalization",
+      "authority_ids": [
+        "calendar_unit",
+        "data"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "layer": "product_analytics",
+      "authority_ids": [
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.option_path",
+      "layer": "product_adapter",
+      "authority_ids": [
+        "lifecycle",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.option_pricing",
+      "layer": "product_adapter",
+      "authority_ids": [
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.portable_runtime",
+      "layer": "cold_replay_support",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "internal_support"
+    },
+    {
+      "module": "market_research.research.multi_asset.portfolio",
+      "layer": "portfolio_accounting",
+      "authority_ids": [
+        "ledger",
+        "lifecycle"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.research_package",
+      "layer": "evidence_resolution",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.scenarios",
+      "layer": "joint_stress",
+      "authority_ids": [
+        "exposure",
+        "market_state",
+        "valuation"
+      ],
+      "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.spot",
+      "layer": "product_adapter",
+      "authority_ids": [
+        "lifecycle"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.study",
+      "layer": "study_validation",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.validated_package",
+      "layer": "portable_evidence",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    }
+  ],
+  "constructor_guards": [
+    {
+      "rule_id": "accounting_receipts",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "FxRevaluationReceipt",
+        "LedgerPnlReconciliation"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.accounting"
+      ]
+    },
+    {
+      "rule_id": "authoritative_option_receipt",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "AuthoritativeOptionAnalyticsReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.option_analytics"
+      ]
+    },
+    {
+      "rule_id": "bitemporal_data",
+      "category": "data_authority",
+      "symbols": [
+        "AppendOnlyBitemporalStore",
+        "BitemporalRecord"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.data",
+        "market_research.research.multi_asset.normalization"
+      ]
+    },
+    {
+      "rule_id": "calendar_unit_registries",
+      "category": "calendar_unit_authority",
+      "symbols": [
+        "CalendarRegistry",
+        "UnitRegistry"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.normalization"
+      ]
+    },
+    {
+      "rule_id": "evidence_cards",
+      "category": "evidence_authority",
+      "symbols": [
+        "DataCard",
+        "ModelCard"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.cards"
+      ]
+    },
+    {
+      "rule_id": "evidence_graph",
+      "category": "evidence_authority",
+      "symbols": [
+        "EvidenceGraph"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.evidence_graph"
+      ]
+    },
+    {
+      "rule_id": "evidence_reproduction_receipt",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "ReproductionReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.evidence"
+      ]
+    },
+    {
+      "rule_id": "exposure_snapshot",
+      "category": "exposure_authority",
+      "symbols": [
+        "PortfolioExposureSnapshot"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.exposure"
+      ]
+    },
+    {
+      "rule_id": "instrument_registry",
+      "category": "identity_authority",
+      "symbols": [
+        "InstrumentRegistry"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.domain"
+      ]
+    },
+    {
+      "rule_id": "lifecycle_event",
+      "category": "lifecycle_authority",
+      "symbols": [
+        "LifecycleEvent"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.domain"
+      ]
+    },
+    {
+      "rule_id": "market_state",
+      "category": "market_state_authority",
+      "symbols": [
+        "MarketState",
+        "OptionChainState"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.market_state"
+      ]
+    },
+    {
+      "rule_id": "normalization_receipt",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "NormalizationReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.normalization"
+      ]
+    },
+    {
+      "rule_id": "option_analytics_factory",
+      "category": "valuation_authority",
+      "symbols": [
+        "AuthoritativeOptionAnalyticsFactory"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.option_analytics"
+      ]
+    },
+    {
+      "rule_id": "option_analytics_mark",
+      "category": "direct_supplier_analytics",
+      "symbols": [
+        "OptionAnalyticsMark"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.option_analytics",
+        "market_research.research.multi_asset.option_pricing"
+      ]
+    },
+    {
+      "rule_id": "package_receipts",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "PackageReproductionReceipt",
+        "PackageVerificationReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.validated_package"
+      ]
+    },
+    {
+      "rule_id": "report_reconciliation",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "ReportLedgerReconciliation"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.accounting",
+        "market_research.research.multi_asset.builtin_runner"
+      ]
+    },
+    {
+      "rule_id": "unified_ledger",
+      "category": "separate_product_ledger",
+      "symbols": [
+        "UnifiedPortfolioLedger"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.accounting",
+        "market_research.research.multi_asset.portfolio"
+      ]
+    },
+    {
+      "rule_id": "validated_study",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "ValidatedMultiAssetStudy"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.evidence",
+        "market_research.research.multi_asset.study"
+      ]
+    }
+  ],
+  "generic_price_allowlist": [
+    {
+      "module": "market_research.research.multi_asset.futures_path",
+      "qualname": "FuturesCurvePoint",
+      "occurrence": "field",
+      "semantic": "Actual listed futures-contract price in the point's declared currency and price unit."
+    },
+    {
+      "module": "market_research.research.multi_asset.market_state",
+      "qualname": "SpotQuote",
+      "occurrence": "field",
+      "semantic": "Spot cash price per the quote's explicit unit and currency."
+    },
+    {
+      "module": "market_research.research.multi_asset.normalization",
+      "qualname": "DecodedProviderObservation",
+      "occurrence": "field",
+      "semantic": "Transient decoded provider price whose convention is fixed by the bound normalization policy."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "AmericanCrrBinomialModel.price",
+      "occurrence": "method",
+      "semantic": "Source-owned CRR model value for an OptionModelInput."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "AmericanRichardsonBinomialModel.price",
+      "occurrence": "method",
+      "semantic": "Source-owned Richardson-extrapolated model value for an OptionModelInput."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "AsianArithmeticMonteCarloModel.price",
+      "occurrence": "method",
+      "semantic": "Seeded arithmetic-Asian Monte Carlo model value for an OptionModelInput."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "EuropeanBlackScholesModel.price",
+      "occurrence": "method",
+      "semantic": "Source-owned European Black-Scholes model value for an OptionModelInput."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "FuturesBlack76Model.price",
+      "occurrence": "method",
+      "semantic": "Source-owned Black-76 futures-option model value for an OptionModelInput."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "OptionModelResult",
+      "occurrence": "field",
+      "semantic": "Model-computed option value bound to model, input, diagnostics, and convergence evidence."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "RegisteredOptionModel.price",
+      "occurrence": "method",
+      "semantic": "Closed-registry option-model protocol value for an OptionModelInput."
+    },
+    {
+      "module": "market_research.research.multi_asset.option_analytics",
+      "qualname": "_surface_diagnostics.price",
+      "occurrence": "method",
+      "semantic": "Local diagnostic repricing of one calibrated surface node; never a tradable quote."
+    },
+    {
+      "module": "market_research.research.multi_asset.portfolio",
+      "qualname": "OptionFillLike",
+      "occurrence": "field",
+      "semantic": "Actual option fill price accepted only by the typed option fill adapter."
+    },
+    {
+      "module": "market_research.research.multi_asset.portfolio",
+      "qualname": "PortfolioEvent",
+      "occurrence": "field",
+      "semantic": "Immutable executed or marked event price whose event type, multiplier, quantity, currency, and source hashes define its meaning."
+    },
+    {
+      "module": "market_research.research.multi_asset.portfolio",
+      "qualname": "PortfolioEventDraft",
+      "occurrence": "field",
+      "semantic": "Pre-publication event price validated into a typed unified-ledger event."
+    },
+    {
+      "module": "market_research.research.multi_asset.portfolio",
+      "qualname": "_PositionAccumulator.trade",
+      "occurrence": "argument",
+      "semantic": "Internal replay price for the already typed unified-ledger trade event."
+    },
+    {
+      "module": "market_research.research.multi_asset.portfolio",
+      "qualname": "trade_event",
+      "occurrence": "argument",
+      "semantic": "Actual trade price paired with instrument, quantity, multiplier, currency, costs, and source hashes."
+    },
+    {
+      "module": "market_research.research.multi_asset.scenarios",
+      "qualname": "SpotQuoteLike.price",
+      "occurrence": "method",
+      "semantic": "Structural read of the typed SpotQuote cash price while projecting a shared MarketState."
+    },
+    {
+      "module": "market_research.research.multi_asset.scenarios",
+      "qualname": "build_common_market_projection.add_price",
+      "occurrence": "argument",
+      "semantic": "Internal projection helper value after its product-specific MarketState component supplied the semantic."
+    },
+    {
+      "module": "market_research.research.multi_asset.spot",
+      "qualname": "accrue_borrow_cost",
+      "occurrence": "argument",
+      "semantic": "Point-in-time spot mark used with explicit quantity, borrow rate, elapsed days, currency, and source evidence."
+    }
+  ],
+  "continuous_future_policy": {
+    "signal_symbols": [
+      "ContinuousFuturesPoint",
+      "ContinuousSignalMapping",
+      "ContinuousSignalTrace"
+    ],
+    "signal_attribute_names": [
+      "continuous_price",
+      "continuous_return"
+    ],
+    "trade_sink_calls": [
+      "ExecutionContext",
+      "PortfolioEvent",
+      "PortfolioEventDraft",
+      "SpotPosting",
+      "Trade",
+      "publish",
+      "trade",
+      "trade_event"
+    ],
+    "trade_sink_keywords": [
+      "execution_price",
+      "fill_price",
+      "mark_price",
+      "price",
+      "reference_price",
+      "settlement_price",
+      "theoretical_price"
+    ]
+  },
+  "supplier_analytics_policy": {
+    "supplier_type": "SupplierAnalyticsObservation",
+    "supplier_attribute_names": [
+      "supplier_delta",
+      "supplier_gamma",
+      "supplier_implied_volatility",
+      "supplier_rho",
+      "supplier_theta",
+      "supplier_vega"
+    ],
+    "authoritative_targets": [
+      "AuthoritativeGreeks",
+      "OptionAnalyticsMark",
+      "OptionGreeks",
+      "OptionModelResult"
+    ],
+    "comparison_module": "market_research.research.multi_asset.option_analytics"
+  },
+  "receipt_policy": {
+    "certification_keywords": [
+      "accepted",
+      "certified",
+      "is_valid",
+      "passed",
+      "reconciled",
+      "success",
+      "validated",
+      "verified"
+    ],
+    "receipt_suffixes": [
+      "Evidence",
+      "Receipt",
+      "Reconciliation"
+    ]
+  },
+  "ledger_policy": {
+    "allowed_ledger_class_names": [
+      "UnifiedPortfolioLedger"
+    ]
+  },
+  "research_only_policy": {
+    "forbidden_import_prefixes": [
+      "ccxt",
+      "django",
+      "httpx",
+      "market_research_web",
+      "portal",
+      "requests",
+      "research_operations",
+      "socket",
+      "urllib.request",
+      "websocket",
+      "websockets"
+    ],
+    "forbidden_call_names": [
+      "backfill",
+      "cancel_order",
+      "create_order",
+      "fetch_ohlcv",
+      "fetch_order_book",
+      "fetch_ticker",
+      "modify_order",
+      "place_order",
+      "source_probe",
+      "submit_order"
+    ],
+    "forbidden_definition_names": [
+      "AccountAccess",
+      "BrokerClient",
+      "ExchangeClient",
+      "LiveTradingService",
+      "OrderManager",
+      "OrderSubmissionService"
+    ],
+    "forbidden_field_names": [
+      "account_id",
+      "broker_account",
+      "broker_api_key",
+      "exchange_api_key",
+      "exchange_api_secret",
+      "private_api_key",
+      "private_api_secret",
+      "real_account_id"
+    ]
+  },
+  "content_hash": "sha256:4d3e344a6fad42f54af1a75273998951ac6f863838a98cd22342173cfa93394f"
+}

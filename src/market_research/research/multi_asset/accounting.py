@@ -25,10 +25,13 @@ from typing import Mapping, cast
 
 from market_research.research.hashing import canonical_json_bytes, sha256_prefixed
 from market_research.research.multi_asset.portfolio import (
+    CollateralWaterfallResult,
     ExternalFlowConversionEvidence,
+    FundingFxRevaluation,
     PortfolioEvent,
     PortfolioEventType,
     PortfolioSnapshot,
+    TaxLotProjection,
     UnifiedPortfolioLedger,
 )
 
@@ -1793,6 +1796,246 @@ class ReportLedgerReconciliation:
         return {**self.identity_payload(), "content_hash": self.content_hash}
 
 
+@dataclass(frozen=True, slots=True)
+class AdvancedAccountingReconciliation:
+    """Bind lot, collateral, funding-FX and exceptional-event evidence.
+
+    The existing ``LedgerPnlReconciliation`` remains the NAV/P&L authority.
+    This receipt adds the operationally important subledgers without allowing
+    any one of them to manufacture a balancing residual.
+    """
+
+    ledger_hash: str
+    ledger_reconciliation_hash: str
+    tax_lot_projection_hash: str
+    funding_fx_revaluation_hash: str
+    collateral_waterfall_hash: str | None
+    advanced_event_hashes: tuple[str, ...]
+    delivery_event_count: int
+    default_event_count: int
+    forced_liquidation_event_count: int
+    lot_position_quantity_hash: str
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "ledger_hash",
+            "ledger_reconciliation_hash",
+            "tax_lot_projection_hash",
+            "funding_fx_revaluation_hash",
+            "lot_position_quantity_hash",
+        ):
+            _require_hash(getattr(self, name), f"advanced_reconciliation.{name}")
+        if self.collateral_waterfall_hash is not None:
+            _require_hash(
+                self.collateral_waterfall_hash,
+                "advanced_reconciliation.collateral_waterfall_hash",
+            )
+        if tuple(sorted(set(self.advanced_event_hashes))) != (
+            self.advanced_event_hashes
+        ):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_event_hashes_invalid"
+            )
+        for item in self.advanced_event_hashes:
+            _require_hash(item, "advanced_reconciliation.event_hash")
+        for name in (
+            "delivery_event_count",
+            "default_event_count",
+            "forced_liquidation_event_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise AccountingReconciliationError(
+                    f"advanced_reconciliation_{name}_invalid"
+                )
+        object.__setattr__(
+            self,
+            "content_hash",
+            sha256_prefixed(
+                {
+                    "ledger_hash": self.ledger_hash,
+                    "ledger_reconciliation_hash": self.ledger_reconciliation_hash,
+                    "tax_lot_projection_hash": self.tax_lot_projection_hash,
+                    "funding_fx_revaluation_hash": (
+                        self.funding_fx_revaluation_hash
+                    ),
+                    "collateral_waterfall_hash": self.collateral_waterfall_hash,
+                    "advanced_event_hashes": list(self.advanced_event_hashes),
+                    "delivery_event_count": self.delivery_event_count,
+                    "default_event_count": self.default_event_count,
+                    "forced_liquidation_event_count": (
+                        self.forced_liquidation_event_count
+                    ),
+                    "lot_position_quantity_hash": self.lot_position_quantity_hash,
+                },
+                label="advanced_accounting_reconciliation",
+            ),
+        )
+
+    @classmethod
+    def from_ledger_evidence(
+        cls,
+        *,
+        ledger: UnifiedPortfolioLedger,
+        ledger_reconciliation: LedgerPnlReconciliation,
+        tax_lots: TaxLotProjection,
+        funding_fx: FundingFxRevaluation,
+        collateral_waterfall: CollateralWaterfallResult | None = None,
+    ) -> AdvancedAccountingReconciliation:
+        if not isinstance(ledger, UnifiedPortfolioLedger):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_ledger_required"
+            )
+        if not isinstance(ledger_reconciliation, LedgerPnlReconciliation):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_ledger_receipt_required"
+            )
+        if not isinstance(tax_lots, TaxLotProjection):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_tax_lot_projection_required"
+            )
+        if not isinstance(funding_fx, FundingFxRevaluation):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_funding_fx_required"
+            )
+        if collateral_waterfall is not None and not isinstance(
+            collateral_waterfall, CollateralWaterfallResult
+        ):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_collateral_waterfall_invalid"
+            )
+        ledger.verify_integrity()
+        if ledger_reconciliation.ledger_hash != ledger.content_hash:
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_ledger_receipt_mismatch"
+            )
+        if tax_lots.ledger_hash != ledger.content_hash:
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_tax_lot_ledger_mismatch"
+            )
+        funding_event_prefix_hashes = {
+            UnifiedPortfolioLedger(
+                ledger_id=ledger.ledger_id,
+                base_currency=ledger.base_currency,
+                events=ledger.events[:index],
+            ).content_hash
+            for index, event in enumerate(ledger.events)
+            if event.event_type is PortfolioEventType.FUNDING_FX_REVALUATION
+            and funding_fx.content_hash in event.source_hashes
+        }
+        if funding_fx.ledger_hash not in {
+            ledger.content_hash,
+            *funding_event_prefix_hashes,
+        }:
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_funding_fx_ledger_mismatch"
+            )
+        snapshot = ledger.replay()
+        lot_quantities: dict[tuple[str, str], Decimal] = {}
+        for lot in tax_lots.open_lots:
+            key = (lot.asset_class.value, lot.instrument_id)
+            lot_quantities[key] = lot_quantities.get(key, _ZERO) + lot.quantity
+        position_quantities = {
+            (item.asset_class.value, item.instrument_id): item.quantity
+            for item in snapshot.positions
+        }
+        if lot_quantities != position_quantities:
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_lot_position_mismatch"
+            )
+        exceptional = tuple(
+            event
+            for event in ledger.events
+            if event.event_type
+            in {
+                PortfolioEventType.DELIVERY,
+                PortfolioEventType.MARGIN_CALL,
+                PortfolioEventType.COLLATERAL_WATERFALL,
+                PortfolioEventType.DEFAULT,
+                PortfolioEventType.FORCED_LIQUIDATION,
+                PortfolioEventType.FUNDING_FX_REVALUATION,
+            }
+        )
+        default_count = sum(
+            event.event_type is PortfolioEventType.DEFAULT for event in exceptional
+        )
+        collateral_events = tuple(
+            event
+            for event in exceptional
+            if event.event_type is PortfolioEventType.COLLATERAL_WATERFALL
+        )
+        if (
+            collateral_events
+            and collateral_waterfall is not None
+            and not any(
+                collateral_waterfall.content_hash in event.source_hashes
+                for event in collateral_events
+            )
+        ):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_collateral_waterfall_unbound"
+            )
+        if (
+            collateral_waterfall is not None
+            and any(
+                collateral_waterfall.content_hash in event.source_hashes
+                for event in exceptional
+                if event.event_type is PortfolioEventType.DEFAULT
+            )
+            and collateral_waterfall.default_shortfall_base <= _ZERO
+        ):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_default_without_shortfall"
+            )
+        funding_events = tuple(
+            event
+            for event in exceptional
+            if event.event_type is PortfolioEventType.FUNDING_FX_REVALUATION
+        )
+        if funding_events and not any(
+            funding_fx.content_hash in event.source_hashes
+            for event in funding_events
+        ):
+            raise AccountingReconciliationError(
+                "advanced_reconciliation_funding_fx_unbound"
+            )
+        quantity_payload = [
+            {
+                "asset_class": key[0],
+                "instrument_id": key[1],
+                "quantity": _decimal_text(value),
+            }
+            for key, value in sorted(lot_quantities.items())
+        ]
+        return cls(
+            ledger_hash=ledger.content_hash,
+            ledger_reconciliation_hash=ledger_reconciliation.content_hash,
+            tax_lot_projection_hash=tax_lots.content_hash,
+            funding_fx_revaluation_hash=funding_fx.content_hash,
+            collateral_waterfall_hash=(
+                None
+                if collateral_waterfall is None
+                else collateral_waterfall.content_hash
+            ),
+            advanced_event_hashes=tuple(
+                sorted(event.content_hash for event in exceptional)
+            ),
+            delivery_event_count=sum(
+                event.event_type is PortfolioEventType.DELIVERY
+                for event in exceptional
+            ),
+            default_event_count=default_count,
+            forced_liquidation_event_count=sum(
+                event.event_type is PortfolioEventType.FORCED_LIQUIDATION
+                for event in exceptional
+            ),
+            lot_position_quantity_hash=sha256_prefixed(
+                quantity_payload, label="advanced_lot_position_quantities"
+            ),
+        )
+
+
 def encode_report_payload(
     *,
     report_id: str,
@@ -1821,6 +2064,7 @@ __all__ = (
     "REPORT_ANALYSIS_OBJECT_NAMES",
     "REPORT_PNL_ROW_NAMES",
     "AccountingReconciliationError",
+    "AdvancedAccountingReconciliation",
     "ExternalFlowConversion",
     "FxExposureInterval",
     "FxRevaluationReceipt",

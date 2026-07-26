@@ -1,0 +1,457 @@
+{
+  "schema_version": 1,
+  "manifest_kind": "multi_asset_authorities",
+  "manifest_id": "multi_asset_authorities_v1",
+  "package_prefix": "market_research.research.multi_asset",
+  "authorities": [
+    {
+      "authority_id": "calendar_unit",
+      "responsibility": "Calendar and unit semantics",
+      "authoritative_module": "market_research.research.multi_asset.normalization",
+      "sole_producer": "ProviderNormalizationService",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "CalendarRegistry",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "UnitRegistry",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "CalendarRegistry",
+        "UnitRegistry"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.normalization"
+      ],
+      "forbidden_constructor_symbols": [
+        "CalendarMap",
+        "UnitMap"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "ProviderNormalizationService",
+          "required_symbols": [
+            "CalendarRegistry",
+            "UnitRegistry"
+          ]
+        }
+      ],
+      "evidence_role": "Binds every normalized value to exact calendar, timezone, unit registry, and conversion policy hashes.",
+      "legacy_migration_id": "migrate_calendar_unit_v1"
+    },
+    {
+      "authority_id": "data",
+      "responsibility": "Immutable bitemporal data layers",
+      "authoritative_module": "market_research.research.multi_asset.data",
+      "sole_producer": "AppendOnlyBitemporalStore",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "AppendOnlyBitemporalStore",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.data",
+          "symbol": "BitemporalRecord",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "AppendOnlyBitemporalStore",
+        "BitemporalRecord"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.data",
+        "market_research.research.multi_asset.normalization"
+      ],
+      "forbidden_constructor_symbols": [
+        "BitemporalDataStore",
+        "MutableMarketDataStore",
+        "PointInTimeDataStore"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.normalization",
+          "symbol": "ProviderNormalizationService",
+          "required_symbols": [
+            "AppendOnlyBitemporalStore",
+            "BitemporalRecord"
+          ]
+        }
+      ],
+      "evidence_role": "Retains raw, normalized, and derived rows with valid-time, knowledge-time, source, code, policy, and upstream hashes.",
+      "legacy_migration_id": "migrate_data_v1"
+    },
+    {
+      "authority_id": "evidence",
+      "responsibility": "Validation and portable evidence",
+      "authoritative_module": "market_research.research.multi_asset.study",
+      "sole_producer": "build_validated_multi_asset_study",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.cards",
+          "symbol": "DataCard",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.cards",
+          "symbol": "ModelCard",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.evidence_graph",
+          "symbol": "EvidenceGraph",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.study",
+          "symbol": "build_validated_multi_asset_study",
+          "kind": "function"
+        },
+        {
+          "module": "market_research.research.multi_asset.validated_package",
+          "symbol": "build_validated_package",
+          "kind": "function"
+        }
+      ],
+      "constructor_symbols": [
+        "DataCard",
+        "EvidenceGraph",
+        "ModelCard",
+        "ValidatedMultiAssetStudy"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.cards",
+        "market_research.research.multi_asset.evidence",
+        "market_research.research.multi_asset.evidence_graph",
+        "market_research.research.multi_asset.study",
+        "market_research.research.multi_asset.validated_package"
+      ],
+      "forbidden_constructor_symbols": [
+        "SelfCertifiedStudy",
+        "UnboundEvidenceGraph",
+        "UnvalidatedResearchReport"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.cli",
+          "symbol": "cmd_research_multi_asset_build_package",
+          "required_symbols": [
+            "build_validated_package"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.application",
+          "symbol": "MultiAssetResearchApplicationService.execute",
+          "required_symbols": [
+            "build_validated_multi_asset_study"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.validated_package",
+          "symbol": "PortablePackageBuildRequest",
+          "required_symbols": [
+            "DataCard",
+            "EvidenceGraph",
+            "ModelCard"
+          ]
+        }
+      ],
+      "evidence_role": "Requires T-01 through T-05 success, exact lineage graph edges, data/model cards, content-addressed objects, and deterministic cold replay.",
+      "legacy_migration_id": "migrate_evidence_v1"
+    },
+    {
+      "authority_id": "exposure",
+      "responsibility": "Cross-product exposure",
+      "authoritative_module": "market_research.research.multi_asset.exposure",
+      "sole_producer": "ExposureEngine",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "ExposureEngine",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "PortfolioExposureSnapshot",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "ExposureEngine",
+        "PortfolioExposureSnapshot"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.exposure"
+      ],
+      "forbidden_constructor_symbols": [
+        "ProductExposureEngine",
+        "SeparateExposureBook"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_spot_exposure_authority",
+          "required_symbols": [
+            "ExposureEngine",
+            "PortfolioExposureSnapshot"
+          ]
+        }
+      ],
+      "evidence_role": "Revalues all products against one immutable MarketState and emits common totals, buckets, concentrations, and invariant hashes.",
+      "legacy_migration_id": "migrate_exposure_v1"
+    },
+    {
+      "authority_id": "identity",
+      "responsibility": "Economic identity and product master",
+      "authoritative_module": "market_research.research.multi_asset.domain",
+      "sole_producer": "InstrumentRegistry",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "InstrumentRegistry",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "InstrumentRegistry"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.domain"
+      ],
+      "forbidden_constructor_symbols": [
+        "AssetRegistry",
+        "ProductMasterRegistry"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_integrated_option_market_authority",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_spot_exposure_authority",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        }
+      ],
+      "evidence_role": "Resolves economic underlyings, issuers, instruments, listings, contracts, relationships, aliases, deliverables, and revision knowledge time.",
+      "legacy_migration_id": "migrate_identity_v1"
+    },
+    {
+      "authority_id": "ledger",
+      "responsibility": "Unified portfolio ledger",
+      "authoritative_module": "market_research.research.multi_asset.portfolio",
+      "sole_producer": "UnifiedPortfolioLedger",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.accounting",
+          "symbol": "LedgerPnlReconciliation",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "UnifiedPortfolioLedger",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "LedgerPnlReconciliation",
+        "UnifiedPortfolioLedger"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.accounting",
+        "market_research.research.multi_asset.portfolio"
+      ],
+      "forbidden_constructor_symbols": [
+        "OptionsLedger",
+        "PerProductLedger",
+        "SpotLedger"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_report_ledger_reconciliation",
+          "required_symbols": [
+            "LedgerPnlReconciliation",
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.multileg_execution",
+          "symbol": "MultiLegLedgerExecutionService",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        }
+      ],
+      "evidence_role": "Preserves one append-only multi-currency event chain and independently reconciles cash, positions, margin, NAV, external flows, FX, and attributed PnL.",
+      "legacy_migration_id": "migrate_ledger_v1"
+    },
+    {
+      "authority_id": "lifecycle",
+      "responsibility": "Instrument and position lifecycle",
+      "authoritative_module": "market_research.research.multi_asset.domain",
+      "sole_producer": "LifecycleEvent",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "LifecycleEvent",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.portfolio",
+          "symbol": "adapt_option_lifecycle",
+          "kind": "function"
+        },
+        {
+          "module": "market_research.research.multi_asset.spot",
+          "symbol": "apply_corporate_action",
+          "kind": "function"
+        }
+      ],
+      "constructor_symbols": [
+        "LifecycleEvent"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.domain"
+      ],
+      "forbidden_constructor_symbols": [
+        "CorporateActionLedger",
+        "OptionLifecycleLedger",
+        "ProductLifecycleLedger"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_AuthoritativeBuiltinRunner.run_option",
+          "required_symbols": [
+            "adapt_option_lifecycle"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_AuthoritativeBuiltinRunner.run_spot",
+          "required_symbols": [
+            "apply_corporate_action"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.domain",
+          "symbol": "ProductMasterHistory",
+          "required_symbols": [
+            "LifecycleEvent"
+          ]
+        }
+      ],
+      "evidence_role": "Binds effective and knowledge time for corporate actions, expiry, exercise, assignment, delivery, and resulting unified-ledger postings.",
+      "legacy_migration_id": "migrate_lifecycle_v1"
+    },
+    {
+      "authority_id": "market_state",
+      "responsibility": "Synchronized immutable MarketState",
+      "authoritative_module": "market_research.research.multi_asset.market_state",
+      "sole_producer": "MarketState",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.market_state",
+          "symbol": "MarketState",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.market_state",
+          "symbol": "OptionChainState",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "MarketState",
+        "OptionChainState"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.market_state"
+      ],
+      "forbidden_constructor_symbols": [
+        "SharedMarketState",
+        "UntypedMarketSnapshot"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_integrated_option_market_authority",
+          "required_symbols": [
+            "MarketState",
+            "OptionChainState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "ExposureEngine",
+          "required_symbols": [
+            "MarketState"
+          ]
+        }
+      ],
+      "evidence_role": "Requires one valuation instant plus explicit currency, unit, calendar, quality, staleness, source, curves, chains, rates, FX, borrow, and liquidity.",
+      "legacy_migration_id": "migrate_market_state_v1"
+    },
+    {
+      "authority_id": "valuation",
+      "responsibility": "Product-aware valuation and option analytics",
+      "authoritative_module": "market_research.research.multi_asset.option_analytics",
+      "sole_producer": "AuthoritativeOptionAnalyticsFactory",
+      "public_entries": [
+        {
+          "module": "market_research.research.multi_asset.exposure",
+          "symbol": "OptionValuationAdapter",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.option_analytics",
+          "symbol": "AuthoritativeOptionAnalyticsFactory",
+          "kind": "class"
+        }
+      ],
+      "constructor_symbols": [
+        "AuthoritativeOptionAnalyticsFactory",
+        "OptionAnalyticsMark",
+        "OptionValuationAdapter"
+      ],
+      "allowed_constructor_modules": [
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.exposure",
+        "market_research.research.multi_asset.option_analytics",
+        "market_research.research.multi_asset.option_pricing"
+      ],
+      "forbidden_constructor_symbols": [
+        "DirectSupplierGreeks",
+        "SupplierAnalyticsMark"
+      ],
+      "consumers": [
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_integrated_option_market_authority",
+          "required_symbols": [
+            "AuthoritativeOptionAnalyticsFactory",
+            "OptionValuationAdapter"
+          ]
+        }
+      ],
+      "evidence_role": "Computes price and Greeks from source-owned models, compares supplier analytics under explicit tolerances, and binds quote, surface, model, margin, and input hashes.",
+      "legacy_migration_id": "migrate_valuation_v1"
+    }
+  ],
+  "content_hash": "sha256:4e4de473983c0099189ac03756d6157dfd87ffff5b826586c4a54203a585be1f"
+}

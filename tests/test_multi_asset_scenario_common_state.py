@@ -34,6 +34,8 @@ from market_research.research.multi_asset.portfolio import (
 )
 from market_research.research.multi_asset.scenarios import (
     CommonMarketProjection,
+    ConstrainedJointScenarioEngine,
+    EconomicProjectionPolicy,
     JointMarketShock,
     JointScenarioEngine,
     PathRiskLimits,
@@ -471,5 +473,58 @@ def test_common_state_shocks_fail_closed_for_unknown_targets(
             _option_only_snapshot(),
             market_state=_full_market_state(),
             shock=shock,
+            repricers={_OPTION_ID: _CommonStateOptionRepricer()},
+        )
+
+
+def test_constrained_scenario_rejects_cross_product_basis_inconsistency() -> None:
+    engine = ConstrainedJointScenarioEngine(
+        policy=EconomicProjectionPolicy(
+            policy_id="economic.constraints",
+            version="1",
+            maximum_absolute_basis_fraction=Decimal("0.10"),
+            maximum_volatility_curvature=Decimal("1"),
+        )
+    )
+    state = _full_market_state()
+    snapshot = _option_only_snapshot()
+    valid_shock = JointMarketShock(
+        scenario_id="economic.valid",
+        price_returns=(
+            (_FUTURE_ID, Decimal("-0.10")),
+            (_UNDERLYING_ID, Decimal("-0.10")),
+        ),
+        source_hashes=(_SOURCE_HASH,),
+    )
+    first = engine.evaluate(
+        snapshot,
+        market_state=state,
+        shock=valid_shock,
+        repricers={_OPTION_ID: _CommonStateOptionRepricer()},
+    )
+    second = engine.evaluate(
+        snapshot,
+        market_state=state,
+        shock=valid_shock,
+        repricers={_OPTION_ID: _CommonStateOptionRepricer()},
+    )
+    assert first.economic_evidence.futures_basis_fractions == (
+        (_FUTURE_ID, Decimal("0.05")),
+    )
+    assert first.content_hash == second.content_hash
+
+    inconsistent = JointMarketShock(
+        scenario_id="economic.inconsistent",
+        price_returns=(
+            (_FUTURE_ID, Decimal("0.10")),
+            (_UNDERLYING_ID, Decimal("-0.10")),
+        ),
+        source_hashes=(_SOURCE_HASH,),
+    )
+    with pytest.raises(ScenarioError, match="future_basis_exceeded"):
+        engine.evaluate(
+            snapshot,
+            market_state=state,
+            shock=inconsistent,
             repricers={_OPTION_ID: _CommonStateOptionRepricer()},
         )

@@ -50,6 +50,7 @@ from market_research.research.derivatives.options import (
     OptionLifecycleEvent,
     OptionPosition,
     PositionSide,
+    QuoteState,
     SettlementType as DerivativeOptionSettlementType,
     ValuationInputSnapshot,
     mark_option_position,
@@ -145,6 +146,11 @@ from market_research.research.multi_asset.multileg_execution import (
     MultiLegLedgerCommand,
     MultiLegLedgerExecutionService,
 )
+from market_research.research.multi_asset.option_analytics import (
+    AuthoritativeOptionAnalyticsFactory,
+    default_analytics_comparison_policy,
+    default_option_model_registry,
+)
 from market_research.research.multi_asset.option_path import (
     CalculatedOptionDelta,
     DeltaFallback,
@@ -160,6 +166,10 @@ from market_research.research.multi_asset.option_path import (
     RawOptionObservation,
     attribute_option_path,
     select_option_contract,
+)
+from market_research.research.multi_asset.option_pricing import (
+    BlackScholesPricingAdapter,
+    black_scholes_pricing_specification,
 )
 from market_research.research.multi_asset.portfolio import (
     AssetClass,
@@ -1388,6 +1398,51 @@ class _AuthoritativeBuiltinRunner:
         default_factory=dict,
         init=False,
     )
+    _resolved_inputs: dict[int, BuiltinScenarioInputs] = field(
+        default_factory=dict,
+        init=False,
+    )
+
+    def _authoritative_inputs(
+        self,
+        context: ScenarioRunContext,
+    ) -> BuiltinScenarioInputs:
+        """Resolve the immutable input document; the request copy is only a claim."""
+
+        cached = self._resolved_inputs.get(context.repeat_index)
+        if cached is not None:
+            return cached
+        artifact = context.one_artifact(EvidenceArtifactRole.RESEARCH_INPUTS)
+        payload = artifact.payload
+        if (
+            payload.get("artifact_kind") != "IMMUTABLE_RESEARCH_INPUTS"
+            or payload.get("input_schema_id")
+            != "builtin-multi-asset-scenario-inputs"
+            or payload.get("input_schema_version") != BUILTIN_MULTI_ASSET_SCHEMA_VERSION
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_research_inputs_schema_mismatch"
+            )
+        document = payload.get("input_document")
+        if not isinstance(document, dict):
+            raise MultiAssetExperimentError(
+                "builtin_research_inputs_document_required"
+            )
+        try:
+            authoritative = BuiltinScenarioInputs.from_dict(document)
+        except BuiltinMultiAssetCodecError as exc:
+            raise MultiAssetExperimentError(
+                "builtin_research_inputs_document_invalid"
+            ) from exc
+        if (
+            authoritative.content_hash != self.inputs.content_hash
+            or authoritative != self.inputs
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_request_input_claim_mismatch"
+            )
+        self._resolved_inputs[context.repeat_index] = authoritative
+        return authoritative
 
     def option_selection_evidence(
         self,
@@ -1401,8 +1456,9 @@ class _AuthoritativeBuiltinRunner:
             ) from exc
 
     def run_spot(self, context: ScenarioRunContext) -> SpotScenarioTrace:
-        config = self.inputs.spot
-        policy = self.inputs.policy
+        inputs = self._authoritative_inputs(context)
+        config = inputs.spot
+        policy = inputs.policy
         decision = _timestamp(config.decision_at, "builtin_spot.decision_at")
         knowledge = _timestamp(config.knowledge_at, "builtin_spot.knowledge_at")
         membership = UniverseMembership(
@@ -3031,6 +3087,16 @@ def _integrated_option_market_authority(
             "builtin_multileg_valuation_input_coverage_mismatch"
         )
     model = request.valuation_model
+    pricing_adapter = BlackScholesPricingAdapter(
+        model=model,
+        specification=black_scholes_pricing_specification(model.model_version),
+    )
+    analytics_factory = AuthoritativeOptionAnalyticsFactory(
+        registry=default_option_model_registry(),
+        comparison_policy=default_analytics_comparison_policy(),
+        margin_model_hash=request.execution_policy.content_hash,
+        pricing_adapter=pricing_adapter,
+    )
     calculated: dict[str, tuple[Decimal, OptionGreeks]] = {}
     for contract_id, item in inputs.items():
         implied = model.implied_volatility(
@@ -3088,6 +3154,18 @@ def _integrated_option_market_authority(
         quote = quote_by_id[contract_id]
         if quote.bid is None or quote.ask is None:
             raise MultiAssetExperimentError("builtin_multileg_two_sided_quote_required")
+        quote_metadata = ObservationMetadata(
+            observed_at=quote.availability.event_at,
+            knowledge_at=quote.availability.processed_at,
+            source_hash=quote.content_hash,
+            calendar_id=calendar_id,
+            max_age_seconds=quote.stale_after_seconds,
+            quality=(
+                MarketDataQuality.INDICATIVE
+                if quote.state is QuoteState.ILLIQUID
+                else MarketDataQuality.GOOD
+            ),
+        )
         common_quote = OptionContractQuote(
             contract_id=contract_id,
             underlying_instrument_id=spot.instrument_id,
@@ -3104,36 +3182,23 @@ def _integrated_option_market_authority(
             ask_size=quote.ask_size,
             volume=Decimal(quote.volume),
             open_interest=Decimal(quote.open_interest),
-            condition=QuoteCondition.NORMAL,
-            metadata=metadata,
+            condition=(
+                QuoteCondition.INDICATIVE
+                if quote.state is QuoteState.ILLIQUID
+                else QuoteCondition.NORMAL
+            ),
+            metadata=quote_metadata,
         )
         option_quotes.append(common_quote)
-        volatility, greek = calculated[contract_id]
-        analytics.append(
-            OptionAnalyticsMark(
-                contract_id=contract_id,
-                underlying_instrument_id=spot.instrument_id,
-                expiry_at=contract.expiration_at,
-                currency=contract.currency,
-                price_unit=f"{contract.currency}_per_contract_unit",
-                market_price=common_quote.midpoint,
-                model_price=greek.price,
-                implied_volatility=volatility,
-                delta=greek.delta,
-                gamma=greek.gamma,
-                vega=greek.vega / Decimal("100"),
-                theta=(greek.theta_per_year / Decimal("365")),
-                rho=greek.rho / Decimal("100"),
-                margin_per_contract=Decimal("0"),
-                collateral_per_contract=Decimal("0"),
-                model_hash=model.content_hash,
-                model_specification_hash=model.content_hash,
-                margin_model_hash=request.execution_policy.content_hash,
-                valuation_input_hash=valuation_input.content_hash,
-                source_quote_hash=common_quote.content_hash,
-                metadata=metadata,
-            )
+        receipt = analytics_factory.derive(
+            receipt_id=f"{contract_id}.builtin-authoritative-analytics",
+            quote=common_quote,
+            valuation_input=valuation_input,
+            margin_per_contract=Decimal("0"),
+            collateral_per_contract=Decimal("0"),
+            permit_illiquid=request.execution_policy.allow_illiquid,
         )
+        analytics.append(receipt.analytics_mark)
         liquidity.append(
             LiquidityQuote(
                 instrument_id=contract_id,
@@ -3278,8 +3343,8 @@ def _integrated_option_market_authority(
         relationships=tuple(relationships),
     )
     adapter = OptionValuationAdapter(
-        pricing_model_hash=model.content_hash,
-        model_specification_hash=model.content_hash,
+        pricing_model_hash=pricing_adapter.model.content_hash,
+        model_specification_hash=pricing_adapter.specification.content_hash,
         margin_model_hash=request.execution_policy.content_hash,
     )
     return market_state, registry, adapter

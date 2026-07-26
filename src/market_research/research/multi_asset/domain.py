@@ -73,6 +73,15 @@ class InstrumentRelationshipType(StrEnum):
     HEDGE_PROXY = "HEDGE_PROXY"
 
 
+class IssuerIdentifierNamespace(StrEnum):
+    """Supported issuer namespaces; provider-specific aliases remain explicit."""
+
+    LEI = "LEI"
+    NATIONAL_REGISTRY = "NATIONAL_REGISTRY"
+    TAX = "TAX"
+    PROVIDER = "PROVIDER"
+
+
 def _timestamp(value: str, field: str) -> datetime:
     try:
         result = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -263,6 +272,102 @@ class Issuer:
             "validity": self.validity.as_dict(),
             "source": self.source.as_dict(),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class IssuerIdentifierRevision:
+    """Append-only correction and validity history for one issuer identifier."""
+
+    identifier_id: str
+    revision: int
+    issuer_id: str
+    namespace: IssuerIdentifierNamespace
+    value: str
+    validity: EffectivePeriod
+    knowledge_at: str
+    source: SourceReference
+    jurisdiction: str | None = None
+    provider_id: str | None = None
+    supersedes_hash: str | None = None
+    correction_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_id(self.identifier_id, "issuer_identifier.identifier_id")
+        _require_id(self.issuer_id, "issuer_identifier.issuer_id")
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 1
+        ):
+            raise ProductMasterError("issuer_identifier.revision_invalid")
+        if not isinstance(self.namespace, IssuerIdentifierNamespace):
+            raise ProductMasterError("issuer_identifier.namespace_invalid")
+        _require_text(self.value, "issuer_identifier.value")
+        object.__setattr__(
+            self,
+            "knowledge_at",
+            _timestamp_text(
+                self.knowledge_at,
+                "issuer_identifier.knowledge_at",
+            ),
+        )
+        if not self.source.known_at(self.knowledge_at):
+            raise ProductMasterError(
+                "issuer_identifier_knowledge_before_source_observed"
+            )
+        if self.jurisdiction is not None:
+            _require_id(self.jurisdiction, "issuer_identifier.jurisdiction")
+        if self.provider_id is not None:
+            _require_id(self.provider_id, "issuer_identifier.provider_id")
+        if self.namespace is IssuerIdentifierNamespace.PROVIDER:
+            if self.provider_id is None:
+                raise ProductMasterError(
+                    "issuer_identifier_provider_id_required"
+                )
+        elif self.provider_id is not None:
+            raise ProductMasterError(
+                "issuer_identifier_provider_id_not_applicable"
+            )
+        if self.revision == 1:
+            if self.supersedes_hash is not None or self.correction_reason is not None:
+                raise ProductMasterError(
+                    "issuer_identifier_initial_revision_binding_forbidden"
+                )
+        else:
+            if self.supersedes_hash is None or self.correction_reason is None:
+                raise ProductMasterError(
+                    "issuer_identifier_revision_binding_required"
+                )
+            _require_hash(
+                self.supersedes_hash,
+                "issuer_identifier.supersedes_hash",
+            )
+            _require_text(
+                self.correction_reason,
+                "issuer_identifier.correction_reason",
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "identifier_id": self.identifier_id,
+            "revision": self.revision,
+            "issuer_id": self.issuer_id,
+            "namespace": self.namespace.value,
+            "value": self.value,
+            "jurisdiction": self.jurisdiction,
+            "provider_id": self.provider_id,
+            "validity": self.validity.as_dict(),
+            "knowledge_at": self.knowledge_at,
+            "source": self.source.as_dict(),
+            "supersedes_hash": self.supersedes_hash,
+            "correction_reason": self.correction_reason,
+        }
+
+    def revision_hash(self) -> str:
+        return sha256_prefixed(
+            self.as_dict(),
+            label="multi_asset_issuer_identifier_revision",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,6 +809,119 @@ class InstrumentRelationship:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DeliverableComponent:
+    """One security or cash component in a versioned complex deliverable."""
+
+    component_id: str
+    target_instrument_id: str | None
+    quantity: Decimal
+    cash_amount: Decimal = Decimal("0")
+    cash_currency: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_id(self.component_id, "deliverable_component.component_id")
+        if self.target_instrument_id is not None:
+            _require_id(
+                self.target_instrument_id,
+                "deliverable_component.target_instrument_id",
+            )
+        if (
+            not isinstance(self.quantity, Decimal)
+            or not self.quantity.is_finite()
+            or self.quantity < 0
+        ):
+            raise ProductMasterError("deliverable_component.quantity_invalid")
+        if (
+            not isinstance(self.cash_amount, Decimal)
+            or not self.cash_amount.is_finite()
+            or self.cash_amount < 0
+        ):
+            raise ProductMasterError("deliverable_component.cash_amount_invalid")
+        if (self.cash_amount > 0) != (self.cash_currency is not None):
+            raise ProductMasterError(
+                "deliverable_component_cash_currency_binding_invalid"
+            )
+        if self.cash_currency is not None:
+            _require_currency(
+                self.cash_currency,
+                "deliverable_component.cash_currency",
+            )
+        if self.target_instrument_id is None and self.cash_amount == 0:
+            raise ProductMasterError("deliverable_component_economic_value_required")
+        if self.target_instrument_id is not None and self.quantity == 0:
+            raise ProductMasterError(
+                "deliverable_component_instrument_quantity_required"
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "component_id": self.component_id,
+            "target_instrument_id": self.target_instrument_id,
+            "quantity": _decimal_text(self.quantity),
+            "cash_amount": _decimal_text(self.cash_amount),
+            "cash_currency": self.cash_currency,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeDeliverable:
+    """Revisioned option/future deliverable retaining all economic legs."""
+
+    deliverable_id: str
+    source_instrument_id: str
+    components: tuple[DeliverableComponent, ...]
+    validity: EffectivePeriod
+    knowledge_at: str
+    source: SourceReference
+
+    def __post_init__(self) -> None:
+        _require_id(self.deliverable_id, "composite_deliverable.deliverable_id")
+        _require_id(
+            self.source_instrument_id,
+            "composite_deliverable.source_instrument_id",
+        )
+        components = tuple(self.components)
+        if not components:
+            raise ProductMasterError("composite_deliverable.components_required")
+        identifiers = [item.component_id for item in components]
+        if identifiers != sorted(identifiers) or len(identifiers) != len(
+            set(identifiers)
+        ):
+            raise ProductMasterError(
+                "composite_deliverable_components_not_unique_canonical"
+            )
+        object.__setattr__(self, "components", components)
+        object.__setattr__(
+            self,
+            "knowledge_at",
+            _timestamp_text(
+                self.knowledge_at,
+                "composite_deliverable.knowledge_at",
+            ),
+        )
+        if not self.source.known_at(self.knowledge_at):
+            raise ProductMasterError(
+                "composite_deliverable_knowledge_before_source"
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "deliverable_id": self.deliverable_id,
+            "source_instrument_id": self.source_instrument_id,
+            "components": [item.as_dict() for item in self.components],
+            "validity": self.validity.as_dict(),
+            "knowledge_at": self.knowledge_at,
+            "source": self.source.as_dict(),
+        }
+
+    def deliverable_hash(self) -> str:
+        return sha256_prefixed(
+            self.as_dict(),
+            label="multi_asset_composite_deliverable",
+        )
+
+
 _T = TypeVar("_T")
 
 
@@ -742,12 +960,14 @@ class InstrumentRegistry:
 
     economic_underlyings: tuple[EconomicUnderlying, ...] = ()
     issuers: tuple[Issuer, ...] = ()
+    issuer_identifier_revisions: tuple[IssuerIdentifierRevision, ...] = ()
     instruments: tuple[Instrument, ...] = ()
     listings: tuple[Listing, ...] = ()
     contract_specifications: tuple[ContractSpecification, ...] = ()
     symbol_aliases: tuple[SymbolAlias, ...] = ()
     lifecycle_events: tuple[LifecycleEvent, ...] = ()
     relationships: tuple[InstrumentRelationship, ...] = ()
+    composite_deliverables: tuple[CompositeDeliverable, ...] = ()
     schema_version: int = MULTI_ASSET_DOMAIN_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -756,18 +976,21 @@ class InstrumentRegistry:
         for field in (
             "economic_underlyings",
             "issuers",
+            "issuer_identifier_revisions",
             "instruments",
             "listings",
             "contract_specifications",
             "symbol_aliases",
             "lifecycle_events",
             "relationships",
+            "composite_deliverables",
         ):
             object.__setattr__(self, field, tuple(getattr(self, field)))
         self._validate_version_ranges()
         self._validate_references()
         self._validate_relationship_types()
         self._validate_derivative_completeness()
+        self._validate_issuer_identifiers()
         self._validate_symbol_aliases()
 
     def _validate_version_ranges(self) -> None:
@@ -809,6 +1032,11 @@ class InstrumentRegistry:
                 lambda item: item.relationship_id,  # type: ignore[attr-defined]
                 "relationship",
             ),
+            (
+                self.composite_deliverables,
+                lambda item: item.deliverable_id,  # type: ignore[attr-defined]
+                "composite_deliverable",
+            ),
         )
         for items, key, label in definitions:
             _validate_non_overlapping_versions(
@@ -836,6 +1064,17 @@ class InstrumentRegistry:
             self.contract_specifications,
             lambda item: item.contract_specification_id,
         )
+
+        for identifier in self.issuer_identifier_revisions:
+            if not _covering(
+                identifier.validity,
+                issuers.get(identifier.issuer_id, ()),
+                lambda item: item.validity,
+            ):
+                raise ProductMasterError(
+                    "issuer_identifier_issuer_reference_invalid:"
+                    f"{identifier.identifier_id}"
+                )
 
         for instrument in self.instruments:
             candidates = underlyings.get(instrument.economic_underlying_id, ())
@@ -984,6 +1223,29 @@ class InstrumentRegistry:
                         f"{relationship.relationship_id}"
                     )
 
+        for deliverable in self.composite_deliverables:
+            if not _covering(
+                deliverable.validity,
+                instruments.get(deliverable.source_instrument_id, ()),
+                lambda item: item.validity,
+            ):
+                raise ProductMasterError(
+                    "composite_deliverable_source_reference_invalid:"
+                    f"{deliverable.deliverable_id}"
+                )
+            for component in deliverable.components:
+                if component.target_instrument_id is None:
+                    continue
+                if not _covering(
+                    deliverable.validity,
+                    instruments.get(component.target_instrument_id, ()),
+                    lambda item: item.validity,
+                ):
+                    raise ProductMasterError(
+                        "composite_deliverable_component_reference_invalid:"
+                        f"{deliverable.deliverable_id}:{component.component_id}"
+                    )
+
     def _validate_relationship_types(self) -> None:
         for relationship in self.relationships:
             source = self._instrument_effective_as_of(
@@ -1130,16 +1392,82 @@ class InstrumentRegistry:
                 }
                 and item.validity.overlaps(specification.validity)
             ]
-            if specification.settlement_type is SettlementType.CASH and deliverables:
+            composite_deliverables = [
+                item
+                for item in self.composite_deliverables
+                if item.source_instrument_id == instrument.instrument_id
+                and item.validity.overlaps(specification.validity)
+            ]
+            if (
+                specification.settlement_type is SettlementType.CASH
+                and (deliverables or composite_deliverables)
+            ):
                 raise ProductMasterError(
                     f"cash_option_deliverable_forbidden:{instrument.instrument_id}"
                 )
             if (
                 specification.settlement_type is SettlementType.PHYSICAL
-                and len(deliverables) != 1
+                and len(deliverables) + len(composite_deliverables) != 1
             ):
                 raise ProductMasterError(
                     f"physical_option_deliverable_required:{instrument.instrument_id}"
+                )
+
+    def _validate_issuer_identifiers(self) -> None:
+        histories = _grouped(
+            self.issuer_identifier_revisions,
+            lambda item: item.identifier_id,
+        )
+        for identifier_id, revisions in histories.items():
+            ordered = sorted(revisions, key=lambda item: item.revision)
+            if [item.revision for item in ordered] != list(
+                range(1, len(ordered) + 1)
+            ):
+                raise ProductMasterError(
+                    f"issuer_identifier_revision_not_contiguous:{identifier_id}"
+                )
+            previous: IssuerIdentifierRevision | None = None
+            for revision in ordered:
+                if previous is not None:
+                    if revision.issuer_id != previous.issuer_id:
+                        raise ProductMasterError(
+                            "issuer_identifier_correction_changed_issuer:"
+                            f"{identifier_id}"
+                        )
+                    if _timestamp(
+                        revision.knowledge_at,
+                        "issuer_identifier.knowledge_at",
+                    ) <= _timestamp(
+                        previous.knowledge_at,
+                        "issuer_identifier.previous_knowledge_at",
+                    ):
+                        raise ProductMasterError(
+                            "issuer_identifier_knowledge_not_increasing:"
+                            f"{identifier_id}"
+                        )
+                    if revision.supersedes_hash != previous.revision_hash():
+                        raise ProductMasterError(
+                            "issuer_identifier_revision_chain_broken:"
+                            f"{identifier_id}"
+                        )
+                previous = revision
+
+        all_revisions = tuple(self.issuer_identifier_revisions)
+        for index, left in enumerate(all_revisions):
+            for right in all_revisions[index + 1 :]:
+                if left.identifier_id == right.identifier_id:
+                    continue
+                if (
+                    left.namespace is not right.namespace
+                    or left.value != right.value
+                    or left.jurisdiction != right.jurisdiction
+                    or left.provider_id != right.provider_id
+                    or not left.validity.overlaps(right.validity)
+                ):
+                    continue
+                raise ProductMasterError(
+                    "issuer_identifier_namespace_collision:"
+                    f"{left.namespace.value}:{left.value}"
                 )
 
     def _validate_symbol_aliases(self) -> None:
@@ -1147,10 +1475,33 @@ class InstrumentRegistry:
             self.symbol_aliases,
             lambda item: f"{item.provider_id}\x00{item.symbol}",
         )
+        listings = {
+            item.listing_id: item
+            for item in self.listings
+        }
         for provider_symbol, versions in aliases.items():
             ordered = sorted(versions, key=lambda item: item.validity.start)
-            for left, right in zip(ordered, ordered[1:]):
-                if left.validity.overlaps(right.validity):
+            for index, left in enumerate(ordered):
+                for right in ordered[index + 1 :]:
+                    if not left.validity.overlaps(right.validity):
+                        continue
+                    left_listing = (
+                        listings.get(left.listing_id)
+                        if left.listing_id is not None
+                        else None
+                    )
+                    right_listing = (
+                        listings.get(right.listing_id)
+                        if right.listing_id is not None
+                        else None
+                    )
+                    different_venues = (
+                        left_listing is not None
+                        and right_listing is not None
+                        and left_listing.venue_mic != right_listing.venue_mic
+                    )
+                    if different_venues:
+                        continue
                     provider, symbol = provider_symbol.split("\x00", 1)
                     raise ProductMasterError(
                         f"symbol_alias_ambiguous:{provider}:{symbol}"
@@ -1204,6 +1555,116 @@ class InstrumentRegistry:
         if instrument is None or not instrument.source.known_at(cutoff):
             return None
         return instrument
+
+    def issuer_as_of(
+        self,
+        issuer_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> Issuer | None:
+        """Resolve the effective issuer without exposing future corrections."""
+
+        _require_id(issuer_id, "issuer_lookup.issuer_id")
+        cutoff = self._knowledge_cutoff(as_of, knowledge_at, "issuer_lookup")
+        matches = [
+            item
+            for item in self.issuers
+            if item.issuer_id == issuer_id
+            and item.validity.contains(as_of)
+            and item.source.known_at(cutoff)
+        ]
+        if len(matches) > 1:
+            raise ProductMasterError(f"issuer_ambiguous_as_of:{issuer_id}")
+        return matches[0] if matches else None
+
+    def listing_as_of(
+        self,
+        listing_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> Listing | None:
+        """Resolve one venue listing on both product-master clocks."""
+
+        _require_id(listing_id, "listing_lookup.listing_id")
+        cutoff = self._knowledge_cutoff(as_of, knowledge_at, "listing_lookup")
+        matches = [
+            item
+            for item in self.listings
+            if item.listing_id == listing_id
+            and item.validity.contains(as_of)
+            and item.source.known_at(cutoff)
+        ]
+        if len(matches) > 1:
+            raise ProductMasterError(f"listing_ambiguous_as_of:{listing_id}")
+        return matches[0] if matches else None
+
+    def resolve_issuer_identifier(
+        self,
+        *,
+        namespace: IssuerIdentifierNamespace,
+        value: str,
+        as_of: str,
+        knowledge_at: str | None = None,
+        jurisdiction: str | None = None,
+        provider_id: str | None = None,
+    ) -> Issuer:
+        """Resolve the last identifier revision known by the query cutoff."""
+
+        if not isinstance(namespace, IssuerIdentifierNamespace):
+            raise ProductMasterError("issuer_identifier_lookup.namespace_invalid")
+        _require_text(value, "issuer_identifier_lookup.value")
+        if jurisdiction is not None:
+            _require_id(
+                jurisdiction,
+                "issuer_identifier_lookup.jurisdiction",
+            )
+        if provider_id is not None:
+            _require_id(provider_id, "issuer_identifier_lookup.provider_id")
+        cutoff = self._knowledge_cutoff(
+            as_of,
+            knowledge_at,
+            "issuer_identifier_lookup",
+        )
+        latest: dict[str, IssuerIdentifierRevision] = {}
+        for revision in self.issuer_identifier_revisions:
+            if (
+                not revision.validity.contains(as_of)
+                or _timestamp(
+                    revision.knowledge_at,
+                    "issuer_identifier.knowledge_at",
+                )
+                > _timestamp(cutoff, "issuer_identifier_lookup.knowledge_at")
+                or not revision.source.known_at(cutoff)
+            ):
+                continue
+            prior = latest.get(revision.identifier_id)
+            if prior is None or revision.revision > prior.revision:
+                latest[revision.identifier_id] = revision
+        issuer_ids = {
+            item.issuer_id
+            for item in latest.values()
+            if item.namespace is namespace
+            and item.value == value
+            and item.jurisdiction == jurisdiction
+            and item.provider_id == provider_id
+        }
+        if len(issuer_ids) != 1:
+            raise ProductMasterError(
+                f"issuer_identifier_not_unique_as_of:{namespace.value}:{value}"
+            )
+        issuer_id = next(iter(issuer_ids))
+        issuer = self.issuer_as_of(
+            issuer_id,
+            as_of,
+            knowledge_at=cutoff,
+        )
+        if issuer is None:
+            raise ProductMasterError(
+                "issuer_identifier_issuer_not_active_or_known"
+            )
+        return issuer
 
     def tradable_instrument_as_of(
         self,
@@ -1268,8 +1729,19 @@ class InstrumentRegistry:
         symbol: str,
         as_of: str,
         knowledge_at: str | None = None,
+        venue_mic: str | None = None,
+        listing_id: str | None = None,
     ) -> Instrument:
         cutoff = self._knowledge_cutoff(as_of, knowledge_at, "symbol_lookup")
+        if venue_mic is not None and not re.fullmatch(r"[A-Z0-9]{4}", venue_mic):
+            raise ProductMasterError("symbol_lookup.venue_mic_invalid")
+        if listing_id is not None:
+            _require_id(listing_id, "symbol_lookup.listing_id")
+        listings = {
+            item.listing_id: item
+            for item in self.listings
+            if item.validity.contains(as_of) and item.source.known_at(cutoff)
+        }
         matches = [
             item
             for item in self.symbol_aliases
@@ -1277,6 +1749,15 @@ class InstrumentRegistry:
             and item.symbol == symbol
             and item.validity.contains(as_of)
             and item.source.known_at(cutoff)
+            and (listing_id is None or item.listing_id == listing_id)
+            and (
+                venue_mic is None
+                or (
+                    item.listing_id is not None
+                    and item.listing_id in listings
+                    and listings[item.listing_id].venue_mic == venue_mic
+                )
+            )
         ]
         if len(matches) != 1:
             raise ProductMasterError(
@@ -1290,6 +1771,36 @@ class InstrumentRegistry:
         if instrument is None:
             raise ProductMasterError("symbol_alias_instrument_not_active_or_known")
         return instrument
+
+    def composite_deliverable_as_of(
+        self,
+        source_instrument_id: str,
+        as_of: str,
+        *,
+        knowledge_at: str | None = None,
+    ) -> CompositeDeliverable | None:
+        cutoff = self._knowledge_cutoff(
+            as_of,
+            knowledge_at,
+            "composite_deliverable_lookup",
+        )
+        matches = [
+            item
+            for item in self.composite_deliverables
+            if item.source_instrument_id == source_instrument_id
+            and item.validity.contains(as_of)
+            and _timestamp(
+                item.knowledge_at,
+                "composite_deliverable.knowledge_at",
+            )
+            <= _timestamp(cutoff, "composite_deliverable_lookup.knowledge_at")
+            and item.source.known_at(cutoff)
+        ]
+        if len(matches) > 1:
+            raise ProductMasterError(
+                f"composite_deliverable_ambiguous:{source_instrument_id}"
+            )
+        return matches[0] if matches else None
 
     def relationship_targets(
         self,
@@ -1380,6 +1891,13 @@ class InstrumentRegistry:
                     key=lambda item: (item.issuer_id, item.validity.valid_from),
                 )
             ],
+            "issuer_identifier_revisions": [
+                item.as_dict()
+                for item in sorted(
+                    self.issuer_identifier_revisions,
+                    key=lambda item: (item.identifier_id, item.revision),
+                )
+            ],
             "instruments": [
                 item.as_dict()
                 for item in sorted(
@@ -1423,6 +1941,16 @@ class InstrumentRegistry:
                     self.relationships,
                     key=lambda item: (
                         item.relationship_id,
+                        item.validity.valid_from,
+                    ),
+                )
+            ],
+            "composite_deliverables": [
+                item.as_dict()
+                for item in sorted(
+                    self.composite_deliverables,
+                    key=lambda item: (
+                        item.deliverable_id,
                         item.validity.valid_from,
                     ),
                 )
@@ -1630,6 +2158,8 @@ class ProductMasterHistory:
         symbol: str,
         as_of: str,
         knowledge_at: str | None = None,
+        venue_mic: str | None = None,
+        listing_id: str | None = None,
     ) -> Instrument:
         cutoff = as_of if knowledge_at is None else knowledge_at
         registry = self.registry_as_known(cutoff)
@@ -1640,6 +2170,31 @@ class ProductMasterHistory:
             symbol=symbol,
             as_of=as_of,
             knowledge_at=cutoff,
+            venue_mic=venue_mic,
+            listing_id=listing_id,
+        )
+
+    def resolve_issuer_identifier(
+        self,
+        *,
+        namespace: IssuerIdentifierNamespace,
+        value: str,
+        as_of: str,
+        knowledge_at: str | None = None,
+        jurisdiction: str | None = None,
+        provider_id: str | None = None,
+    ) -> Issuer:
+        cutoff = as_of if knowledge_at is None else knowledge_at
+        registry = self.registry_as_known(cutoff)
+        if registry is None:
+            raise ProductMasterError("product_master_snapshot_not_known")
+        return registry.resolve_issuer_identifier(
+            namespace=namespace,
+            value=value,
+            as_of=as_of,
+            knowledge_at=cutoff,
+            jurisdiction=jurisdiction,
+            provider_id=provider_id,
         )
 
     def relationship_targets(

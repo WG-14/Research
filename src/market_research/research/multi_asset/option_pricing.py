@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
+from typing import ClassVar
 
 from market_research.research.derivatives.common import (
     DERIVATIVE_RESEARCH_SCHEMA_VERSION,
@@ -353,15 +354,18 @@ class BlackScholesPricingAdapter:
 
 @dataclass(frozen=True, slots=True)
 class BlackScholesOptionAnalyticsFactory:
-    """Derive a typed analytics mark without accepting caller-supplied analytics.
+    """Compatibility-only vanilla adapter factory.
 
     The typed quote is bound to the legacy valuation snapshot through contract,
     quote fields, availability clocks, and the legacy quote content hash.  Price,
     implied volatility, and every Greek are then recomputed by the configured
     pricing adapter.  Margin amounts remain explicit external assumptions, while
-    their model identity is fixed in the factory itself.
+    their model identity is fixed in the factory itself.  Production consumers
+    use ``AuthoritativeOptionAnalyticsFactory`` from ``option_analytics`` so a
+    model-registry receipt and supplier-comparison evidence are mandatory.
     """
 
+    production_authoritative: ClassVar[bool] = False
     margin_model_hash: str
     pricing_adapter: BlackScholesPricingAdapter = field(
         default_factory=BlackScholesPricingAdapter

@@ -272,6 +272,30 @@ def _dispatch_research_command(
                 out_path=args.out,
             )
         )
+    if command == "research-multi-asset-build-package":
+        return int(
+            cli.cmd_research_multi_asset_build_package(
+                context=context,
+                descriptor_path=args.descriptor,
+                out_path=args.out,
+            )
+        )
+    if command == "research-multi-asset-verify-package":
+        return int(
+            cli.cmd_research_multi_asset_verify_package(
+                context=context,
+                package_path=args.package,
+                out_path=args.out,
+            )
+        )
+    if command == "research-multi-asset-reproduce-package":
+        return int(
+            cli.cmd_research_multi_asset_reproduce_package(
+                context=context,
+                package_path=args.package,
+                out_path=args.out,
+            )
+        )
     raise ValueError(f"unsupported research command: {command}")
 
 

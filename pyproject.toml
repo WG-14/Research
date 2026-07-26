@@ -30,7 +30,11 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-market_research = ["_build_provenance.json", "builtin_strategies/*.strategy.json"]
+market_research = [
+    "_build_provenance.json",
+    "builtin_strategies/*.strategy.json",
+    "research/multi_asset/manifests/*.json",
+]
 
 [tool.uv.workspace]
 members = [
