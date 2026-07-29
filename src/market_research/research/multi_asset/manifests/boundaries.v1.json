@@ -35,6 +35,15 @@
       "public_api_policy": "explicit_exports"
     },
     {
+      "module": "market_research.research.multi_asset.authoritative_inputs",
+      "layer": "immutable_input_authority",
+      "authority_ids": [
+        "data",
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
       "module": "market_research.research.multi_asset.builtin_runner",
       "layer": "source_owned_orchestration",
       "authority_ids": [
@@ -191,7 +200,23 @@
       "public_api_policy": "explicit_exports"
     },
     {
+      "module": "market_research.research.multi_asset.portable_engine_replay",
+      "layer": "cold_replay_support",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "internal_support"
+    },
+    {
       "module": "market_research.research.multi_asset.portable_runtime",
+      "layer": "cold_replay_support",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "internal_support"
+    },
+    {
+      "module": "market_research.research.multi_asset.portable_source",
       "layer": "cold_replay_support",
       "authority_ids": [
         "evidence"
@@ -206,6 +231,63 @@
         "lifecycle"
       ],
       "public_api_policy": "module_contract"
+    },
+    {
+      "module": "market_research.research.multi_asset.public_execution_evidence",
+      "layer": "portable_evidence",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.public_integrated_profile",
+      "layer": "source_owned_orchestration",
+      "authority_ids": [
+        "evidence",
+        "exposure",
+        "identity",
+        "ledger",
+        "lifecycle",
+        "market_state",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.public_option_profile",
+      "layer": "source_owned_orchestration",
+      "authority_ids": [
+        "evidence",
+        "ledger",
+        "lifecycle",
+        "market_state",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.public_package",
+      "layer": "portable_evidence",
+      "authority_ids": [
+        "evidence"
+      ],
+      "public_api_policy": "explicit_exports"
+    },
+    {
+      "module": "market_research.research.multi_asset.public_spot_futures_profile",
+      "layer": "source_owned_orchestration",
+      "authority_ids": [
+        "calendar_unit",
+        "evidence",
+        "exposure",
+        "identity",
+        "ledger",
+        "lifecycle",
+        "market_state",
+        "valuation"
+      ],
+      "public_api_policy": "explicit_exports"
     },
     {
       "module": "market_research.research.multi_asset.research_package",
@@ -263,6 +345,17 @@
       ]
     },
     {
+      "rule_id": "authoritative_input_receipts",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "AuthoritativeInputReceipt",
+        "AuthoritativeOutputBinding"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.authoritative_inputs"
+      ]
+    },
+    {
       "rule_id": "authoritative_option_receipt",
       "category": "caller_certified_receipt",
       "symbols": [
@@ -292,7 +385,8 @@
         "UnitRegistry"
       ],
       "allowed_modules": [
-        "market_research.research.multi_asset.normalization"
+        "market_research.research.multi_asset.normalization",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ]
     },
     {
@@ -303,6 +397,7 @@
         "ModelCard"
       ],
       "allowed_modules": [
+        "market_research.research.multi_asset.builtin_runner",
         "market_research.research.multi_asset.cards"
       ]
     },
@@ -313,7 +408,8 @@
         "EvidenceGraph"
       ],
       "allowed_modules": [
-        "market_research.research.multi_asset.evidence_graph"
+        "market_research.research.multi_asset.evidence_graph",
+        "market_research.research.multi_asset.public_package"
       ]
     },
     {
@@ -344,7 +440,9 @@
       ],
       "allowed_modules": [
         "market_research.research.multi_asset.builtin_runner",
-        "market_research.research.multi_asset.domain"
+        "market_research.research.multi_asset.domain",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ]
     },
     {
@@ -366,7 +464,10 @@
       ],
       "allowed_modules": [
         "market_research.research.multi_asset.builtin_runner",
-        "market_research.research.multi_asset.market_state"
+        "market_research.research.multi_asset.market_state",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_option_profile",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ]
     },
     {
@@ -387,7 +488,9 @@
       ],
       "allowed_modules": [
         "market_research.research.multi_asset.builtin_runner",
-        "market_research.research.multi_asset.option_analytics"
+        "market_research.research.multi_asset.option_analytics",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_option_profile"
       ]
     },
     {
@@ -398,7 +501,8 @@
       ],
       "allowed_modules": [
         "market_research.research.multi_asset.option_analytics",
-        "market_research.research.multi_asset.option_pricing"
+        "market_research.research.multi_asset.option_pricing",
+        "market_research.research.multi_asset.public_integrated_profile"
       ]
     },
     {
@@ -413,6 +517,47 @@
       ]
     },
     {
+      "rule_id": "public_execution_evidence_bundle",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "PublicExecutionEvidenceBundle"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.public_execution_evidence"
+      ]
+    },
+    {
+      "rule_id": "public_integrated_profile_receipt",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "PublicIntegratedProfileReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.public_integrated_profile"
+      ]
+    },
+    {
+      "rule_id": "public_option_profile_receipt",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "PublicOptionInstitutionalReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.public_option_profile"
+      ]
+    },
+    {
+      "rule_id": "public_spot_futures_profile_receipts",
+      "category": "caller_certified_receipt",
+      "symbols": [
+        "PublicFuturesProfileReceipt",
+        "PublicSpotProfileReceipt"
+      ],
+      "allowed_modules": [
+        "market_research.research.multi_asset.public_spot_futures_profile"
+      ]
+    },
+    {
       "rule_id": "report_reconciliation",
       "category": "caller_certified_receipt",
       "symbols": [
@@ -420,7 +565,8 @@
       ],
       "allowed_modules": [
         "market_research.research.multi_asset.accounting",
-        "market_research.research.multi_asset.builtin_runner"
+        "market_research.research.multi_asset.builtin_runner",
+        "market_research.research.multi_asset.public_integrated_profile"
       ]
     },
     {
@@ -542,6 +688,12 @@
       "qualname": "trade_event",
       "occurrence": "argument",
       "semantic": "Actual trade price paired with instrument, quantity, multiplier, currency, costs, and source hashes."
+    },
+    {
+      "module": "market_research.research.multi_asset.public_option_profile",
+      "qualname": "PublicOptionInstitutionalFactory._own_iv",
+      "occurrence": "argument",
+      "semantic": "Observed option market value inverted by the source-owned model against the exact bound valuation snapshot."
     },
     {
       "module": "market_research.research.multi_asset.scenarios",
@@ -677,5 +829,5 @@
       "real_account_id"
     ]
   },
-  "content_hash": "sha256:4d3e344a6fad42f54af1a75273998951ac6f863838a98cd22342173cfa93394f"
+  "content_hash": "sha256:c42f262a9cfc004fbf888c0bb435916e369b1a74169e00a2bf35acd3daa32a50"
 }

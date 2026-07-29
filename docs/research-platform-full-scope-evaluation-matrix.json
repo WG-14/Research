@@ -95573,7 +95573,7 @@
           },
           {
             "path": "src/market_research/application/capabilities.py",
-            "sha256": "3879d0f386bc698fd82c808f1f658156f2d48c02fc3856eb6ce17ea192058eaf"
+            "sha256": "e75fbf0dfbcdba26c699e044ab82d84eff78a546ea94e8190088bb0ee9f4be58"
           },
           {
             "path": "src/market_research/application/platform_contracts.py",
@@ -95581,15 +95581,15 @@
           },
           {
             "path": "tests/test_internal_web_architecture_contract.py",
-            "sha256": "d5793071d1b19f544b069e578234ec1ceca23ade0e0694f50af34af7cee9b109"
+            "sha256": "6922de8c189ad1d4e52960b683ddb9c3cbd46321a5089ecd41c78a9b99e9bf20"
           },
           {
             "path": "tests/test_research_cli_boundary.py",
-            "sha256": "c93a982e5af563488efa058c1fb580415ff4e4bae0b143fcee0f5fe503e5635b"
+            "sha256": "f880b1047344314f32d914e6c5ceac32defe13a307d7afdaa6d0e3d0c3f65b1c"
           },
           {
             "path": "tests/test_research_only_capability_guard.py",
-            "sha256": "a9117dc82905ee21ce17b572c1b56ff97994e58fa5c2880dedb5f511101d2011"
+            "sha256": "e51d027378366808b1087e55df01c6327ccced65573efdacde9e3a4497c3b686"
           },
           {
             "path": "tests/test_monorepo_architecture.py",

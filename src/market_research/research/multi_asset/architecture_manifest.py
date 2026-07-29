@@ -357,9 +357,7 @@ class ModuleConformance:
         payload = _mapping(value, label)
         _exact(
             payload,
-            frozenset(
-                {"authority_ids", "layer", "module", "public_api_policy"}
-            ),
+            frozenset({"authority_ids", "layer", "module", "public_api_policy"}),
             label,
         )
         policy = _text(payload["public_api_policy"], f"{label}.public_api_policy")
@@ -661,9 +659,7 @@ class BoundaryManifest:
             )
         )
         if prices != tuple(sorted(set(prices))):
-            raise ArchitectureManifestError(
-                "generic_price_allowlist_not_sorted_unique"
-            )
+            raise ArchitectureManifestError("generic_price_allowlist_not_sorted_unique")
         return cls(
             manifest_id=_identifier(payload["manifest_id"], "boundary.manifest_id"),
             package_prefix=PACKAGE_PREFIX,
@@ -808,9 +804,7 @@ class MigrationManifest:
             raise ArchitectureManifestError("migration_schema_version_unsupported")
         migrations = tuple(
             MigrationContract.from_dict(item, f"migrations.{index}")
-            for index, item in enumerate(
-                _sequence(payload["migrations"], "migrations")
-            )
+            for index, item in enumerate(_sequence(payload["migrations"], "migrations"))
         )
         if migrations != tuple(sorted(set(migrations))):
             raise ArchitectureManifestError("migrations_not_sorted_unique")
@@ -849,8 +843,10 @@ def default_manifest_directory() -> Path:
 def load_multi_asset_architecture(
     manifest_directory: Path | None = None,
 ) -> MultiAssetArchitecture:
-    directory = default_manifest_directory() if manifest_directory is None else (
-        manifest_directory
+    directory = (
+        default_manifest_directory()
+        if manifest_directory is None
+        else (manifest_directory)
     )
     result = MultiAssetArchitecture(
         authorities=AuthorityManifest.load(directory / "authorities.v1.json"),
@@ -1176,9 +1172,7 @@ def scan_python_source(
                 if _has_taint(
                     keyword.value,
                     tainted_names=supplier_names,
-                    tainted_attributes=frozenset(
-                        supplier.supplier_attribute_names
-                    ),
+                    tainted_attributes=frozenset(supplier.supplier_attribute_names),
                 ):
                     add(
                         "direct_supplier_analytics_forbidden",
@@ -1193,9 +1187,7 @@ def scan_python_source(
             if _has_taint(
                 keyword.value,
                 tainted_names=continuous_names,
-                tainted_attributes=frozenset(
-                    continuous.signal_attribute_names
-                ),
+                tainted_attributes=frozenset(continuous.signal_attribute_names),
             ):
                 add(
                     "continuous_future_trade_forbidden",
@@ -1207,9 +1199,7 @@ def scan_python_source(
                 if _has_taint(
                     argument,
                     tainted_names=continuous_names,
-                    tainted_attributes=frozenset(
-                        continuous.signal_attribute_names
-                    ),
+                    tainted_attributes=frozenset(continuous.signal_attribute_names),
                 ):
                     add(
                         "continuous_future_trade_forbidden",
@@ -1260,12 +1250,9 @@ def _definition_node(tree: ast.Module, symbol: str) -> ast.AST | None:
 def _all_exports(tree: ast.Module) -> tuple[str, ...] | None:
     for node in tree.body:
         value: ast.expr | None = None
-        if (
-            isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "__all__"
-                for target in node.targets
-            )
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
         ):
             value = node.value
         elif (
@@ -1292,9 +1279,7 @@ def _top_level_names(tree: ast.Module) -> frozenset[str]:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             result.add(node.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = (
-                node.targets if isinstance(node, ast.Assign) else (node.target,)
-            )
+            targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
             for target in targets:
                 if isinstance(target, ast.Name):
                     result.add(target.id)
@@ -1305,15 +1290,11 @@ def _top_level_names(tree: ast.Module) -> frozenset[str]:
 
 
 def _render_entries(entries: Sequence[SymbolRef]) -> str:
-    return "<br>".join(
-        f"`{item.module}.{item.symbol}`" for item in sorted(entries)
-    )
+    return "<br>".join(f"`{item.module}.{item.symbol}`" for item in sorted(entries))
 
 
 def _render_consumers(consumers: Sequence[ConsumerContract]) -> str:
-    return "<br>".join(
-        f"`{item.module}.{item.symbol}`" for item in sorted(consumers)
-    )
+    return "<br>".join(f"`{item.module}.{item.symbol}`" for item in sorted(consumers))
 
 
 def render_responsibility_table(architecture: MultiAssetArchitecture) -> str:
@@ -1334,10 +1315,7 @@ def render_responsibility_table(architecture: MultiAssetArchitecture) -> str:
             + " | ".join(
                 (
                     authority.responsibility,
-                    (
-                        f"`{authority.authoritative_module}."
-                        f"{authority.sole_producer}`"
-                    ),
+                    (f"`{authority.authoritative_module}.{authority.sole_producer}`"),
                     _render_entries(authority.public_entries),
                     constructors,
                     _render_consumers(authority.consumers),
@@ -1429,9 +1407,7 @@ def validate_multi_asset_architecture(
         trees[module] = tree
         findings.extend(scan_python_source(module, source, architecture.boundaries))
 
-    conformance = {
-        item.module: item for item in architecture.boundaries.modules
-    }
+    conformance = {item.module: item for item in architecture.boundaries.modules}
     for module, contract in conformance.items():
         conformance_tree = trees.get(module)
         if conformance_tree is None:
@@ -1589,12 +1565,8 @@ def validate_multi_asset_architecture(
                 if module == legacy.module:
                     continue
                 for node in ast.walk(tree):
-                    if (
-                        isinstance(node, ast.Name)
-                        and node.id == legacy.symbol
-                    ) or (
-                        isinstance(node, ast.Attribute)
-                        and node.attr == legacy.symbol
+                    if (isinstance(node, ast.Name) and node.id == legacy.symbol) or (
+                        isinstance(node, ast.Attribute) and node.attr == legacy.symbol
                     ):
                         finding(
                             "legacy_symbol_still_consumed",

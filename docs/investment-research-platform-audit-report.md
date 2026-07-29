@@ -2,7 +2,7 @@
 
 기준 원문 SHA-256: `f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae`  
 실행 지시 SHA-256: `26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de`  
-평가 대상: base commit `a73adb4d94fff8836e0641e54e50ef84537d65e3` + 이 보고서에 결속된 working-tree assessment surface
+평가 대상: base commit `cb8f58bdac235577aa7363e138a67fc98740125a` + 이 보고서에 결속된 working-tree assessment surface
 
 ## 13.1 Executive Verdict
 
@@ -29,7 +29,7 @@
 | --- | --- |
 | 레포 이름 | market-research platform monorepo |
 | root | `/home/vorac/work/Research` |
-| commit / branch / dirty | `a73adb4d94fff8836e0641e54e50ef84537d65e3` / `main` / true |
+| commit / branch / dirty | `cb8f58bdac235577aa7363e138a67fc98740125a` / `main` / true |
 | 기술 스택 | Python 3.12, uv workspace, pandas, Pydantic, Django, PostgreSQL/psycopg, SQLite |
 | 실행 진입점 | `scripts/platform`, `market-research`, Django portal, `research-ops` |
 | 테스트 | pytest, pytest-django, property/integration/boundary tests |
@@ -837,13 +837,13 @@ Final ResearchPackage sha256:814781…
   "score_cap": 84.0,
   "repository": {
     "root": "/home/vorac/work/Research",
-    "commit": "a73adb4d94fff8836e0641e54e50ef84537d65e3",
+    "commit": "cb8f58bdac235577aa7363e138a67fc98740125a",
     "branch": "main",
     "dirty": true,
     "assessment_surface": {
       "schema_version": 2,
-      "file_count": 730,
-      "sha256": "8ad6f95795b49d27aeecc66723408364acdb38c12c4fa800ce5acbedf550ae3c",
+      "file_count": 763,
+      "sha256": "17f05930349daa3f2c87f0b22f070725db7b54e5b3c2df95948db2224ca9a274",
       "exclusions": [
         "directory:.git",
         "directory:.hypothesis",
@@ -860,6 +860,9 @@ Final ResearchPackage sha256:814781…
         "file:docs/investment-research-platform-audit-report.md",
         "file:docs/investment-research-platform-audit-result.json",
         "file:docs/investment-research-platform-audit.json",
+        "file:docs/multi-asset-investment-research-audit-report.md",
+        "file:docs/multi-asset-investment-research-audit-result.json",
+        "file:docs/multi-asset-investment-research-criterion-evidence.json",
         "file_suffix:*.pyc",
         "file_suffix:*.pyo"
       ]
@@ -1090,7 +1093,7 @@ Final ResearchPackage sha256:814781…
           "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
           "symbol_or_lines": "research-only package limitations and capability denial",
           "test": "tests/test_research_only_capability_guard.py",
-          "test_sha256": "a9117dc82905ee21ce17b572c1b56ff97994e58fa5c2880dedb5f511101d2011",
+          "test_sha256": "e51d027378366808b1087e55df01c6327ccced65573efdacde9e3a4497c3b686",
           "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_only_capability_guard.py",
           "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
         }
@@ -1185,7 +1188,7 @@ Final ResearchPackage sha256:814781…
           "path_sha256": "1e4a183cdae17a326976d8a7e2680f7f9c56d7840f64e80dc3bf38a3011f7ee4",
           "symbol_or_lines": "research-only package limitations and capability denial",
           "test": "tests/test_research_only_capability_guard.py",
-          "test_sha256": "a9117dc82905ee21ce17b572c1b56ff97994e58fa5c2880dedb5f511101d2011",
+          "test_sha256": "e51d027378366808b1087e55df01c6327ccced65573efdacde9e3a4497c3b686",
           "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_only_capability_guard.py",
           "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
         }
@@ -1733,7 +1736,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "src/market_research/research/cli.py",
-          "path_sha256": "5f5723e4a1b088e05a52a29902959998dcacc4af49c39ebddbd4639ad7700c37",
+          "path_sha256": "d6e413e279abc7a91b47f6812aa9638f42f6e4d27a3db1ae57a0a7fc6e0317d9",
           "symbol_or_lines": "research-reproduce-run same-state replay command",
           "test": "tests/test_research_reproduction_cli.py",
           "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
@@ -1752,10 +1755,10 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "src/market_research/research_cli/commands.py",
-          "path_sha256": "627c4707830d519b311af4b642afbfaf6e6dce6a0d48443dbb926eb6dbedcc2b",
+          "path_sha256": "b98b03935023c32f23ddbdaa4688a10e2e6ebf204c2aa0398e35c102ac23c6b5",
           "symbol_or_lines": "official non-notebook research command boundary",
           "test": "tests/test_research_cli_boundary.py",
-          "test_sha256": "c93a982e5af563488efa058c1fb580415ff4e4bae0b143fcee0f5fe503e5635b",
+          "test_sha256": "f880b1047344314f32d914e6c5ceac32defe13a307d7afdaa6d0e3d0c3f65b1c",
           "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
           "result": "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
         }
@@ -1771,10 +1774,10 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "src/market_research/research_cli/commands.py",
-          "path_sha256": "627c4707830d519b311af4b642afbfaf6e6dce6a0d48443dbb926eb6dbedcc2b",
+          "path_sha256": "b98b03935023c32f23ddbdaa4688a10e2e6ebf204c2aa0398e35c102ac23c6b5",
           "symbol_or_lines": "official non-notebook research command boundary",
           "test": "tests/test_research_cli_boundary.py",
-          "test_sha256": "c93a982e5af563488efa058c1fb580415ff4e4bae0b143fcee0f5fe503e5635b",
+          "test_sha256": "f880b1047344314f32d914e6c5ceac32defe13a307d7afdaa6d0e3d0c3f65b1c",
           "command": "PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 DJANGO_SETTINGS_MODULE=market_research_web.settings_test PYTHONPATH=src:apps/internal_web/src:services/research_operations/src uv run --no-sync pytest -q tests/test_research_cli_boundary.py",
           "result": "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
         }
@@ -1866,7 +1869,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "src/market_research/research/cli.py",
-          "path_sha256": "5f5723e4a1b088e05a52a29902959998dcacc4af49c39ebddbd4639ad7700c37",
+          "path_sha256": "d6e413e279abc7a91b47f6812aa9638f42f6e4d27a3db1ae57a0a7fc6e0317d9",
           "symbol_or_lines": "research-reproduce-run same-state replay command",
           "test": "tests/test_research_reproduction_cli.py",
           "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
@@ -3329,7 +3332,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "src/market_research/research/cli.py",
-          "path_sha256": "5f5723e4a1b088e05a52a29902959998dcacc4af49c39ebddbd4639ad7700c37",
+          "path_sha256": "d6e413e279abc7a91b47f6812aa9638f42f6e4d27a3db1ae57a0a7fc6e0317d9",
           "symbol_or_lines": "research-reproduce-run same-state replay command",
           "test": "tests/test_research_reproduction_cli.py",
           "test_sha256": "d7244a5e0745a3d6be7a6ae99273b3870fcf6254f253b1c997862d2d3d6853eb",
@@ -4562,7 +4565,7 @@ Final ResearchPackage sha256:814781…
       "evidence": [
         {
           "path": "docs/internal-web-architecture.md",
-          "path_sha256": "939862916afb1c37d93c2582ca6dbc094bbecfab34c8a050c488b7d662498bbb",
+          "path_sha256": "eae66e41489e48c34090d5ef4399149e6895e06fd2d8a731bcc5f0f6a88e8656",
           "symbol_or_lines": "researcher, reviewer, approver, and operator workflow",
           "test": "tests/test_documentation_contract.py",
           "test_sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1",

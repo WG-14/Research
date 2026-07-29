@@ -336,16 +336,12 @@ def test_historical_bootstrap_and_stochastic_path_factory_is_reproducible() -> N
             regime_id="normal",
             price_returns=(("AAPL", Decimal(str(index)) / Decimal("100")),),
             fx_returns=(("EUR", Decimal(str(index)) / Decimal("1000")),),
-            volatility_shifts=(
-                ("AAPL.VOL", Decimal(str(index)) / Decimal("1000")),
-            ),
+            volatility_shifts=(("AAPL.VOL", Decimal(str(index)) / Decimal("1000")),),
             rate_shifts=(("USD", Decimal(str(index)) / Decimal("10000")),),
             spread_multipliers=(
                 ("AAPL", Decimal("1") + Decimal(str(index)) / Decimal("10")),
             ),
-            margin_multiplier=(
-                Decimal("1") + Decimal(str(index)) / Decimal("20")
-            ),
+            margin_multiplier=(Decimal("1") + Decimal(str(index)) / Decimal("20")),
             source_hash=("sha256:" + str(index) * 64),
         )
         for index in range(1, 5)
@@ -370,8 +366,7 @@ def test_historical_bootstrap_and_stochastic_path_factory_is_reproducible() -> N
         assert first.events[0].predecessor_hash == first.chain_root_hash
         assert first.events[1].predecessor_hash == first.events[0].content_hash
         assert all(
-            spec.model_hash in event.shock.source_hashes
-            for event in first.events
+            spec.model_hash in event.shock.source_hashes for event in first.events
         )
 
     bootstrap = factory.generate(

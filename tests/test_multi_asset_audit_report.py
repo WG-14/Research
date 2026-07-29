@@ -24,7 +24,8 @@ def _module() -> object:
 def test_final_audit_report_is_complete_consistent_and_current() -> None:
     module = _module()
     result = module.build_result()  # type: ignore[attr-defined]
-    result_bytes, report_bytes = module.render()  # type: ignore[attr-defined]
+    result_bytes, report_bytes, evidence_bytes = module.render()  # type: ignore[attr-defined]
+    evidence = json.loads(evidence_bytes)
     report = report_bytes.decode("utf-8")
 
     assert len(result["criteria"]) == 140
@@ -83,9 +84,25 @@ def test_final_audit_report_is_complete_consistent_and_current() -> None:
     assert (
         len({item["implementation_evidence"][0] for item in result["criteria"]}) >= 125
     )
-    assert json.loads(result_bytes) == result
+    rendered_result = json.loads(result_bytes)
+    assert {
+        key: value
+        for key, value in rendered_result.items()
+        if key != "criterion_evidence_manifest"
+    } == result
     assert result_bytes == module.RESULT_PATH.read_bytes()  # type: ignore[attr-defined]
     assert report_bytes == module.REPORT_PATH.read_bytes()  # type: ignore[attr-defined]
+    assert evidence_bytes == module.EVIDENCE_PATH.read_bytes()  # type: ignore[attr-defined]
+    assert evidence["criterion_count"] == 140
+    assert len(evidence["criteria"]) == 140
+    assert all(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", item["content_hash"])
+        for item in evidence["criteria"]
+    )
+    assert (
+        rendered_result["criterion_evidence_manifest"]["content_hash"]
+        == (evidence["content_hash"])
+    )
     assert all(f"# {number}." in report for number in range(1, 14))
     report_lines = report.splitlines()
     assert sum(line.startswith("| A-") for line in report_lines) == 5

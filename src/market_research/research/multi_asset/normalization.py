@@ -235,9 +235,7 @@ class CalendarRegistry:
         identities = [
             (item.calendar_id, item.calendar_version_id) for item in self.calendars
         ]
-        if identities != sorted(identities) or len(identities) != len(
-            set(identities)
-        ):
+        if identities != sorted(identities) or len(identities) != len(set(identities)):
             raise ProviderNormalizationError(
                 "calendar_registry.calendars_not_unique_canonical"
             )
@@ -258,9 +256,7 @@ class CalendarRegistry:
                 continue
             valid_from = date.fromisoformat(item.valid_from)
             valid_to = (
-                date.fromisoformat(item.valid_to)
-                if item.valid_to is not None
-                else None
+                date.fromisoformat(item.valid_to) if item.valid_to is not None else None
             )
             if query_date < valid_from or (
                 valid_to is not None and query_date > valid_to
@@ -341,9 +337,7 @@ class ProviderRow:
         if isinstance(self.revision, bool) or self.revision < 1:
             raise ProviderNormalizationError("provider_row.revision_invalid")
         if (self.revision == 1) != (self.supersedes_hash is None):
-            raise ProviderNormalizationError(
-                "provider_row.supersedes_binding_invalid"
-            )
+            raise ProviderNormalizationError("provider_row.supersedes_binding_invalid")
         if self.supersedes_hash is not None:
             _require_hash(self.supersedes_hash, "provider_row.supersedes_hash")
         if not self.fields:
@@ -351,9 +345,7 @@ class ProviderRow:
         for key, value in self.fields.items():
             _require_id(key, "provider_row.field_name")
             if isinstance(value, float):
-                raise ProviderNormalizationError(
-                    f"provider_row_float_forbidden:{key}"
-                )
+                raise ProviderNormalizationError(f"provider_row_float_forbidden:{key}")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -435,9 +427,7 @@ class ProviderNormalizationPolicy:
             raise ProviderNormalizationError(
                 "normalization_policy.quote_convention_invalid"
             )
-        if not isinstance(
-            self.corporate_action_adjustment, CorporateActionAdjustment
-        ):
+        if not isinstance(self.corporate_action_adjustment, CorporateActionAdjustment):
             raise ProviderNormalizationError(
                 "normalization_policy.corporate_action_adjustment_invalid"
             )
@@ -473,9 +463,7 @@ class ProviderNormalizationPolicy:
             "price_scale": _decimal_text(self.price_scale),
             "quantity_scale": _decimal_text(self.quantity_scale),
             "quote_convention": self.quote_convention.value,
-            "corporate_action_adjustment": (
-                self.corporate_action_adjustment.value
-            ),
+            "corporate_action_adjustment": (self.corporate_action_adjustment.value),
             "missing_value_semantics": self.missing_value_semantics.value,
             "missing_tokens": list(self.missing_tokens),
             "provider_priority": self.provider_priority,
@@ -509,15 +497,11 @@ class DecodedProviderObservation:
         try:
             date.fromisoformat(self.trading_date)
         except ValueError as exc:
-            raise ProviderNormalizationError(
-                "decoded.trading_date_invalid"
-            ) from exc
+            raise ProviderNormalizationError("decoded.trading_date_invalid") from exc
         _require_id(self.session_id, "decoded.session_id")
         _require_id(self.provider_symbol, "decoded.provider_symbol")
         if (self.price is None) != (self.quantity is None):
-            raise ProviderNormalizationError(
-                "decoded_missing_price_quantity_mismatch"
-            )
+            raise ProviderNormalizationError("decoded_missing_price_quantity_mismatch")
         if self.price is not None and (
             not self.price.is_finite() or self.price <= _ZERO
         ):
@@ -570,9 +554,7 @@ class IsoLocalDirectAdapter:
         symbol = str(_field(row.fields, "symbol", missing_tokens=missing))
         if symbol != policy.provider_symbol:
             raise ProviderNormalizationError("provider_symbol_mismatch")
-        local_text = str(
-            _field(row.fields, "local_timestamp", missing_tokens=missing)
-        )
+        local_text = str(_field(row.fields, "local_timestamp", missing_tokens=missing))
         try:
             local = datetime.fromisoformat(local_text)
         except ValueError as exc:
@@ -580,13 +562,11 @@ class IsoLocalDirectAdapter:
                 "provider_local_timestamp_invalid"
             ) from exc
         if local.tzinfo is not None:
-            raise ProviderNormalizationError(
-                "provider_local_timestamp_must_be_naive"
-            )
+            raise ProviderNormalizationError("provider_local_timestamp_must_be_naive")
         zone = ZoneInfo(policy.source_timezone)
         aware = local.replace(tzinfo=zone, fold=0)
-        round_trip = aware.astimezone(timezone.utc).astimezone(zone).replace(
-            tzinfo=None
+        round_trip = (
+            aware.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
         )
         alternate = local.replace(tzinfo=zone, fold=1)
         if round_trip != local or aware.utcoffset() != alternate.utcoffset():
@@ -606,9 +586,7 @@ class IsoLocalDirectAdapter:
             publication_at=_timestamp_text(publication),
             availability_at=_timestamp_text(availability),
             trading_date=local.date().isoformat(),
-            session_id=str(
-                _field(row.fields, "session_id", missing_tokens=missing)
-            ),
+            session_id=str(_field(row.fields, "session_id", missing_tokens=missing)),
             provider_symbol=symbol,
             price=_decimal(
                 _field(row.fields, "price", missing_tokens=missing),
@@ -662,9 +640,7 @@ class EpochScaledReciprocalAdapter:
             publication_at=_timestamp_text(publication),
             availability_at=_timestamp_text(availability),
             trading_date=local.date().isoformat(),
-            session_id=str(
-                _field(row.fields, "session_code", missing_tokens=missing)
-            ),
+            session_id=str(_field(row.fields, "session_code", missing_tokens=missing)),
             provider_symbol=symbol,
             price=reciprocal,
             quantity=quantity,
@@ -756,12 +732,8 @@ class ProviderNormalizationService:
     def __post_init__(self) -> None:
         if not self.adapters:
             raise ProviderNormalizationError("normalization.adapters_required")
-        identities = [
-            (item.adapter_id, item.adapter_version) for item in self.adapters
-        ]
-        if identities != sorted(identities) or len(identities) != len(
-            set(identities)
-        ):
+        identities = [(item.adapter_id, item.adapter_version) for item in self.adapters]
+        if identities != sorted(identities) or len(identities) != len(set(identities)):
             raise ProviderNormalizationError(
                 "normalization.adapters_not_unique_canonical"
             )
@@ -794,14 +766,9 @@ class ProviderNormalizationService:
         ):
             raise ProviderNormalizationError("provider_event_outside_session")
         if decoded.price is None or decoded.quantity is None:
-            if (
-                policy.missing_value_semantics
-                is MissingValueSemantics.REJECT_ROW
-            ):
+            if policy.missing_value_semantics is MissingValueSemantics.REJECT_ROW:
                 raise ProviderNormalizationError("provider_row_missing_rejected")
-            raise ProviderNormalizationError(
-                "explicit_missing_rows_are_evidence_only"
-            )
+            raise ProviderNormalizationError("explicit_missing_rows_are_evidence_only")
 
         scaled_price = decoded.price * policy.price_scale
         if policy.quote_convention is QuoteConvention.RECIPROCAL:
@@ -886,9 +853,7 @@ class ProviderNormalizationService:
             "price_unit": policy.target_price_unit,
             "quantity_unit": policy.target_quantity_unit,
             "contract_multiplier": _decimal_text(policy.contract_multiplier),
-            "corporate_action_adjustment": (
-                policy.corporate_action_adjustment.value
-            ),
+            "corporate_action_adjustment": (policy.corporate_action_adjustment.value),
             "quote_convention": policy.quote_convention.value,
             "missing_value_semantics": policy.missing_value_semantics.value,
             "calendar_id": calendar.calendar_id,
@@ -905,9 +870,7 @@ class ProviderNormalizationService:
             prior_normalized[-1].record_hash() if prior_normalized else None
         )
         if (row.revision == 1) != (normalized_supersedes is None):
-            raise ProviderNormalizationError(
-                "normalized_revision_history_incomplete"
-            )
+            raise ProviderNormalizationError("normalized_revision_history_incomplete")
         normalized_record = BitemporalRecord(
             record_id=f"normalized.{row.provider_id}.{row.row_id}",
             version=row.revision,
@@ -952,9 +915,7 @@ class ProviderNormalizationService:
             ),
             supersedes_hash=normalized_supersedes,
             correction_reason=(
-                "provider_revision"
-                if normalized_supersedes is not None
-                else None
+                "provider_revision" if normalized_supersedes is not None else None
             ),
         )
         complete = with_raw.append(normalized_record)
@@ -1001,9 +962,7 @@ class ProviderNormalizationService:
         for row in rows:
             ingested = _timestamp(row.ingested_at, "provider_row.ingested_at")
             if previous_ingested is not None and ingested < previous_ingested:
-                raise ProviderNormalizationError(
-                    "provider_rows_out_of_order_arrival"
-                )
+                raise ProviderNormalizationError("provider_rows_out_of_order_arrival")
             try:
                 policy = policies[row.provider_id]
                 adapter_id = adapter_ids[row.provider_id]

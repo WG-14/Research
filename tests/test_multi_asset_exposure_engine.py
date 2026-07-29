@@ -231,9 +231,7 @@ def test_extended_exposure_aggregates_cross_greeks_and_versioned_offsets() -> No
             funding_bucket="funding:usd",
             tenor_bucket="tenor:front",
             volatility_bucket=(
-                "vol:option"
-                if item.instrument_kind.value == "OPTION"
-                else "vol:none"
+                "vol:option" if item.instrument_kind.value == "OPTION" else "vol:none"
             ),
             source_hashes=(_hash(f"supplement-{index}"),),
         )
@@ -275,22 +273,21 @@ def test_extended_exposure_aggregates_cross_greeks_and_versioned_offsets() -> No
     assert partial.totals.offset_delta_equivalent == (
         full.totals.offset_delta_equivalent / Decimal("2")
     )
-    assert {item.dimension for item in full.buckets} == set(
-        ExtendedExposureDimension
+    assert {item.dimension for item in full.buckets} == set(ExtendedExposureDimension)
+    assert (
+        full.content_hash
+        == build_extended_portfolio_exposure(
+            snapshot,
+            supplements=supplements,
+            offset_policy=OffsetPolicyV3(
+                policy_id="offset.full",
+                version="1",
+                exact_underlying_recognition=OffsetRecognition.FULL,
+            ),
+        ).content_hash
     )
-    assert full.content_hash == build_extended_portfolio_exposure(
-        snapshot,
-        supplements=supplements,
-        offset_policy=OffsetPolicyV3(
-            policy_id="offset.full",
-            version="1",
-            exact_underlying_recognition=OffsetRecognition.FULL,
-        ),
-    ).content_hash
 
-    with pytest.raises(
-        ExposureEngineError, match="supplement_binding_mismatch"
-    ):
+    with pytest.raises(ExposureEngineError, match="supplement_binding_mismatch"):
         build_extended_portfolio_exposure(
             snapshot,
             supplements=(

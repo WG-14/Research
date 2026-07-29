@@ -271,9 +271,7 @@ def test_advanced_accounting_receipt_binds_lots_and_funding_audit_prefix() -> No
         funding_fx=funding_fx,
     )
     assert receipt.funding_fx_revaluation_hash == funding_fx.content_hash
-    assert receipt.advanced_event_hashes == (
-        audited_ledger.events[-1].content_hash,
-    )
+    assert receipt.advanced_event_hashes == (audited_ledger.events[-1].content_hash,)
     assert receipt.content_hash.startswith("sha256:")
 
     with pytest.raises(

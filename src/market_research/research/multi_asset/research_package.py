@@ -81,11 +81,7 @@ RESEARCH_INPUT_SOURCE_ROW_FIELDS = frozenset(
 def research_input_source_row_hash(row: Mapping[str, object]) -> str:
     """Hash one externally prepared source row without trusting its receipt."""
 
-    identity = {
-        key: value
-        for key, value in row.items()
-        if key != "content_hash"
-    }
+    identity = {key: value for key, value in row.items() if key != "content_hash"}
     return evidence_hash(identity, label="research-input-source-row")
 
 
@@ -740,16 +736,7 @@ class BoundedEvidenceArtifactResolver:
         verified_at: str,
     ) -> ResolvedEvidenceArtifact:
         _timestamp(verified_at, "resolver.verified_at")
-        path = self._path_for(reference)
-        raw = self._read_bounded(path)
-        if len(raw) != reference.byte_length:
-            raise MultiAssetResearchPackageError(
-                "evidence_artifact_byte_length_mismatch"
-            )
-        if bytes_sha256(raw) != reference.content_hash:
-            raise MultiAssetResearchPackageError(
-                "evidence_artifact_content_hash_mismatch"
-            )
+        raw = self.read_verified_bytes(reference)
         try:
             envelope = json.loads(
                 raw,
@@ -810,6 +797,21 @@ class BoundedEvidenceArtifactResolver:
             ),
             verified_at=verified_at,
         )
+
+    def read_verified_bytes(self, reference: EvidenceArtifactRef) -> bytes:
+        """Read one bounded artifact while enforcing its immutable byte binding."""
+
+        path = self._path_for(reference)
+        raw = self._read_bounded(path)
+        if len(raw) != reference.byte_length:
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_byte_length_mismatch"
+            )
+        if bytes_sha256(raw) != reference.content_hash:
+            raise MultiAssetResearchPackageError(
+                "evidence_artifact_content_hash_mismatch"
+            )
+        return raw
 
     def _path_for(self, reference: EvidenceArtifactRef) -> Path:
         parsed = urlsplit(reference.uri)

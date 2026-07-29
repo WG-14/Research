@@ -23,14 +23,7 @@ from market_research.research.multi_asset.architecture_manifest import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFESTS = (
-    ROOT
-    / "src"
-    / "market_research"
-    / "research"
-    / "multi_asset"
-    / "manifests"
-)
+MANIFESTS = ROOT / "src" / "market_research" / "research" / "multi_asset" / "manifests"
 
 
 def _canonical_hash(payload: object) -> str:
@@ -69,13 +62,7 @@ def test_every_multi_asset_python_module_is_declared_and_conformant() -> None:
 
 
 def test_discovery_includes_a_new_nested_python_module(tmp_path: Path) -> None:
-    package = (
-        tmp_path
-        / "src"
-        / "market_research"
-        / "research"
-        / "multi_asset"
-    )
+    package = tmp_path / "src" / "market_research" / "research" / "multi_asset"
     nested = package / "new_boundary"
     nested.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
@@ -215,9 +202,7 @@ def test_manifest_content_tamper_fails_before_architecture_use(
 def test_generated_responsibility_views_have_no_docs_only_claims() -> None:
     architecture = load_multi_asset_architecture()
     generated = ROOT / architecture.boundaries.generated_document
-    main_doc = (ROOT / "docs" / "multi-asset-research.md").read_text(
-        encoding="utf-8"
-    )
+    main_doc = (ROOT / "docs" / "multi-asset-research.md").read_text(encoding="utf-8")
     embedded = render_embedded_responsibility_section(architecture)
 
     assert generated.read_text(encoding="utf-8") == (

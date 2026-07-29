@@ -1903,9 +1903,7 @@ class PositionRiskSupplement:
             _require_bucket_key(getattr(self, name), f"risk_supplement.{name}")
         sources = tuple(sorted(set(self.source_hashes)))
         if sources != self.source_hashes:
-            raise ExposureEngineError(
-                "risk_supplement_source_hashes_not_sorted_unique"
-            )
+            raise ExposureEngineError("risk_supplement_source_hashes_not_sorted_unique")
         for source_hash in sources:
             _require_hash(source_hash, "risk_supplement.source_hash")
         object.__setattr__(
@@ -2024,7 +2022,9 @@ class OffsetPolicyV3:
                 key=lambda item: (item.left_underlying_id, item.right_underlying_id),
             )
         )
-        if ordered != self.rules or len({item.pair for item in ordered}) != len(ordered):
+        if ordered != self.rules or len({item.pair for item in ordered}) != len(
+            ordered
+        ):
             raise ExposureEngineError("offset_policy_rules_not_sorted_unique")
         object.__setattr__(
             self,
@@ -2283,9 +2283,7 @@ def build_extended_portfolio_exposure(
                 or (position.underlying_id,),
                 ExtendedExposureDimension.FUNDING: (supplement.funding_bucket,),
                 ExtendedExposureDimension.TENOR: (supplement.tenor_bucket,),
-                ExtendedExposureDimension.VOLATILITY: (
-                    supplement.volatility_bucket,
-                ),
+                ExtendedExposureDimension.VOLATILITY: (supplement.volatility_bucket,),
             }[dimension]
             for key in keys:
                 grouped.setdefault(key, []).append(position)

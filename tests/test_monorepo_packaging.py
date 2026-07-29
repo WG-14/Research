@@ -140,6 +140,7 @@ def test_release_build_and_native_install_are_provenance_bound_wheels() -> None:
         "market_research": [
             "_build_provenance.json",
             "builtin_strategies/*.strategy.json",
+            "research/multi_asset/manifests/*.json",
         ]
     }
     assert web_project["tool"]["setuptools"]["package-data"]["market_research_web"] == [

@@ -308,13 +308,9 @@ class CorporateAction:
                     "rights subscription requires shares, price, currency and policy"
                 )
         if self.whole_share_only and self.cash_in_lieu_price <= ZERO:
-            raise SpotResearchError(
-                "whole-share policy requires cash-in-lieu price"
-            )
+            raise SpotResearchError("whole-share policy requires cash-in-lieu price")
         if self.cash_in_lieu_price > ZERO and self.currency is None:
-            raise SpotResearchError(
-                "cash-in-lieu price requires currency"
-            )
+            raise SpotResearchError("cash-in-lieu price requires currency")
         if self.action_type is CorporateActionType.SPIN_OFF:
             if self.child_instrument_id is None:
                 raise SpotResearchError("spin-off requires child instrument")
@@ -630,8 +626,7 @@ def apply_corporate_action(
             action,
         )
         fractional_basis = (
-            position.total_cost_basis
-            * abs(fractional_quantity / exact_quantity)
+            position.total_cost_basis * abs(fractional_quantity / exact_quantity)
             if exact_quantity != ZERO
             else ZERO
         )
@@ -844,9 +839,7 @@ def apply_corporate_action(
         )
         child_basis = position.total_cost_basis * action.child_cost_basis_fraction
         delivered_basis = (
-            child_basis * child_quantity / child_exact
-            if child_exact != ZERO
-            else ZERO
+            child_basis * child_quantity / child_exact if child_exact != ZERO else ZERO
         )
         positions[position.instrument_id] = replace(
             position,
@@ -895,11 +888,9 @@ def apply_corporate_action(
     }:
         assert action.replacement_instrument_id is not None
         replacement_exact = position.quantity * action.ratio
-        replacement_quantity, fractional_quantity = (
-            _whole_and_fractional_quantity(
-                replacement_exact,
-                action,
-            )
+        replacement_quantity, fractional_quantity = _whole_and_fractional_quantity(
+            replacement_exact,
+            action,
         )
         cash_basis = position.total_cost_basis * action.cash_basis_fraction
         stock_basis = position.total_cost_basis - cash_basis
@@ -941,9 +932,7 @@ def apply_corporate_action(
         )
         if action.cash_per_share != ZERO:
             if action.currency is None:
-                raise SpotResearchError(
-                    "cash-and-stock merger requires currency"
-                )
+                raise SpotResearchError("cash-and-stock merger requires currency")
             gross_cash = position.quantity * action.cash_per_share
             tax = max(gross_cash - cash_basis, ZERO) * action.tax_rate
             cash_delta = gross_cash - tax
@@ -1193,9 +1182,7 @@ class BorrowSnapshot:
             raise SpotResearchError("borrow revision must be positive")
         if self.revision == 1:
             if self.supersedes_hash is not None or self.correction_reason is not None:
-                raise SpotResearchError(
-                    "initial borrow revision cannot supersede"
-                )
+                raise SpotResearchError("initial borrow revision cannot supersede")
         elif self.supersedes_hash is None or self.correction_reason is None:
             raise SpotResearchError("borrow correction binding required")
         if self.supersedes_hash is not None:
@@ -1223,29 +1210,19 @@ class BorrowScenarioSet:
             revisions.setdefault(item.snapshot_id, []).append(item)
         for snapshot_id, history in revisions.items():
             ordered = sorted(history, key=lambda item: item.revision)
-            if [item.revision for item in ordered] != list(
-                range(1, len(ordered) + 1)
-            ):
+            if [item.revision for item in ordered] != list(range(1, len(ordered) + 1)):
                 raise SpotResearchError(
                     f"borrow revisions are not contiguous: {snapshot_id}"
                 )
             for previous, current in zip(ordered, ordered[1:]):
                 if current.instrument_id != previous.instrument_id:
-                    raise SpotResearchError(
-                        "borrow correction instrument changed"
-                    )
+                    raise SpotResearchError("borrow correction instrument changed")
                 if current.scenario is not previous.scenario:
-                    raise SpotResearchError(
-                        "borrow correction scenario changed"
-                    )
+                    raise SpotResearchError("borrow correction scenario changed")
                 if current.known_at <= previous.known_at:
-                    raise SpotResearchError(
-                        "borrow correction knowledge must increase"
-                    )
+                    raise SpotResearchError("borrow correction knowledge must increase")
                 if current.supersedes_hash != previous.content_hash:
-                    raise SpotResearchError(
-                        "borrow correction chain is broken"
-                    )
+                    raise SpotResearchError("borrow correction chain is broken")
         by_instrument: dict[str, set[BorrowScenario]] = {}
         for item in snapshots:
             by_instrument.setdefault(item.instrument_id, set()).add(item.scenario)
@@ -1348,9 +1325,7 @@ class BorrowRecall:
         _require_hash(self.source_hash, "source_hash")
         if self.revision == 1:
             if self.supersedes_hash is not None or self.correction_reason is not None:
-                raise SpotResearchError(
-                    "initial recall revision cannot supersede"
-                )
+                raise SpotResearchError("initial recall revision cannot supersede")
         elif self.supersedes_hash is None or self.correction_reason is None:
             raise SpotResearchError("recall correction binding required")
         if self.supersedes_hash is not None:
@@ -1372,9 +1347,7 @@ class BorrowRecallRevisionStore:
             self.append(recall)
 
     def append(self, recall: BorrowRecall) -> None:
-        history = [
-            item for item in self._recalls if item.recall_id == recall.recall_id
-        ]
+        history = [item for item in self._recalls if item.recall_id == recall.recall_id]
         if not history:
             if recall.revision != 1:
                 raise SpotResearchError("first recall revision must be one")

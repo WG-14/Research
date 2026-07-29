@@ -181,9 +181,7 @@ def test_issuer_identifier_correction_is_bitemporal_and_not_overwritten() -> Non
         knowledge_at="2024-06-01T00:00:00+00:00",
     )
     assert old.issuer_id == new.issuer_id == "issuer.acme"
-    with pytest.raises(
-        ProductMasterError, match="issuer_identifier_not_unique_as_of"
-    ):
+    with pytest.raises(ProductMasterError, match="issuer_identifier_not_unique_as_of"):
         registry.resolve_issuer_identifier(
             namespace=IssuerIdentifierNamespace.LEI,
             value="549300OLDACME000001",
@@ -272,6 +270,4 @@ def test_composite_deliverable_is_hash_bound_and_resolved_by_knowledge_time() ->
         )
         is None
     )
-    assert registry.composite_deliverables[0].deliverable_hash().startswith(
-        "sha256:"
-    )
+    assert registry.composite_deliverables[0].deliverable_hash().startswith("sha256:")

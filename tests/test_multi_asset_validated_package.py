@@ -5,14 +5,22 @@ import hashlib
 import json
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from market_research.research.multi_asset.cards import (
     CardValidationResult,
     DataCard,
+    DataFieldDefinition,
+    DataFieldUnit,
+    DataRowResolverMetadata,
+    DataTemporalSemantics,
+    DistributionStatus,
     ModelCard,
+    ModelParameter,
     ResearchCardError,
     ValidationStatus,
 )
@@ -25,6 +33,10 @@ from market_research.research.multi_asset.evidence_graph import (
     EvidenceNode,
     EvidenceNodeKind,
     EvidenceRelation,
+)
+from market_research.research.multi_asset.portable_runtime import (
+    PortableRuntimeError,
+    validate_card,
 )
 from market_research.research.multi_asset.validated_package import (
     PackageArtifactRole,
@@ -44,7 +56,7 @@ from market_research.settings import ResearchSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_GOLDEN_MANIFEST_HASH = (
-    "sha256:410d3a7b320b78b8f541b76ddc6c2ab31e758df2f674c90ef08d0415624fe985"
+    "sha256:ca288aae80b0b12a833b761c9eacd95f668ba76cb29c7ec4f8ee2c551750c7ad"
 )
 
 
@@ -61,6 +73,86 @@ def _validation(check_id: str, label: str) -> CardValidationResult:
     )
 
 
+def _data_field_schema() -> tuple[DataFieldDefinition, ...]:
+    return tuple(
+        DataFieldDefinition(
+            field_name=field_name,
+            data_type=data_type,
+            semantic_type=semantic_type,
+            nullable=False,
+            description=description,
+        )
+        for field_name, data_type, semantic_type, description in (
+            (
+                "availability_at",
+                "RFC3339 timestamp",
+                "availability_time",
+                "Time at which the row may be consumed by research.",
+            ),
+            (
+                "instrument_id",
+                "string",
+                "instrument_identifier",
+                "Stable instrument identifier.",
+            ),
+            (
+                "knowledge_at",
+                "RFC3339 timestamp",
+                "knowledge_time",
+                "First time the provider states the row was known.",
+            ),
+            ("price", "decimal string", "close_price", "Observed close price."),
+            (
+                "source_artifact_hash",
+                "sha256 string",
+                "source_artifact_hash",
+                "Immutable source artifact hash.",
+            ),
+            (
+                "source_row_hash",
+                "sha256 string",
+                "source_row_hash",
+                "Canonical source-row hash.",
+            ),
+            (
+                "valid_at",
+                "RFC3339 timestamp",
+                "valid_time",
+                "Economic time represented by the row.",
+            ),
+        )
+    )
+
+
+def _data_units() -> tuple[DataFieldUnit, ...]:
+    return tuple(
+        DataFieldUnit(field_name=field_name, unit=unit)
+        for field_name, unit in (
+            ("availability_at", "UTC_TIMESTAMP"),
+            ("instrument_id", "IDENTIFIER"),
+            ("knowledge_at", "UTC_TIMESTAMP"),
+            ("price", "USD_PER_UNIT"),
+            ("source_artifact_hash", "SHA256"),
+            ("source_row_hash", "SHA256"),
+            ("valid_at", "UTC_TIMESTAMP"),
+        )
+    )
+
+
+def _model_parameter(
+    parameter_name: str,
+    value: str,
+    description: str,
+) -> ModelParameter:
+    return ModelParameter(
+        parameter_name=parameter_name,
+        value=value,
+        data_type="string",
+        unit="NOT_APPLICABLE",
+        description=description,
+    )
+
+
 def _data_card(version: str = "v1") -> DataCard:
     return DataCard(
         card_id="card:data:prices",
@@ -71,18 +163,56 @@ def _data_card(version: str = "v1") -> DataCard:
         source_reference=f"catalog:prices:{version}",
         license_id="fixture-research-license",
         license_terms_hash=_hash("license-terms"),
+        distribution_status=DistributionStatus.LICENSE_RESTRICTED,
         use_constraints=(
             "NO_REDISTRIBUTION",
             "OFFLINE_RESEARCH_ONLY",
         ),
+        snapshot_method="Externally prepared immutable point-in-time snapshot.",
         coverage_start_at="2025-01-01T00:00:00Z",
         coverage_end_at="2025-01-03T00:00:00Z",
         coverage_markets=("TEST_MARKET",),
         coverage_instruments=("asset_xyz",),
+        field_schema=_data_field_schema(),
+        units=_data_units(),
+        temporal_semantics=DataTemporalSemantics(
+            valid_time_field="valid_at",
+            valid_time_definition="Economic event time represented by the row.",
+            knowledge_time_field="knowledge_at",
+            knowledge_time_definition="Time the observation became provider-known.",
+            availability_time_field="availability_at",
+            availability_time_definition=(
+                "Earliest point at which the research engine may consume the row."
+            ),
+            timezone="UTC",
+            calendar_ids=("calendar.test_market",),
+        ),
+        normalization_transformations=(
+            "CANONICAL_UTC_TIMESTAMP_NORMALIZATION",
+            "DECIMAL_PRICE_PRESERVED",
+        ),
+        known_corrections=(),
         missing_data_summary="No missing rows in the bounded fixture.",
         missing_data_policy="Reject any timestamp gap.",
+        survivorship_policy="Use the point-in-time admitted instrument set only.",
+        corporate_action_policy="No corporate actions exist in the fixture.",
         known_biases=("SYNTHETIC_FIXTURE",),
+        known_limitations=("BOUNDED_THREE_DAY_TEST_WINDOW",),
+        intended_uses=("DETERMINISTIC_OFFLINE_RESEARCH_VALIDATION",),
+        prohibited_uses=("LIVE_TRADING_OR_ACCOUNT_DECISIONS",),
         revision_policy="Immutable; revisions require a new dataset version.",
+        source_hashes=(_hash("source-document"),),
+        row_resolver_metadata=DataRowResolverMetadata(
+            resolver_id="resolver:fixture:prices",
+            resolver_version="v1",
+            row_identity_fields=("instrument_id", "valid_at"),
+            source_artifact_hash_field="source_artifact_hash",
+            source_row_hash_field="source_row_hash",
+            resolution_policy=(
+                "Resolve the instrument and valid-time key to exactly one "
+                "source-row and source-artifact hash."
+            ),
+        ),
         validation_results=(_validation("data:row-count", "data"),),
         quality_flags=("SOURCE_COMPLETE",),
     )
@@ -95,13 +225,52 @@ def _model_card(version: str = "v1") -> ModelCard:
         model_id="model:deterministic-pnl",
         model_version=version,
         model_name="Deterministic fixture PnL",
+        model_family="Deterministic arithmetic research model",
         implementation_hash=_hash("model-implementation"),
+        code_hash=_hash("model-code"),
+        configuration_hash=_hash("model-configuration"),
         input_schema_hash=_hash("model-input-schema"),
         output_schema_hash=_hash("model-output-schema"),
+        input_hashes=(_hash("model-input"),),
+        output_hashes=(_hash("model-output"),),
         assumptions=("DECIMAL_ARITHMETIC", "NO_EXTERNAL_STATE"),
         applicability_scope=("BOUNDED_FIXTURE", "OFFLINE_RESEARCH"),
+        unsupported_cases=("LIVE_ACCOUNT_OR_NETWORK_STATE",),
+        parameters=(
+            _model_parameter(
+                "arithmetic_mode",
+                "DECIMAL",
+                "Use exact decimal arithmetic.",
+            ),
+            _model_parameter(
+                "fee_rate",
+                "0",
+                "Fixture fee rate.",
+            ),
+        ),
+        calibration_data_hashes=(_hash("calibration-data"),),
+        calibration_process="No fitting; validate exact fixture arithmetic.",
+        objective="Reproduce source-bound fixture PnL exactly.",
+        diagnostic_results=(_validation("model:diagnostic", "diagnostic"),),
+        convergence_criteria="Exact one-pass arithmetic evaluation.",
+        convergence_result=_validation("model:convergence", "convergence"),
         failure_conditions=("INPUT_HASH_MISMATCH", "MISSING_PRICE_ROW"),
+        failure_behavior="Reject without emitting a model result.",
         validation_results=(_validation("model:golden", "model"),),
+        benchmark_results=(_validation("model:benchmark", "benchmark"),),
+        sensitivity_results=(_validation("model:sensitivity", "sensitivity"),),
+        deterministic_configuration=(
+            _model_parameter(
+                "parallel_workers",
+                "1",
+                "Single deterministic worker.",
+            ),
+            _model_parameter(
+                "random_seed",
+                "0",
+                "No stochastic path; fixed seed retained as evidence.",
+            ),
+        ),
         known_limitations=("NOT_FOR_LIVE_TRADING",),
         quality_flags=("MODEL_VALIDATED",),
     )
@@ -391,13 +560,7 @@ def _build_request(
         terminal_ids=("claim:report:net-pnl",),
     )
     graph_flags = tuple(
-        sorted(
-            {
-                flag
-                for node in graph.nodes
-                for flag in node.quality_flags
-            }
-        )
+        sorted({flag for node in graph.nodes for flag in node.quality_flags})
     )
     sources.append(
         _json_artifact(
@@ -430,9 +593,7 @@ def _build_request(
 def _artifact_payload(package: Path, role: PackageArtifactRole) -> dict[str, object]:
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     row = next(item for item in manifest["artifacts"] if item["role"] == role.value)
-    value = json.loads(
-        (package / row["relative_path"]).read_text(encoding="utf-8")
-    )
+    value = json.loads((package / row["relative_path"]).read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
 
@@ -443,6 +604,43 @@ def test_data_and_model_cards_are_strict_versioned_and_hash_bound() -> None:
 
     assert DataCard.from_dict(data.as_dict()) == data
     assert ModelCard.from_dict(model.as_dict()) == model
+    assert data.as_dict()["schema_version"] == 2
+    assert model.as_dict()["schema_version"] == 2
+    assert {
+        "distribution_status",
+        "snapshot_method",
+        "field_schema",
+        "units",
+        "temporal_semantics",
+        "normalization_transformations",
+        "known_corrections",
+        "survivorship_policy",
+        "corporate_action_policy",
+        "known_limitations",
+        "intended_uses",
+        "prohibited_uses",
+        "source_hashes",
+        "row_resolver_metadata",
+    } <= data.as_dict().keys()
+    assert {
+        "model_family",
+        "unsupported_cases",
+        "parameters",
+        "calibration_data_hashes",
+        "calibration_process",
+        "objective",
+        "diagnostic_results",
+        "convergence_criteria",
+        "convergence_result",
+        "benchmark_results",
+        "sensitivity_results",
+        "failure_behavior",
+        "deterministic_configuration",
+        "code_hash",
+        "configuration_hash",
+        "input_hashes",
+        "output_hashes",
+    } <= model.as_dict().keys()
 
     missing = data.as_dict()
     del missing["known_biases"]
@@ -453,6 +651,44 @@ def test_data_and_model_cards_are_strict_versioned_and_hash_bound() -> None:
     tampered["model_version"] = "v2"
     with pytest.raises(ResearchCardError, match="content_hash_mismatch"):
         ModelCard.from_dict(tampered)
+
+    nested_tamper = data.as_dict()
+    units = cast(list[dict[str, object]], nested_tamper["units"])
+    units[0]["unit"] = "LOCAL_TIME"
+    with pytest.raises(ResearchCardError, match="content_hash_mismatch"):
+        DataCard.from_dict(nested_tamper)
+
+    with pytest.raises(ResearchCardError, match="must_be_sorted_unique"):
+        replace(data, field_schema=tuple(reversed(data.field_schema)))
+    with pytest.raises(ResearchCardError, match="must_be_sorted_unique"):
+        replace(
+            model,
+            deterministic_configuration=tuple(
+                reversed(model.deterministic_configuration)
+            ),
+        )
+
+
+def test_portable_runtime_enforces_complete_nested_card_schema() -> None:
+    data_payload = _data_card().as_dict()
+    model_payload = _model_card().as_dict()
+
+    validate_card(data_payload, "DATA_CARD")
+    validate_card(model_payload, "MODEL_CARD")
+
+    missing = _data_card().as_dict()
+    del missing["snapshot_method"]
+    with pytest.raises(PortableRuntimeError, match="fields_invalid"):
+        validate_card(missing, "DATA_CARD")
+
+    nested_tamper = _model_card().as_dict()
+    parameters = cast(
+        list[dict[str, object]],
+        nested_tamper["deterministic_configuration"],
+    )
+    parameters[0]["value"] = "8"
+    with pytest.raises(PortableRuntimeError, match="content_hash_mismatch"):
+        validate_card(nested_tamper, "MODEL_CARD")
 
 
 def test_evidence_graph_resolves_report_claim_to_source_row_in_both_forms() -> None:
@@ -465,16 +701,12 @@ def test_evidence_graph_resolves_report_claim_to_source_row_in_both_forms() -> N
     assert "row:prices:2025-01-02" in node_ids
     assert "normalized:prices" in node_ids
     assert "analysis:pnl" in node_ids
-    assert "row:prices:2025-01-02" in resolver.human_query(
-        "claim:report:net-pnl"
-    )
+    assert "row:prices:2025-01-02" in resolver.human_query("claim:report:net-pnl")
     downstream = resolver.machine_query(
         "row:prices:2025-01-02",
         direction="downstream",
     )
-    assert "claim:report:net-pnl" in {
-        item["node_id"] for item in downstream["nodes"]
-    }
+    assert "claim:report:net-pnl" in {item["node_id"] for item in downstream["nodes"]}
 
     source = next(
         item for item in graph.nodes if item.node_id == "row:prices:2025-01-02"
@@ -562,6 +794,105 @@ def test_evidence_graph_rejects_missing_edge_cycle_and_tamper() -> None:
     tampered["edges"][0]["relation"] = "SUPPORTS"
     with pytest.raises(EvidenceGraphError, match="edge_hash_mismatch"):
         EvidenceGraph.from_dict(tampered)
+
+
+def test_evidence_graph_rejects_self_consistent_relation_kind_rewrite() -> None:
+    _request, graph = _build_request()
+    target = next(
+        item for item in graph.edges if item.relation is EvidenceRelation.CALCULATES
+    )
+    rewritten = replace(target, relation=EvidenceRelation.REPORTS)
+
+    with pytest.raises(EvidenceGraphError, match="relation_kind_mismatch"):
+        EvidenceGraph(
+            graph_id=graph.graph_id,
+            version=graph.version,
+            nodes=graph.nodes,
+            edges=tuple(
+                sorted(
+                    (
+                        rewritten if item.identity == target.identity else item
+                        for item in graph.edges
+                    ),
+                    key=lambda item: item.identity,
+                )
+            ),
+            terminal_ids=graph.terminal_ids,
+        )
+
+
+def test_package_build_rejects_aggregate_only_evidence_graph() -> None:
+    request, graph = _build_request()
+    claim_id = "claim:report:net-pnl"
+    aggregate_nodes = tuple(
+        sorted(
+            (
+                replace(
+                    item,
+                    kind=(
+                        EvidenceNodeKind.IMMUTABLE_INPUT
+                        if item.node_id == "row:prices:2025-01-02"
+                        else item.kind
+                    ),
+                )
+                for item in graph.nodes
+                if item.node_id != claim_id
+            ),
+            key=lambda item: item.node_id,
+        )
+    )
+    aggregate_edges = tuple(
+        item
+        for item in graph.edges
+        if item.source_id != claim_id and item.target_id != claim_id
+    )
+    aggregate_graph = EvidenceGraph(
+        graph_id=graph.graph_id,
+        version=graph.version,
+        nodes=aggregate_nodes,
+        edges=aggregate_edges,
+        terminal_ids=("accounting:ledger",),
+    )
+    graph_artifact = next(
+        item
+        for item in request.artifacts
+        if item.role is PackageArtifactRole.EVIDENCE_GRAPH
+    )
+    aggregate_graph_artifact = _json_artifact(
+        PackageArtifactRole.EVIDENCE_GRAPH,
+        graph_artifact.logical_id,
+        aggregate_graph.as_dict(),
+        version=graph_artifact.version,
+        quality_flags=graph_artifact.quality_flags,
+    )
+    aggregate_artifacts = tuple(
+        sorted(
+            (
+                *(
+                    item
+                    for item in request.artifacts
+                    if item.logical_id not in {claim_id, graph_artifact.logical_id}
+                ),
+                aggregate_graph_artifact,
+            ),
+            key=lambda item: (
+                item.role.value,
+                item.logical_id,
+                item.version,
+            ),
+        )
+    )
+
+    with pytest.raises(
+        ValidatedPackageError,
+        match="aggregate_only_lineage_forbidden",
+    ):
+        PortablePackageBuildRequest(
+            package_id=request.package_id,
+            package_version=request.package_version,
+            seed=request.seed,
+            artifacts=aggregate_artifacts,
+        )
 
 
 def test_portable_package_golden_verify_reproduce_and_cold_root(
@@ -723,9 +1054,7 @@ def test_package_rejects_missing_manifest_tamper_and_unexpected_file(
     tampered = tmp_path / "tampered"
     shutil.copytree(original, tampered)
     manifest = json.loads((tampered / "manifest.json").read_text(encoding="utf-8"))
-    report = next(
-        item for item in manifest["artifacts"] if item["role"] == "REPORT"
-    )
+    report = next(item for item in manifest["artifacts"] if item["role"] == "REPORT")
     report_path = tampered / report["relative_path"]
     report_path.write_bytes(report_path.read_bytes() + b" ")
     with pytest.raises(ValidatedPackageError):

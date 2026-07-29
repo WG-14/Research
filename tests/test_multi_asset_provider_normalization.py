@@ -76,9 +76,7 @@ def _calendar(
         market_mode="session" if session else "continuous_24x7",
         timezone_name=timezone_name,
         tzdb_version="2026a",
-        dst_transition_policy=(
-            "iana_tzdb_reject_ambiguous_or_nonexistent_local_time"
-        ),
+        dst_transition_policy=("iana_tzdb_reject_ambiguous_or_nonexistent_local_time"),
         valid_from="2025-01-01",
         valid_to="2027-12-31",
         source_uri=f"/tmp/codex-gap-closure/{calendar_id}.json",
@@ -167,9 +165,7 @@ def _policy(
         calendar_id=selected.calendar_id,
         exchange_session_id="REGULAR",
         source_timezone=selected.timezone_name,
-        source_price_unit=(
-            "share_per_USD" if reciprocal else "USD_per_share"
-        ),
+        source_price_unit=("share_per_USD" if reciprocal else "USD_per_share"),
         target_price_unit="USD_per_share",
         source_quantity_unit="lot" if reciprocal else "share",
         target_quantity_unit="share",
@@ -178,9 +174,7 @@ def _policy(
         price_scale=Decimal("0.01") if reciprocal else Decimal("1"),
         quantity_scale=Decimal("1"),
         quote_convention=(
-            QuoteConvention.RECIPROCAL
-            if reciprocal
-            else QuoteConvention.DIRECT
+            QuoteConvention.RECIPROCAL if reciprocal else QuoteConvention.DIRECT
         ),
         corporate_action_adjustment=CorporateActionAdjustment.RAW,
         missing_value_semantics=MissingValueSemantics.REJECT_ROW,
@@ -271,14 +265,15 @@ def test_two_provider_conventions_normalize_to_same_economic_meaning() -> None:
         "contract_multiplier",
     )
     for field in economic_fields:
-        assert direct.normalized_record.payload[field] == (
-            reciprocal.normalized_record.payload[field]
+        assert (
+            direct.normalized_record.payload[field]
+            == (reciprocal.normalized_record.payload[field])
         )
     assert direct.normalized_record.payload["price"] == "100"
     assert direct.normalized_record.payload["quantity"] == "5"
-    assert direct.store.trace_to_raw(
-        direct.normalized_record.record_hash()
-    ) == (direct.raw_record,)
+    assert direct.store.trace_to_raw(direct.normalized_record.record_hash()) == (
+        direct.raw_record,
+    )
     assert direct.receipt.raw_record_hash == direct.raw_record.record_hash()
     assert direct.receipt.normalized_record_hash == (
         direct.normalized_record.record_hash()
@@ -386,9 +381,7 @@ def test_calendar_early_close_dst_units_and_arrival_order_fail_closed() -> None:
         )
 
     with pytest.raises(ProviderNormalizationError, match="unit_dimension_mismatch"):
-        _unit_registry().convert(
-            Decimal("1"), source="share", target="USD_per_share"
-        )
+        _unit_registry().convert(Decimal("1"), source="share", target="USD_per_share")
 
     later = replace(
         _iso_row(),
@@ -400,14 +393,12 @@ def test_calendar_early_close_dst_units_and_arrival_order_fail_closed() -> None:
         row_id="row.acme.earlier",
         ingested_at="2026-01-02T11:00:00+00:00",
     )
-    with pytest.raises(
-        ProviderNormalizationError, match="out_of_order_arrival"
-    ):
+    with pytest.raises(ProviderNormalizationError, match="out_of_order_arrival"):
         _service().normalize_many(
             (later, earlier),
-            policies={"provider.iso": _policy(
-                provider_id="provider.iso", adapter="direct"
-            )},
+            policies={
+                "provider.iso": _policy(provider_id="provider.iso", adapter="direct")
+            },
             adapter_ids={"provider.iso": "provider.iso-local-direct"},
         )
 
@@ -435,15 +426,12 @@ def test_derived_record_binds_code_policy_inputs_and_reverse_lineage() -> None:
         quality_flags=("fixture_only",),
     )
 
-    assert complete.trace_to_raw(derived.record_hash()) == (
-        normalized.raw_record,
+    assert complete.trace_to_raw(derived.record_hash()) == (normalized.raw_record,)
+    assert complete.lineage_descendants(normalized.raw_record.record_hash()) == (
+        normalized.normalized_record,
+        derived,
     )
-    assert complete.lineage_descendants(
-        normalized.raw_record.record_hash()
-    ) == (normalized.normalized_record, derived)
-    assert complete.propagated_quality_flags(derived.record_hash()) == (
-        "fixture_only",
-    )
+    assert complete.propagated_quality_flags(derived.record_hash()) == ("fixture_only",)
     with pytest.raises(ProviderNormalizationError, match="raw_upstream_forbidden"):
         derive_normalized_value(
             normalized.store,

@@ -89,8 +89,7 @@ def _json_value(value: object, label: str) -> object:
         return result
     if isinstance(value, (list, tuple)):
         return [
-            _json_value(item, f"{label}.{index}")
-            for index, item in enumerate(value)
+            _json_value(item, f"{label}.{index}") for index, item in enumerate(value)
         ]
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -257,9 +256,7 @@ class AuthoritativeSourceRow:
     def __post_init__(self) -> None:
         _require_stable_id(self.row_id, "authoritative_source_row.row_id")
         if not isinstance(self.row_kind, AuthoritativeInputRowKind):
-            raise AuthoritativeInputError(
-                "authoritative_source_row_row_kind_invalid"
-            )
+            raise AuthoritativeInputError("authoritative_source_row_row_kind_invalid")
         _timestamp(self.event_at, "authoritative_source_row.event_at")
         _timestamp(self.knowledge_at, "authoritative_source_row.knowledge_at")
         _require_stable_id(
@@ -272,9 +269,7 @@ class AuthoritativeSourceRow:
         )
         payload = self.payload
         if not payload:
-            raise AuthoritativeInputError(
-                "authoritative_source_row_payload_required"
-            )
+            raise AuthoritativeInputError("authoritative_source_row_payload_required")
         _require_hash(
             self.content_hash,
             "authoritative_source_row.content_hash",
@@ -341,6 +336,79 @@ class InputPathCoverage:
             "source_row_hash": self.source_row_hash,
             "value_hash": self.value_hash,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoritativeOutputBinding:
+    """Factory-only link from one reported output to covered input leaves."""
+
+    output_path: str
+    input_paths: tuple[str, ...]
+    output_value_hash: str
+    computation_hash: str
+    input_receipt_hash: str
+    source_row_hashes: tuple[str, ...]
+    _factory_token: InitVar[object | None] = None
+    content_hash: str = field(init=False)
+
+    def __post_init__(self, _factory_token: object | None) -> None:
+        if _factory_token is not _FACTORY_TOKEN:
+            raise AuthoritativeInputError(
+                "authoritative_output_binding_requires_factory"
+            )
+        _pointer_tokens(
+            self.output_path,
+            "authoritative_output_binding.output_path",
+        )
+        if not self.input_paths or self.input_paths != tuple(
+            sorted(set(self.input_paths))
+        ):
+            raise AuthoritativeInputError(
+                "authoritative_output_binding_input_paths_invalid"
+            )
+        for input_path in self.input_paths:
+            _pointer_tokens(
+                input_path,
+                "authoritative_output_binding.input_path",
+            )
+        for value, label in (
+            (self.output_value_hash, "output_value"),
+            (self.computation_hash, "computation"),
+            (self.input_receipt_hash, "input_receipt"),
+        ):
+            _require_hash(value, f"authoritative_output_binding.{label}")
+        if not self.source_row_hashes or self.source_row_hashes != tuple(
+            sorted(set(self.source_row_hashes))
+        ):
+            raise AuthoritativeInputError(
+                "authoritative_output_binding_source_row_hashes_invalid"
+            )
+        for row_hash in self.source_row_hashes:
+            _require_hash(
+                row_hash,
+                "authoritative_output_binding.source_row_hash",
+            )
+        object.__setattr__(
+            self,
+            "content_hash",
+            evidence_hash(
+                self.identity_payload(),
+                label="authoritative-output-input-binding",
+            ),
+        )
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "output_path": self.output_path,
+            "input_paths": list(self.input_paths),
+            "output_value_hash": self.output_value_hash,
+            "computation_hash": self.computation_hash,
+            "input_receipt_hash": self.input_receipt_hash,
+            "source_row_hashes": list(self.source_row_hashes),
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        return {**self.identity_payload(), "content_hash": self.content_hash}
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,19 +513,7 @@ class AuthoritativeInputReceipt:
             self,
             "content_hash",
             evidence_hash(
-                {
-                    "schema_version": AUTHORITATIVE_INPUT_SCHEMA_VERSION,
-                    "input_schema_id": self.input_schema_id,
-                    "input_schema_version": self.input_schema_version,
-                    "decision_cutoff": self.decision_cutoff,
-                    "artifact_logical_id": self.artifact_logical_id,
-                    "artifact_version": self.artifact_version,
-                    "input_document_hash": self.input_document_hash,
-                    "artifact_hash": self.artifact_hash,
-                    "source_rows_hash": self.source_rows_hash,
-                    "source_row_hashes": list(self.source_row_hashes),
-                    "coverage_hash": self.coverage_hash,
-                },
+                self.identity_payload(),
                 label="authoritative-input-receipt",
             ),
         )
@@ -476,6 +532,34 @@ class AuthoritativeInputReceipt:
             )
         return cast(dict[str, object], value)
 
+    def identity_payload(self) -> dict[str, object]:
+        """Return the immutable identity used to derive ``content_hash``."""
+
+        return {
+            "schema_version": AUTHORITATIVE_INPUT_SCHEMA_VERSION,
+            "input_schema_id": self.input_schema_id,
+            "input_schema_version": self.input_schema_version,
+            "decision_cutoff": self.decision_cutoff,
+            "artifact_logical_id": self.artifact_logical_id,
+            "artifact_version": self.artifact_version,
+            "input_document_hash": self.input_document_hash,
+            "artifact_hash": self.artifact_hash,
+            "source_rows_hash": self.source_rows_hash,
+            "source_row_hashes": list(self.source_row_hashes),
+            "coverage_hash": self.coverage_hash,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Expose the complete independently inspectable provenance receipt."""
+
+        return {
+            **self.identity_payload(),
+            "input_document": self.input_document,
+            "source_rows": [row.as_dict() for row in self.source_rows],
+            "coverage": [item.as_dict() for item in self.coverage],
+            "content_hash": self.content_hash,
+        }
+
     @property
     def input_paths(self) -> tuple[str, ...]:
         return tuple(item.input_path for item in self.coverage)
@@ -486,10 +570,7 @@ class AuthoritativeInputReceipt:
     ) -> Mapping[str, tuple[AuthoritativeSourceRow, ...]]:
         rows = {row.row_id: row for row in self.source_rows}
         return MappingProxyType(
-            {
-                item.input_path: (rows[item.source_row_id],)
-                for item in self.coverage
-            }
+            {item.input_path: (rows[item.source_row_id],) for item in self.coverage}
         )
 
     def source_rows_for_path(
@@ -516,6 +597,115 @@ class AuthoritativeInputReceipt:
         raise AuthoritativeInputError(
             "authoritative_input_receipt_input_path_not_covered"
         )
+
+    def input_value_for_path(self, input_path: str) -> object:
+        """Resolve and reverify the typed canonical value at one covered path."""
+
+        coverage = self.coverage_for_path(input_path)
+        value = _resolve_pointer(
+            self.input_document,
+            coverage.input_path,
+            "authoritative_input_receipt.input_path",
+        )
+        if _value_hash(value) != coverage.value_hash:
+            raise AuthoritativeInputError(
+                "authoritative_input_receipt_input_value_hash_mismatch"
+            )
+        return _json_value(value, "authoritative_input_receipt.input_value")
+
+    def source_value_for_path(self, input_path: str) -> object:
+        """Resolve and reverify the source-row value establishing one input."""
+
+        coverage = self.coverage_for_path(input_path)
+        rows = self.source_rows_for_path(input_path)
+        if len(rows) != 1:
+            raise AuthoritativeInputError(
+                "authoritative_input_receipt_source_row_cardinality_invalid"
+            )
+        value = _resolve_pointer(
+            rows[0].payload,
+            coverage.source_payload_path,
+            "authoritative_input_receipt.source_payload_path",
+        )
+        if _value_hash(value) != coverage.value_hash:
+            raise AuthoritativeInputError(
+                "authoritative_input_receipt_source_value_hash_mismatch"
+            )
+        return _json_value(value, "authoritative_input_receipt.source_value")
+
+    def coverages_for_path(
+        self,
+        input_path: str,
+    ) -> tuple[InputPathCoverage, ...]:
+        """Resolve a leaf or object/array prefix to all covered input leaves."""
+
+        _pointer_tokens(input_path, "authoritative_input_receipt.input_path")
+        prefix = f"{input_path}/" if input_path else "/"
+        matches = tuple(
+            item
+            for item in self.coverage
+            if item.input_path == input_path or item.input_path.startswith(prefix)
+        )
+        if not matches:
+            raise AuthoritativeInputError(
+                "authoritative_input_receipt_input_path_not_covered"
+            )
+        return matches
+
+    def bind_output(
+        self,
+        *,
+        output_path: str,
+        output_value: object,
+        input_paths: Sequence[str],
+        computation_hash: str,
+    ) -> AuthoritativeOutputBinding:
+        """Bind one report value to its covered inputs and actual source rows."""
+
+        paths = tuple(sorted(set(input_paths)))
+        if not paths:
+            raise AuthoritativeInputError(
+                "authoritative_output_binding_input_paths_required"
+            )
+        coverages = tuple(
+            item for path in paths for item in self.coverages_for_path(path)
+        )
+        return AuthoritativeOutputBinding(
+            output_path=output_path,
+            input_paths=paths,
+            output_value_hash=_value_hash(output_value),
+            computation_hash=computation_hash,
+            input_receipt_hash=self.content_hash,
+            source_row_hashes=tuple(
+                sorted({item.source_row_hash for item in coverages})
+            ),
+            _factory_token=_FACTORY_TOKEN,
+        )
+
+    def source_rows_for_output(
+        self,
+        binding: AuthoritativeOutputBinding,
+    ) -> tuple[AuthoritativeSourceRow, ...]:
+        """Resolve a bound report output back to its immutable source rows."""
+
+        if (
+            not isinstance(binding, AuthoritativeOutputBinding)
+            or binding.input_receipt_hash != self.content_hash
+        ):
+            raise AuthoritativeInputError(
+                "authoritative_output_binding_receipt_mismatch"
+            )
+        rows_by_id = {row.row_id: row for row in self.source_rows}
+        rows = {
+            rows_by_id[item.source_row_id].content_hash: rows_by_id[item.source_row_id]
+            for input_path in binding.input_paths
+            for item in self.coverages_for_path(input_path)
+        }
+        if tuple(sorted(rows)) != binding.source_row_hashes:
+            raise AuthoritativeInputError(
+                "authoritative_output_binding_source_rows_mismatch"
+            )
+        return tuple(rows[row_hash] for row_hash in sorted(rows))
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,22 +749,16 @@ class AuthoritativeInputFactory:
                 "authoritative_input_resolved_artifact_required"
             )
         if artifact.reference.role is not EvidenceArtifactRole.RESEARCH_INPUTS:
-            raise AuthoritativeInputError(
-                "authoritative_input_artifact_role_invalid"
-            )
+            raise AuthoritativeInputError("authoritative_input_artifact_role_invalid")
         cutoff_text, cutoff = _timestamp(
             decision_cutoff,
             "authoritative_input_factory.decision_cutoff",
         )
         payload = _parse_payload_json(artifact.payload_json)
         if frozenset(payload) != _ARTIFACT_FIELDS:
-            raise AuthoritativeInputError(
-                "authoritative_input_artifact_fields_invalid"
-            )
+            raise AuthoritativeInputError("authoritative_input_artifact_fields_invalid")
         if payload["artifact_kind"] != "IMMUTABLE_RESEARCH_INPUTS":
-            raise AuthoritativeInputError(
-                "authoritative_input_artifact_kind_invalid"
-            )
+            raise AuthoritativeInputError("authoritative_input_artifact_kind_invalid")
         if payload["input_schema_id"] != self.input_schema_id:
             raise AuthoritativeInputError(
                 "authoritative_input_artifact_schema_id_mismatch"
@@ -613,9 +797,7 @@ class AuthoritativeInputFactory:
         leaf_values = _leaf_values(artifact_document)
         raw_rows = payload["source_rows"]
         if not isinstance(raw_rows, list) or not raw_rows:
-            raise AuthoritativeInputError(
-                "authoritative_input_source_rows_required"
-            )
+            raise AuthoritativeInputError("authoritative_input_source_rows_required")
         rows, coverage = self._validate_rows(
             raw_rows,
             document=artifact_document,
@@ -697,7 +879,12 @@ class AuthoritativeInputFactory:
             )
             raw_kind = row["row_kind"]
             try:
-                row_kind = AuthoritativeInputRowKind(raw_kind)
+                row_kind = AuthoritativeInputRowKind(
+                    _require_stable_id(
+                        raw_kind,
+                        f"authoritative_input_source_row.{index}.row_kind",
+                    )
+                )
             except (TypeError, ValueError) as exc:
                 raise AuthoritativeInputError(
                     "authoritative_input_source_row_kind_unsupported"
@@ -764,9 +951,7 @@ class AuthoritativeInputFactory:
                 leaf_values=leaf_values,
             )
             if not bindings:
-                raise AuthoritativeInputError(
-                    "authoritative_input_orphan_source_row"
-                )
+                raise AuthoritativeInputError("authoritative_input_orphan_source_row")
             for input_path, source_path, source_value in bindings:
                 if input_path not in leaf_values:
                     raise AuthoritativeInputError(
@@ -803,9 +988,7 @@ class AuthoritativeInputFactory:
                 "authoritative_input_source_rows_order_or_identity_invalid"
             )
         if len(row_hashes) != len(set(row_hashes)):
-            raise AuthoritativeInputError(
-                "authoritative_input_duplicate_source_rows"
-            )
+            raise AuthoritativeInputError("authoritative_input_duplicate_source_rows")
         return tuple(rows), coverage
 
     def _row_bindings(
@@ -893,6 +1076,7 @@ __all__ = [
     "AuthoritativeInputFactory",
     "AuthoritativeInputReceipt",
     "AuthoritativeInputRowKind",
+    "AuthoritativeOutputBinding",
     "AuthoritativeSourceRow",
     "InputPathCoverage",
 ]

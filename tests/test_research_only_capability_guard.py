@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import subprocess
 import tomllib
@@ -168,6 +169,23 @@ _RUNTIME_CONFIGURATION_SUFFIXES = frozenset(
         ".yml",
     }
 )
+_MULTI_ASSET_BOUNDARY_DENIAL_CONTRACT = (
+    ROOT
+    / "src"
+    / "market_research"
+    / "research"
+    / "multi_asset"
+    / "manifests"
+    / "boundaries.v1.json"
+)
+_BOUNDARY_DENIAL_FIELDS = frozenset(
+    {
+        "forbidden_call_names",
+        "forbidden_definition_names",
+        "forbidden_field_names",
+        "forbidden_import_prefixes",
+    }
+)
 
 
 def _normalized_words(value: object) -> tuple[str, ...]:
@@ -190,6 +208,41 @@ def _forbidden_capability(value: object) -> str | None:
         if any(_contains_sequence(words, sequence) for sequence in sequences):
             return capability
     return None
+
+
+def _capability_scan_text(path: Path, text: str) -> str:
+    """Exclude only declarations in the exact multi-asset denial contract."""
+
+    if path != _MULTI_ASSET_BOUNDARY_DENIAL_CONTRACT:
+        return text
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return text
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("manifest_kind") != "multi_asset_boundaries"
+        or payload.get("manifest_id") != "multi_asset_boundaries_v1"
+    ):
+        return text
+    policy = payload.get("research_only_policy")
+    if not isinstance(policy, dict) or set(policy) != _BOUNDARY_DENIAL_FIELDS:
+        return text
+    for field_name in _BOUNDARY_DENIAL_FIELDS:
+        values = policy[field_name]
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) for value in values)
+            or values != sorted(set(values))
+        ):
+            return text
+    scan_payload = dict(payload)
+    scan_payload["research_only_policy"] = {
+        field_name: [] for field_name in sorted(_BOUNDARY_DENIAL_FIELDS)
+    }
+    return json.dumps(scan_payload, sort_keys=True, separators=(",", ":"))
 
 
 def _module_matches(module: str, candidates: Iterable[str]) -> bool:
@@ -393,7 +446,8 @@ def _runtime_surface_violations() -> list[str]:
             continue
         relative = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
-        words = _normalized_words(text)
+        scan_text = _capability_scan_text(path, text)
+        words = _normalized_words(scan_text)
         allowed_sequences = _RUNTIME_SEQUENCE_ALLOWLIST.get(path, frozenset())
         for capability, sequences in _FORBIDDEN_CAPABILITY_SEQUENCES.items():
             for sequence in sequences:
@@ -406,7 +460,7 @@ def _runtime_surface_violations() -> list[str]:
         for call_name in _FORBIDDEN_NETWORK_CALLS:
             if _contains_sequence(words, tuple(call_name.split("_"))):
                 violations.append(f"{relative}:runtime-call:{call_name}")
-        for token in _CONFIG_TOKEN.findall(text):
+        for token in _CONFIG_TOKEN.findall(scan_text):
             normalized = token.lower().replace("_", "-")
             if normalized in _KNOWN_TRADING_CLIENT_DEPENDENCIES:
                 violations.append(f"{relative}:trading-client:{normalized}")
@@ -459,7 +513,8 @@ def _configuration_violations() -> list[str]:
     for path in _tracked_configuration_paths():
         relative = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
-        for token in _CONFIG_TOKEN.findall(text):
+        scan_text = _capability_scan_text(path, text)
+        for token in _CONFIG_TOKEN.findall(scan_text):
             capability = _forbidden_capability(token)
             if capability is not None:
                 violations.append(f"{relative}:config:{capability}:{token}")

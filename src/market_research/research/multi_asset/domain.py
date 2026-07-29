@@ -321,13 +321,9 @@ class IssuerIdentifierRevision:
             _require_id(self.provider_id, "issuer_identifier.provider_id")
         if self.namespace is IssuerIdentifierNamespace.PROVIDER:
             if self.provider_id is None:
-                raise ProductMasterError(
-                    "issuer_identifier_provider_id_required"
-                )
+                raise ProductMasterError("issuer_identifier_provider_id_required")
         elif self.provider_id is not None:
-            raise ProductMasterError(
-                "issuer_identifier_provider_id_not_applicable"
-            )
+            raise ProductMasterError("issuer_identifier_provider_id_not_applicable")
         if self.revision == 1:
             if self.supersedes_hash is not None or self.correction_reason is not None:
                 raise ProductMasterError(
@@ -335,9 +331,7 @@ class IssuerIdentifierRevision:
                 )
         else:
             if self.supersedes_hash is None or self.correction_reason is None:
-                raise ProductMasterError(
-                    "issuer_identifier_revision_binding_required"
-                )
+                raise ProductMasterError("issuer_identifier_revision_binding_required")
             _require_hash(
                 self.supersedes_hash,
                 "issuer_identifier.supersedes_hash",
@@ -901,9 +895,7 @@ class CompositeDeliverable:
             ),
         )
         if not self.source.known_at(self.knowledge_at):
-            raise ProductMasterError(
-                "composite_deliverable_knowledge_before_source"
-            )
+            raise ProductMasterError("composite_deliverable_knowledge_before_source")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -1398,9 +1390,8 @@ class InstrumentRegistry:
                 if item.source_instrument_id == instrument.instrument_id
                 and item.validity.overlaps(specification.validity)
             ]
-            if (
-                specification.settlement_type is SettlementType.CASH
-                and (deliverables or composite_deliverables)
+            if specification.settlement_type is SettlementType.CASH and (
+                deliverables or composite_deliverables
             ):
                 raise ProductMasterError(
                     f"cash_option_deliverable_forbidden:{instrument.instrument_id}"
@@ -1420,9 +1411,7 @@ class InstrumentRegistry:
         )
         for identifier_id, revisions in histories.items():
             ordered = sorted(revisions, key=lambda item: item.revision)
-            if [item.revision for item in ordered] != list(
-                range(1, len(ordered) + 1)
-            ):
+            if [item.revision for item in ordered] != list(range(1, len(ordered) + 1)):
                 raise ProductMasterError(
                     f"issuer_identifier_revision_not_contiguous:{identifier_id}"
                 )
@@ -1447,8 +1436,7 @@ class InstrumentRegistry:
                         )
                     if revision.supersedes_hash != previous.revision_hash():
                         raise ProductMasterError(
-                            "issuer_identifier_revision_chain_broken:"
-                            f"{identifier_id}"
+                            f"issuer_identifier_revision_chain_broken:{identifier_id}"
                         )
                 previous = revision
 
@@ -1475,10 +1463,7 @@ class InstrumentRegistry:
             self.symbol_aliases,
             lambda item: f"{item.provider_id}\x00{item.symbol}",
         )
-        listings = {
-            item.listing_id: item
-            for item in self.listings
-        }
+        listings = {item.listing_id: item for item in self.listings}
         for provider_symbol, versions in aliases.items():
             ordered = sorted(versions, key=lambda item: item.validity.start)
             for index, left in enumerate(ordered):
@@ -1661,9 +1646,7 @@ class InstrumentRegistry:
             knowledge_at=cutoff,
         )
         if issuer is None:
-            raise ProductMasterError(
-                "issuer_identifier_issuer_not_active_or_known"
-            )
+            raise ProductMasterError("issuer_identifier_issuer_not_active_or_known")
         return issuer
 
     def tradable_instrument_as_of(

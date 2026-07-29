@@ -2,10 +2,11 @@
 
 The package is a directory, not an environment-specific archive.  Every
 research object is stored below ``objects/sha256`` and addressed only through
-relative paths.  The bundled verifier and replay program use the Python
-standard library and therefore run from an empty cold root without importing
-``market_research`` or consulting Git, a virtual environment, caches, prior
-results, or live external state.
+relative paths.  Verification uses only the Python standard library.  An
+executable public package additionally contains a deterministic source archive
+and immutable evidence envelopes; reproduction extracts and imports only that
+bound source in an isolated child process, without consulting Git, an installed
+distribution, a virtual environment, caches, prior results, or live state.
 """
 
 from __future__ import annotations
@@ -25,13 +26,14 @@ from market_research.paths import ResearchPathManager
 from market_research.research.multi_asset.cards import DataCard, ModelCard
 from market_research.research.multi_asset.evidence_graph import (
     EvidenceGraph,
+    EvidenceGraphError,
     EvidenceNodeKind,
 )
 from market_research.research.multi_asset import portable_runtime as _portable_runtime
 
 
-VALIDATED_PACKAGE_SCHEMA_VERSION = 1
-PORTABLE_REPLAY_ALGORITHM_VERSION = "multi-asset-portable-replay-v1"
+VALIDATED_PACKAGE_SCHEMA_VERSION = 2
+PORTABLE_REPLAY_ALGORITHM_VERSION = "multi-asset-portable-replay-v2"
 PACKAGE_BUILD_DESCRIPTOR_SCHEMA_VERSION = 1
 
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -55,6 +57,8 @@ class PackageArtifactRole(StrEnum):
     SOURCE_IDENTITY = "SOURCE_IDENTITY"
     DEPENDENCY_IDENTITY = "DEPENDENCY_IDENTITY"
     RUNTIME_IDENTITY = "RUNTIME_IDENTITY"
+    ENGINE_SOURCE = "ENGINE_SOURCE"
+    ENGINE_REPLAY_DESCRIPTOR = "ENGINE_REPLAY_DESCRIPTOR"
     NORMALIZED_EVIDENCE = "NORMALIZED_EVIDENCE"
     DERIVED_EVIDENCE = "DERIVED_EVIDENCE"
     ACCOUNTING = "ACCOUNTING"
@@ -96,6 +100,12 @@ _REQUIRED_INPUT_MULTI = frozenset(
     }
 )
 _ALL_SINGLETONS = _REQUIRED_INPUT_SINGLETONS | _GENERATED_ROLES
+_OPTIONAL_EXECUTABLE_SINGLETONS = frozenset(
+    {
+        PackageArtifactRole.ENGINE_SOURCE,
+        PackageArtifactRole.ENGINE_REPLAY_DESCRIPTOR,
+    }
+)
 
 _GRAPH_ROLE_KINDS: Mapping[PackageArtifactRole, frozenset[EvidenceNodeKind]] = {
     PackageArtifactRole.REQUEST: frozenset({EvidenceNodeKind.CONFIGURATION}),
@@ -106,12 +116,12 @@ _GRAPH_ROLE_KINDS: Mapping[PackageArtifactRole, frozenset[EvidenceNodeKind]] = {
     PackageArtifactRole.DATA_CARD: frozenset({EvidenceNodeKind.DATA_CARD}),
     PackageArtifactRole.MODEL_CARD: frozenset({EvidenceNodeKind.MODEL_CARD}),
     PackageArtifactRole.POLICY: frozenset({EvidenceNodeKind.POLICY}),
-    PackageArtifactRole.CONFIGURATION: frozenset(
+    PackageArtifactRole.CONFIGURATION: frozenset({EvidenceNodeKind.CONFIGURATION}),
+    PackageArtifactRole.ENGINE_SOURCE: frozenset({EvidenceNodeKind.CODE}),
+    PackageArtifactRole.ENGINE_REPLAY_DESCRIPTOR: frozenset(
         {EvidenceNodeKind.CONFIGURATION}
     ),
-    PackageArtifactRole.NORMALIZED_EVIDENCE: frozenset(
-        {EvidenceNodeKind.NORMALIZED}
-    ),
+    PackageArtifactRole.NORMALIZED_EVIDENCE: frozenset({EvidenceNodeKind.NORMALIZED}),
     PackageArtifactRole.DERIVED_EVIDENCE: frozenset(
         {
             EvidenceNodeKind.DERIVED,
@@ -121,6 +131,21 @@ _GRAPH_ROLE_KINDS: Mapping[PackageArtifactRole, frozenset[EvidenceNodeKind]] = {
     ),
     PackageArtifactRole.ACCOUNTING: frozenset({EvidenceNodeKind.ACCOUNTING}),
 }
+_COMPONENT_KIND_NODE_KINDS: Mapping[str, EvidenceNodeKind] = {
+    "SOURCE_ROW": EvidenceNodeKind.SOURCE_ROW,
+    "NORMALIZED_RECORD": EvidenceNodeKind.NORMALIZED,
+    "MODEL_OR_PROFILE_OUTPUT": EvidenceNodeKind.ANALYSIS,
+    "REPORT_FIELD": EvidenceNodeKind.REPORT_CLAIM,
+}
+_COMPONENT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "component_kind",
+        "aggregate_artifact_id",
+        "json_pointer",
+        "value",
+    }
+)
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -209,6 +234,107 @@ def _load_json_bytes(raw: bytes, field_name: str) -> object:
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValidatedPackageError(f"{field_name}_invalid_json") from exc
+
+
+def _decode_json_pointer_token(value: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character != "~":
+            decoded.append(character)
+            index += 1
+            continue
+        if index + 1 >= len(value) or value[index + 1] not in {"0", "1"}:
+            raise ValidatedPackageError("package_build.component_pointer_invalid")
+        decoded.append("~" if value[index + 1] == "0" else "/")
+        index += 2
+    return "".join(decoded)
+
+
+def _resolve_json_pointer(value: object, pointer: object) -> object:
+    if (
+        not isinstance(pointer, str)
+        or pointer in {"", "/"}
+        or not pointer.startswith("/")
+    ):
+        raise ValidatedPackageError("package_build.component_pointer_not_granular")
+    current = value
+    for raw_token in pointer[1:].split("/"):
+        token = _decode_json_pointer_token(raw_token)
+        if isinstance(current, dict):
+            if token not in current:
+                raise ValidatedPackageError("package_build.component_pointer_missing")
+            current = current[token]
+        elif isinstance(current, list):
+            if (
+                not token.isdigit()
+                or (len(token) > 1 and token.startswith("0"))
+                or int(token) >= len(current)
+            ):
+                raise ValidatedPackageError(
+                    "package_build.component_pointer_index_invalid"
+                )
+            current = current[int(token)]
+        else:
+            raise ValidatedPackageError(
+                "package_build.component_pointer_traversal_invalid"
+            )
+    return current
+
+
+def _validate_graph_component_bindings(
+    graph: EvidenceGraph,
+    payloads: Mapping[str, object],
+) -> None:
+    component_counts = {kind: 0 for kind in _COMPONENT_KIND_NODE_KINDS}
+    component_nodes_seen = 0
+    for node in graph.nodes:
+        attributes = dict(node.attributes)
+        component_kind = attributes.get("component_kind")
+        if component_kind is None:
+            continue
+        expected_kind = _COMPONENT_KIND_NODE_KINDS.get(component_kind)
+        if expected_kind is None or node.kind is not expected_kind:
+            raise ValidatedPackageError(
+                f"package_build.component_node_kind_mismatch:{node.node_id}"
+            )
+        component_nodes_seen += 1
+        component_counts[component_kind] += 1
+        payload = _mapping(
+            payloads.get(node.node_id),
+            f"package_build.component.{node.node_id}",
+        )
+        _exact(payload, _COMPONENT_FIELDS, "package_build.component")
+        if payload["schema_version"] != 1:
+            raise ValidatedPackageError(
+                "package_build.component_schema_version_invalid"
+            )
+        aggregate_id = payload["aggregate_artifact_id"]
+        pointer = payload["json_pointer"]
+        if (
+            payload["component_kind"] != component_kind
+            or aggregate_id != attributes.get("aggregate_artifact_id")
+            or pointer != attributes.get("json_pointer")
+        ):
+            raise ValidatedPackageError(
+                f"package_build.component_attributes_mismatch:{node.node_id}"
+            )
+        if not isinstance(aggregate_id, str) or aggregate_id == node.node_id:
+            raise ValidatedPackageError(
+                f"package_build.component_aggregate_invalid:{node.node_id}"
+            )
+        if aggregate_id not in payloads:
+            raise ValidatedPackageError(
+                f"package_build.component_aggregate_missing:{node.node_id}"
+            )
+        selected = _resolve_json_pointer(payloads[aggregate_id], pointer)
+        if _canonical_bytes(selected) != _canonical_bytes(payload["value"]):
+            raise ValidatedPackageError(
+                f"package_build.component_value_mismatch:{node.node_id}"
+            )
+    if component_nodes_seen and any(count == 0 for count in component_counts.values()):
+        raise ValidatedPackageError("package_build.component_lineage_incomplete")
 
 
 def _safe_relative_path(value: str, field_name: str) -> PurePosixPath:
@@ -302,9 +428,7 @@ class PortableArtifactRecord:
         _safe_relative_path(self.relative_path, "portable_artifact.relative_path")
         _require_hash(self.content_hash, "portable_artifact.content_hash")
         if self.relative_path != _artifact_relative_path(self.content_hash):
-            raise ValidatedPackageError(
-                "portable_artifact.path_not_content_addressed"
-            )
+            raise ValidatedPackageError("portable_artifact.path_not_content_addressed")
         if (
             isinstance(self.byte_length, bool)
             or not isinstance(self.byte_length, int)
@@ -433,9 +557,7 @@ class SupportFileRecord:
         payload = _mapping(value, "support_file")
         _exact(
             payload,
-            frozenset(
-                {"relative_path", "content_hash", "byte_length", "purpose"}
-            ),
+            frozenset({"relative_path", "content_hash", "byte_length", "purpose"}),
             "support_file",
         )
         byte_length = payload["byte_length"]
@@ -477,14 +599,15 @@ class ValidatedPackageManifest:
             "package_manifest.replay_algorithm_version",
         )
         if self.replay_algorithm_version != PORTABLE_REPLAY_ALGORITHM_VERSION:
-            raise ValidatedPackageError(
-                "package_manifest.replay_algorithm_unsupported"
-            )
-        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+            raise ValidatedPackageError("package_manifest.replay_algorithm_unsupported")
+        if (
+            isinstance(self.seed, bool)
+            or not isinstance(self.seed, int)
+            or self.seed < 0
+        ):
             raise ValidatedPackageError("package_manifest.seed_invalid")
         artifact_keys = tuple(
-            (item.role.value, item.logical_id, item.version)
-            for item in self.artifacts
+            (item.role.value, item.logical_id, item.version) for item in self.artifacts
         )
         if artifact_keys != tuple(sorted(set(artifact_keys))):
             raise ValidatedPackageError(
@@ -540,6 +663,17 @@ class ValidatedPackageManifest:
                 raise ValidatedPackageError(
                     f"package_manifest.role_required:{role.value}"
                 )
+        executable_counts = tuple(
+            counts[role]
+            for role in sorted(
+                _OPTIONAL_EXECUTABLE_SINGLETONS,
+                key=lambda item: item.value,
+            )
+        )
+        if executable_counts not in {(0, 0), (1, 1)}:
+            raise ValidatedPackageError(
+                "package_manifest.executable_replay_pair_required"
+            )
 
     def identity_payload(self) -> dict[str, object]:
         return {
@@ -628,20 +762,23 @@ class PortablePackageBuildRequest:
     package_version: str
     seed: int
     artifacts: tuple[PortableSourceArtifact, ...]
+    expected_study: PortableSourceArtifact | None = None
+    expected_report: PortableSourceArtifact | None = None
 
     def __post_init__(self) -> None:
         _require_id(self.package_id, "package_build.package_id")
         _require_id(self.package_version, "package_build.package_version")
-        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+        if (
+            isinstance(self.seed, bool)
+            or not isinstance(self.seed, int)
+            or self.seed < 0
+        ):
             raise ValidatedPackageError("package_build.seed_invalid")
         keys = tuple(
-            (item.role.value, item.logical_id, item.version)
-            for item in self.artifacts
+            (item.role.value, item.logical_id, item.version) for item in self.artifacts
         )
         if keys != tuple(sorted(set(keys))):
-            raise ValidatedPackageError(
-                "package_build.artifacts_must_be_sorted_unique"
-            )
+            raise ValidatedPackageError("package_build.artifacts_must_be_sorted_unique")
         logical_ids = tuple(item.logical_id for item in self.artifacts)
         if len(logical_ids) != len(set(logical_ids)):
             raise ValidatedPackageError("package_build.logical_id_duplicate")
@@ -658,19 +795,64 @@ class PortablePackageBuildRequest:
                 )
         for role in _REQUIRED_INPUT_MULTI:
             if counts[role] < 1:
+                raise ValidatedPackageError(f"package_build.role_required:{role.value}")
+        executable_counts = tuple(
+            counts[role]
+            for role in sorted(
+                _OPTIONAL_EXECUTABLE_SINGLETONS,
+                key=lambda item: item.value,
+            )
+        )
+        if executable_counts not in {(0, 0), (1, 1)}:
+            raise ValidatedPackageError("package_build.executable_replay_pair_required")
+        if (self.expected_study is None) != (self.expected_report is None):
+            raise ValidatedPackageError("package_build.expected_output_pair_required")
+        if self.expected_study is not None and self.expected_report is not None:
+            if (
+                self.expected_study.role is not PackageArtifactRole.STUDY
+                or self.expected_report.role is not PackageArtifactRole.REPORT
+                or self.expected_study.media_type != "application/json"
+                or self.expected_report.media_type != "application/json"
+            ):
                 raise ValidatedPackageError(
-                    f"package_build.role_required:{role.value}"
+                    "package_build.expected_output_role_or_media_invalid"
+                )
+            output_ids = {
+                self.expected_study.logical_id,
+                self.expected_report.logical_id,
+            }
+            if output_ids.intersection(logical_ids):
+                raise ValidatedPackageError(
+                    "package_build.expected_output_logical_id_collision"
+                )
+            study_payload = _mapping(
+                _load_json_bytes(
+                    self.expected_study.payload,
+                    "package_build.expected_study",
+                ),
+                "package_build.expected_study",
+            )
+            study_identity = {
+                key: value
+                for key, value in study_payload.items()
+                if key != "content_hash"
+            }
+            if study_payload.get("content_hash") != _hash_payload(study_identity):
+                raise ValidatedPackageError(
+                    "package_build.expected_study_content_hash_mismatch"
                 )
         self._validate_semantic_artifacts()
 
     def _validate_semantic_artifacts(self) -> None:
         graph: EvidenceGraph | None = None
+        json_payloads: dict[str, object] = {}
         for artifact in self.artifacts:
             if artifact.media_type == "application/json":
                 payload = _load_json_bytes(
                     artifact.payload,
                     f"package_build.{artifact.logical_id}",
                 )
+                json_payloads[artifact.logical_id] = payload
             else:
                 payload = None
             if artifact.role is PackageArtifactRole.DATA_CARD:
@@ -689,30 +871,40 @@ class PortablePackageBuildRequest:
                 graph = EvidenceGraph.from_dict(payload)
                 graph_flags = tuple(
                     sorted(
-                        {
-                            flag
-                            for node in graph.nodes
-                            for flag in node.quality_flags
-                        }
+                        {flag for node in graph.nodes for flag in node.quality_flags}
                     )
                 )
                 if artifact.quality_flags != graph_flags:
                     raise ValidatedPackageError(
                         "package_build.graph_quality_flags_mismatch"
                     )
-            elif artifact.role in (
-                _REQUIRED_INPUT_SINGLETONS
-                | _REQUIRED_INPUT_MULTI
-            ) and artifact.media_type != "application/json":
+            elif artifact.role is PackageArtifactRole.ENGINE_SOURCE:
+                if artifact.media_type != "application/zip":
+                    raise ValidatedPackageError(
+                        "package_build.engine_source_zip_required"
+                    )
+            elif artifact.role is PackageArtifactRole.ENGINE_REPLAY_DESCRIPTOR:
+                if artifact.media_type != "application/json" or payload is None:
+                    raise ValidatedPackageError(
+                        "package_build.engine_replay_descriptor_json_required"
+                    )
+            elif (
+                artifact.role in (_REQUIRED_INPUT_SINGLETONS | _REQUIRED_INPUT_MULTI)
+                and artifact.media_type != "application/json"
+            ):
                 if artifact.role is not PackageArtifactRole.IMMUTABLE_INPUT:
                     raise ValidatedPackageError(
                         f"package_build.json_media_type_required:{artifact.role.value}"
                     )
         if graph is None:  # pragma: no cover - cardinality checked above
             raise ValidatedPackageError("package_build.evidence_graph_required")
-        self._validate_graph_bindings(graph)
+        self._validate_graph_bindings(graph, json_payloads)
 
-    def _validate_graph_bindings(self, graph: EvidenceGraph) -> None:
+    def _validate_graph_bindings(
+        self,
+        graph: EvidenceGraph,
+        json_payloads: Mapping[str, object],
+    ) -> None:
         nodes = {item.node_id: item for item in graph.nodes}
         traceable = tuple(
             item for item in self.artifacts if item.role in _GRAPH_ROLE_KINDS
@@ -734,6 +926,11 @@ class PortablePackageBuildRequest:
         traceable_ids = {item.logical_id for item in traceable}
         if set(nodes) != traceable_ids:
             raise ValidatedPackageError("package_build.graph_unbound_node")
+        try:
+            graph.require_resolvable_report_lineage()
+        except EvidenceGraphError as exc:
+            raise ValidatedPackageError(str(exc)) from exc
+        _validate_graph_component_bindings(graph, json_payloads)
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,16 +1126,18 @@ This directory is immutable and content addressed. Do not edit it.
 Verify from any empty cold root with Python 3.12 or later:
   python -I /absolute/path/to/package/verify.py /absolute/path/to/package
 
-Recompute the canonical study and report twice and compare them:
+Recompute the actual study, report, and accounting twice and compare them:
   python -I /absolute/path/to/package/reproduce.py /absolute/path/to/package
 
 Optionally preserve a repository-external receipt:
   python -I /absolute/path/to/package/reproduce.py /absolute/path/to/package \\
     --out /absolute/external/path/reproduction-receipt.json
 
-The programs use only the Python standard library and bundled relative files.
-They do not read Git metadata, a virtual environment, caches, prior results,
-network services, credentials, or paths outside this package except --out.
+Verification uses only the Python standard library. Reproduction uses the
+content-addressed research engine and immutable evidence bundled in this
+package. Neither mode reads Git metadata, a virtual environment, caches, prior
+results, network services, credentials, or paths outside the package except
+fresh temporary replay roots and an explicit --out receipt.
 """
 
 _GENERATED_LOGICAL_IDS = frozenset(
@@ -1087,11 +1286,16 @@ def _build_plan(
     support_payloads = _support_payloads()
     support_records = _support_records(support_payloads)
     source_identity = _generated_source_identity(support_records)
+    supplied_outputs = tuple(
+        item
+        for item in (request.expected_study, request.expected_report)
+        if item is not None
+    )
     package_quality_flags = tuple(
         sorted(
             {
                 flag
-                for item in request.artifacts
+                for item in (*request.artifacts, *supplied_outputs)
                 for flag in item.quality_flags
             }
         )
@@ -1121,35 +1325,41 @@ def _build_plan(
         records=replay_records,
         package_quality_flags=package_quality_flags,
     )
-    study_payload, report_payload = (
-        _portable_runtime.canonical_replay_outputs(  # type: ignore[no-untyped-call]
+    if request.expected_study is None or request.expected_report is None:
+        study_payload, report_payload = _portable_runtime.canonical_replay_outputs(  # type: ignore[no-untyped-call]
             provisional,
             _json_payloads(replay_inputs),
         )
-    )
-    study = PortableSourceArtifact.from_json(
-        logical_id="study:portable",
-        version=request.package_version,
-        role=PackageArtifactRole.STUDY,
-        payload=study_payload,
-        quality_flags=package_quality_flags,
-    )
-    report = PortableSourceArtifact.from_json(
-        logical_id="report:portable",
-        version=request.package_version,
-        role=PackageArtifactRole.REPORT,
-        payload=report_payload,
-        quality_flags=package_quality_flags,
-    )
+        study = PortableSourceArtifact.from_json(
+            logical_id="study:portable",
+            version=request.package_version,
+            role=PackageArtifactRole.STUDY,
+            payload=study_payload,
+            quality_flags=package_quality_flags,
+        )
+        report = PortableSourceArtifact.from_json(
+            logical_id="report:portable",
+            version=request.package_version,
+            role=PackageArtifactRole.REPORT,
+            payload=report_payload,
+            quality_flags=package_quality_flags,
+        )
+    else:
+        study = request.expected_study
+        report = request.expected_report
+        if (set(study.quality_flags) | set(report.quality_flags)) - set(
+            package_quality_flags
+        ):
+            raise ValidatedPackageError(
+                "package_build.expected_output_quality_flags_mismatch"
+            )
     all_artifacts = tuple(
         sorted(
             (*replay_inputs, study, report),
             key=lambda item: (item.role.value, item.logical_id, item.version),
         )
     )
-    records = tuple(
-        PortableArtifactRecord.from_source(item) for item in all_artifacts
-    )
+    records = tuple(PortableArtifactRecord.from_source(item) for item in all_artifacts)
     manifest = ValidatedPackageManifest(
         package_id=request.package_id,
         package_version=request.package_version,
@@ -1194,9 +1404,7 @@ def _write_file_once(path: Path, raw: bytes) -> None:
 
 def _manifest_from_package(path: Path) -> ValidatedPackageManifest:
     raw = (path / "manifest.json").read_bytes()
-    return ValidatedPackageManifest.from_dict(
-        _load_json_bytes(raw, "package_manifest")
-    )
+    return ValidatedPackageManifest.from_dict(_load_json_bytes(raw, "package_manifest"))
 
 
 def build_validated_package(
@@ -1214,10 +1422,7 @@ def build_validated_package(
     if target.exists():
         receipt = verify_validated_package(target)
         existing = _manifest_from_package(target)
-        if (
-            receipt.status != "PASS"
-            or existing.content_hash != manifest.content_hash
-        ):
+        if receipt.status != "PASS" or existing.content_hash != manifest.content_hash:
             raise ValidatedPackageError("package_build.existing_target_conflict")
         return PublishedValidatedPackage(
             path=target,
@@ -1251,9 +1456,7 @@ def build_validated_package(
         except FileExistsError:
             existing_receipt = verify_validated_package(target)
             if existing_receipt.manifest_hash != manifest.content_hash:
-                raise ValidatedPackageError(
-                    "package_build.concurrent_target_conflict"
-                )
+                raise ValidatedPackageError("package_build.concurrent_target_conflict")
             return PublishedValidatedPackage(
                 path=target,
                 manifest=_manifest_from_package(target),
@@ -1275,6 +1478,36 @@ def _trusted_runtime_matches(package_path: Path) -> None:
         raise ValidatedPackageError("package_runtime_source_unsupported_or_tampered")
 
 
+def _trusted_graph_semantics(package_path: Path) -> None:
+    manifest = _manifest_from_package(package_path)
+    json_payloads = {
+        item.logical_id: _load_json_bytes(
+            (package_path / item.relative_path).read_bytes(),
+            f"package.{item.logical_id}",
+        )
+        for item in manifest.artifacts
+        if item.role in _GRAPH_ROLE_KINDS and item.media_type == "application/json"
+    }
+    graph_records = tuple(
+        item
+        for item in manifest.artifacts
+        if item.role is PackageArtifactRole.EVIDENCE_GRAPH
+    )
+    if len(graph_records) != 1:  # pragma: no cover - manifest checks cardinality.
+        raise ValidatedPackageError("package_graph_cardinality_invalid")
+    graph_record = graph_records[0]
+    graph_payload = _load_json_bytes(
+        (package_path / graph_record.relative_path).read_bytes(),
+        "package.evidence_graph",
+    )
+    try:
+        graph = EvidenceGraph.from_dict(graph_payload)
+        graph.require_resolvable_report_lineage()
+    except EvidenceGraphError as exc:
+        raise ValidatedPackageError(str(exc)) from exc
+    _validate_graph_component_bindings(graph, json_payloads)
+
+
 def verify_validated_package(
     package_path: str | Path,
 ) -> PackageVerificationReceipt:
@@ -1286,6 +1519,7 @@ def verify_validated_package(
         payload = _portable_runtime.verify_package(  # type: ignore[no-untyped-call]
             path
         )
+        _trusted_graph_semantics(path)
         return PackageVerificationReceipt.from_dict(payload)
     except (OSError, ValueError, TypeError) as exc:
         if isinstance(exc, ValidatedPackageError):
@@ -1296,11 +1530,12 @@ def verify_validated_package(
 def reproduce_validated_package(
     package_path: str | Path,
 ) -> PackageReproductionReceipt:
-    """Recompute study and report twice using bundled inputs and source only."""
+    """Recompute the actual study/report twice using bundled inputs and source."""
 
     try:
         path = Path(package_path).expanduser().resolve(strict=True)
         _trusted_runtime_matches(path)
+        _trusted_graph_semantics(path)
         payload = _portable_runtime.reproduce_package(  # type: ignore[no-untyped-call]
             path
         )

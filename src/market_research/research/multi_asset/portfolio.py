@@ -505,8 +505,7 @@ def _validate_event_semantics(event: PortfolioEventDraft | PortfolioEvent) -> No
             or len(event.cash_deltas) != 1
             or event.asset_class is not AssetClass.FUTURE
             or event.instrument_id is None
-            or _cash_amount(event.cash_deltas, event.currency)
-            != event.realized_pnl
+            or _cash_amount(event.cash_deltas, event.currency) != event.realized_pnl
         ):
             raise PortfolioAccountingError("variation_margin_fields_invalid")
     elif event.event_type is PortfolioEventType.POSITION_MARK:
@@ -696,9 +695,7 @@ def _validate_event_semantics(event: PortfolioEventDraft | PortfolioEvent) -> No
             or event.instrument_id is not None
             or event.asset_class is not None
         ):
-            raise PortfolioAccountingError(
-                "advanced_audit_event_must_be_non_economic"
-            )
+            raise PortfolioAccountingError("advanced_audit_event_must_be_non_economic")
         metadata = dict(event.metadata)
         factory_hash = metadata.get("accounting_factory_hash")
         bundle_hash = metadata.get("economic_bundle_hash")
@@ -1410,9 +1407,7 @@ class UnifiedPortfolioLedger:
                     _add(realized, event.currency, event.realized_pnl)
             elif event.event_type is PortfolioEventType.VARIATION_MARGIN:
                 if event.currency is None:
-                    raise PortfolioAccountingError(
-                        "variation_margin_currency_missing"
-                    )
+                    raise PortfolioAccountingError("variation_margin_currency_missing")
                 _add(realized, event.currency, event.realized_pnl)
             elif event.event_type in {
                 PortfolioEventType.DIVIDEND_INCOME,
@@ -1608,12 +1603,10 @@ class UnifiedPortfolioLedger:
                     raise PortfolioAccountingError(
                         "corporate_action_transfer_fraction_invalid"
                     ) from exc
-                transfer_fraction = (
-                    _decimal(
-                        parsed_transfer_fraction,
-                        "corporate_action.transfer_value_fraction",
-                        nonnegative=True,
-                    )
+                transfer_fraction = _decimal(
+                    parsed_transfer_fraction,
+                    "corporate_action.transfer_value_fraction",
+                    nonnegative=True,
                 )
                 if transfer_fraction > _ONE:
                     raise PortfolioAccountingError(
@@ -1949,10 +1942,7 @@ class TaxLotProjection:
             }
         ) != len(self.open_lots):
             raise PortfolioAccountingError("tax_projection_open_lot_duplicate")
-        if any(
-            not isinstance(item, TaxLotRealization)
-            for item in self.realizations
-        ):
+        if any(not isinstance(item, TaxLotRealization) for item in self.realizations):
             raise PortfolioAccountingError("tax_projection_realization_invalid")
         expected = _balances(
             {
@@ -2456,16 +2446,20 @@ def _futures_lifecycle_audit(
     evidence_hashes: tuple[str, ...],
     details: Mapping[str, str],
 ) -> PortfolioEventDraft:
-    return InvariantAccountingFactory(
-        factory_id="futures.lifecycle.accounting",
-        version="1",
-    ).audit_bundle(
-        event_id=event_id,
-        event_type=event_type,
-        occurred_at=occurred_at,
-        economic_event_hashes=tuple(sorted(set(evidence_hashes))),
-        details=details,
-    ).audit_event
+    return (
+        InvariantAccountingFactory(
+            factory_id="futures.lifecycle.accounting",
+            version="1",
+        )
+        .audit_bundle(
+            event_id=event_id,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            economic_event_hashes=tuple(sorted(set(evidence_hashes))),
+            details=details,
+        )
+        .audit_event
+    )
 
 
 def adapt_futures_lifecycle_posting(
@@ -2535,9 +2529,7 @@ def adapt_futures_lifecycle_posting(
         and item.instrument_id == contract.contract_id
     ]
     if len(matches) != 1:
-        raise PortfolioAccountingError(
-            "futures_lifecycle_open_position_not_unique"
-        )
+        raise PortfolioAccountingError("futures_lifecycle_open_position_not_unique")
     position = matches[0]
     if (
         quantity_delta != -position.quantity
@@ -2558,21 +2550,14 @@ def adapt_futures_lifecycle_posting(
             raise PortfolioAccountingError(
                 "futures_lifecycle_cash_settlement_mode_mismatch"
             )
-        if (
-            posting.delivered_instrument_id is not None
-            or delivered_quantity != _ZERO
-        ):
-            raise PortfolioAccountingError(
-                "futures_lifecycle_cash_delivery_forbidden"
-            )
+        if posting.delivered_instrument_id is not None or delivered_quantity != _ZERO:
+            raise PortfolioAccountingError("futures_lifecycle_cash_delivery_forbidden")
         terminal_price = position.average_price + (
             cash_delta / (position.quantity * multiplier)
         )
     elif lifecycle_type == "DELIVERY":
         if settlement_mode != "PHYSICAL" or not isinstance(ctd, CTDDecisionLike):
-            raise PortfolioAccountingError(
-                "futures_lifecycle_ctd_decision_required"
-            )
+            raise PortfolioAccountingError("futures_lifecycle_ctd_decision_required")
         ctd_hash = ctd.decision_hash()
         _require_hash(ctd_hash, "futures_lifecycle.ctd_hash")
         if (
@@ -2581,9 +2566,7 @@ def adapt_futures_lifecycle_posting(
             or ctd_hash not in posting.source_hashes
             or ctd.basket_hash not in posting.source_hashes
         ):
-            raise PortfolioAccountingError(
-                "futures_lifecycle_ctd_binding_mismatch"
-            )
+            raise PortfolioAccountingError("futures_lifecycle_ctd_binding_mismatch")
         selected = next(
             (
                 item
@@ -2597,9 +2580,7 @@ def adapt_futures_lifecycle_posting(
             or selected.instrument_id != posting.delivered_instrument_id
             or delivered_quantity != position.quantity * multiplier
         ):
-            raise PortfolioAccountingError(
-                "futures_lifecycle_delivery_terms_mismatch"
-            )
+            raise PortfolioAccountingError("futures_lifecycle_delivery_terms_mismatch")
         terminal_price = _decimal(
             ctd.futures_settlement_price,
             "futures_lifecycle.ctd_settlement_price",
@@ -2611,9 +2592,7 @@ def adapt_futures_lifecycle_posting(
             positive=True,
         )
         direction = _ONE if position.quantity > _ZERO else -_ONE
-        invoice_cash = (
-            -direction * invoice_per_contract * abs(position.quantity)
-        )
+        invoice_cash = -direction * invoice_per_contract * abs(position.quantity)
         audit_drafts.append(
             _futures_lifecycle_audit(
                 event_id=f"{posting.posting_id}:delivery-audit",
@@ -2641,16 +2620,13 @@ def adapt_futures_lifecycle_posting(
             "futures_lifecycle.default_penalty_rate",
             nonnegative=True,
         )
-        denominator = multiplier * (
-            position.quantity - abs(position.quantity) * rate
-        )
+        denominator = multiplier * (position.quantity - abs(position.quantity) * rate)
         if denominator == _ZERO:
             raise PortfolioAccountingError(
                 "futures_lifecycle_default_price_not_identifiable"
             )
         terminal_price = (
-            cash_delta
-            + position.quantity * multiplier * position.average_price
+            cash_delta + position.quantity * multiplier * position.average_price
         ) / denominator
         audit_drafts.extend(
             (
@@ -2681,22 +2657,16 @@ def adapt_futures_lifecycle_posting(
             f"futures_lifecycle_event_unsupported:{lifecycle_type}"
         )
     if terminal_price <= _ZERO:
-        raise PortfolioAccountingError(
-            "futures_lifecycle_terminal_price_nonpositive"
-        )
+        raise PortfolioAccountingError("futures_lifecycle_terminal_price_nonpositive")
     variation_margin = (
-        terminal_price - position.average_price
-    ) * multiplier * position.quantity
+        (terminal_price - position.average_price) * multiplier * position.quantity
+    )
     if lifecycle_type == "DEFAULT":
         penalty = variation_margin - cash_delta
         if penalty < _ZERO:
-            raise PortfolioAccountingError(
-                "futures_lifecycle_default_penalty_negative"
-            )
+            raise PortfolioAccountingError("futures_lifecycle_default_penalty_negative")
     elif cash_delta != variation_margin + invoice_cash:
-        raise PortfolioAccountingError(
-            "futures_lifecycle_cash_identity_mismatch"
-        )
+        raise PortfolioAccountingError("futures_lifecycle_cash_identity_mismatch")
 
     drafts: list[PortfolioEventDraft] = [
         PortfolioEventDraft(
@@ -2755,14 +2725,13 @@ def adapt_futures_lifecycle_posting(
             )
         )
     drafts.extend(audit_drafts)
-    if sum(
-        (
-            delta.amount
-            for draft in drafts
-            for delta in draft.cash_deltas
-        ),
-        start=_ZERO,
-    ) != cash_delta:
+    if (
+        sum(
+            (delta.amount for draft in drafts for delta in draft.cash_deltas),
+            start=_ZERO,
+        )
+        != cash_delta
+    ):
         raise PortfolioAccountingError("futures_lifecycle_published_cash_mismatch")
     return tuple(drafts)
 
@@ -2815,9 +2784,7 @@ def adapt_futures_margin_waterfall(
     occurred_at: str,
     currency: str,
     contract_id: str,
-    funding_conversion_evidence: tuple[
-        ExternalFlowConversionEvidence, ...
-    ] = (),
+    funding_conversion_evidence: tuple[ExternalFlowConversionEvidence, ...] = (),
 ) -> tuple[PortfolioEventDraft, ...]:
     """Project aggregate margin economics plus factory-bound exception audits."""
 
@@ -2847,8 +2814,9 @@ def adapt_futures_margin_waterfall(
             "default_amount",
         )
     }
-    if values["gross_initial_requirement"] - values["spread_offset"] != (
-        values["net_initial_requirement"]
+    if (
+        values["gross_initial_requirement"] - values["spread_offset"]
+        != (values["net_initial_requirement"])
     ):
         raise PortfolioAccountingError("margin_waterfall_requirement_identity")
     expected_call = max(
@@ -2890,9 +2858,7 @@ def adapt_futures_margin_waterfall(
         "contract_id": contract_id,
         "default_amount": _decimal_text(values["default_amount"]),
         "margin_call": _decimal_text(values["margin_call"]),
-        "net_initial_requirement": _decimal_text(
-            values["net_initial_requirement"]
-        ),
+        "net_initial_requirement": _decimal_text(values["net_initial_requirement"]),
     }
     drafts: list[PortfolioEventDraft] = []
     if values["variation_margin"] != _ZERO:
@@ -2902,9 +2868,7 @@ def adapt_futures_margin_waterfall(
                 event_type=PortfolioEventType.VARIATION_MARGIN,
                 occurred_at=occurred_at,
                 currency=currency,
-                cash_deltas=(
-                    CashDelta(currency, values["variation_margin"]),
-                ),
+                cash_deltas=(CashDelta(currency, values["variation_margin"]),),
                 instrument_id=contract_id,
                 asset_class=AssetClass.FUTURE,
                 realized_pnl=values["variation_margin"],
@@ -2926,9 +2890,7 @@ def adapt_futures_margin_waterfall(
             funding_event(
                 event_id=f"{event_id_prefix}:additional-funding",
                 occurred_at=occurred_at,
-                cash_deltas=(
-                    CashDelta(currency, values["additional_funding"]),
-                ),
+                cash_deltas=(CashDelta(currency, values["additional_funding"]),),
                 conversion_evidence=funding_conversion_evidence,
                 source_hashes=sources,
             )
@@ -3559,8 +3521,7 @@ def adapt_borrow_recall_application(
         positive=True,
     )
     if (
-        _spot_book_binding_hash(application.book_before)
-        != application.book_before_hash
+        _spot_book_binding_hash(application.book_before) != application.book_before_hash
         or _spot_book_binding_hash(application.book_after)
         != application.book_after_hash
     ):
@@ -3569,19 +3530,11 @@ def adapt_borrow_recall_application(
     if len(postings) != 2:
         raise PortfolioAccountingError("borrow_recall_posting_count_invalid")
     notice = next(
-        (
-            item
-            for item in postings
-            if _enum_text(item.posting_type) == "BORROW_RECALL"
-        ),
+        (item for item in postings if _enum_text(item.posting_type) == "BORROW_RECALL"),
         None,
     )
     buy_in = next(
-        (
-            item
-            for item in postings
-            if _enum_text(item.posting_type) == "FORCED_BUY_IN"
-        ),
+        (item for item in postings if _enum_text(item.posting_type) == "FORCED_BUY_IN"),
         None,
     )
     if notice is None or buy_in is None:
@@ -3629,23 +3582,16 @@ def adapt_borrow_recall_application(
         )
     ):
         raise PortfolioAccountingError("borrow_recall_book_diff_invalid")
-    before_cash = {
-        item.currency: item.amount for item in application.book_before.cash
-    }
-    after_cash = {
-        item.currency: item.amount for item in application.book_after.cash
-    }
+    before_cash = {item.currency: item.amount for item in application.book_before.cash}
+    after_cash = {item.currency: item.amount for item in application.book_after.cash}
     expected_cash_diff = {
         currency: after_cash.get(currency, _ZERO) - before_cash.get(currency, _ZERO)
         for currency in set(before_cash) | set(after_cash)
     }
-    if (
-        expected_cash_diff.get(buy_in.currency, _ZERO) != buy_in.cash_delta
-        or any(
-            amount != _ZERO
-            for currency, amount in expected_cash_diff.items()
-            if currency != buy_in.currency
-        )
+    if expected_cash_diff.get(buy_in.currency, _ZERO) != buy_in.cash_delta or any(
+        amount != _ZERO
+        for currency, amount in expected_cash_diff.items()
+        if currency != buy_in.currency
     ):
         raise PortfolioAccountingError("borrow_recall_cash_diff_invalid")
     principal = covered * execution_price
@@ -3701,9 +3647,7 @@ def adapt_borrow_recall_application(
                 event_type=PortfolioEventType.EXECUTION_COST,
                 occurred_at=_spot_timestamp(buy_in.occurred_at),
                 currency=buy_in.currency,
-                cash_deltas=(
-                    CashDelta(buy_in.currency, -additional_cost),
-                ),
+                cash_deltas=(CashDelta(buy_in.currency, -additional_cost),),
                 instrument_id=buy_in.instrument_id,
                 asset_class=AssetClass.SPOT,
                 source_hashes=all_sources,
@@ -3748,8 +3692,7 @@ def adapt_corporate_action_application(
             f"corporate_action_application.{field_name}",
         )
     if (
-        _spot_book_binding_hash(application.book_before)
-        != application.book_before_hash
+        _spot_book_binding_hash(application.book_before) != application.book_before_hash
         or _spot_book_binding_hash(application.book_after)
         != application.book_after_hash
     ):
@@ -3760,9 +3703,7 @@ def adapt_corporate_action_application(
     if len({item.posting_id for item in postings}) != len(postings):
         raise PortfolioAccountingError("corporate_action_posting_id_duplicate")
     if any(item.source_hash != application.action_hash for item in postings):
-        raise PortfolioAccountingError(
-            "corporate_action_posting_action_hash_mismatch"
-        )
+        raise PortfolioAccountingError("corporate_action_posting_action_hash_mismatch")
     before = {item.instrument_id: item for item in application.book_before.positions}
     after = {item.instrument_id: item for item in application.book_after.positions}
     before_cash = {item.currency: item.amount for item in application.book_before.cash}
@@ -3824,9 +3765,7 @@ def adapt_corporate_action_application(
         for item in corporate_cash_postings
         if item.cash_delta + item.tax_amount > _ZERO
     }
-    total_positive_gross_cash = sum(
-        positive_gross_cash.values(), start=_ZERO
-    )
+    total_positive_gross_cash = sum(positive_gross_cash.values(), start=_ZERO)
     total_before_basis = sum(
         (item.total_cost_basis for item in before.values()), start=_ZERO
     )
@@ -3986,9 +3925,7 @@ def adapt_corporate_action_application(
                 if total_positive_gross_cash > _ZERO
                 else _ZERO
             )
-            realized_pnl = (
-                gross_cash - allocated_basis if gross_cash > _ZERO else _ZERO
-            )
+            realized_pnl = gross_cash - allocated_basis if gross_cash > _ZERO else _ZERO
             metadata = (
                 ("action_hash", application.action_hash),
                 ("book_after_hash", application.book_after_hash),
@@ -4014,9 +3951,7 @@ def adapt_corporate_action_application(
                         event_type=PortfolioEventType.TAX,
                         occurred_at=_spot_timestamp(posting.occurred_at),
                         currency=posting.currency,
-                        cash_deltas=(
-                            CashDelta(posting.currency, -posting.tax_amount),
-                        ),
+                        cash_deltas=(CashDelta(posting.currency, -posting.tax_amount),),
                         instrument_id=posting.instrument_id,
                         asset_class=AssetClass.SPOT,
                         source_hashes=all_sources,
@@ -4075,11 +4010,7 @@ class CollateralAssetBalance:
 
     @property
     def eligible_value_native(self) -> Decimal:
-        return (
-            self.market_value * (_ONE - self.haircut)
-            if self.eligible
-            else _ZERO
-        )
+        return self.market_value * (_ONE - self.haircut) if self.eligible else _ZERO
 
 
 @dataclass(frozen=True, slots=True)
@@ -4138,9 +4069,7 @@ class CollateralAllocation:
     def __post_init__(self) -> None:
         _require_id(self.asset_id, "collateral_allocation.asset_id")
         if not _CURRENCY.fullmatch(self.currency):
-            raise PortfolioAccountingError(
-                "collateral_allocation_currency_invalid"
-            )
+            raise PortfolioAccountingError("collateral_allocation_currency_invalid")
         for name in (
             "pledged_market_value",
             "collateral_credit_base",
@@ -4157,22 +4086,16 @@ class CollateralAllocation:
             nonnegative=True,
         )
         if self.haircut >= _ONE:
-            raise PortfolioAccountingError(
-                "collateral_allocation_haircut_invalid"
-            )
+            raise PortfolioAccountingError("collateral_allocation_haircut_invalid")
         if (
             isinstance(self.priority, bool)
             or not isinstance(self.priority, int)
             or self.priority < 0
         ):
-            raise PortfolioAccountingError(
-                "collateral_allocation_priority_invalid"
-            )
+            raise PortfolioAccountingError("collateral_allocation_priority_invalid")
         _require_hash(self.source_hash, "collateral_allocation.source_hash")
         if self.collateral_credit_base != (
-            self.pledged_market_value
-            * self.fx_rate
-            * (_ONE - self.haircut)
+            self.pledged_market_value * self.fx_rate * (_ONE - self.haircut)
         ):
             raise PortfolioAccountingError(
                 "collateral_allocation_credit_identity_failed"
@@ -4184,9 +4107,7 @@ class CollateralAllocation:
                 {
                     "asset_id": self.asset_id,
                     "currency": self.currency,
-                    "pledged_market_value": _decimal_text(
-                        self.pledged_market_value
-                    ),
+                    "pledged_market_value": _decimal_text(self.pledged_market_value),
                     "collateral_credit_base": _decimal_text(
                         self.collateral_credit_base
                     ),
@@ -4225,42 +4146,39 @@ class CollateralWaterfallResult:
             self.required_credit_base
         ):
             raise PortfolioAccountingError("collateral_waterfall_identity_failed")
-        if any(
-            not isinstance(item, CollateralAllocation)
-            for item in self.allocations
-        ):
-            raise PortfolioAccountingError(
-                "collateral_waterfall_allocation_invalid"
+        if any(not isinstance(item, CollateralAllocation) for item in self.allocations):
+            raise PortfolioAccountingError("collateral_waterfall_allocation_invalid")
+        if (
+            tuple(
+                sorted(
+                    self.allocations, key=lambda item: (item.priority, item.asset_id)
+                )
             )
-        if tuple(
-            sorted(self.allocations, key=lambda item: (item.priority, item.asset_id))
-        ) != self.allocations:
+            != self.allocations
+        ):
             raise PortfolioAccountingError(
                 "collateral_waterfall_allocations_not_ordered"
             )
-        if len({item.asset_id for item in self.allocations}) != len(
-            self.allocations
-        ):
-            raise PortfolioAccountingError(
-                "collateral_waterfall_allocation_duplicate"
+        if len({item.asset_id for item in self.allocations}) != len(self.allocations):
+            raise PortfolioAccountingError("collateral_waterfall_allocation_duplicate")
+        if (
+            sum(
+                (item.collateral_credit_base for item in self.allocations),
+                start=_ZERO,
             )
-        if sum(
-            (item.collateral_credit_base for item in self.allocations),
-            start=_ZERO,
-        ) != self.provided_credit_base:
+            != self.provided_credit_base
+        ):
             raise PortfolioAccountingError(
                 "collateral_waterfall_allocation_sum_mismatch"
             )
         _require_hash(self.policy_hash, "collateral_waterfall.policy_hash")
         if tuple(sorted(set(self.source_hashes))) != self.source_hashes:
-            raise PortfolioAccountingError(
-                "collateral_waterfall_source_hashes_invalid"
-            )
+            raise PortfolioAccountingError("collateral_waterfall_source_hashes_invalid")
         for source_hash in self.source_hashes:
             _require_hash(source_hash, "collateral_waterfall.source_hash")
-        if not {
-            item.source_hash for item in self.allocations
-        }.issubset(self.source_hashes):
+        if not {item.source_hash for item in self.allocations}.issubset(
+            self.source_hashes
+        ):
             raise PortfolioAccountingError(
                 "collateral_waterfall_allocation_source_unbound"
             )
@@ -4269,9 +4187,7 @@ class CollateralWaterfallResult:
             "content_hash",
             sha256_prefixed(
                 {
-                    "required_credit_base": _decimal_text(
-                        self.required_credit_base
-                    ),
+                    "required_credit_base": _decimal_text(self.required_credit_base),
                     "allocations": [
                         {
                             "asset_id": item.asset_id,
@@ -4289,9 +4205,7 @@ class CollateralWaterfallResult:
                         }
                         for item in self.allocations
                     ],
-                    "provided_credit_base": _decimal_text(
-                        self.provided_credit_base
-                    ),
+                    "provided_credit_base": _decimal_text(self.provided_credit_base),
                     "default_shortfall_base": _decimal_text(
                         self.default_shortfall_base
                     ),
@@ -4402,9 +4316,7 @@ class FundingFxRevaluation:
 
     def __post_init__(self) -> None:
         _require_hash(self.ledger_hash, "funding_fx.ledger_hash")
-        _require_hash(
-            self.current_fx_source_hash, "funding_fx.current_fx_source_hash"
-        )
+        _require_hash(self.current_fx_source_hash, "funding_fx.current_fx_source_hash")
         if any(
             not isinstance(item, FundingFxCurrencyRevaluation)
             for item in self.currencies
@@ -4412,13 +4324,9 @@ class FundingFxRevaluation:
             raise PortfolioAccountingError("funding_fx_currency_row_invalid")
         if tuple(sorted(self.currencies, key=lambda item: item.currency)) != (
             self.currencies
-        ) or len({item.currency for item in self.currencies}) != len(
-            self.currencies
-        ):
+        ) or len({item.currency for item in self.currencies}) != len(self.currencies):
             raise PortfolioAccountingError("funding_fx_currencies_invalid")
-        expected = sum(
-            (item.translation_pnl for item in self.currencies), start=_ZERO
-        )
+        expected = sum((item.translation_pnl for item in self.currencies), start=_ZERO)
         if expected != self.total_translation_pnl:
             raise PortfolioAccountingError("funding_fx_translation_identity_failed")
         object.__setattr__(
@@ -4431,24 +4339,18 @@ class FundingFxRevaluation:
                     "currencies": [
                         {
                             "currency": item.currency,
-                            "principal_native": _decimal_text(
-                                item.principal_native
-                            ),
+                            "principal_native": _decimal_text(item.principal_native),
                             "locked_principal_base": _decimal_text(
                                 item.locked_principal_base
                             ),
                             "current_principal_base": _decimal_text(
                                 item.current_principal_base
                             ),
-                            "translation_pnl": _decimal_text(
-                                item.translation_pnl
-                            ),
+                            "translation_pnl": _decimal_text(item.translation_pnl),
                         }
                         for item in self.currencies
                     ],
-                    "total_translation_pnl": _decimal_text(
-                        self.total_translation_pnl
-                    ),
+                    "total_translation_pnl": _decimal_text(self.total_translation_pnl),
                 },
                 label="funding_fx_revaluation",
             ),
@@ -4468,9 +4370,7 @@ def revalue_funding_fx(
     for event in ledger.events:
         if event.event_type is not PortfolioEventType.FUNDING:
             continue
-        conversions = {
-            item.currency: item for item in event.external_flow_conversions
-        }
+        conversions = {item.currency: item for item in event.external_flow_conversions}
         for delta in event.cash_deltas:
             _add(native, delta.currency, delta.amount)
             if delta.currency == ledger.base_currency:
@@ -4485,9 +4385,7 @@ def revalue_funding_fx(
     rows: list[FundingFxCurrencyRevaluation] = []
     for currency, principal in sorted(native.items()):
         rate = (
-            _ONE
-            if currency == ledger.base_currency
-            else current_fx_rates.get(currency)
+            _ONE if currency == ledger.base_currency else current_fx_rates.get(currency)
         )
         if rate is None:
             raise PortfolioAccountingError(f"funding_fx_rate_missing:{currency}")
@@ -4507,9 +4405,7 @@ def revalue_funding_fx(
         ledger_hash=ledger.content_hash,
         current_fx_source_hash=current_fx_source_hash,
         currencies=tuple(rows),
-        total_translation_pnl=sum(
-            (item.translation_pnl for item in rows), start=_ZERO
-        ),
+        total_translation_pnl=sum((item.translation_pnl for item in rows), start=_ZERO),
     )
 
 
@@ -4575,9 +4471,7 @@ class InvariantAccountingFactory:
         details: Mapping[str, str],
     ) -> AdvancedAccountingBundle:
         if event_type not in _ADVANCED_AUDIT_EVENT_TYPES:
-            raise PortfolioAccountingError(
-                "accounting_factory_advanced_event_required"
-            )
+            raise PortfolioAccountingError("accounting_factory_advanced_event_required")
         if tuple(sorted(set(economic_event_hashes))) != economic_event_hashes:
             raise PortfolioAccountingError(
                 "accounting_factory_economic_hashes_not_sorted_unique"
@@ -4612,9 +4506,7 @@ class InvariantAccountingFactory:
             event_id=event_id,
             event_type=event_type,
             occurred_at=occurred_at,
-            source_hashes=tuple(
-                sorted((*economic_event_hashes, economic_bundle_hash))
-            ),
+            source_hashes=tuple(sorted((*economic_event_hashes, economic_bundle_hash))),
             metadata=metadata,
         )
         return AdvancedAccountingBundle(

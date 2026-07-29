@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_HALF_EVEN, Decimal, localcontext
 from enum import StrEnum
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from market_research.research.hashing import sha256_prefixed
 
@@ -531,9 +531,7 @@ class CalibratedImpactCostModel:
             sha256_prefixed(
                 {
                     "model_version": self.model_version,
-                    "maximum_calibration_age_days": (
-                        self.maximum_calibration_age_days
-                    ),
+                    "maximum_calibration_age_days": (self.maximum_calibration_age_days),
                     "calibration_hashes": [item.content_hash for item in ordered],
                     "base_model": {
                         field_name: _decimal_text(getattr(self.base_model, field_name))
@@ -1082,9 +1080,7 @@ class CostMarketFeatures:
         ):
             raise ExecutionCostError("cost_features_leg_count_invalid")
         if tuple(sorted(set(self.source_hashes))) != self.source_hashes:
-            raise ExecutionCostError(
-                "cost_features_source_hashes_not_sorted_unique"
-            )
+            raise ExecutionCostError("cost_features_source_hashes_not_sorted_unique")
         if not self.source_hashes:
             raise ExecutionCostError("cost_features_source_hashes_required")
         for item in self.source_hashes:
@@ -1141,9 +1137,7 @@ class EmpiricalCalibrationRegistry:
             )
         )
         if ordered != self.calibrations:
-            raise ExecutionCostError(
-                "empirical_registry_calibrations_not_canonical"
-            )
+            raise ExecutionCostError("empirical_registry_calibrations_not_canonical")
         ids = [item.calibration_id for item in ordered]
         if len(ids) != len(set(ids)):
             raise ExecutionCostError("empirical_registry_calibration_id_duplicate")
@@ -1318,8 +1312,7 @@ class EmpiricalExecutionCostModel:
             option_leg=base.option_leg,
         )
         participation_pressure = (
-            features.participation_rate
-            / calibration.maximum_participation_rate
+            features.participation_rate / calibration.maximum_participation_rate
             if calibration.maximum_participation_rate > _ZERO
             else _ONE
         )
@@ -1363,9 +1356,7 @@ class EnhancedCapacityInput:
             self.context.participation_rate is not None
             and self.context.participation_rate != self.features.participation_rate
         ):
-            raise ExecutionCostError(
-                "enhanced_capacity_participation_mismatch"
-            )
+            raise ExecutionCostError("enhanced_capacity_participation_mismatch")
         _decimal(
             self.daily_capacity_quantity,
             "enhanced_capacity.daily_capacity_quantity",
@@ -1414,9 +1405,7 @@ class EnhancedCapacityPoint:
             )
         _decimal(self.expected_net_edge, "enhanced_capacity.expected_net_edge")
         if self.filled_notional > self.requested_notional:
-            raise ExecutionCostError(
-                "enhanced_capacity_filled_above_requested"
-            )
+            raise ExecutionCostError("enhanced_capacity_filled_above_requested")
         if (
             self.participation_rate > _ONE
             or self.fill_probability > _ONE
@@ -1425,9 +1414,7 @@ class EnhancedCapacityPoint:
         ):
             raise ExecutionCostError("enhanced_capacity_fraction_above_one")
         if self.filled_notional > _ZERO and self.liquidation_days < _ONE:
-            raise ExecutionCostError(
-                "enhanced_capacity_liquidation_days_invalid"
-            )
+            raise ExecutionCostError("enhanced_capacity_liquidation_days_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1438,9 +1425,7 @@ class EnhancedCapacityStudy:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        _cost_require_hash(
-            self.model_registry_hash, "enhanced_capacity.registry_hash"
-        )
+        _cost_require_hash(self.model_registry_hash, "enhanced_capacity.registry_hash")
         _decimal(
             self.maximum_profitable_requested_notional,
             "enhanced_capacity.maximum_profitable_requested_notional",
@@ -1452,22 +1437,17 @@ class EnhancedCapacityStudy:
             raise ExecutionCostError("enhanced_capacity_points_invalid")
         requested = tuple(item.requested_notional for item in self.points)
         if requested != tuple(sorted(set(requested))):
-            raise ExecutionCostError(
-                "enhanced_capacity_points_not_strictly_increasing"
-            )
+            raise ExecutionCostError("enhanced_capacity_points_not_strictly_increasing")
         expected_maximum = max(
             (
                 item.requested_notional
                 for item in self.points
-                if item.fill_probability > _ZERO
-                and item.expected_net_edge >= _ZERO
+                if item.fill_probability > _ZERO and item.expected_net_edge >= _ZERO
             ),
             default=_ZERO,
         )
         if self.maximum_profitable_requested_notional != expected_maximum:
-            raise ExecutionCostError(
-                "enhanced_capacity_maximum_profitable_mismatch"
-            )
+            raise ExecutionCostError("enhanced_capacity_maximum_profitable_mismatch")
         object.__setattr__(
             self,
             "content_hash",
@@ -1502,21 +1482,15 @@ def analyze_enhanced_capacity(
 ) -> EnhancedCapacityStudy:
     if not inputs:
         raise ExecutionCostError("enhanced_capacity_inputs_required")
-    _decimal(
-        gross_edge_bps, "enhanced_capacity.gross_edge_bps", nonnegative=True
-    )
+    _decimal(gross_edge_bps, "enhanced_capacity.gross_edge_bps", nonnegative=True)
     if not isinstance(model, EmpiricalExecutionCostModel):
         raise ExecutionCostError("enhanced_capacity_model_required")
     if any(not isinstance(item, EnhancedCapacityInput) for item in inputs):
         raise ExecutionCostError("enhanced_capacity_input_invalid")
-    ordered = tuple(
-        sorted(inputs, key=lambda item: item.context.requested_quantity)
-    )
+    ordered = tuple(sorted(inputs, key=lambda item: item.context.requested_quantity))
     if ordered != inputs:
         raise ExecutionCostError("enhanced_capacity_inputs_not_sorted")
-    requested_quantities = tuple(
-        item.context.requested_quantity for item in inputs
-    )
+    requested_quantities = tuple(item.context.requested_quantity for item in inputs)
     if len(set(requested_quantities)) != len(requested_quantities):
         raise ExecutionCostError("enhanced_capacity_requested_quantity_duplicate")
     first = inputs[0].context
@@ -1537,9 +1511,7 @@ def analyze_enhanced_capacity(
             * item.context.multiplier
         )
         margin_cost = (
-            item.features.margin_requirement
-            * item.margin_funding_bps
-            / _BASIS_POINTS
+            item.features.margin_requirement * item.margin_funding_bps / _BASIS_POINTS
         )
         gross_edge = (
             item.context.gross_notional
@@ -1561,9 +1533,7 @@ def analyze_enhanced_capacity(
             implementation_shortfall=estimate.implementation_shortfall,
             margin_requirement=item.features.margin_requirement,
             liquidation_days=liquidation_days,
-            target_degradation_fraction=(
-                item.features.target_degradation_fraction
-            ),
+            target_degradation_fraction=(item.features.target_degradation_fraction),
             leg_interaction_fraction=item.features.leg_interaction_fraction,
             expected_net_edge=expected_net,
         )

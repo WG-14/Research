@@ -1226,8 +1226,7 @@ def test_rights_subscription_and_mixed_merger_preserve_bound_accounting() -> Non
         PortfolioEventType.CORPORATE_CASH,
     }
     assert all(
-        subscription.content_hash in item.source_hashes
-        for item in subscription_events
+        subscription.content_hash in item.source_hashes for item in subscription_events
     )
     ledger = ledger.publish_many(subscription_events)
     book = subscription_application.book_after
@@ -1359,8 +1358,7 @@ def test_borrow_recall_forced_buy_in_reconciles_and_rejects_tampering() -> None:
         PortfolioEventType.EXECUTION_COST,
     ]
     assert all(
-        recall.content_hash in item.source_hashes
-        and _HASH_2 in item.source_hashes
+        recall.content_hash in item.source_hashes and _HASH_2 in item.source_hashes
         for item in drafts
     )
     ledger = ledger.publish_many(drafts)
@@ -1532,9 +1530,10 @@ def test_tax_lots_collateral_waterfall_and_factory_only_default_evidence() -> No
         (item.realized_pnl for item in average.realizations), Decimal("0")
     ) == Decimal("60")
     assert average.open_lots[0].unit_cost == Decimal("110")
-    assert fifo.content_hash == project_tax_lots(
-        ledger, method=TaxLotMethod.FIFO
-    ).content_hash
+    assert (
+        fifo.content_hash
+        == project_tax_lots(ledger, method=TaxLotMethod.FIFO).content_hash
+    )
 
     policy = CollateralWaterfallPolicy(
         policy_id="collateral.waterfall",
@@ -1586,9 +1585,7 @@ def test_tax_lots_collateral_waterfall_and_factory_only_default_evidence() -> No
     assert after.events[-1].event_type is PortfolioEventType.DEFAULT
     assert waterfall.content_hash in after.events[-1].source_hashes
 
-    with pytest.raises(
-        PortfolioAccountingError, match="factory_receipt_required"
-    ):
+    with pytest.raises(PortfolioAccountingError, match="factory_receipt_required"):
         PortfolioEventDraft(
             event_id="default.bypass",
             event_type=PortfolioEventType.DEFAULT,
@@ -1620,8 +1617,11 @@ def test_funding_fx_lock_and_revaluation_are_hash_bound() -> None:
     assert receipt.currencies[0].locked_principal_base == Decimal("110")
     assert receipt.currencies[0].current_principal_base == Decimal("120")
     assert receipt.total_translation_pnl == Decimal("10")
-    assert receipt.content_hash == revalue_funding_fx(
-        ledger,
-        current_fx_rates={"EUR": Decimal("1.20")},
-        current_fx_source_hash=_HASH_2,
-    ).content_hash
+    assert (
+        receipt.content_hash
+        == revalue_funding_fx(
+            ledger,
+            current_fx_rates={"EUR": Decimal("1.20")},
+            current_fx_source_hash=_HASH_2,
+        ).content_hash
+    )

@@ -114,6 +114,9 @@ def _assert_machine_result_schema(result: object) -> None:
         "file:docs/investment-research-platform-audit.json",
         "file:docs/investment-research-platform-audit-report.md",
         "file:docs/investment-research-platform-audit-result.json",
+        "file:docs/multi-asset-investment-research-audit-report.md",
+        "file:docs/multi-asset-investment-research-audit-result.json",
+        "file:docs/multi-asset-investment-research-criterion-evidence.json",
         "file_suffix:*.pyc",
     }.issubset(assessment_surface["exclusions"])
     for key in ("primary_languages", "entrypoints", "test_commands"):
@@ -472,6 +475,13 @@ def test_assessment_surface_covers_owned_root_files_but_not_virtualenv(
     virtualenv_file = tmp_path / "apps" / "internal_web" / ".venv" / "cache.py"
     virtualenv_file.parent.mkdir(parents=True)
     virtualenv_file.write_text("ephemeral\n", encoding="utf-8")
+    assert audit_surface(tmp_path) == before
+
+    generated_audit = (
+        tmp_path / "docs" / "multi-asset-investment-research-criterion-evidence.json"
+    )
+    generated_audit.parent.mkdir()
+    generated_audit.write_text('{"generated":true}\n', encoding="utf-8")
     assert audit_surface(tmp_path) == before
 
     root_policy.write_text("POLICY=two\n", encoding="utf-8")

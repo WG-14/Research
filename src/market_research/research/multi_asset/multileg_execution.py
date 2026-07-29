@@ -944,9 +944,7 @@ class ExpressionCompilePolicy:
             or not isinstance(self.maximum_leg_time_skew_seconds, int)
             or self.maximum_leg_time_skew_seconds < 0
         ):
-            raise MultiLegLedgerError(
-                "expression_compile_policy_time_skew_invalid"
-            )
+            raise MultiLegLedgerError("expression_compile_policy_time_skew_invalid")
         if (
             self.execution_policy is MultiLegExecutionPolicy.SEQUENTIAL
             and self.maximum_leg_time_skew_seconds == 0
@@ -970,9 +968,7 @@ class ExpressionCompilePolicy:
                         self.maximum_leg_time_skew_seconds
                     ),
                     "allow_partial": self.allow_partial,
-                    "sequential_partial_action": (
-                        self.sequential_partial_action.value
-                    ),
+                    "sequential_partial_action": (self.sequential_partial_action.value),
                 },
                 label="expression_execution_compile_policy",
             ),
@@ -1046,9 +1042,7 @@ class ExpressionExecutionCompiler:
         if len(set(selected_ids)) != len(selected_ids):
             raise MultiLegLedgerError("expression_compiler_instrument_duplicate")
         if set(contracts) != set(selected_ids):
-            raise MultiLegLedgerError(
-                "expression_compiler_contract_coverage_mismatch"
-            )
+            raise MultiLegLedgerError("expression_compiler_contract_coverage_mismatch")
         if set(quotes) != set(selected_ids):
             raise MultiLegLedgerError("expression_compiler_quote_coverage_mismatch")
         legs: list[OptionLeg] = []
@@ -1060,9 +1054,7 @@ class ExpressionExecutionCompiler:
                 )
             contract = contracts[expression_leg.instrument_id]
             if contract.contract_id != expression_leg.instrument_id:
-                raise MultiLegLedgerError(
-                    "expression_compiler_contract_id_mismatch"
-                )
+                raise MultiLegLedgerError("expression_compiler_contract_id_mismatch")
             if expression_leg.quantity != expression_leg.quantity.to_integral_value():
                 raise MultiLegLedgerError(
                     "expression_compiler_noninteger_quantity_forbidden"
@@ -1082,23 +1074,17 @@ class ExpressionExecutionCompiler:
                 )
             )
         if set(fill_times) != set(leg_ids):
-            raise MultiLegLedgerError(
-                "expression_compiler_fill_time_coverage_mismatch"
-            )
+            raise MultiLegLedgerError("expression_compiler_fill_time_coverage_mismatch")
         participation = participation_rates or {}
         if not set(participation).issubset(leg_ids):
-            raise MultiLegLedgerError(
-                "expression_compiler_participation_leg_unknown"
-            )
+            raise MultiLegLedgerError("expression_compiler_participation_leg_unknown")
         requested_at = decision.as_of.isoformat()
         order = MultiLegOrder(
             group_id=f"{execution_id}.order",
             legs=tuple(legs),
             policy=self.policy.execution_policy,
             requested_at=requested_at,
-            maximum_leg_time_skew_seconds=(
-                self.policy.maximum_leg_time_skew_seconds
-            ),
+            maximum_leg_time_skew_seconds=(self.policy.maximum_leg_time_skew_seconds),
             allow_partial=self.policy.allow_partial,
             execution_policy_hash=self.policy.content_hash,
         )
@@ -1320,9 +1306,7 @@ class DynamicMultiLegExecutionPlan:
             raise MultiLegLedgerError("dynamic_plan_policy_required")
         if not self.attempts or len(self.attempts) > self.policy.maximum_attempts:
             raise MultiLegLedgerError("dynamic_plan_attempt_count_invalid")
-        baseline = _economic_order_signature(
-            self.attempts[0].compiled.command.order
-        )
+        baseline = _economic_order_signature(self.attempts[0].compiled.command.order)
         previous_time: datetime | None = None
         for expected, attempt in enumerate(self.attempts, start=1):
             if attempt.attempt_number != expected:
@@ -1330,9 +1314,7 @@ class DynamicMultiLegExecutionPlan:
             if attempt.compiled.decision_hash != self.decision_hash:
                 raise MultiLegLedgerError("dynamic_plan_decision_binding_mismatch")
             if _economic_order_signature(attempt.compiled.command.order) != baseline:
-                raise MultiLegLedgerError(
-                    "dynamic_plan_retry_changed_selected_legs"
-                )
+                raise MultiLegLedgerError("dynamic_plan_retry_changed_selected_legs")
             attempt_time = min(
                 _timestamp(value, "dynamic_plan.fill_time")
                 for _leg_id, value in attempt.compiled.command.fill_times
@@ -1346,9 +1328,7 @@ class DynamicMultiLegExecutionPlan:
                 move.move_bps > self.policy.maximum_interleg_move_bps
                 for move in attempt.interleg_moves
             ):
-                raise MultiLegLedgerError(
-                    "dynamic_plan_interleg_move_limit_exceeded"
-                )
+                raise MultiLegLedgerError("dynamic_plan_interleg_move_limit_exceeded")
             order = attempt.compiled.command.order
             if self.policy.time_in_force is DynamicTimeInForce.ALL_OR_NONE and (
                 order.policy is not MultiLegExecutionPolicy.SIMULTANEOUS
@@ -1376,9 +1356,7 @@ class DynamicMultiLegExecutionPlan:
                     "plan_id": self.plan_id,
                     "decision_hash": self.decision_hash,
                     "policy_hash": self.policy.content_hash,
-                    "attempt_hashes": [
-                        item.content_hash for item in self.attempts
-                    ],
+                    "attempt_hashes": [item.content_hash for item in self.attempts],
                 },
                 label="dynamic_multileg_execution_plan",
             ),
@@ -1507,7 +1485,9 @@ class DynamicMultiLegExecutionService:
                 _timestamp(value, "dynamic_service.fill_time")
                 for _leg_id, value in attempt.compiled.command.fill_times
             )
-            if (attempt_time - first_time).total_seconds() > plan.policy.timeout_seconds:
+            if (
+                attempt_time - first_time
+            ).total_seconds() > plan.policy.timeout_seconds:
                 raise MultiLegLedgerError("dynamic_service_timeout_exceeded")
             before = current
             execution = self._service.execute(
@@ -1522,9 +1502,7 @@ class DynamicMultiLegExecutionService:
                 {
                     "execution_hash": execution.content_hash,
                     "total_fees": _decimal_text(execution.total_fees),
-                    "premium_cash_flow": _decimal_text(
-                        execution.premium_cash_flow
-                    ),
+                    "premium_cash_flow": _decimal_text(execution.premium_cash_flow),
                 },
                 label="dynamic_attempt_cost_revaluation",
             )
@@ -1632,15 +1610,15 @@ class LifecycleTransitionEvidence:
             _require_id(leg_id, "lifecycle_transition.leg_id")
         _decimal(self.quantity_before, "lifecycle_transition.quantity_before")
         _decimal(self.quantity_after, "lifecycle_transition.quantity_after")
-        if self.action is LifecycleActionType.FULL_UNWIND and self.quantity_after != _ZERO:
-            raise MultiLegLedgerError("lifecycle_transition_full_unwind_not_flat")
         if (
-            self.action is LifecycleActionType.PARTIAL_UNWIND
-            and not abs(self.quantity_after) < abs(self.quantity_before)
+            self.action is LifecycleActionType.FULL_UNWIND
+            and self.quantity_after != _ZERO
         ):
-            raise MultiLegLedgerError(
-                "lifecycle_transition_partial_unwind_not_reduced"
-            )
+            raise MultiLegLedgerError("lifecycle_transition_full_unwind_not_flat")
+        if self.action is LifecycleActionType.PARTIAL_UNWIND and not abs(
+            self.quantity_after
+        ) < abs(self.quantity_before):
+            raise MultiLegLedgerError("lifecycle_transition_partial_unwind_not_reduced")
         object.__setattr__(
             self,
             "content_hash",

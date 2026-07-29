@@ -129,9 +129,10 @@ class FuturesTermsMetadata:
     def __post_init__(self) -> None:
         start = _timestamp(self.valid_from, "terms.valid_from")
         cutoff = _timestamp(self.knowledge_at, "terms.knowledge_at")
-        if self.valid_to is not None and _timestamp(
-            self.valid_to, "terms.valid_to"
-        ) <= start:
+        if (
+            self.valid_to is not None
+            and _timestamp(self.valid_to, "terms.valid_to") <= start
+        ):
             raise FuturesDeliveryError("terms_validity_invalid")
         if cutoff < start:
             # Future-effective terms may be published before their start, but a
@@ -223,9 +224,7 @@ class FuturesContractMasterVersion:
         ):
             raise FuturesDeliveryError("contract_master.version_invalid")
         listed = _timestamp(self.listed_at, "contract_master.listed_at")
-        last_trade = _timestamp(
-            self.last_trade_at, "contract_master.last_trade_at"
-        )
+        last_trade = _timestamp(self.last_trade_at, "contract_master.last_trade_at")
         settlement = _timestamp(
             self.final_settlement_at,
             "contract_master.final_settlement_at",
@@ -304,18 +303,12 @@ class FuturesContractMasterVersion:
                 self.deliverable_basket_id,
             )
         ):
-            raise FuturesDeliveryError(
-                "cash_contract_physical_terms_forbidden"
-            )
+            raise FuturesDeliveryError("cash_contract_physical_terms_forbidden")
         if self.version == 1 and self.supersedes_hash is not None:
-            raise FuturesDeliveryError(
-                "initial_contract_version_cannot_supersede"
-            )
+            raise FuturesDeliveryError("initial_contract_version_cannot_supersede")
         if self.version > 1:
             if self.supersedes_hash is None:
-                raise FuturesDeliveryError(
-                    "contract_revision_supersedes_required"
-                )
+                raise FuturesDeliveryError("contract_revision_supersedes_required")
             _require_hash(
                 self.supersedes_hash,
                 "contract_master.supersedes_hash",
@@ -382,9 +375,7 @@ class FuturesContractMasterHistory:
             histories.setdefault(item.record_id, []).append(item)
         for record_id, versions in histories.items():
             ordered = sorted(versions, key=lambda item: item.version)
-            if [item.version for item in ordered] != list(
-                range(1, len(ordered) + 1)
-            ):
+            if [item.version for item in ordered] != list(range(1, len(ordered) + 1)):
                 raise FuturesDeliveryError(
                     f"contract_master_revision_not_contiguous:{record_id}"
                 )
@@ -394,9 +385,7 @@ class FuturesContractMasterHistory:
                         "contract_master_revision_contract_changed"
                     )
                 if current.supersedes_hash != previous.contract_hash():
-                    raise FuturesDeliveryError(
-                        "contract_master_revision_chain_broken"
-                    )
+                    raise FuturesDeliveryError("contract_master_revision_chain_broken")
                 if _timestamp(
                     current.metadata.knowledge_at,
                     "contract_master.knowledge_at",
@@ -474,9 +463,8 @@ class ContinuousSeriesManifest:
             "builder_version",
         ):
             _require_id(getattr(self, field), f"continuous_manifest.{field}")
-        if (
-            not self.source_contract_ids
-            or self.source_contract_ids != tuple(sorted(set(self.source_contract_ids)))
+        if not self.source_contract_ids or self.source_contract_ids != tuple(
+            sorted(set(self.source_contract_ids))
         ):
             raise FuturesDeliveryError(
                 "continuous_manifest_source_contracts_not_canonical"
@@ -488,13 +476,9 @@ class ContinuousSeriesManifest:
             or not isinstance(self.roll_window_days, int)
             or self.roll_window_days < 1
         ):
-            raise FuturesDeliveryError(
-                "continuous_manifest.roll_window_days_invalid"
-            )
+            raise FuturesDeliveryError("continuous_manifest.roll_window_days_invalid")
         if not isinstance(self.adjustment_method, RollAdjustmentMethod):
-            raise FuturesDeliveryError(
-                "continuous_manifest.adjustment_method_invalid"
-            )
+            raise FuturesDeliveryError("continuous_manifest.adjustment_method_invalid")
         keys = [item[0] for item in self.adjustment_values]
         if keys != sorted(set(keys)):
             raise FuturesDeliveryError(
@@ -506,10 +490,8 @@ class ContinuousSeriesManifest:
                     "continuous_manifest_adjustment_contract_unknown"
                 )
             _decimal(value, "continuous_manifest.adjustment_value")
-        if (
-            not self.source_snapshot_hashes
-            or self.source_snapshot_hashes
-            != tuple(sorted(set(self.source_snapshot_hashes)))
+        if not self.source_snapshot_hashes or self.source_snapshot_hashes != tuple(
+            sorted(set(self.source_snapshot_hashes))
         ):
             raise FuturesDeliveryError(
                 "continuous_manifest_source_hashes_not_canonical"
@@ -545,17 +527,13 @@ class ContinuousSeriesManifest:
         }
 
     def manifest_hash(self) -> str:
-        return sha256_prefixed(
-            self.as_dict(), label="continuous_futures_manifest"
-        )
+        return sha256_prefixed(self.as_dict(), label="continuous_futures_manifest")
 
     def require_actual_contract(self, identifier: str) -> str:
         if identifier == self.series_id:
             raise FuturesDeliveryError("continuous_series_not_tradable")
         if identifier not in self.source_contract_ids:
-            raise FuturesDeliveryError(
-                "contract_not_bound_to_continuous_manifest"
-            )
+            raise FuturesDeliveryError("contract_not_bound_to_continuous_manifest")
         return identifier
 
 
@@ -585,9 +563,7 @@ class RollYieldPolicy:
         days: int,
     ) -> Decimal:
         old = _decimal(expiring_price, "roll_yield.expiring_price", positive=True)
-        new = _decimal(
-            replacement_price, "roll_yield.replacement_price", positive=True
-        )
+        new = _decimal(replacement_price, "roll_yield.replacement_price", positive=True)
         if isinstance(days, bool) or days < 1:
             raise FuturesDeliveryError("roll_yield.days_invalid")
         spread = (old - new) / old
@@ -717,17 +693,11 @@ class ContractSelectionPolicy:
                 "minimum_days_to_notice": self.minimum_days_to_notice,
                 "minimum_days_to_last_trade": self.minimum_days_to_last_trade,
                 "minimum_volume": _decimal_text(self.minimum_volume),
-                "minimum_open_interest": _decimal_text(
-                    self.minimum_open_interest
-                ),
+                "minimum_open_interest": _decimal_text(self.minimum_open_interest),
                 "maximum_spread": _decimal_text(self.maximum_spread),
                 "volume_weight": _decimal_text(self.volume_weight),
-                "open_interest_weight": _decimal_text(
-                    self.open_interest_weight
-                ),
-                "spread_penalty_weight": _decimal_text(
-                    self.spread_penalty_weight
-                ),
+                "open_interest_weight": _decimal_text(self.open_interest_weight),
+                "spread_penalty_weight": _decimal_text(self.spread_penalty_weight),
             },
             label="futures_contract_selection_policy",
         )
@@ -864,9 +834,7 @@ def select_actual_contract(
         selected_contract_hash=selected.contract.contract_hash(),
         selected_quote_hash=selected.source_quote_hash,
         selected_score=score,
-        candidate_hashes=tuple(
-            sorted(item.candidate_hash() for item in candidates)
-        ),
+        candidate_hashes=tuple(sorted(item.candidate_hash() for item in candidates)),
         rejected=tuple(sorted(rejected)),
         policy_hash=policy.policy_hash(),
     )
@@ -965,17 +933,13 @@ class DeliverableBasket:
             ),
         )
         identifiers = [item.grade_id for item in self.grades]
-        if (
-            not identifiers
-            or identifiers != sorted(set(identifiers))
-        ):
-            raise FuturesDeliveryError(
-                "deliverable_basket_grades_not_unique_canonical"
-            )
+        if not identifiers or identifiers != sorted(set(identifiers)):
+            raise FuturesDeliveryError("deliverable_basket_grades_not_unique_canonical")
         start = _timestamp(self.valid_from, "deliverable_basket.valid_from")
-        if self.valid_to is not None and _timestamp(
-            self.valid_to, "deliverable_basket.valid_to"
-        ) <= start:
+        if (
+            self.valid_to is not None
+            and _timestamp(self.valid_to, "deliverable_basket.valid_to") <= start
+        ):
             raise FuturesDeliveryError("deliverable_basket_validity_invalid")
         _timestamp(self.knowledge_at, "deliverable_basket.knowledge_at")
         _require_hash(self.source_hash, "deliverable_basket.source_hash")
@@ -1182,15 +1146,11 @@ class FuturesLifecyclePosting:
         if (self.delivered_instrument_id is None) != (
             self.delivered_quantity_delta == _ZERO
         ):
-            raise FuturesDeliveryError(
-                "lifecycle_posting_delivery_binding_invalid"
-            )
+            raise FuturesDeliveryError("lifecycle_posting_delivery_binding_invalid")
         if not self.source_hashes or self.source_hashes != tuple(
             sorted(set(self.source_hashes))
         ):
-            raise FuturesDeliveryError(
-                "lifecycle_posting_source_hashes_not_canonical"
-            )
+            raise FuturesDeliveryError("lifecycle_posting_source_hashes_not_canonical")
         for value in self.source_hashes:
             _require_hash(value, "lifecycle_posting.source_hash")
         if self.previous_posting_hash is not None:
@@ -1206,9 +1166,7 @@ class FuturesLifecyclePosting:
                 "event_type": self.event_type.value,
                 "occurred_at": self.occurred_at,
                 "contract_id": self.contract_id,
-                "contract_quantity_delta": _decimal_text(
-                    self.contract_quantity_delta
-                ),
+                "contract_quantity_delta": _decimal_text(self.contract_quantity_delta),
                 "cash_delta": _decimal_text(self.cash_delta),
                 "currency": self.currency,
                 "delivered_instrument_id": self.delivered_instrument_id,
@@ -1238,22 +1196,16 @@ def settle_futures_position(
     position = _decimal(quantity, "settlement.quantity")
     if position == _ZERO:
         raise FuturesDeliveryError("settlement_open_position_required")
-    prior = _decimal(
-        prior_settlement_price, "settlement.prior_price", positive=True
-    )
-    final = _decimal(
-        final_settlement_price, "settlement.final_price", positive=True
-    )
+    prior = _decimal(prior_settlement_price, "settlement.prior_price", positive=True)
+    final = _decimal(final_settlement_price, "settlement.final_price", positive=True)
     when = _timestamp(occurred_at, "settlement.occurred_at")
     if when < _timestamp(
         contract.final_settlement_at,
         "contract_master.final_settlement_at",
     ):
         raise FuturesDeliveryError("settlement_before_final_settlement_time")
-    variation = (
-        final - prior
-    ) * contract.contract_multiplier * position
-    base_sources = (contract.contract_hash(), policy.policy_hash())
+    variation = (final - prior) * contract.contract_multiplier * position
+    base_sources = tuple(sorted((contract.contract_hash(), policy.policy_hash())))
     if defaulted:
         penalty = (
             abs(position)
@@ -1295,9 +1247,7 @@ def settle_futures_position(
     if ctd is None or ctd.contract_hash != contract.contract_hash():
         raise FuturesDeliveryError("physical_settlement_ctd_required")
     selected = next(
-        item
-        for item in ctd.comparisons
-        if item.grade_id == ctd.selected_grade_id
+        item for item in ctd.comparisons if item.grade_id == ctd.selected_grade_id
     )
     direction = _ONE if position > 0 else -_ONE
     invoice_cash = -direction * selected.invoice_amount * abs(position)
@@ -1344,12 +1294,8 @@ class CollateralEligibility:
                     nonnegative=True,
                 ),
             )
-            if (
-                field == "haircut"
-                and getattr(self, field) >= _ONE
-            ) or (
-                field == "concentration_limit"
-                and getattr(self, field) > _ONE
+            if (field == "haircut" and getattr(self, field) >= _ONE) or (
+                field == "concentration_limit" and getattr(self, field) > _ONE
             ):
                 raise FuturesDeliveryError(f"collateral.{field}_out_of_range")
         _require_hash(self.source_hash, "collateral.source_hash")
@@ -1399,9 +1345,7 @@ class FuturesMarginPolicyVersion:
             raise FuturesDeliveryError("margin_variation_frequency_unknown")
         asset_ids = [item.asset_id for item in self.collateral]
         if asset_ids != sorted(set(asset_ids)):
-            raise FuturesDeliveryError(
-                "margin_collateral_not_unique_canonical"
-            )
+            raise FuturesDeliveryError("margin_collateral_not_unique_canonical")
         if set(self.collateral_waterfall) != set(asset_ids) or len(
             self.collateral_waterfall
         ) != len(asset_ids):
@@ -1432,9 +1376,7 @@ class FuturesMarginPolicyVersion:
                 "version": self.version,
                 "exchange_mic": self.exchange_mic,
                 "currency": self.currency,
-                "initial_per_contract": _decimal_text(
-                    self.initial_per_contract
-                ),
+                "initial_per_contract": _decimal_text(self.initial_per_contract),
                 "maintenance_per_contract": _decimal_text(
                     self.maintenance_per_contract
                 ),
@@ -1445,17 +1387,13 @@ class FuturesMarginPolicyVersion:
                         "kind": item.kind.value,
                         "currency": item.currency,
                         "haircut": _decimal_text(item.haircut),
-                        "concentration_limit": _decimal_text(
-                            item.concentration_limit
-                        ),
+                        "concentration_limit": _decimal_text(item.concentration_limit),
                         "source_hash": item.source_hash,
                     }
                     for item in self.collateral
                 ],
                 "collateral_waterfall": list(self.collateral_waterfall),
-                "collateral_yield_rate": _decimal_text(
-                    self.collateral_yield_rate
-                ),
+                "collateral_yield_rate": _decimal_text(self.collateral_yield_rate),
                 "spread_offset_rate": _decimal_text(self.spread_offset_rate),
                 "additional_funding_allowed": self.additional_funding_allowed,
                 "metadata": self.metadata.as_dict(),
@@ -1505,12 +1443,8 @@ class MarginWaterfallResult:
                     self.gross_initial_requirement
                 ),
                 "spread_offset": _decimal_text(self.spread_offset),
-                "net_initial_requirement": _decimal_text(
-                    self.net_initial_requirement
-                ),
-                "maintenance_requirement": _decimal_text(
-                    self.maintenance_requirement
-                ),
+                "net_initial_requirement": _decimal_text(self.net_initial_requirement),
+                "maintenance_requirement": _decimal_text(self.maintenance_requirement),
                 "eligible_collateral_value": _decimal_text(
                     self.eligible_collateral_value
                 ),
@@ -1548,9 +1482,7 @@ def evaluate_margin_waterfall(
     )
     variation = _decimal(variation_margin, "margin.variation_margin")
     days = _decimal(elapsed_days, "margin.elapsed_days", nonnegative=True)
-    gross = (outrights + spread_pairs * Decimal("2")) * (
-        policy.initial_per_contract
-    )
+    gross = (outrights + spread_pairs * Decimal("2")) * (policy.initial_per_contract)
     offset = (
         spread_pairs
         * Decimal("2")
@@ -1572,18 +1504,12 @@ def evaluate_margin_waterfall(
     total_eligible = sum(eligible_values.values(), _ZERO)
     for asset_id, value in eligible_values.items():
         rule = eligibility[asset_id]
-        if (
-            total_eligible > 0
-            and value / total_eligible > rule.concentration_limit
-        ):
+        if total_eligible > 0 and value / total_eligible > rule.concentration_limit:
             raise FuturesDeliveryError(
                 f"collateral_concentration_limit_exceeded:{asset_id}"
             )
     collateral_income = (
-        total_eligible
-        * policy.collateral_yield_rate
-        * days
-        / Decimal("365")
+        total_eligible * policy.collateral_yield_rate * days / Decimal("365")
     )
     available = total_eligible + collateral_income + variation
     call = max(net - available, _ZERO)

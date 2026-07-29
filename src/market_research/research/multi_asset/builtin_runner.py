@@ -15,6 +15,8 @@ Every trace hash is derived from those returned economic objects.
 
 from __future__ import annotations
 
+import base64
+import json
 import math
 import re
 from dataclasses import dataclass, field, replace
@@ -70,6 +72,24 @@ from market_research.research.multi_asset.accounting import (
     encode_report_payload,
     report_payload_hash,
 )
+from market_research.research.multi_asset.cards import (
+    CardValidationResult,
+    DataCard,
+    DataFieldDefinition,
+    DataFieldUnit,
+    DataRowResolverMetadata,
+    DataTemporalSemantics,
+    DistributionStatus,
+    ModelCard,
+    ModelParameter,
+    ValidationStatus,
+)
+from market_research.research.multi_asset.authoritative_inputs import (
+    AuthoritativeInputError,
+    AuthoritativeInputFactory,
+    AuthoritativeInputReceipt,
+    AuthoritativeOutputBinding,
+)
 from market_research.research.multi_asset.costs import (
     ExecutionContext,
     ExecutionSide,
@@ -80,6 +100,7 @@ from market_research.research.multi_asset.application import (
     MultiAssetExperimentError,
     MultiAssetExperimentSpec,
     MultiAssetResearchApplicationService,
+    MultiAssetResearchExecution,
     MultiAssetRunRequest,
     MultiAssetScenarioRunners,
     ScenarioRunContext,
@@ -100,6 +121,7 @@ from market_research.research.multi_asset.evidence import (
     ScenarioObjectHashes,
     evidence_hash,
     scenario_object_hashes,
+    validated_study_report_payload,
 )
 from market_research.research.multi_asset.exposure import (
     ExposureEngine,
@@ -126,6 +148,9 @@ from market_research.research.multi_asset.expression import (
 )
 from market_research.research.multi_asset.futures_path import (
     trace_continuous_signal,
+)
+from market_research.research.multi_asset.futures_delivery import (
+    FuturesSettlementMode,
 )
 from market_research.research.multi_asset.market_state import (
     LiquidityQuote,
@@ -184,10 +209,43 @@ from market_research.research.multi_asset.portfolio import (
     funding_event,
     trade_event,
 )
+from market_research.research.multi_asset.public_spot_futures_profile import (
+    PublicFuturesProfileReceipt,
+    PublicSpotProfileReceipt,
+    build_public_t01_inputs,
+    build_public_t02_inputs,
+    run_public_t01_spot_profile,
+    run_public_t02_futures_profile,
+)
+from market_research.research.multi_asset.public_option_profile import (
+    PublicOptionInstitutionalReceipt,
+    build_public_t03_fixture_inputs,
+    default_public_option_institutional_factory,
+    run_public_option_profile,
+)
+from market_research.research.multi_asset.public_integrated_profile import (
+    PublicIntegratedProfileReceipt,
+    build_public_t04_fixture_inputs,
+    run_public_integrated_profile,
+)
+from market_research.research.multi_asset.public_execution_evidence import (
+    PublicExecutionEvidenceBundle,
+    build_public_execution_evidence_bundle,
+    publish_public_execution_evidence_bundle,
+)
+from market_research.research.multi_asset.public_package import (
+    PublicPackageMaterials,
+    build_public_validated_package_request,
+)
 from market_research.research.multi_asset.research_package import (
     ArtifactChecksum,
+    BoundedEvidenceArtifactResolver,
     EvidenceArtifactRef,
     EvidenceArtifactRole,
+    bytes_sha256,
+)
+from market_research.research.multi_asset.portable_source import (
+    build_portable_engine_source_archive,
 )
 from market_research.research.multi_asset.scenarios import (
     JointMarketShock,
@@ -212,6 +270,9 @@ from market_research.research.multi_asset.study import (
     OptionScenarioTrace,
     ScenarioAccounting,
     SpotScenarioTrace,
+)
+from market_research.research.multi_asset.validated_package import (
+    build_validated_package,
 )
 
 
@@ -1402,6 +1463,46 @@ class _AuthoritativeBuiltinRunner:
         default_factory=dict,
         init=False,
     )
+    _input_authority_receipts: dict[int, AuthoritativeInputReceipt] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _spot_profile_receipts: dict[int, PublicSpotProfileReceipt] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _futures_profile_receipts: dict[int, PublicFuturesProfileReceipt] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _option_profile_receipts: dict[
+        int,
+        PublicOptionInstitutionalReceipt,
+    ] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _integrated_profile_receipts: dict[
+        int,
+        PublicIntegratedProfileReceipt,
+    ] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _profile_output_bindings: dict[
+        int,
+        dict[str, AuthoritativeOutputBinding],
+    ] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _execution_evidence_bundles: dict[
+        int,
+        PublicExecutionEvidenceBundle,
+    ] = field(
+        default_factory=dict,
+        init=False,
+    )
 
     def _authoritative_inputs(
         self,
@@ -1412,22 +1513,20 @@ class _AuthoritativeBuiltinRunner:
         cached = self._resolved_inputs.get(context.repeat_index)
         if cached is not None:
             return cached
-        artifact = context.one_artifact(EvidenceArtifactRole.RESEARCH_INPUTS)
-        payload = artifact.payload
-        if (
-            payload.get("artifact_kind") != "IMMUTABLE_RESEARCH_INPUTS"
-            or payload.get("input_schema_id")
-            != "builtin-multi-asset-scenario-inputs"
-            or payload.get("input_schema_version") != BUILTIN_MULTI_ASSET_SCHEMA_VERSION
-        ):
-            raise MultiAssetExperimentError(
-                "builtin_research_inputs_schema_mismatch"
+        try:
+            receipt = AuthoritativeInputFactory(
+                input_schema_id="builtin-multi-asset-scenario-inputs",
+                input_schema_version=BUILTIN_MULTI_ASSET_SCHEMA_VERSION,
+            ).resolve(
+                context.artifacts_for(EvidenceArtifactRole.RESEARCH_INPUTS),
+                input_document=self.inputs.as_dict(),
+                decision_cutoff=context.spec.data_range.end_at,
             )
-        document = payload.get("input_document")
-        if not isinstance(document, dict):
+        except AuthoritativeInputError as exc:
             raise MultiAssetExperimentError(
-                "builtin_research_inputs_document_required"
-            )
+                "builtin_research_input_authority_failed"
+            ) from exc
+        document = receipt.input_document
         try:
             authoritative = BuiltinScenarioInputs.from_dict(document)
         except BuiltinMultiAssetCodecError as exc:
@@ -1438,11 +1537,67 @@ class _AuthoritativeBuiltinRunner:
             authoritative.content_hash != self.inputs.content_hash
             or authoritative != self.inputs
         ):
-            raise MultiAssetExperimentError(
-                "builtin_request_input_claim_mismatch"
-            )
+            raise MultiAssetExperimentError("builtin_request_input_claim_mismatch")
         self._resolved_inputs[context.repeat_index] = authoritative
+        self._input_authority_receipts[context.repeat_index] = receipt
         return authoritative
+
+    def _input_authority_receipt(
+        self,
+        context: ScenarioRunContext,
+    ) -> AuthoritativeInputReceipt:
+        self._authoritative_inputs(context)
+        try:
+            return self._input_authority_receipts[context.repeat_index]
+        except KeyError as exc:  # pragma: no cover - method above establishes it.
+            raise MultiAssetExperimentError(
+                "builtin_research_input_authority_receipt_missing"
+            ) from exc
+
+    @staticmethod
+    def _institutional_source_hashes(
+        receipt: AuthoritativeInputReceipt,
+    ) -> tuple[str, ...]:
+        """Return canonical immutable document/row identities for profiles."""
+
+        return tuple(
+            sorted(
+                {
+                    receipt.artifact_hash,
+                    receipt.input_document_hash,
+                    receipt.source_rows_hash,
+                    *receipt.source_row_hashes,
+                }
+            )
+        )
+
+    def _bind_profile_output(
+        self,
+        *,
+        context: ScenarioRunContext,
+        scenario_id: str,
+        profile_receipt: object,
+        profile_content_hash: str,
+        input_paths: Sequence[str],
+    ) -> AuthoritativeOutputBinding:
+        input_receipt = self._input_authority_receipt(context)
+        as_dict = getattr(profile_receipt, "as_dict", None)
+        if not callable(as_dict):
+            raise MultiAssetExperimentError(
+                "builtin_institutional_profile_receipt_invalid"
+            )
+        binding = input_receipt.bind_output(
+            output_path=f"/{scenario_id}/institutional_receipt",
+            output_value=as_dict(),
+            input_paths=input_paths,
+            computation_hash=profile_content_hash,
+        )
+        input_receipt.source_rows_for_output(binding)
+        self._profile_output_bindings.setdefault(
+            context.repeat_index,
+            {},
+        )[scenario_id] = binding
+        return binding
 
     def option_selection_evidence(
         self,
@@ -1455,8 +1610,20 @@ class _AuthoritativeBuiltinRunner:
                 "builtin_option_selection_evidence_missing"
             ) from exc
 
+    def public_execution_evidence(
+        self,
+        repeat_index: int,
+    ) -> PublicExecutionEvidenceBundle:
+        try:
+            return self._execution_evidence_bundles[repeat_index]
+        except KeyError as exc:
+            raise MultiAssetExperimentError(
+                "builtin_public_execution_evidence_missing"
+            ) from exc
+
     def run_spot(self, context: ScenarioRunContext) -> SpotScenarioTrace:
         inputs = self._authoritative_inputs(context)
+        input_receipt = self._input_authority_receipt(context)
         config = inputs.spot
         policy = inputs.policy
         decision = _timestamp(config.decision_at, "builtin_spot.decision_at")
@@ -1741,6 +1908,31 @@ class _AuthoritativeBuiltinRunner:
             (delta.amount for draft in dividend_drafts for delta in draft.cash_deltas),
             Decimal("0"),
         )
+        institutional_receipt = run_public_t01_spot_profile(
+            build_public_t01_inputs(
+                source_document_id=input_receipt.artifact_logical_id,
+                source_document_hashes=self._institutional_source_hashes(input_receipt),
+                observation_at=_timestamp_text(decision - timedelta(days=10)),
+                valuation_at=config.decision_at,
+                knowledge_at=config.knowledge_at,
+                instrument_id=config.instrument_id,
+                currency=config.currency,
+                entry_price=config.entry_price,
+                quantity=config.quantity,
+            )
+        )
+        if institutional_receipt.resolved_instrument_id != config.instrument_id:
+            raise MultiAssetExperimentError(
+                "builtin_spot_institutional_profile_identity_mismatch"
+            )
+        institutional_binding = self._bind_profile_output(
+            context=context,
+            scenario_id="T-01",
+            profile_receipt=institutional_receipt,
+            profile_content_hash=institutional_receipt.content_hash,
+            input_paths=("/spot",),
+        )
+        self._spot_profile_receipts[context.repeat_index] = institutional_receipt
         objects = _scenario_objects(
             trades=(expression,),
             snapshot=snapshot,
@@ -1760,6 +1952,9 @@ class _AuthoritativeBuiltinRunner:
                 "split_hash": split_application.book_after_hash,
                 "dividend_hash": dividend_application.book_after_hash,
                 "execution_cost_hash": spot_cost.content_hash,
+                "input_authority_receipt_hash": input_receipt.content_hash,
+                "institutional_profile_receipt": (institutional_receipt.as_dict()),
+                "institutional_output_binding": (institutional_binding.as_dict()),
             },
         )
         data_hashes = tuple(
@@ -1812,7 +2007,9 @@ class _AuthoritativeBuiltinRunner:
             quality_flags=(
                 "AUTHORITATIVE_CORPORATE_ACTION_ENGINE",
                 "AUTHORITATIVE_EXPRESSION_ENGINE",
+                "IMMUTABLE_SOURCE_ROW_INPUT_AUTHORITY",
                 "POINT_IN_TIME_UNIVERSE",
+                "PUBLIC_T01_INSTITUTIONAL_PROFILE",
             ),
         )
         self._spot_ledgers[context.repeat_index] = ledger
@@ -1824,9 +2021,11 @@ class _AuthoritativeBuiltinRunner:
         self,
         context: ScenarioRunContext,
     ) -> FuturesScenarioTrace:
+        inputs = self._authoritative_inputs(context)
+        input_receipt = self._input_authority_receipt(context)
         request = cast(
             FuturesStudyRequest,
-            self.inputs.futures_request.payload,
+            inputs.futures_request.payload,
         )
         entry_commands = tuple(
             item for item in request.commands if isinstance(item, FuturesOrderCommand)
@@ -1841,18 +2040,18 @@ class _AuthoritativeBuiltinRunner:
         entry_command = entry_commands[0]
         roll_command = roll_commands[0]
         continuous_trace = trace_continuous_signal(
-            self.inputs.futures_signal_points,
+            inputs.futures_signal_points,
             trace_id=(f"{context.spec.experiment_id}.builtin.continuous.trace"),
         )
         entry_points = tuple(
             item
-            for item in self.inputs.futures_signal_points
+            for item in inputs.futures_signal_points
             if item.content_hash == entry_command.intent.signal_point_hash
             and item.source_contract_id == entry_command.intent.contract_id
         )
         roll_points = tuple(
             item
-            for item in self.inputs.futures_signal_points
+            for item in inputs.futures_signal_points
             if item.roll_decision_hash == roll_command.decision.content_hash
         )
         if (
@@ -1874,15 +2073,15 @@ class _AuthoritativeBuiltinRunner:
             "builtin_futures.entry_decision_at",
         ):
             raise MultiAssetExperimentError("builtin_futures_entry_signal_from_future")
-        entry_point_index = self.inputs.futures_signal_points.index(entry_point)
+        entry_point_index = inputs.futures_signal_points.index(entry_point)
         if entry_point_index == 0:
             raise MultiAssetExperimentError("builtin_futures_signal_history_required")
-        previous_signal_point = self.inputs.futures_signal_points[entry_point_index - 1]
+        previous_signal_point = inputs.futures_signal_points[entry_point_index - 1]
         signal_return = (
             entry_point.continuous_price / previous_signal_point.continuous_price
             - Decimal("1")
         )
-        threshold = self.inputs.policy.futures_signal_return_threshold
+        threshold = inputs.policy.futures_signal_return_threshold
         if abs(signal_return) <= threshold:
             raise MultiAssetExperimentError(
                 "builtin_futures_signal_below_entry_threshold"
@@ -1899,7 +2098,7 @@ class _AuthoritativeBuiltinRunner:
             entry_signal_quote.close_price * entry_contract.contract_multiplier
         )
         raw_contract_quantity = (
-            self.inputs.policy.futures_target_notional / contract_notional
+            inputs.policy.futures_target_notional / contract_notional
         )
         expected_contract_quantity = int(
             raw_contract_quantity.to_integral_value(rounding=ROUND_FLOOR)
@@ -1909,9 +2108,7 @@ class _AuthoritativeBuiltinRunner:
                 "builtin_futures_target_notional_below_one_contract"
             )
         entry_sizing_payload = {
-            "target_notional": _decimal_text(
-                self.inputs.policy.futures_target_notional
-            ),
+            "target_notional": _decimal_text(inputs.policy.futures_target_notional),
             "contract_price": _decimal_text(entry_signal_quote.close_price),
             "contract_multiplier": _decimal_text(entry_contract.contract_multiplier),
             "raw_contract_quantity": _decimal_text(raw_contract_quantity),
@@ -1927,12 +2124,10 @@ class _AuthoritativeBuiltinRunner:
             raise MultiAssetExperimentError(
                 "builtin_futures_order_not_derived_from_signal"
             )
-        roll_point_index = self.inputs.futures_signal_points.index(roll_points[0])
+        roll_point_index = inputs.futures_signal_points.index(roll_points[0])
         if (
             roll_point_index == 0
-            or self.inputs.futures_signal_points[
-                roll_point_index - 1
-            ].source_contract_id
+            or inputs.futures_signal_points[roll_point_index - 1].source_contract_id
             != roll_command.decision.from_contract_id
         ):
             raise MultiAssetExperimentError(
@@ -1943,13 +2138,13 @@ class _AuthoritativeBuiltinRunner:
                 point.source_contract_id,
                 point.observed_at,
             )
-            for point in self.inputs.futures_signal_points
+            for point in inputs.futures_signal_points
         )
         if any(
             point.source_quote_hash != quote.content_hash
             or point.source_price != quote.close_price
             for point, quote in zip(
-                self.inputs.futures_signal_points,
+                inputs.futures_signal_points,
                 signal_quotes,
                 strict=True,
             )
@@ -2071,6 +2266,64 @@ class _AuthoritativeBuiltinRunner:
         final_action_at = roll.executed_at
         final_cash = ledger.cash_balance
         pnl = final_cash - request.initial_cash
+        selected_contract = request.simulator.contract_for(
+            roll_command.decision.to_contract_id
+        )
+        selected_quote = request.chain.quote_for(
+            selected_contract.contract_id,
+            roll_command.decision.decision_at,
+        )
+        institutional_position_quantity = Decimal(open_fill.quantity) * (
+            Decimal("1") if open_fill.side is FuturesOrderSide.BUY else Decimal("-1")
+        )
+        institutional_receipt = run_public_t02_futures_profile(
+            build_public_t02_inputs(
+                source_document_id=input_receipt.artifact_logical_id,
+                source_document_hashes=self._institutional_source_hashes(input_receipt),
+                observation_at=entry_point.observed_at,
+                valuation_at=roll_command.decision.decision_at,
+                knowledge_at=request.chain.availability.processed_at,
+                underlying_instrument_id=inputs.spot.instrument_id,
+                root_id=request.chain.root_id,
+                near_contract_id=entry_command.intent.contract_id,
+                selected_contract_id=selected_contract.contract_id,
+                currency=inputs.spot.currency,
+                entry_price=open_fill.fill_price,
+                final_price=selected_quote.settlement_price,
+                multiplier=open_fill.multiplier,
+                quantity=institutional_position_quantity,
+                settlement_mode=(
+                    FuturesSettlementMode.PHYSICAL
+                    if selected_contract.settlement_type.value == "PHYSICAL_SETTLED"
+                    else FuturesSettlementMode.CASH
+                ),
+            )
+        )
+        if (
+            institutional_receipt.selected_contract_id
+            != roll_command.decision.to_contract_id
+            or institutional_receipt.selected_contract_multiplier
+            != open_fill.multiplier
+            or institutional_receipt.position_quantity
+            != institutional_position_quantity
+            or institutional_receipt.prior_settlement_price != open_fill.fill_price
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_futures_institutional_profile_economics_mismatch"
+            )
+        institutional_binding = self._bind_profile_output(
+            context=context,
+            scenario_id="T-02",
+            profile_receipt=institutional_receipt,
+            profile_content_hash=institutional_receipt.content_hash,
+            input_paths=(
+                "/futures_request",
+                "/futures_signal_points",
+                "/policy",
+                "/spot",
+            ),
+        )
+        self._futures_profile_receipts[context.repeat_index] = institutional_receipt
         objects = scenario_object_hashes(
             trades=tuple(fill.as_dict() for item in steps for fill in item.fills),
             positions=tuple(item.as_dict() for item in ledger.positions),
@@ -2108,7 +2361,12 @@ class _AuthoritativeBuiltinRunner:
                 "cumulative_fees": _decimal_text(ledger.cumulative_fees),
                 "native_ledger_pnl": _decimal_text(pnl),
             },
-            scenario_output=execution.simulation.as_dict(),
+            scenario_output={
+                "derivative_simulation": execution.simulation.as_dict(),
+                "input_authority_receipt_hash": input_receipt.content_hash,
+                "institutional_profile_receipt": (institutional_receipt.as_dict()),
+                "institutional_output_binding": (institutional_binding.as_dict()),
+            },
         )
         self._futures_steps[context.repeat_index] = tuple(steps)
         return FuturesScenarioTrace(
@@ -2141,6 +2399,8 @@ class _AuthoritativeBuiltinRunner:
                 "AUTHORITATIVE_FUTURES_SIMULATOR",
                 "CONTRACT_MULTIPLIER_SIZING",
                 "EXPOSURE_PRESERVING_ROLL",
+                "IMMUTABLE_SOURCE_ROW_INPUT_AUTHORITY",
+                "PUBLIC_T02_INSTITUTIONAL_PROFILE",
             ),
         )
 
@@ -2148,9 +2408,11 @@ class _AuthoritativeBuiltinRunner:
         self,
         context: ScenarioRunContext,
     ) -> OptionScenarioTrace:
+        inputs = self._authoritative_inputs(context)
+        input_receipt = self._input_authority_receipt(context)
         request = cast(
             OptionStudyRequest,
-            self.inputs.option_request.payload,
+            inputs.option_request.payload,
         )
         if len(request.orders) != 1 or request.orders[0].lifecycle is None:
             raise MultiAssetExperimentError(
@@ -2328,19 +2590,13 @@ class _AuthoritativeBuiltinRunner:
                 policy_id="builtin-option-selection",
                 version="v1",
                 right=PathOptionRight(contract.option_type.value),
-                target_days_to_expiry=(self.inputs.policy.option_target_days_to_expiry),
-                minimum_days_to_expiry=(
-                    self.inputs.policy.option_minimum_days_to_expiry
-                ),
-                maximum_days_to_expiry=(
-                    self.inputs.policy.option_maximum_days_to_expiry
-                ),
-                target_delta=self.inputs.policy.option_target_delta,
-                maximum_delta_distance=(
-                    self.inputs.policy.option_maximum_delta_distance
-                ),
+                target_days_to_expiry=(inputs.policy.option_target_days_to_expiry),
+                minimum_days_to_expiry=(inputs.policy.option_minimum_days_to_expiry),
+                maximum_days_to_expiry=(inputs.policy.option_maximum_days_to_expiry),
+                target_delta=inputs.policy.option_target_delta,
+                maximum_delta_distance=(inputs.policy.option_maximum_delta_distance),
                 minimum_liquidity_weight=(
-                    self.inputs.policy.option_minimum_liquidity_weight
+                    inputs.policy.option_minimum_liquidity_weight
                 ),
                 fallback=DeltaFallback.REJECT,
                 model_specification_hash=request.valuation_model.content_hash,
@@ -2492,7 +2748,7 @@ class _AuthoritativeBuiltinRunner:
         )
         intermediate_request = cast(
             OptionStudyRequest,
-            self.inputs.option_intermediate_request.payload,
+            inputs.option_intermediate_request.payload,
         )
         if len(intermediate_request.orders) != 1:
             raise MultiAssetExperimentError(
@@ -2589,7 +2845,7 @@ class _AuthoritativeBuiltinRunner:
             if position.side is PositionSide.LONG
             else -position.quantity
         )
-        if self.inputs.policy.option_maximum_absolute_residual > abs(fill.cash_flow):
+        if inputs.policy.option_maximum_absolute_residual > abs(fill.cash_flow):
             raise MultiAssetExperimentError(
                 "builtin_option_absolute_residual_limit_too_loose"
             )
@@ -2605,10 +2861,10 @@ class _AuthoritativeBuiltinRunner:
                 policy_id="builtin-option-path-attribution",
                 version="v1",
                 maximum_absolute_residual=(
-                    self.inputs.policy.option_maximum_absolute_residual
+                    inputs.policy.option_maximum_absolute_residual
                 ),
                 maximum_relative_residual=(
-                    self.inputs.policy.option_maximum_relative_residual
+                    inputs.policy.option_maximum_relative_residual
                 ),
             ),
         )
@@ -2621,6 +2877,161 @@ class _AuthoritativeBuiltinRunner:
             ),
             Decimal("0"),
         )
+        competing_contracts = tuple(
+            sorted(request.chain.contracts, key=lambda item: item.strike)
+        )
+        if len(competing_contracts) < 3:
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_requires_three_source_contracts"
+            )
+        competing_quotes = tuple(
+            request.chain.quote(item.contract_id) for item in competing_contracts
+        )
+        if any(item.bid is None or item.ask is None for item in competing_quotes):
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_two_sided_quotes_required"
+            )
+        if any(
+            right.strike <= left.strike
+            for left, right in zip(
+                competing_contracts,
+                competing_contracts[1:],
+            )
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_strike_order_invalid"
+            )
+        initial_observation_times = {
+            _timestamp(
+                item.availability.event_at,
+                "builtin_option.initial_quote_event_at",
+            )
+            for item in competing_quotes
+        }
+        if len(initial_observation_times) != 1:
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_initial_clock_skew"
+            )
+        initial_observation_at = _timestamp_text(next(iter(initial_observation_times)))
+        intermediate_contract_ids = {
+            item.contract_id for item in intermediate_request.chain.contracts
+        }
+        if intermediate_contract_ids != {
+            item.contract_id for item in competing_contracts
+        }:
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_repricing_contract_mismatch"
+            )
+        intermediate_quotes = tuple(
+            intermediate_request.chain.quote(item.contract_id)
+            for item in competing_contracts
+        )
+        if any(item.bid is None or item.ask is None for item in intermediate_quotes):
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_repricing_quote_required"
+            )
+        repricing_observation_times = {
+            _timestamp(
+                item.availability.event_at,
+                "builtin_option.repricing_quote_event_at",
+            )
+            for item in intermediate_quotes
+        }
+        if len(repricing_observation_times) != 1:
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_repricing_clock_skew"
+            )
+        if intermediate_request.chain.underlying_price != intermediate_input.spot_price:
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_repricing_spot_mismatch"
+            )
+        contract_specification = (
+            contract.expiration_at,
+            contract.settlement_at,
+            contract.multiplier,
+            contract.currency,
+        )
+        if any(
+            (
+                item.expiration_at,
+                item.settlement_at,
+                item.multiplier,
+                item.currency,
+            )
+            != contract_specification
+            for item in competing_contracts
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_contract_terms_mismatch"
+            )
+        institutional_inputs = build_public_t03_fixture_inputs(
+            source_document_id=input_receipt.artifact_logical_id,
+            source_document_hashes=self._institutional_source_hashes(input_receipt),
+            observation_at=initial_observation_at,
+            valuation_at=command.requested_at,
+            knowledge_at=request.chain.knowledge_time,
+            underlying_id=request.chain.underlying_id,
+            contract_ids=tuple(item.contract_id for item in competing_contracts),
+            strikes=tuple(item.strike for item in competing_contracts),
+            quotes=tuple(
+                (
+                    cast(Decimal, item.bid),
+                    cast(Decimal, item.ask),
+                )
+                for item in competing_quotes
+            ),
+            spot_price=request.chain.underlying_price,
+            quantity=command.quantity,
+            repricing_observation_at=_timestamp_text(
+                next(iter(repricing_observation_times))
+            ),
+            repricing_knowledge_at=intermediate_request.chain.knowledge_time,
+            repricing_valuation_at=intermediate_input.valuation_at,
+            repricing_quotes=tuple(
+                (
+                    cast(Decimal, item.bid),
+                    cast(Decimal, item.ask),
+                )
+                for item in intermediate_quotes
+            ),
+            repricing_spot_price=intermediate_request.chain.underlying_price,
+            settlement_observation_at=settlement.availability.event_at,
+            settlement_knowledge_at=settlement.availability.processed_at,
+            settlement_spot_price=settlement.spot_price,
+            lifecycle_event_at=lifecycle_command.event_at,
+            contract_expiration_at=contract.expiration_at,
+            contract_settlement_at=contract.settlement_at,
+            contract_multiplier=contract.multiplier,
+            contract_currency=contract.currency,
+        )
+        institutional_receipt = run_public_option_profile(
+            receipt_id=(f"{context.spec.experiment_id}.t03.institutional.receipt"),
+            inputs=institutional_inputs,
+            factory=default_public_option_institutional_factory(
+                fill_quantity=command.quantity,
+                fill_side=command.side,
+            ),
+        )
+        institutional_receipt.require_valid()
+        if (
+            institutional_receipt.selected_contract_id != command.contract_id
+            or institutional_receipt.filled_quantity != command.quantity
+            or institutional_receipt.executed_side is not command.side
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_option_institutional_profile_economics_mismatch"
+            )
+        institutional_binding = self._bind_profile_output(
+            context=context,
+            scenario_id="T-03",
+            profile_receipt=institutional_receipt,
+            profile_content_hash=institutional_receipt.content_hash,
+            input_paths=(
+                "/option_intermediate_request",
+                "/option_request",
+            ),
+        )
+        self._option_profile_receipts[context.repeat_index] = institutional_receipt
         objects = _scenario_objects(
             trades=(fill.as_dict(),),
             snapshot=snapshot,
@@ -2638,12 +3049,15 @@ class _AuthoritativeBuiltinRunner:
                 "derivative_simulation": execution.simulation.as_dict(),
                 "cleaned_chain_hash": cleaned_chain.content_hash,
                 "eligible_contract_ids": list(selection.eligible_contract_ids),
+                "input_authority_receipt_hash": input_receipt.content_hash,
                 "selection_hash": selection.content_hash,
+                "institutional_profile_receipt": (institutional_receipt.as_dict()),
+                "institutional_output_binding": (institutional_binding.as_dict()),
             },
         )
         self._option_positions[context.repeat_index] = position
         self._option_selection_evidence[context.repeat_index] = (
-            selection.eligible_contract_ids,
+            tuple(sorted(selection.eligible_contract_ids)),
             selection.content_hash,
             cleaned_chain.content_hash,
         )
@@ -2687,7 +3101,9 @@ class _AuthoritativeBuiltinRunner:
                 "AUTHORITATIVE_DERIVATIVE_APPLICATION",
                 "AUTHORITATIVE_OPTION_LIFECYCLE",
                 "COMPETING_CHAIN_SELECTION",
+                "IMMUTABLE_SOURCE_ROW_INPUT_AUTHORITY",
                 "INTERMEDIATE_PATH_ATTRIBUTION",
+                "PUBLIC_T03_INSTITUTIONAL_PROFILE",
             ),
         )
 
@@ -2699,6 +3115,8 @@ class _AuthoritativeBuiltinRunner:
         futures: FuturesScenarioTrace,
         option: OptionScenarioTrace,
     ) -> IntegratedScenarioExecution:
+        inputs = self._authoritative_inputs(context)
+        input_receipt = self._input_authority_receipt(context)
         stored_spot = self._spot_traces.get(context.repeat_index)
         if (
             stored_spot is None
@@ -2712,7 +3130,7 @@ class _AuthoritativeBuiltinRunner:
             )
         request = cast(
             MultiLegStudyRequest,
-            self.inputs.multi_leg_request.payload,
+            inputs.multi_leg_request.payload,
         )
         if any(
             item.contract.settlement_type is not DerivativeOptionSettlementType.CASH
@@ -2726,7 +3144,7 @@ class _AuthoritativeBuiltinRunner:
         market_state, registry, option_adapter = _integrated_option_market_authority(
             request=request,
             payload=payload,
-            spot=self.inputs.spot,
+            spot=inputs.spot,
         )
         exposure_engine = ExposureEngine.with_default_spot(
             product_catalog=registry,
@@ -2734,9 +3152,9 @@ class _AuthoritativeBuiltinRunner:
         )
         bindings = (
             LedgerExposureBinding(
-                instrument_id=self.inputs.spot.instrument_id,
+                instrument_id=inputs.spot.instrument_id,
                 quantity_unit="unit",
-                opened_at=self.inputs.spot.decision_at,
+                opened_at=inputs.spot.decision_at,
             ),
             *(
                 LedgerExposureBinding(
@@ -2762,7 +3180,7 @@ class _AuthoritativeBuiltinRunner:
         integrated = service.execute(
             command,
             ledger=self._spot_ledgers[context.repeat_index],
-            fx_rates={self.inputs.spot.currency: Decimal("1")},
+            fx_rates={inputs.spot.currency: Decimal("1")},
             exposure_request=LedgerExposureRequest(
                 snapshot_id=f"{context.spec.experiment_id}.builtin.exposure",
                 engine=exposure_engine,
@@ -2791,8 +3209,8 @@ class _AuthoritativeBuiltinRunner:
             scenario_id=(f"{context.spec.experiment_id}.builtin.joint-shock"),
             price_returns=(
                 (
-                    self.inputs.spot.instrument_id,
-                    self.inputs.policy.joint_spot_return,
+                    inputs.spot.instrument_id,
+                    inputs.policy.joint_spot_return,
                 ),
             ),
             liquidity_haircuts=tuple(
@@ -2800,16 +3218,14 @@ class _AuthoritativeBuiltinRunner:
                     (
                         (
                             item.instrument_id,
-                            self.inputs.policy.joint_liquidity_haircut,
+                            inputs.policy.joint_liquidity_haircut,
                         )
                         for item in entry_snapshot.positions
                     )
                 )
             ),
-            liquidity_cost_multiplier=(
-                self.inputs.policy.joint_liquidity_cost_multiplier
-            ),
-            margin_multiplier=self.inputs.policy.joint_margin_multiplier,
+            liquidity_cost_multiplier=(inputs.policy.joint_liquidity_cost_multiplier),
+            margin_multiplier=inputs.policy.joint_margin_multiplier,
             source_hashes=(market_state.state_hash(),),
         )
         repricers: dict[str, _BlackScholesScenarioRepricer] = {}
@@ -2910,7 +3326,7 @@ class _AuthoritativeBuiltinRunner:
         ledger = lifecycle_projection.ledger_after
         snapshot = ledger.replay()
         if {item.instrument_id for item in snapshot.positions} != {
-            self.inputs.spot.instrument_id
+            inputs.spot.instrument_id
         }:
             raise MultiAssetExperimentError(
                 "builtin_multileg_terminal_residual_position_mismatch"
@@ -2938,13 +3354,11 @@ class _AuthoritativeBuiltinRunner:
         legs: list[IntegratedLegResult] = [
             IntegratedLegResult(
                 leg_id="builtin.spot",
-                instrument_id=self.inputs.spot.instrument_id,
+                instrument_id=inputs.spot.instrument_id,
                 trade_hash=spot.trade_hashes[0],
                 cost=self._spot_costs[context.repeat_index],
                 pnl=spot_pnl,
-                terminal_quantity=position_by_id[
-                    self.inputs.spot.instrument_id
-                ].quantity,
+                terminal_quantity=position_by_id[inputs.spot.instrument_id].quantity,
             )
         ]
         for index, (contract_id, fill) in enumerate(sorted(fills_by_id.items())):
@@ -2958,6 +3372,112 @@ class _AuthoritativeBuiltinRunner:
                     terminal_quantity=Decimal("0"),
                 )
             )
+        public_legs = tuple(
+            sorted(
+                request.order.legs,
+                key=lambda item: item.contract.contract_id,
+            )
+        )
+        if len(public_legs) != 2:
+            raise MultiAssetExperimentError(
+                "builtin_integrated_institutional_profile_requires_two_legs"
+            )
+        public_prices: list[Decimal] = []
+        target_notional = Decimal("0")
+        for item in public_legs:
+            public_quote = request.chain.quote(item.contract.contract_id)
+            public_midpoint = public_quote.midpoint
+            if public_midpoint is None:
+                raise MultiAssetExperimentError(
+                    "builtin_integrated_institutional_profile_quote_required"
+                )
+            public_prices.append(public_midpoint)
+            target_notional += (
+                abs(item.quantity) * public_midpoint * item.contract.multiplier
+            )
+        funding_currency = "EUR" if inputs.spot.currency != "EUR" else "USD"
+        public_directions = cast(
+            tuple[Direction, Direction],
+            tuple(
+                Direction.LONG if item.side is PositionSide.LONG else Direction.SHORT
+                for item in public_legs
+            ),
+        )
+        institutional_receipt = run_public_integrated_profile(
+            build_public_t04_fixture_inputs(
+                source_document_id=input_receipt.artifact_logical_id,
+                source_document_hashes=self._institutional_source_hashes(input_receipt),
+                opened_at=request.started_at,
+                closed_at=request.finished_at,
+                underlying_id=inputs.spot.instrument_id,
+                leg_instrument_ids=cast(
+                    tuple[str, str],
+                    tuple(item.contract.contract_id for item in public_legs),
+                ),
+                leg_prices=cast(
+                    tuple[Decimal, Decimal],
+                    tuple(public_prices),
+                ),
+                leg_directions=public_directions,
+                target_notional=target_notional,
+                base_currency=inputs.spot.currency,
+                funding_currency=funding_currency,
+            )
+        )
+        expected_public_instruments = tuple(
+            item.contract.contract_id for item in public_legs
+        )
+        expected_public_directions = tuple(
+            sorted(
+                (
+                    item.contract.contract_id,
+                    (
+                        Direction.LONG.value
+                        if item.side is PositionSide.LONG
+                        else Direction.SHORT.value
+                    ),
+                )
+                for item in public_legs
+            )
+        )
+        if (
+            institutional_receipt.selected_instruments != expected_public_instruments
+            or institutional_receipt.selected_directions != expected_public_directions
+        ):
+            raise MultiAssetExperimentError(
+                "builtin_integrated_institutional_profile_economics_mismatch"
+            )
+        institutional_binding = self._bind_profile_output(
+            context=context,
+            scenario_id="T-04",
+            profile_receipt=institutional_receipt,
+            profile_content_hash=institutional_receipt.content_hash,
+            input_paths=("/multi_leg_request", "/spot"),
+        )
+        self._integrated_profile_receipts[context.repeat_index] = institutional_receipt
+        try:
+            profile_bindings = self._profile_output_bindings[context.repeat_index]
+            execution_evidence = build_public_execution_evidence_bundle(
+                experiment_spec_hash=context.spec.content_hash,
+                authoritative_input_receipt=input_receipt,
+                spot_profile_receipt=self._spot_profile_receipts[context.repeat_index],
+                futures_profile_receipt=self._futures_profile_receipts[
+                    context.repeat_index
+                ],
+                option_profile_receipt=self._option_profile_receipts[
+                    context.repeat_index
+                ],
+                integrated_profile_receipt=institutional_receipt,
+                output_bindings=tuple(
+                    profile_bindings[scenario_id]
+                    for scenario_id in ("T-01", "T-02", "T-03", "T-04")
+                ),
+            )
+        except KeyError as exc:
+            raise MultiAssetExperimentError(
+                "builtin_institutional_profile_evidence_incomplete"
+            ) from exc
+        self._execution_evidence_bundles[context.repeat_index] = execution_evidence
         objects = _scenario_objects(
             trades=(
                 integrated.authoritative_result.identity_payload(),
@@ -2981,6 +3501,12 @@ class _AuthoritativeBuiltinRunner:
                 "joint_scenario": joint.identity_payload(),
                 "multi_leg_execution": integrated.as_dict(),
                 "multi_leg_lifecycle": (lifecycle_projection.as_dict()),
+                "input_authority_receipt_hash": input_receipt.content_hash,
+                "institutional_profile_receipt": (institutional_receipt.as_dict()),
+                "institutional_output_binding": (institutional_binding.as_dict()),
+                "public_execution_evidence_bundle_hash": (
+                    execution_evidence.content_hash
+                ),
             },
         )
         trace = IntegratedScenarioTrace(
@@ -3012,6 +3538,8 @@ class _AuthoritativeBuiltinRunner:
                 "AUTHORITATIVE_JOINT_SCENARIO_ENGINE",
                 "AUTHORITATIVE_MULTILEG_COMMON_LEDGER",
                 "AUTHORITATIVE_MULTILEG_LIFECYCLE",
+                "IMMUTABLE_SOURCE_ROW_INPUT_AUTHORITY",
+                "PUBLIC_T04_INSTITUTIONAL_PROFILE",
             ),
         )
         return IntegratedScenarioExecution(
@@ -3365,6 +3893,10 @@ class BuiltinExecutionRecord:
     option_eligible_contract_ids: tuple[str, ...]
     option_selection_hash: str
     option_cleaned_chain_hash: str
+    public_profile_receipt_hashes: tuple[str, ...]
+    public_execution_evidence_hash: str
+    public_execution_evidence_artifact_hash: str
+    portable_package_manifest_hash: str
     content_hash: str = field(init=False)
     schema_version: int = BUILTIN_MULTI_ASSET_SCHEMA_VERSION
 
@@ -3382,6 +3914,9 @@ class BuiltinExecutionRecord:
             "manifest_artifact_hash",
             "option_selection_hash",
             "option_cleaned_chain_hash",
+            "public_execution_evidence_hash",
+            "public_execution_evidence_artifact_hash",
+            "portable_package_manifest_hash",
         ):
             _require_hash(
                 getattr(self, field_name),
@@ -3399,6 +3934,15 @@ class BuiltinExecutionRecord:
             _require_id(
                 contract_id,
                 "builtin_execution.option_eligible_contract_id",
+            )
+        if len(self.public_profile_receipt_hashes) != 4:
+            raise BuiltinMultiAssetCodecError(
+                "builtin_execution_public_profile_receipt_count_invalid"
+            )
+        for receipt_hash in self.public_profile_receipt_hashes:
+            _require_hash(
+                receipt_hash,
+                "builtin_execution.public_profile_receipt_hash",
             )
         object.__setattr__(
             self,
@@ -3424,6 +3968,12 @@ class BuiltinExecutionRecord:
             "option_eligible_contract_ids": list(self.option_eligible_contract_ids),
             "option_selection_hash": self.option_selection_hash,
             "option_cleaned_chain_hash": self.option_cleaned_chain_hash,
+            "public_profile_receipt_hashes": list(self.public_profile_receipt_hashes),
+            "public_execution_evidence_hash": (self.public_execution_evidence_hash),
+            "public_execution_evidence_artifact_hash": (
+                self.public_execution_evidence_artifact_hash
+            ),
+            "portable_package_manifest_hash": (self.portable_package_manifest_hash),
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -3448,6 +3998,10 @@ class BuiltinExecutionRecord:
                 "option_eligible_contract_ids",
                 "option_selection_hash",
                 "option_cleaned_chain_hash",
+                "public_profile_receipt_hashes",
+                "public_execution_evidence_hash",
+                "public_execution_evidence_artifact_hash",
+                "portable_package_manifest_hash",
                 "content_hash",
             },
             "builtin_execution",
@@ -3455,9 +4009,14 @@ class BuiltinExecutionRecord:
         if payload["artifact_type"] != _EXECUTION_ARTIFACT_TYPE:
             raise BuiltinMultiAssetCodecError("builtin_execution_artifact_type_invalid")
         raw_eligible = payload["option_eligible_contract_ids"]
+        raw_profile_hashes = payload["public_profile_receipt_hashes"]
         if not isinstance(raw_eligible, list):
             raise BuiltinMultiAssetCodecError(
                 "builtin_execution_option_eligible_contracts_array_required"
+            )
+        if not isinstance(raw_profile_hashes, list):
+            raise BuiltinMultiAssetCodecError(
+                "builtin_execution_public_profile_receipts_array_required"
             )
         result = cls(
             schema_version=_integer(
@@ -3508,6 +4067,25 @@ class BuiltinExecutionRecord:
                 payload["option_cleaned_chain_hash"],
                 "builtin_execution.option_cleaned_chain_hash",
             ),
+            public_profile_receipt_hashes=tuple(
+                _text(
+                    item,
+                    "builtin_execution.public_profile_receipt_hash",
+                )
+                for item in raw_profile_hashes
+            ),
+            public_execution_evidence_hash=_text(
+                payload["public_execution_evidence_hash"],
+                "builtin_execution.public_execution_evidence_hash",
+            ),
+            public_execution_evidence_artifact_hash=_text(
+                payload["public_execution_evidence_artifact_hash"],
+                "builtin_execution.public_execution_evidence_artifact_hash",
+            ),
+            portable_package_manifest_hash=_text(
+                payload["portable_package_manifest_hash"],
+                "builtin_execution.portable_package_manifest_hash",
+            ),
         )
         if result.content_hash != _text(
             payload["content_hash"],
@@ -3527,6 +4105,11 @@ class BuiltinReproductionRecord:
     expected_study_hash: str
     reproduced_study_hash: str
     reproduced_manifest_hash: str
+    expected_public_execution_evidence_hash: str
+    reproduced_public_execution_evidence_hash: str
+    reproduced_public_execution_evidence_artifact_hash: str
+    expected_portable_package_manifest_hash: str
+    reproduced_portable_package_manifest_hash: str
     status: BuiltinReproductionStatus
     mismatch_fields: tuple[str, ...]
     content_hash: str = field(init=False)
@@ -3545,6 +4128,11 @@ class BuiltinReproductionRecord:
             "expected_study_hash",
             "reproduced_study_hash",
             "reproduced_manifest_hash",
+            "expected_public_execution_evidence_hash",
+            "reproduced_public_execution_evidence_hash",
+            "reproduced_public_execution_evidence_artifact_hash",
+            "expected_portable_package_manifest_hash",
+            "reproduced_portable_package_manifest_hash",
         ):
             _require_hash(
                 getattr(self, field_name),
@@ -3579,6 +4167,21 @@ class BuiltinReproductionRecord:
             "expected_study_hash": self.expected_study_hash,
             "reproduced_study_hash": self.reproduced_study_hash,
             "reproduced_manifest_hash": self.reproduced_manifest_hash,
+            "expected_public_execution_evidence_hash": (
+                self.expected_public_execution_evidence_hash
+            ),
+            "reproduced_public_execution_evidence_hash": (
+                self.reproduced_public_execution_evidence_hash
+            ),
+            "reproduced_public_execution_evidence_artifact_hash": (
+                self.reproduced_public_execution_evidence_artifact_hash
+            ),
+            "expected_portable_package_manifest_hash": (
+                self.expected_portable_package_manifest_hash
+            ),
+            "reproduced_portable_package_manifest_hash": (
+                self.reproduced_portable_package_manifest_hash
+            ),
             "status": self.status.value,
             "mismatch_fields": list(self.mismatch_fields),
         }
@@ -3600,6 +4203,11 @@ class BuiltinReproductionRecord:
                 "expected_study_hash",
                 "reproduced_study_hash",
                 "reproduced_manifest_hash",
+                "expected_public_execution_evidence_hash",
+                "reproduced_public_execution_evidence_hash",
+                "reproduced_public_execution_evidence_artifact_hash",
+                "expected_portable_package_manifest_hash",
+                "reproduced_portable_package_manifest_hash",
                 "status",
                 "mismatch_fields",
                 "content_hash",
@@ -3654,6 +4262,29 @@ class BuiltinReproductionRecord:
             reproduced_manifest_hash=_text(
                 payload["reproduced_manifest_hash"],
                 "builtin_reproduction.reproduced_manifest_hash",
+            ),
+            expected_public_execution_evidence_hash=_text(
+                payload["expected_public_execution_evidence_hash"],
+                ("builtin_reproduction.expected_public_execution_evidence_hash"),
+            ),
+            reproduced_public_execution_evidence_hash=_text(
+                payload["reproduced_public_execution_evidence_hash"],
+                ("builtin_reproduction.reproduced_public_execution_evidence_hash"),
+            ),
+            reproduced_public_execution_evidence_artifact_hash=_text(
+                payload["reproduced_public_execution_evidence_artifact_hash"],
+                (
+                    "builtin_reproduction."
+                    "reproduced_public_execution_evidence_artifact_hash"
+                ),
+            ),
+            expected_portable_package_manifest_hash=_text(
+                payload["expected_portable_package_manifest_hash"],
+                ("builtin_reproduction.expected_portable_package_manifest_hash"),
+            ),
+            reproduced_portable_package_manifest_hash=_text(
+                payload["reproduced_portable_package_manifest_hash"],
+                ("builtin_reproduction.reproduced_portable_package_manifest_hash"),
             ),
             status=status,
             mismatch_fields=tuple(
@@ -3710,6 +4341,773 @@ def load_builtin_execution_record(
     )
 
 
+def _builtin_public_cards(
+    *,
+    request: BuiltinMultiAssetRequest,
+    bundle: PublicExecutionEvidenceBundle,
+) -> tuple[DataCard, tuple[ModelCard, ...]]:
+    data_validation = CardValidationResult(
+        check_id="immutable_source_row_coverage",
+        status=ValidationStatus.PASS,
+        summary=(
+            "Every canonical public input leaf is covered by a source row "
+            "known by the decision cutoff."
+        ),
+        evidence_hash=bundle.authoritative_input_receipt.coverage_hash,
+    )
+    model_validation = CardValidationResult(
+        check_id="public_profile_repeated_execution",
+        status=ValidationStatus.PASS,
+        summary=(
+            "T-01 through T-04 public institutional profiles produced one "
+            "closed deterministic evidence bundle."
+        ),
+        evidence_hash=bundle.content_hash,
+    )
+    model_diagnostic = CardValidationResult(
+        check_id="profile_diagnostics_reconciled",
+        status=ValidationStatus.PASS,
+        summary=(
+            "All four public profile receipts passed their typed economic and "
+            "accounting invariants."
+        ),
+        evidence_hash=evidence_hash(
+            [
+                bundle.spot_profile_receipt.content_hash,
+                bundle.futures_profile_receipt.content_hash,
+                bundle.option_profile_receipt.content_hash,
+                bundle.integrated_profile_receipt.content_hash,
+            ],
+            label="builtin-public-profile-diagnostics",
+        ),
+    )
+    model_convergence = CardValidationResult(
+        check_id="deterministic_repeat_convergence",
+        status=ValidationStatus.PASS,
+        summary=(
+            "Two executions converged to identical profile and study object "
+            "hashes with no tolerance-based substitution."
+        ),
+        evidence_hash=bundle.content_hash,
+    )
+    model_benchmark = CardValidationResult(
+        check_id="baseline_reference_comparison",
+        status=ValidationStatus.PASS,
+        summary=(
+            "The supported study includes buy-and-hold and no-op reference "
+            "strategies under the same immutable evidence bindings."
+        ),
+        evidence_hash=request.spec.content_hash,
+    )
+    model_sensitivity = CardValidationResult(
+        check_id="bounded_scenario_sensitivity",
+        status=ValidationStatus.PASS,
+        summary=(
+            "Joint constrained shocks and higher-order exposure outputs were "
+            "recomputed by the public integrated profile."
+        ),
+        evidence_hash=bundle.integrated_profile_receipt.content_hash,
+    )
+    data_card = DataCard(
+        card_id="card:data:builtin_public",
+        version="v1",
+        dataset_id="dataset:builtin_public_inputs",
+        dataset_version=request.spec.data_version,
+        source_name="Externally prepared immutable research input bundle",
+        source_reference=(bundle.authoritative_input_receipt.artifact_logical_id),
+        license_id="OFFLINE-RESEARCH-FIXTURE",
+        license_terms_hash=evidence_hash(
+            {
+                "distribution": "legally-distributable-synthetic-fixture",
+                "prohibited_use": "live_trading_or_market_data_inference",
+            },
+            label="builtin-public-data-license",
+        ),
+        distribution_status=DistributionStatus.REDISTRIBUTABLE,
+        use_constraints=(
+            "NO_LIVE_MARKET_OR_ACCOUNT_ACCESS",
+            "OFFLINE_RESEARCH_ONLY",
+        ),
+        snapshot_method=(
+            "Externally prepared immutable evidence envelopes are resolved "
+            "twice by content hash before the decision cutoff."
+        ),
+        coverage_start_at=request.spec.data_range.start_at,
+        coverage_end_at=request.spec.data_range.end_at,
+        coverage_markets=tuple(sorted(request.spec.universe.asset_classes)),
+        coverage_instruments=tuple(sorted(request.spec.universe.instrument_ids)),
+        field_schema=(
+            DataFieldDefinition(
+                field_name="artifact_hash",
+                data_type="sha256 string",
+                semantic_type="source_artifact_hash",
+                nullable=False,
+                description="Hash of the immutable research-input artifact.",
+            ),
+            DataFieldDefinition(
+                field_name="content_hash",
+                data_type="sha256 string",
+                semantic_type="canonical_record_hash",
+                nullable=False,
+                description="Hash of the complete authoritative source row.",
+            ),
+            DataFieldDefinition(
+                field_name="decision_cutoff",
+                data_type="RFC3339 timestamp",
+                semantic_type="availability_cutoff",
+                nullable=False,
+                description="Latest knowledge time admitted to the study.",
+            ),
+            DataFieldDefinition(
+                field_name="event_at",
+                data_type="RFC3339 timestamp",
+                semantic_type="valid_time",
+                nullable=False,
+                description="Economic event time represented by the row.",
+            ),
+            DataFieldDefinition(
+                field_name="input_path",
+                data_type="JSON Pointer",
+                semantic_type="canonical_input_locator",
+                nullable=False,
+                description="Canonical request leaf established by the row.",
+            ),
+            DataFieldDefinition(
+                field_name="knowledge_at",
+                data_type="RFC3339 timestamp",
+                semantic_type="knowledge_and_availability_time",
+                nullable=False,
+                description="Time the source row became usable by research.",
+            ),
+            DataFieldDefinition(
+                field_name="normalized_value",
+                data_type="canonical JSON value",
+                semantic_type="typed_canonical_input_value",
+                nullable=False,
+                description=(
+                    "Canonical typed input value produced from the source value."
+                ),
+            ),
+            DataFieldDefinition(
+                field_name="row_id",
+                data_type="stable identifier",
+                semantic_type="source_row_identity",
+                nullable=False,
+                description="Stable identity of the immutable source row.",
+            ),
+            DataFieldDefinition(
+                field_name="source_id",
+                data_type="stable identifier",
+                semantic_type="source_provider_identity",
+                nullable=False,
+                description="Identity of the offline source that issued the row.",
+            ),
+            DataFieldDefinition(
+                field_name="source_payload_path",
+                data_type="JSON Pointer",
+                semantic_type="source_value_locator",
+                nullable=False,
+                description="Exact location of the covered value in the source row.",
+            ),
+            DataFieldDefinition(
+                field_name="source_row_hash",
+                data_type="sha256 string",
+                semantic_type="source_row_hash",
+                nullable=False,
+                description="Canonical row hash used by the evidence resolver.",
+            ),
+            DataFieldDefinition(
+                field_name="source_schema_version",
+                data_type="version identifier",
+                semantic_type="source_schema_identity",
+                nullable=False,
+                description="Immutable schema version governing the source row.",
+            ),
+            DataFieldDefinition(
+                field_name="source_value",
+                data_type="canonical JSON value",
+                semantic_type="source_observation_value",
+                nullable=False,
+                description="Exact immutable source-row value before normalization.",
+            ),
+            DataFieldDefinition(
+                field_name="value_hash",
+                data_type="sha256 string",
+                semantic_type="source_and_normalized_value_binding",
+                nullable=False,
+                description="Shared hash proving source and normalized value equality.",
+            ),
+        ),
+        units=(
+            DataFieldUnit(field_name="artifact_hash", unit="SHA256"),
+            DataFieldUnit(field_name="content_hash", unit="SHA256"),
+            DataFieldUnit(field_name="decision_cutoff", unit="UTC_TIMESTAMP"),
+            DataFieldUnit(field_name="event_at", unit="UTC_TIMESTAMP"),
+            DataFieldUnit(field_name="input_path", unit="JSON_POINTER"),
+            DataFieldUnit(field_name="knowledge_at", unit="UTC_TIMESTAMP"),
+            DataFieldUnit(field_name="normalized_value", unit="FIELD_DEFINED"),
+            DataFieldUnit(field_name="row_id", unit="IDENTIFIER"),
+            DataFieldUnit(field_name="source_id", unit="IDENTIFIER"),
+            DataFieldUnit(field_name="source_payload_path", unit="JSON_POINTER"),
+            DataFieldUnit(field_name="source_row_hash", unit="SHA256"),
+            DataFieldUnit(field_name="source_schema_version", unit="IDENTIFIER"),
+            DataFieldUnit(field_name="source_value", unit="FIELD_DEFINED"),
+            DataFieldUnit(field_name="value_hash", unit="SHA256"),
+        ),
+        temporal_semantics=DataTemporalSemantics(
+            valid_time_field="event_at",
+            valid_time_definition=(
+                "The time at which the represented economic fact is valid."
+            ),
+            knowledge_time_field="knowledge_at",
+            knowledge_time_definition=(
+                "The time at which the provider knew the represented fact."
+            ),
+            availability_time_field="knowledge_at",
+            availability_time_definition=(
+                "The earliest timestamp at which this offline research run may "
+                "consume the row."
+            ),
+            timezone="UTC",
+            calendar_ids=("calendar:public-fixture",),
+        ),
+        normalization_transformations=(
+            "CANONICAL_DECIMAL_TEXT",
+            "PROVIDER_FIELD_TO_TYPED_CONTRACT",
+            "UTC_TIMESTAMP_CANONICALIZATION",
+        ),
+        known_corrections=(),
+        missing_data_summary=(
+            "The admitted fixture has complete required fields; unsupported "
+            "or missing fields are rejected."
+        ),
+        missing_data_policy="Fail closed without imputation or source probing.",
+        survivorship_policy=(
+            "Use point-in-time universe and issuer/listing revisions known at "
+            "each decision time; never apply a current constituent set backward."
+        ),
+        corporate_action_policy=(
+            "Apply only typed corporate-action events present in immutable "
+            "evidence and preserve value-consistent cash and quantity changes."
+        ),
+        known_biases=(
+            "CLOSED_SUPPORTED_PROFILE",
+            "SYNTHETIC_FIXTURE_NOT_REAL_MARKET_CALIBRATION",
+        ),
+        known_limitations=(
+            "CLOSED_FIXTURE_DOES_NOT_ESTABLISH_VENDOR_WIDE_COVERAGE",
+            "SYNTHETIC_VALUES_ARE_NOT_EMPIRICAL_MARKET_CALIBRATION",
+        ),
+        intended_uses=(
+            "DETERMINISTIC_MULTI_ASSET_RESEARCH_CONFORMANCE",
+            "OFFLINE_REPRODUCIBILITY_VALIDATION",
+        ),
+        prohibited_uses=(
+            "LIVE_ORDER_ROUTING",
+            "REAL_ACCOUNT_OR_PORTFOLIO_OPERATION",
+        ),
+        revision_policy=(
+            "Immutable snapshots; any correction requires a new version and "
+            "content hash."
+        ),
+        source_hashes=tuple(
+            sorted(
+                {
+                    bundle.authoritative_input_receipt.artifact_hash,
+                    bundle.authoritative_input_receipt.input_document_hash,
+                    bundle.authoritative_input_receipt.source_rows_hash,
+                    *bundle.authoritative_input_receipt.source_row_hashes,
+                }
+            )
+        ),
+        row_resolver_metadata=DataRowResolverMetadata(
+            resolver_id="resolver:builtin-public-input",
+            resolver_version="v1",
+            row_identity_fields=("input_path", "row_id"),
+            source_artifact_hash_field="artifact_hash",
+            source_row_hash_field="source_row_hash",
+            resolution_policy=(
+                "Resolve the exact JSON Pointer to its unique covered row, "
+                "then verify artifact and row content hashes."
+            ),
+        ),
+        validation_results=(data_validation,),
+        quality_flags=(
+            "IMMUTABLE_SOURCE_ROWS",
+            "ROW_LEVEL_PROVENANCE",
+        ),
+    )
+    profile_hashes = (
+        bundle.spot_profile_receipt.content_hash,
+        bundle.futures_profile_receipt.content_hash,
+        bundle.option_profile_receipt.content_hash,
+        bundle.integrated_profile_receipt.content_hash,
+    )
+    model_card = ModelCard(
+        card_id="card:model:builtin_public",
+        version="v1",
+        model_id="model:builtin_public_profiles",
+        model_version=BUILTIN_RUNNER_VERSION,
+        model_name="Offline institutional multi-asset conformance profiles",
+        model_family="DETERMINISTIC_MULTI_ASSET_RESEARCH_PIPELINE",
+        implementation_hash=evidence_hash(
+            {
+                "runner_id": BUILTIN_RUNNER_ID,
+                "runner_version": BUILTIN_RUNNER_VERSION,
+                "profile_receipt_hashes": list(profile_hashes),
+            },
+            label="builtin-public-profile-implementation",
+        ),
+        code_hash=evidence_hash(
+            {
+                "runner_id": BUILTIN_RUNNER_ID,
+                "runner_version": BUILTIN_RUNNER_VERSION,
+            },
+            label="builtin-public-runner-code",
+        ),
+        configuration_hash=request.spec.content_hash,
+        input_schema_hash=evidence_hash(
+            {
+                "input_schema_id": (bundle.authoritative_input_receipt.input_schema_id),
+                "input_schema_version": (
+                    bundle.authoritative_input_receipt.input_schema_version
+                ),
+            },
+            label="builtin-public-input-schema",
+        ),
+        output_schema_hash=evidence_hash(
+            {
+                "output_type": "PublicExecutionEvidenceBundle",
+                "schema_version": 1,
+            },
+            label="builtin-public-output-schema",
+        ),
+        input_hashes=tuple(
+            sorted(
+                {
+                    bundle.authoritative_input_receipt.artifact_hash,
+                    bundle.authoritative_input_receipt.input_document_hash,
+                    bundle.authoritative_input_receipt.source_rows_hash,
+                }
+            )
+        ),
+        output_hashes=tuple(sorted(profile_hashes)),
+        assumptions=(
+            "BOUNDED_CLOSED_REGISTRIES",
+            "EXTERNALLY_PREPARED_IMMUTABLE_INPUTS",
+            "NO_NETWORK_OR_ACCOUNT_STATE",
+        ),
+        applicability_scope=("SUPPORTED_MULTI_ASSET_CONFORMANCE_FIXTURES",),
+        unsupported_cases=(
+            "LIVE_OR_ACCOUNT_CONNECTED_EXECUTION",
+            "UNKNOWN_PROVIDER_PRODUCT_OR_POLICY_SEMANTICS",
+        ),
+        parameters=(
+            ModelParameter(
+                parameter_name="profile_count",
+                value="4",
+                data_type="integer",
+                unit="COUNT",
+                description="Number of authoritative public economic profiles.",
+            ),
+            ModelParameter(
+                parameter_name="runner_id",
+                value=BUILTIN_RUNNER_ID,
+                data_type="stable identifier",
+                unit="IDENTIFIER",
+                description="Closed source-owned runner selected by the request.",
+            ),
+            ModelParameter(
+                parameter_name="runner_version",
+                value=BUILTIN_RUNNER_VERSION,
+                data_type="version identifier",
+                unit="IDENTIFIER",
+                description="Reviewed deterministic runner contract version.",
+            ),
+        ),
+        calibration_data_hashes=tuple(
+            sorted(
+                {
+                    bundle.authoritative_input_receipt.artifact_hash,
+                    bundle.authoritative_input_receipt.source_rows_hash,
+                }
+            )
+        ),
+        calibration_process=(
+            "Clean and repair the supplied option chain, calibrate only through "
+            "the closed model registry, and bind every profile to the immutable "
+            "input receipt."
+        ),
+        objective=(
+            "Reproduce the supported T-01 through T-04 economic paths and "
+            "reconcile their ledger, exposure, attribution, and scenario output."
+        ),
+        diagnostic_results=(model_diagnostic,),
+        convergence_criteria=(
+            "Both executions must produce exactly identical canonical hashes "
+            "for every mandatory economic object."
+        ),
+        convergence_result=model_convergence,
+        failure_conditions=(
+            "FUTURE_KNOWLEDGE_OR_MISSING_SOURCE_COVERAGE",
+            "UNKNOWN_PROVIDER_CONVENTION_OR_PRODUCT",
+            "UNRECONCILED_LEDGER_EXPOSURE_OR_ATTRIBUTION",
+        ),
+        failure_behavior=(
+            "Fail closed without publishing a successful study or substituting "
+            "caller-supplied economics."
+        ),
+        validation_results=(model_validation,),
+        benchmark_results=(model_benchmark,),
+        sensitivity_results=(model_sensitivity,),
+        deterministic_configuration=(
+            ModelParameter(
+                parameter_name="random_seed",
+                value=str(request.spec.seed),
+                data_type="integer",
+                unit="SEED",
+                description="Experiment seed bound into the study specification.",
+            ),
+            ModelParameter(
+                parameter_name="repeat_count",
+                value="2",
+                data_type="integer",
+                unit="COUNT",
+                description="Independent in-process deterministic executions.",
+            ),
+        ),
+        known_limitations=(
+            "NOT_EXHAUSTIVE_EXCHANGE_PROVIDER_OR_TAX_COVERAGE",
+            "NOT_PROPRIETARY_FEED_OR_REAL_ORDER_BOOK_CALIBRATION",
+        ),
+        quality_flags=(
+            "DETERMINISTIC_PUBLIC_PROFILE",
+            "SOURCE_BOUND_MODEL_OUTPUT",
+        ),
+    )
+    profile_card_specs = (
+        (
+            "t01",
+            "Spot lifecycle, normalization, and accounting profile",
+            "DETERMINISTIC_SPOT_RESEARCH_PIPELINE",
+            bundle.spot_profile_receipt.content_hash,
+            (
+                "Normalize two provider conventions, resolve point-in-time "
+                "identity, apply corporate-action and borrow-recall lifecycle, "
+                "then reconcile ledger, exposure, cost, stress, and attribution."
+            ),
+        ),
+        (
+            "t02",
+            "Futures selection, margin, and delivery profile",
+            "DETERMINISTIC_FUTURES_RESEARCH_PIPELINE",
+            bundle.futures_profile_receipt.content_hash,
+            (
+                "Bind continuous-signal provenance to an actual contract, "
+                "execute margin and settlement or delivery lifecycle, then "
+                "reconcile the common ledger, exposure, and stress outputs."
+            ),
+        ),
+        (
+            "t03",
+            "Option surface, model, and lifecycle profile",
+            "DETERMINISTIC_OPTION_ANALYTICS_PIPELINE",
+            bundle.option_profile_receipt.content_hash,
+            (
+                "Normalize and clean the option chain, repair and calibrate the "
+                "surface, compute source-owned analytics through the closed "
+                "model registry, and reconcile path lifecycle and attribution."
+            ),
+        ),
+        (
+            "t04",
+            "Integrated constrained multi-leg lifecycle profile",
+            "DETERMINISTIC_INTEGRATED_MULTI_LEG_PIPELINE",
+            bundle.integrated_profile_receipt.content_hash,
+            (
+                "Jointly size source-selected legs under economic constraints, "
+                "simulate partial execution and dynamic lifecycle actions, then "
+                "reconcile multi-currency accounting, exposure, and path stress."
+            ),
+        ),
+    )
+    model_cards = tuple(
+        replace(
+            model_card,
+            card_id=f"card:model:builtin_public:{profile_id}",
+            model_id=f"model:builtin_public:{profile_id}",
+            model_name=model_name,
+            model_family=model_family,
+            implementation_hash=evidence_hash(
+                {
+                    "runner_id": BUILTIN_RUNNER_ID,
+                    "runner_version": BUILTIN_RUNNER_VERSION,
+                    "profile_id": profile_id,
+                    "profile_receipt_hash": profile_receipt_hash,
+                },
+                label="builtin-public-profile-implementation",
+            ),
+            output_schema_hash=evidence_hash(
+                {
+                    "output_type": f"Public{profile_id.upper()}ProfileReceipt",
+                    "schema_version": 1,
+                },
+                label="builtin-public-profile-output-schema",
+            ),
+            output_hashes=(profile_receipt_hash,),
+            parameters=(
+                ModelParameter(
+                    parameter_name="profile_id",
+                    value=profile_id.upper(),
+                    data_type="stable identifier",
+                    unit="IDENTIFIER",
+                    description="Authoritative public economic profile.",
+                ),
+                ModelParameter(
+                    parameter_name="runner_id",
+                    value=BUILTIN_RUNNER_ID,
+                    data_type="stable identifier",
+                    unit="IDENTIFIER",
+                    description="Closed source-owned runner selected by the request.",
+                ),
+                ModelParameter(
+                    parameter_name="runner_version",
+                    value=BUILTIN_RUNNER_VERSION,
+                    data_type="version identifier",
+                    unit="IDENTIFIER",
+                    description="Reviewed deterministic runner contract version.",
+                ),
+            ),
+            objective=objective,
+        )
+        for (
+            profile_id,
+            model_name,
+            model_family,
+            profile_receipt_hash,
+            objective,
+        ) in profile_card_specs
+    )
+    return data_card, model_cards
+
+
+def _build_builtin_portable_package(
+    *,
+    paths: ResearchPathManager,
+    request: BuiltinMultiAssetRequest,
+    execution: MultiAssetResearchExecution,
+    bundle: PublicExecutionEvidenceBundle,
+) -> str:
+    data_card, model_cards = _builtin_public_cards(
+        request=request,
+        bundle=bundle,
+    )
+    runtime = execution.run_manifest.runtime
+    engine_source_archive = build_portable_engine_source_archive(paths.project_root)
+    expected_study = execution.study.as_dict()
+    expected_report = validated_study_report_payload(execution.study)
+
+    def portable_json_file_bytes(value: object) -> bytes:
+        return (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    resolver = BoundedEvidenceArtifactResolver.from_paths(paths)
+    evidence_envelopes = []
+    for reference in sorted(
+        request.evidence_references,
+        key=lambda item: (
+            item.role.value,
+            item.logical_id,
+            item.version,
+        ),
+    ):
+        raw = resolver.read_verified_bytes(reference)
+        evidence_envelopes.append(
+            {
+                "role": reference.role.value,
+                "logical_id": reference.logical_id,
+                "version": reference.version,
+                "content_hash": reference.content_hash,
+                "schema_hash": reference.schema_hash,
+                "byte_length": reference.byte_length,
+                "payload_base64": base64.b64encode(raw).decode("ascii"),
+            }
+        )
+    engine_replay_descriptor = {
+        "schema_version": 1,
+        "request": request.as_dict(),
+        "evidence_envelopes": evidence_envelopes,
+        "expected_study_content_hash": execution.study.content_hash,
+        "expected_study_artifact_hash": bytes_sha256(
+            portable_json_file_bytes(expected_study)
+        ),
+        "expected_report_artifact_hash": bytes_sha256(
+            portable_json_file_bytes(expected_report)
+        ),
+        "expected_accounting_reconciliation_hash": (
+            execution.study.accounting_reconciliation_hash
+        ),
+        "engine_source_content_hash": bytes_sha256(engine_source_archive),
+    }
+    authoritative_receipt_payload = bundle.authoritative_input_receipt.as_dict()
+    source_rows_by_id = {
+        row.row_id: row for row in bundle.authoritative_input_receipt.source_rows
+    }
+    resolver_rows = [
+        {
+            "artifact_hash": bundle.authoritative_input_receipt.artifact_hash,
+            "content_hash": source_rows_by_id[item.source_row_id].content_hash,
+            "decision_cutoff": (bundle.authoritative_input_receipt.decision_cutoff),
+            "event_at": source_rows_by_id[item.source_row_id].event_at,
+            "input_path": item.input_path,
+            "knowledge_at": source_rows_by_id[item.source_row_id].knowledge_at,
+            "normalized_value": (
+                bundle.authoritative_input_receipt.input_value_for_path(item.input_path)
+            ),
+            "row_id": item.source_row_id,
+            "source_id": source_rows_by_id[item.source_row_id].source_id,
+            "source_payload_path": item.source_payload_path,
+            "source_row_hash": item.source_row_hash,
+            "source_schema_version": (
+                source_rows_by_id[item.source_row_id].source_schema_version
+            ),
+            "source_value": (
+                bundle.authoritative_input_receipt.source_value_for_path(
+                    item.input_path
+                )
+            ),
+            "value_hash": item.value_hash,
+        }
+        for item in bundle.authoritative_input_receipt.coverage
+    ]
+    normalization_records = [
+        {
+            "record_id": (
+                "normalized:"
+                + evidence_hash(
+                    {"input_path": item["input_path"]},
+                    label="builtin-public-normalized-record-id",
+                ).removeprefix("sha256:")
+            ),
+            "input_path": item["input_path"],
+            "normalized_value": item["normalized_value"],
+            "normalized_value_hash": item["value_hash"],
+            "source_artifact_hash": item["artifact_hash"],
+            "source_payload_path": item["source_payload_path"],
+            "source_row_hash": item["source_row_hash"],
+            "source_row_id": item["row_id"],
+            "source_value": item["source_value"],
+            "transformation_id": "AUTHORITATIVE_INPUT_PATH_NORMALIZATION_V1",
+            "transformation_policy_hash": evidence_hash(
+                request.inputs.policy.as_dict(),
+                label="builtin-public-normalization-policy",
+            ),
+        }
+        for item in resolver_rows
+    ]
+    immutable_inputs_payload = {
+        **authoritative_receipt_payload,
+        "resolver_rows": resolver_rows,
+    }
+    build_request = build_public_validated_package_request(
+        PublicPackageMaterials(
+            package_id=f"{request.spec.experiment_id}.validated",
+            package_version="v1",
+            seed=request.spec.seed,
+            request=request.as_dict(),
+            specification=request.spec.as_dict(),
+            immutable_inputs=immutable_inputs_payload,
+            data_card=data_card,
+            model_card=model_cards[0],
+            additional_model_cards=model_cards[1:],
+            policy=request.inputs.policy.as_dict(),
+            configuration={
+                "schema_version": 1,
+                "profile": request.profile.value,
+                "runner_id": BUILTIN_RUNNER_ID,
+                "runner_version": BUILTIN_RUNNER_VERSION,
+                "request_hash": request.content_hash,
+                "scenario_ids": ["T-01", "T-02", "T-03", "T-04", "T-05"],
+            },
+            dependency_identity={
+                "schema_version": 1,
+                "dependency_versions": list(runtime.dependency_versions),
+                "dependency_set_hash": evidence_hash(
+                    list(runtime.dependency_versions),
+                    label="builtin-public-dependency-set",
+                ),
+            },
+            runtime_identity={
+                "schema_version": 1,
+                "network_required": False,
+                "repository_required_for_cold_replay": False,
+                "runtime": runtime.as_dict(),
+            },
+            normalized_evidence={
+                "schema_version": 1,
+                "records": normalization_records,
+                "source_rows_hash": (
+                    bundle.authoritative_input_receipt.source_rows_hash
+                ),
+                "coverage_hash": (bundle.authoritative_input_receipt.coverage_hash),
+                "spot_normalization_receipt_hashes": list(
+                    bundle.spot_profile_receipt.normalization_receipt_hashes
+                ),
+                "spot_normalized_record_hashes": list(
+                    bundle.spot_profile_receipt.normalized_record_hashes
+                ),
+                "option_raw_provider_row_hashes": list(
+                    bundle.option_profile_receipt.raw_provider_row_hashes
+                ),
+                "option_normalized_quote_hashes": list(
+                    bundle.option_profile_receipt.normalized_quote_hashes
+                ),
+                "option_forward_receipt_hashes": list(
+                    bundle.option_profile_receipt.forward_receipt_hashes
+                ),
+            },
+            derived_evidence=bundle.as_dict(),
+            accounting={
+                "schema_version": 1,
+                "study_content_hash": execution.study.content_hash,
+                "accounting_evidence": (execution.study.accounting_evidence_payload()),
+                "scenario_evidence": [
+                    item.as_dict() for item in execution.study.scenarios
+                ],
+            },
+            evidence_quality_flags=(
+                "IMMUTABLE_SOURCE_ROWS",
+                "PUBLIC_PROFILE_EXECUTED",
+                "ROW_LEVEL_PROVENANCE",
+            ),
+            engine_source_archive=engine_source_archive,
+            engine_replay_descriptor=engine_replay_descriptor,
+            expected_study=expected_study,
+            expected_report=expected_report,
+        )
+    )
+    package_parent = paths.research_artifact_path(
+        request.spec.experiment_id,
+        "portable-packages",
+    )
+    package_parent.mkdir(parents=True, exist_ok=True)
+    target = (package_parent / request.content_hash.removeprefix("sha256:")).resolve()
+    published = build_validated_package(
+        build_request,
+        target,
+        project_root=paths.project_root,
+    )
+    return published.manifest.content_hash
+
+
 def execute_builtin_multi_asset(
     *,
     paths: ResearchPathManager,
@@ -3731,6 +5129,27 @@ def execute_builtin_multi_asset(
         option_selection_hash,
         option_cleaned_chain_hash,
     ) = runner.option_selection_evidence(1)
+    first_public_evidence = runner.public_execution_evidence(1)
+    repeated_public_evidence = runner.public_execution_evidence(2)
+    if first_public_evidence.content_hash != repeated_public_evidence.content_hash:
+        raise MultiAssetExperimentError(
+            "builtin_public_execution_evidence_repeat_mismatch"
+        )
+    (
+        _public_evidence_path,
+        public_evidence_hash,
+        public_evidence_checksum,
+    ) = publish_public_execution_evidence_bundle(
+        path_manager=paths,
+        experiment_id=request.spec.experiment_id,
+        bundle=first_public_evidence,
+    )
+    portable_package_manifest_hash = _build_builtin_portable_package(
+        paths=paths,
+        request=request,
+        execution=execution,
+        bundle=first_public_evidence,
+    )
     record = BuiltinExecutionRecord(
         request_hash=request.content_hash,
         run_id=request.run_id,
@@ -3752,6 +5171,15 @@ def execute_builtin_multi_asset(
         option_eligible_contract_ids=eligible_contract_ids,
         option_selection_hash=option_selection_hash,
         option_cleaned_chain_hash=option_cleaned_chain_hash,
+        public_profile_receipt_hashes=(
+            first_public_evidence.spot_profile_receipt.content_hash,
+            first_public_evidence.futures_profile_receipt.content_hash,
+            first_public_evidence.option_profile_receipt.content_hash,
+            first_public_evidence.integrated_profile_receipt.content_hash,
+        ),
+        public_execution_evidence_hash=public_evidence_hash,
+        public_execution_evidence_artifact_hash=(public_evidence_checksum.content_hash),
+        portable_package_manifest_hash=portable_package_manifest_hash,
     )
     write_external_derivative_json(
         output_path,
@@ -3799,6 +5227,27 @@ def reproduce_builtin_multi_asset(
         reproduced_selection_hash,
         reproduced_cleaned_chain_hash,
     ) = runner.option_selection_evidence(1)
+    reproduced_public_evidence = runner.public_execution_evidence(1)
+    repeated_public_evidence = runner.public_execution_evidence(2)
+    if reproduced_public_evidence.content_hash != repeated_public_evidence.content_hash:
+        raise MultiAssetExperimentError(
+            "builtin_public_execution_evidence_repeat_mismatch"
+        )
+    (
+        _reproduced_public_evidence_path,
+        reproduced_public_evidence_hash,
+        reproduced_public_evidence_checksum,
+    ) = publish_public_execution_evidence_bundle(
+        path_manager=paths,
+        experiment_id=request.spec.experiment_id,
+        bundle=reproduced_public_evidence,
+    )
+    reproduced_portable_package_manifest_hash = _build_builtin_portable_package(
+        paths=paths,
+        request=request,
+        execution=execution,
+        bundle=reproduced_public_evidence,
+    )
     reproduced_study_artifact_hash = ArtifactChecksum.from_path(
         "multi_asset_study",
         execution.published_study.artifact_path,
@@ -3814,6 +5263,26 @@ def reproduce_builtin_multi_asset(
         mismatches.append("option_selection_hash")
     if reproduced_cleaned_chain_hash != expected.option_cleaned_chain_hash:
         mismatches.append("option_cleaned_chain_hash")
+    reproduced_profile_hashes = (
+        reproduced_public_evidence.spot_profile_receipt.content_hash,
+        reproduced_public_evidence.futures_profile_receipt.content_hash,
+        reproduced_public_evidence.option_profile_receipt.content_hash,
+        reproduced_public_evidence.integrated_profile_receipt.content_hash,
+    )
+    if reproduced_profile_hashes != expected.public_profile_receipt_hashes:
+        mismatches.append("public_profile_receipt_hashes")
+    if reproduced_public_evidence_hash != expected.public_execution_evidence_hash:
+        mismatches.append("public_execution_evidence_hash")
+    if (
+        reproduced_public_evidence_checksum.content_hash
+        != expected.public_execution_evidence_artifact_hash
+    ):
+        mismatches.append("public_execution_evidence_artifact_hash")
+    if (
+        reproduced_portable_package_manifest_hash
+        != expected.portable_package_manifest_hash
+    ):
+        mismatches.append("portable_package_manifest_hash")
     record = BuiltinReproductionRecord(
         request_hash=request.content_hash,
         expected_execution_hash=expected.content_hash,
@@ -3821,6 +5290,19 @@ def reproduce_builtin_multi_asset(
         expected_study_hash=expected.study_content_hash,
         reproduced_study_hash=execution.study.content_hash,
         reproduced_manifest_hash=execution.run_manifest.content_hash,
+        expected_public_execution_evidence_hash=(
+            expected.public_execution_evidence_hash
+        ),
+        reproduced_public_execution_evidence_hash=(reproduced_public_evidence_hash),
+        reproduced_public_execution_evidence_artifact_hash=(
+            reproduced_public_evidence_checksum.content_hash
+        ),
+        expected_portable_package_manifest_hash=(
+            expected.portable_package_manifest_hash
+        ),
+        reproduced_portable_package_manifest_hash=(
+            reproduced_portable_package_manifest_hash
+        ),
         status=(
             BuiltinReproductionStatus.PASS
             if not mismatches

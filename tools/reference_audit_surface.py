@@ -25,6 +25,9 @@ _EXCLUDED_FILES = {
     "docs/investment-research-platform-audit.json",
     "docs/investment-research-platform-audit-report.md",
     "docs/investment-research-platform-audit-result.json",
+    "docs/multi-asset-investment-research-audit-report.md",
+    "docs/multi-asset-investment-research-audit-result.json",
+    "docs/multi-asset-investment-research-criterion-evidence.json",
 }
 _EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 _EXCLUDED_DIRECTORY_SUFFIXES = {".egg-info"}

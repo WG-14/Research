@@ -189,15 +189,12 @@ def test_continuous_manifest_is_complete_and_never_tradable() -> None:
             ("future.index.202606", Decimal("-5")),
         ),
         builder_version="builder.v2",
-        source_snapshot_hashes=tuple(
-            sorted((_hash("chain-1"), _hash("chain-2")))
-        ),
+        source_snapshot_hashes=tuple(sorted((_hash("chain-1"), _hash("chain-2")))),
         generated_series_hash=_hash("series"),
         generated_at="2026-01-02T00:00:00+00:00",
     )
     assert (
-        manifest.require_actual_contract("future.index.202603")
-        == "future.index.202603"
+        manifest.require_actual_contract("future.index.202603") == "future.index.202603"
     )
     with pytest.raises(FuturesDeliveryError, match="not_tradable"):
         manifest.require_actual_contract(manifest.series_id)
@@ -266,9 +263,7 @@ def test_contract_selection_uses_notice_trade_liquidity_oi_volume_and_spread() -
         policy=policy,
     )
     assert receipt.selected_contract_id == "future.usbond.202606"
-    assert receipt.rejected == (
-        ("future.usbond.202603", ("FIRST_NOTICE",)),
-    )
+    assert receipt.rejected == (("future.usbond.202603", ("FIRST_NOTICE",)),)
     with pytest.raises(FuturesDeliveryError, match="future_knowledge"):
         select_actual_contract(
             candidates,
@@ -387,6 +382,38 @@ def test_cash_settlement_default_and_ctd_nonapplicability_are_distinct() -> None
             _basket(),
             futures_settlement_price=Decimal("105"),
         )
+
+
+def test_cash_settlement_canonicalizes_arbitrary_contract_and_policy_hashes() -> None:
+    pairs = (
+        (
+            _cash_contract(f"future.index.canonical.{index}"),
+            DeliveryPolicy(
+                policy_id=f"delivery.cash.canonical.{index}",
+                version="v1",
+                physical_delivery_enabled=False,
+                close_before_notice_days=0,
+                default_closeout_penalty_rate=Decimal("0.01"),
+            ),
+        )
+        for index in range(32)
+    )
+    contract, policy = next(
+        (contract, policy)
+        for contract, policy in pairs
+        if contract.contract_hash() > policy.policy_hash()
+    )
+
+    posting = settle_futures_position(
+        contract,
+        quantity=Decimal("1"),
+        prior_settlement_price=Decimal("5000"),
+        final_settlement_price=Decimal("5001"),
+        occurred_at="2026-03-21T16:00:00+00:00",
+        policy=policy,
+    )[0]
+
+    assert posting.source_hashes == tuple(sorted(posting.source_hashes))
 
 
 def _margin_policy(*, funding: bool) -> FuturesMarginPolicyVersion:
@@ -656,9 +683,7 @@ def test_common_ledger_cash_delivery_and_default_postings_reconcile() -> None:
     assert delivered.instrument_id == "bond.treasury.a"
     assert delivered.quantity == Decimal("2000")
     assert delivered.average_price == Decimal("111.25")
-    delivered_valuation = delivered_snapshot.valuation(
-        fx_rates={"USD": Decimal("1")}
-    )
+    delivered_valuation = delivered_snapshot.valuation(fx_rates={"USD": Decimal("1")})
     assert delivered_valuation.nav == Decimal("302000")
     assert delivered_valuation.realized_pnl == Decimal("2000")
     assert delivered_valuation.reconciled

@@ -66,6 +66,7 @@ markers = [
     "nightly: expensive research validation intended for nightly or dedicated pipelines",
     "memory_sensitive: tests that guard memory/resource semantics or order-dependent RSS behavior",
     "resource_guard: deterministic tests for research resource-limit enforcement and reporting",
+    "postgresql: requires the explicitly configured live PostgreSQL database",
 ]
 
 [tool.ruff]

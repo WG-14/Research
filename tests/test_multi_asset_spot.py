@@ -640,9 +640,7 @@ def test_borrow_recall_revision_and_forced_buy_in_reconcile_short_book() -> None
     assert store.as_of(T0 + timedelta(hours=1)) == (recall,)
     assert store.as_of(T0 + timedelta(hours=3)) == (correction,)
     with pytest.raises(SpotResearchError, match="revision chain"):
-        BorrowRecallRevisionStore(
-            (recall, replace(correction, supersedes_hash=HASH_B))
-        )
+        BorrowRecallRevisionStore((recall, replace(correction, supersedes_hash=HASH_B)))
 
     with pytest.raises(SpotResearchError, match="open short"):
         apply_borrow_recall(

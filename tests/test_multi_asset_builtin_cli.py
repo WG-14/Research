@@ -265,8 +265,14 @@ def _option_requests() -> tuple[
     MultiLegStudyRequest,
     Decimal,
 ]:
+    lower_strike = option_contract("builtin_call_090", strike="90")
     selected = option_contract("builtin_call_100", strike="100")
     competitor = option_contract("builtin_call_110", strike="110")
+    lower_strike_quote = option_quote(
+        lower_strike,
+        bid="11.9",
+        ask="12.1",
+    )
     selected_quote = option_quote(selected)
     competitor_quote = option_quote(
         competitor,
@@ -278,8 +284,8 @@ def _option_requests() -> tuple[
         underlying_id=selected.underlying_id,
         knowledge_time=NOW,
         underlying_price=Decimal("100"),
-        contracts=(selected, competitor),
-        quotes=(selected_quote, competitor_quote),
+        contracts=(lower_strike, selected, competitor),
+        quotes=(lower_strike_quote, selected_quote, competitor_quote),
         source_manifest_hashes=(_hash("d"),),
         quality_results=_quality(),
     )
@@ -297,7 +303,11 @@ def _option_requests() -> tuple[
     dataset = _dataset(
         instrument=InstrumentKind.OPTION,
         chain_hash=chain.content_hash,
-        universe_ids=(selected.contract_id, competitor.contract_id),
+        universe_ids=(
+            lower_strike.contract_id,
+            selected.contract_id,
+            competitor.contract_id,
+        ),
     )
     model = BlackScholesModel()
     spec = derivative_spec(
@@ -373,13 +383,21 @@ def _option_requests() -> tuple[
         as_of=intermediate_at,
         availability=intermediate_availability,
     )
+    intermediate_lower_strike_quote = option_quote(
+        lower_strike,
+        bid="10.8",
+        ask="11.0",
+        as_of=intermediate_at,
+        availability=intermediate_availability,
+    )
     intermediate_chain = OptionChainSnapshot(
         chain_snapshot_id="chain.option.builtin.intermediate",
         underlying_id=selected.underlying_id,
         knowledge_time=intermediate_at,
         underlying_price=Decimal("100"),
-        contracts=(selected, competitor),
+        contracts=(lower_strike, selected, competitor),
         quotes=(
+            intermediate_lower_strike_quote,
             intermediate_selected_quote,
             intermediate_competitor_quote,
         ),
@@ -390,7 +408,11 @@ def _option_requests() -> tuple[
         _dataset(
             instrument=InstrumentKind.OPTION,
             chain_hash=intermediate_chain.content_hash,
-            universe_ids=(selected.contract_id, competitor.contract_id),
+            universe_ids=(
+                lower_strike.contract_id,
+                selected.contract_id,
+                competitor.contract_id,
+            ),
         ),
         knowledge_time=intermediate_at,
         period_end=intermediate_at,
@@ -448,8 +470,23 @@ def _option_requests() -> tuple[
         allow_illiquid=False,
         maximum_leg_time_skew_seconds=1,
     )
+    multi_chain = OptionChainSnapshot(
+        chain_snapshot_id="chain.option.builtin.multileg",
+        underlying_id=selected.underlying_id,
+        knowledge_time=NOW,
+        underlying_price=Decimal("100"),
+        contracts=(selected, competitor),
+        quotes=(selected_quote, competitor_quote),
+        source_manifest_hashes=(_hash("d"),),
+        quality_results=_quality(),
+    )
+    multi_dataset = _dataset(
+        instrument=InstrumentKind.OPTION,
+        chain_hash=multi_chain.content_hash,
+        universe_ids=(selected.contract_id, competitor.contract_id),
+    )
     multi_spec = derivative_spec(
-        dataset,
+        multi_dataset,
         simulation_policy_hash=multi_policy.content_hash,
         cost_model_hash=multi_policy.cost_model_hash,
         fill_model_hash=multi_policy.fill_model_hash,
@@ -484,9 +521,9 @@ def _option_requests() -> tuple[
         started_at=NOW,
         finished_at="2026-07-03T00:00:00Z",
         preregistration=preregistration,
-        dataset=dataset,
+        dataset=multi_dataset,
         experiment_spec=multi_spec,
-        chain=chain,
+        chain=multi_chain,
         execution_policy=multi_policy,
         valuation_model=model,
         order=order,
@@ -695,6 +732,7 @@ def test_public_builtin_cli_executes_and_reproduces_authoritative_study(
 
     assert execution.request_hash == request.content_hash
     assert execution.option_eligible_contract_ids == (
+        "builtin_call_090",
         "builtin_call_100",
         "builtin_call_110",
     )
@@ -721,6 +759,66 @@ def test_public_builtin_cli_executes_and_reproduces_authoritative_study(
     assert reproduction.status is BuiltinReproductionStatus.PASS
     assert reproduction.mismatch_fields == ()
     assert reproduction.reproduced_study_hash == (execution.study_content_hash)
+
+
+def test_public_builtin_cli_rejects_request_values_not_backed_by_input_artifact(
+    tmp_path: Path,
+) -> None:
+    request, context = _builtin_request(tmp_path)
+    forged_inputs = replace(
+        request.inputs,
+        spot=replace(
+            request.inputs.spot,
+            entry_price=request.inputs.spot.entry_price + Decimal("1"),
+        ),
+    )
+    forged_spec = replace(
+        request.spec,
+        scenarios=tuple(
+            (
+                replace(
+                    scenario,
+                    parameters=(("builtin_inputs_hash", forged_inputs.content_hash),),
+                )
+                if index < 4
+                else scenario
+            )
+            for index, scenario in enumerate(request.spec.scenarios)
+        ),
+    )
+    forged = BuiltinMultiAssetRequest(
+        run_id="run:builtin-cli:unbacked-input-claim",
+        spec=forged_spec,
+        evidence_references=_references(
+            paths=context.paths,
+            spec=forged_spec,
+            research_inputs_document=request.inputs.as_dict(),
+            research_inputs_schema_id="builtin-multi-asset-scenario-inputs",
+        ),
+        inputs=forged_inputs,
+    )
+    request_path = (tmp_path / "forged-builtin-request.json").resolve()
+    output_path = (tmp_path / "forged-builtin-execution.json").resolve()
+    write_builtin_multi_asset_request(
+        context.paths,
+        request_path,
+        forged,
+    )
+    messages: list[str] = []
+    context.printer = messages.append
+
+    result = command_registry()["research-multi-asset-execute"].handler(
+        argparse.Namespace(
+            request=str(request_path),
+            out=str(output_path),
+        ),
+        context,
+    )
+
+    assert result == 1
+    failure = json.loads(messages[-1])
+    assert failure["failure_code"] == "builtin_research_input_authority_failed"
+    assert not output_path.exists()
 
 
 def test_builtin_request_codec_rejects_external_runner_injection(

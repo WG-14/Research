@@ -396,11 +396,7 @@ def test_joint_integer_optimizer_enforces_all_targets_and_reports_infeasibility(
                 minimum_liquidity_score=Decimal("0.5"),
             ),
             direction=direction,
-            role=(
-                LegRole.PRIMARY
-                if direction is Direction.LONG
-                else LegRole.HEDGE
-            ),
+            role=(LegRole.PRIMARY if direction is Direction.LONG else LegRole.HEDGE),
             minimum_quantity=1,
             maximum_quantity=3,
             unit_delta=Decimal("10"),
@@ -467,12 +463,8 @@ def test_joint_integer_optimizer_enforces_all_targets_and_reports_infeasibility(
         )
     )
     assert not infeasible.feasible
-    assert dict(infeasible.infeasibility_reasons)[
-        "MARGIN_LIMIT_EXCEEDED"
-    ] > 0
-    assert "HYPOTHESIS_MARGIN_BUDGET_INFEASIBLE" in (
-        infeasible.hypothesis_feedback
-    )
+    assert dict(infeasible.infeasibility_reasons)["MARGIN_LIMIT_EXCEEDED"] > 0
+    assert "HYPOTHESIS_MARGIN_BUDGET_INFEASIBLE" in (infeasible.hypothesis_feedback)
 
     bypass = replace(
         problem,
@@ -491,6 +483,4 @@ def test_joint_integer_optimizer_enforces_all_targets_and_reports_infeasibility(
     )
     rejected = optimizer.optimize(bypass)
     assert not rejected.feasible
-    assert "LEG_PRODUCT_KIND_MISMATCH" in dict(
-        rejected.infeasibility_reasons
-    )
+    assert "LEG_PRODUCT_KIND_MISMATCH" in dict(rejected.infeasibility_reasons)

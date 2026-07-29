@@ -462,8 +462,8 @@ def _references(
     source_row: dict[str, object] = {
         "row_id": "row:research-inputs:1",
         "row_kind": "CANONICAL_RESEARCH_INPUTS",
-        "event_at": spec.frozen_at,
-        "knowledge_at": spec.frozen_at,
+        "event_at": spec.data_range.end_at,
+        "knowledge_at": spec.data_range.end_at,
         "source_id": "externally-prepared-test-fixture",
         "source_schema_version": "v1",
         "payload": input_document,
@@ -497,9 +497,7 @@ def _references(
                 "input_schema_id": research_inputs_schema_id,
                 "input_schema_version": 1,
                 "input_document": input_document,
-                "input_document_hash": research_input_document_hash(
-                    input_document
-                ),
+                "input_document_hash": research_input_document_hash(input_document),
                 "source_rows": source_rows,
                 "source_rows_hash": research_input_source_rows_hash(source_rows),
             },

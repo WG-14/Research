@@ -862,6 +862,15 @@ class EconomicScenarioExecution:
 
 
 @dataclass(frozen=True, slots=True)
+class DeterministicStudyCoreExecution:
+    """The repository-independent economic core shared by execute and replay."""
+
+    study: ValidatedMultiAssetStudy
+    first_execution: EconomicScenarioExecution
+    repeated_execution: EconomicScenarioExecution
+
+
+@dataclass(frozen=True, slots=True)
 class MultiAssetResearchExecution:
     study: ValidatedMultiAssetStudy
     published_study: PublishedMultiAssetStudy
@@ -1226,6 +1235,108 @@ def _core_execution_hash(execution: EconomicScenarioExecution) -> str:
     )
 
 
+def execute_deterministic_study_core(
+    *,
+    spec: MultiAssetExperimentSpec,
+    first_artifacts: tuple[ResolvedEvidenceArtifact, ...],
+    repeated_artifacts: tuple[ResolvedEvidenceArtifact, ...],
+    runners: MultiAssetScenarioRunners,
+    runtime: RuntimeEnvironment,
+) -> DeterministicStudyCoreExecution:
+    """Execute and reconcile the economic study without publishing or Git access.
+
+    Both the public application service and the cold-package replay entry point
+    call this function.  The caller must independently resolve the immutable
+    artifacts twice; this function validates both resolutions against the same
+    captured runtime authority before running the source-owned scenario graph.
+    """
+
+    first_identities = tuple(
+        (
+            item.reference.role.value,
+            item.reference.logical_id,
+            item.reference.version,
+            item.reference.content_hash,
+        )
+        for item in first_artifacts
+    )
+    repeated_identities = tuple(
+        (
+            item.reference.role.value,
+            item.reference.logical_id,
+            item.reference.version,
+            item.reference.content_hash,
+        )
+        for item in repeated_artifacts
+    )
+    if first_identities != repeated_identities:
+        raise MultiAssetExperimentError("evidence_authority.repeat_resolution_mismatch")
+    _validate_evidence_authority(
+        spec=spec,
+        artifacts=first_artifacts,
+        runtime=runtime,
+    )
+    _validate_evidence_authority(
+        spec=spec,
+        artifacts=repeated_artifacts,
+        runtime=runtime,
+    )
+    first = MultiAssetResearchApplicationService._execute_once(
+        spec=spec,
+        artifacts=first_artifacts,
+        runners=runners,
+        repeat_index=1,
+    )
+    repeated = MultiAssetResearchApplicationService._execute_once(
+        spec=spec,
+        artifacts=repeated_artifacts,
+        runners=runners,
+        repeat_index=2,
+    )
+    first_objects = _aggregate_objects(first)
+    repeated_objects = _aggregate_objects(repeated)
+    reproduction = ReproducibilityScenarioTrace(
+        first=first_objects,
+        second=repeated_objects,
+        first_core_artifact_hash=_core_execution_hash(first),
+        second_core_artifact_hash=_core_execution_hash(repeated),
+        object_hashes=reproduction_object_hashes(
+            first_objects,
+            repeated_objects,
+        ),
+    )
+    study = build_validated_multi_asset_study(
+        experiment_id=spec.experiment_id,
+        bindings=_bindings(first_artifacts, spec),
+        spot=first.spot,
+        futures=first.futures,
+        option=first.option,
+        integrated=first.integrated,
+        reproduction=reproduction,
+        accounting_reconciliation=first.accounting_reconciliation,
+    )
+    t05_flags = tuple(
+        sorted(
+            {
+                *_input_quality_flags(first_artifacts),
+                "DETERMINISTIC_REPEAT_VERIFIED",
+            }
+        )
+    )
+    study = replace(
+        study,
+        scenarios=(
+            *study.scenarios[:4],
+            replace(study.scenarios[4], quality_flags=t05_flags),
+        ),
+    )
+    return DeterministicStudyCoreExecution(
+        study=study,
+        first_execution=first,
+        repeated_execution=repeated,
+    )
+
+
 def _failure_code(error: Exception) -> str:
     message = str(error)
     if isinstance(
@@ -1277,73 +1388,20 @@ class MultiAssetResearchApplicationService:
                 ordered_references,
                 verified_at=started_at,
             )
-            _validate_evidence_authority(
-                spec=request.spec,
-                artifacts=resolved,
-                runtime=runtime,
-            )
-            first = self._execute_once(
-                spec=request.spec,
-                artifacts=resolved,
-                runners=request.runners,
-                repeat_index=1,
-            )
             repeated_resolved = resolver.resolve_all(
                 ordered_references,
                 verified_at=started_at,
             )
-            if tuple(
-                item.reference.content_hash for item in repeated_resolved
-            ) != tuple(item.reference.content_hash for item in resolved):
-                raise MultiAssetExperimentError(
-                    "evidence_authority.repeat_resolution_mismatch"
-                )
-            _validate_evidence_authority(
+            core_execution = execute_deterministic_study_core(
                 spec=request.spec,
-                artifacts=repeated_resolved,
+                first_artifacts=resolved,
+                repeated_artifacts=repeated_resolved,
+                runners=request.runners,
                 runtime=runtime,
             )
-            repeated = self._execute_once(
-                spec=request.spec,
-                artifacts=repeated_resolved,
-                runners=request.runners,
-                repeat_index=2,
-            )
-            first_objects = _aggregate_objects(first)
-            repeated_objects = _aggregate_objects(repeated)
-            reproduction = ReproducibilityScenarioTrace(
-                first=first_objects,
-                second=repeated_objects,
-                first_core_artifact_hash=_core_execution_hash(first),
-                second_core_artifact_hash=_core_execution_hash(repeated),
-                object_hashes=reproduction_object_hashes(
-                    first_objects,
-                    repeated_objects,
-                ),
-            )
-            study = build_validated_multi_asset_study(
-                experiment_id=request.spec.experiment_id,
-                bindings=_bindings(resolved, request.spec),
-                spot=first.spot,
-                futures=first.futures,
-                option=first.option,
-                integrated=first.integrated,
-                reproduction=reproduction,
-                accounting_reconciliation=(first.accounting_reconciliation),
-            )
-            t05_flags = tuple(
-                sorted(
-                    {
-                        *_input_quality_flags(resolved),
-                        "DETERMINISTIC_REPEAT_VERIFIED",
-                    }
-                )
-            )
-            scenarios = (
-                *study.scenarios[:4],
-                replace(study.scenarios[4], quality_flags=t05_flags),
-            )
-            study = replace(study, scenarios=scenarios)
+            study = core_execution.study
+            first = core_execution.first_execution
+            repeated = core_execution.repeated_execution
             finishing_runtime = capture_runtime_environment(request.paths.project_root)
             if finishing_runtime != runtime:
                 raise MultiAssetExperimentError(
@@ -1528,6 +1586,7 @@ class MultiAssetResearchApplicationService:
 
 __all__ = [
     "DataRange",
+    "DeterministicStudyCoreExecution",
     "EconomicScenarioExecution",
     "EvaluationMetric",
     "FuturesScenarioRunner",
@@ -1551,5 +1610,6 @@ __all__ = [
     "UniverseDefinition",
     "VersionedRule",
     "capture_runtime_environment",
+    "execute_deterministic_study_core",
     "multi_asset_experiment_spec_from_dict",
 ]

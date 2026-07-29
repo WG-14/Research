@@ -444,9 +444,7 @@ def cmd_research_multi_asset_verify_package(
         context.printer(f"[RESEARCH-MULTI-ASSET-VERIFY-PACKAGE] error={exc}")
         return 1
     context.run_result_hash = receipt.manifest_hash
-    context.printer(
-        json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True)
-    )
+    context.printer(json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True))
     return 0
 
 
@@ -479,9 +477,7 @@ def cmd_research_multi_asset_reproduce_package(
         context.printer(f"[RESEARCH-MULTI-ASSET-REPRODUCE-PACKAGE] error={exc}")
         return 1
     context.run_result_hash = receipt.manifest_hash
-    context.printer(
-        json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True)
-    )
+    context.printer(json.dumps(receipt.as_dict(), ensure_ascii=False, sort_keys=True))
     return 0 if receipt.status == "PASS" else 1
 
 

@@ -37,6 +37,14 @@
             "CalendarRegistry",
             "UnitRegistry"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t01_inputs",
+          "required_symbols": [
+            "CalendarRegistry",
+            "UnitRegistry"
+          ]
         }
       ],
       "deprecation_policy": "Unversioned unit or calendar maps are rejected; every provider policy names immutable registry hashes."
@@ -103,6 +111,26 @@
       ],
       "replacements": [
         {
+          "module": "market_research.research.multi_asset.application",
+          "symbol": "execute_deterministic_study_core",
+          "kind": "function"
+        },
+        {
+          "module": "market_research.research.multi_asset.authoritative_inputs",
+          "symbol": "AuthoritativeInputFactory",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.authoritative_inputs",
+          "symbol": "AuthoritativeInputReceipt",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.authoritative_inputs",
+          "symbol": "AuthoritativeOutputBinding",
+          "kind": "class"
+        },
+        {
           "module": "market_research.research.multi_asset.cards",
           "symbol": "DataCard",
           "kind": "class"
@@ -140,7 +168,44 @@
           "module": "market_research.research.multi_asset.application",
           "symbol": "MultiAssetResearchApplicationService.execute",
           "required_symbols": [
+            "execute_deterministic_study_core"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.application",
+          "symbol": "execute_deterministic_study_core",
+          "required_symbols": [
             "build_validated_multi_asset_study"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_AuthoritativeBuiltinRunner._authoritative_inputs",
+          "required_symbols": [
+            "AuthoritativeInputFactory"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_execution_evidence",
+          "symbol": "build_public_execution_evidence_bundle",
+          "required_symbols": [
+            "AuthoritativeInputReceipt",
+            "AuthoritativeOutputBinding"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_package",
+          "symbol": "PublicPackageMaterials",
+          "required_symbols": [
+            "DataCard",
+            "ModelCard"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_package",
+          "symbol": "build_public_validated_package_request",
+          "required_symbols": [
+            "EvidenceGraph"
           ]
         },
         {
@@ -153,7 +218,7 @@
           ]
         }
       ],
-      "deprecation_policy": "No PASS receipt may be accepted from a caller; validated studies and packages are recomputed by source-owned factories."
+      "deprecation_policy": "No input or PASS receipt may be accepted from a caller; immutable input coverage, validated studies, and packages are recomputed by source-owned factories."
     },
     {
       "migration_id": "migrate_exposure_v1",
@@ -193,6 +258,27 @@
             "ExposureEngine",
             "PortfolioExposureSnapshot"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "ExposureEngine"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_futures",
+          "required_symbols": [
+            "ExposureEngine"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_spot",
+          "required_symbols": [
+            "ExposureEngine"
+          ]
         }
       ],
       "deprecation_policy": "Product-specific exposure books are forbidden; all product adapters feed one common exposure snapshot."
@@ -229,6 +315,27 @@
         {
           "module": "market_research.research.multi_asset.builtin_runner",
           "symbol": "_spot_exposure_authority",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t01_inputs",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t02_inputs",
           "required_symbols": [
             "InstrumentRegistry"
           ]
@@ -278,6 +385,35 @@
         {
           "module": "market_research.research.multi_asset.multileg_execution",
           "symbol": "MultiLegLedgerExecutionService",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "_execute_accounting",
+          "required_symbols": [
+            "LedgerPnlReconciliation",
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "PublicOptionInstitutionalFactory.derive",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_futures",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "_seed_spot_ledger",
           "required_symbols": [
             "UnifiedPortfolioLedger"
           ]
@@ -341,6 +477,20 @@
           "required_symbols": [
             "LifecycleEvent"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "PublicOptionInstitutionalFactory.derive",
+          "required_symbols": [
+            "adapt_option_lifecycle"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_spot",
+          "required_symbols": [
+            "apply_corporate_action"
+          ]
         }
       ],
       "deprecation_policy": "Lifecycle semantics remain typed product adapters, but every economic effect is projected into the unified ledger."
@@ -386,6 +536,35 @@
           "required_symbols": [
             "MarketState"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "MarketState",
+            "OptionChainState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "_fixture_market_state",
+          "required_symbols": [
+            "MarketState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t01_inputs",
+          "required_symbols": [
+            "MarketState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t02_inputs",
+          "required_symbols": [
+            "MarketState"
+          ]
         }
       ],
       "deprecation_policy": "Compatibility aliases may remain only in the declaring market-state module; production callers use typed MarketState components."
@@ -424,10 +603,24 @@
             "AuthoritativeOptionAnalyticsFactory",
             "OptionValuationAdapter"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "OptionValuationAdapter"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "PublicOptionInstitutionalFactory.__post_init__",
+          "required_symbols": [
+            "AuthoritativeOptionAnalyticsFactory"
+          ]
         }
       ],
       "deprecation_policy": "Supplier IV and Greeks are comparison observations only; public marks come from the source-owned factory and closed model registry."
     }
   ],
-  "content_hash": "sha256:d9f7a3aaa8b62aad9a31ce1f8075c0e17921dc3a20dbc8605284776e57ec3208"
+  "content_hash": "sha256:ed0d6df1d441f6076a629588d041e4e4fb00d36b7b966b6344c5d757a5862d5e"
 }

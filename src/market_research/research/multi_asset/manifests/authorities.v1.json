@@ -26,7 +26,8 @@
         "UnitRegistry"
       ],
       "allowed_constructor_modules": [
-        "market_research.research.multi_asset.normalization"
+        "market_research.research.multi_asset.normalization",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ],
       "forbidden_constructor_symbols": [
         "CalendarMap",
@@ -36,6 +37,14 @@
         {
           "module": "market_research.research.multi_asset.normalization",
           "symbol": "ProviderNormalizationService",
+          "required_symbols": [
+            "CalendarRegistry",
+            "UnitRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t01_inputs",
           "required_symbols": [
             "CalendarRegistry",
             "UnitRegistry"
@@ -95,6 +104,26 @@
       "sole_producer": "build_validated_multi_asset_study",
       "public_entries": [
         {
+          "module": "market_research.research.multi_asset.application",
+          "symbol": "execute_deterministic_study_core",
+          "kind": "function"
+        },
+        {
+          "module": "market_research.research.multi_asset.authoritative_inputs",
+          "symbol": "AuthoritativeInputFactory",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.authoritative_inputs",
+          "symbol": "AuthoritativeInputReceipt",
+          "kind": "class"
+        },
+        {
+          "module": "market_research.research.multi_asset.authoritative_inputs",
+          "symbol": "AuthoritativeOutputBinding",
+          "kind": "class"
+        },
+        {
           "module": "market_research.research.multi_asset.cards",
           "symbol": "DataCard",
           "kind": "class"
@@ -121,15 +150,20 @@
         }
       ],
       "constructor_symbols": [
+        "AuthoritativeInputFactory",
+        "AuthoritativeInputReceipt",
+        "AuthoritativeOutputBinding",
         "DataCard",
         "EvidenceGraph",
         "ModelCard",
         "ValidatedMultiAssetStudy"
       ],
       "allowed_constructor_modules": [
+        "market_research.research.multi_asset.authoritative_inputs",
         "market_research.research.multi_asset.cards",
         "market_research.research.multi_asset.evidence",
         "market_research.research.multi_asset.evidence_graph",
+        "market_research.research.multi_asset.public_package",
         "market_research.research.multi_asset.study",
         "market_research.research.multi_asset.validated_package"
       ],
@@ -150,7 +184,44 @@
           "module": "market_research.research.multi_asset.application",
           "symbol": "MultiAssetResearchApplicationService.execute",
           "required_symbols": [
+            "execute_deterministic_study_core"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.application",
+          "symbol": "execute_deterministic_study_core",
+          "required_symbols": [
             "build_validated_multi_asset_study"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.builtin_runner",
+          "symbol": "_AuthoritativeBuiltinRunner._authoritative_inputs",
+          "required_symbols": [
+            "AuthoritativeInputFactory"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_execution_evidence",
+          "symbol": "build_public_execution_evidence_bundle",
+          "required_symbols": [
+            "AuthoritativeInputReceipt",
+            "AuthoritativeOutputBinding"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_package",
+          "symbol": "PublicPackageMaterials",
+          "required_symbols": [
+            "DataCard",
+            "ModelCard"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_package",
+          "symbol": "build_public_validated_package_request",
+          "required_symbols": [
+            "EvidenceGraph"
           ]
         },
         {
@@ -163,7 +234,7 @@
           ]
         }
       ],
-      "evidence_role": "Requires T-01 through T-05 success, exact lineage graph edges, data/model cards, content-addressed objects, and deterministic cold replay.",
+      "evidence_role": "Requires source-row-covered immutable input receipts, T-01 through T-05 success, exact output-to-input lineage graph edges, data/model cards, content-addressed objects, and deterministic cold replay.",
       "legacy_migration_id": "migrate_evidence_v1"
     },
     {
@@ -188,7 +259,9 @@
         "PortfolioExposureSnapshot"
       ],
       "allowed_constructor_modules": [
-        "market_research.research.multi_asset.exposure"
+        "market_research.research.multi_asset.exposure",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ],
       "forbidden_constructor_symbols": [
         "ProductExposureEngine",
@@ -201,6 +274,27 @@
           "required_symbols": [
             "ExposureEngine",
             "PortfolioExposureSnapshot"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "ExposureEngine"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_futures",
+          "required_symbols": [
+            "ExposureEngine"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_spot",
+          "required_symbols": [
+            "ExposureEngine"
           ]
         }
       ],
@@ -224,7 +318,9 @@
       ],
       "allowed_constructor_modules": [
         "market_research.research.multi_asset.builtin_runner",
-        "market_research.research.multi_asset.domain"
+        "market_research.research.multi_asset.domain",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ],
       "forbidden_constructor_symbols": [
         "AssetRegistry",
@@ -241,6 +337,27 @@
         {
           "module": "market_research.research.multi_asset.builtin_runner",
           "symbol": "_spot_exposure_authority",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t01_inputs",
+          "required_symbols": [
+            "InstrumentRegistry"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t02_inputs",
           "required_symbols": [
             "InstrumentRegistry"
           ]
@@ -272,7 +389,10 @@
       ],
       "allowed_constructor_modules": [
         "market_research.research.multi_asset.accounting",
-        "market_research.research.multi_asset.portfolio"
+        "market_research.research.multi_asset.portfolio",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_option_profile",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ],
       "forbidden_constructor_symbols": [
         "OptionsLedger",
@@ -291,6 +411,35 @@
         {
           "module": "market_research.research.multi_asset.multileg_execution",
           "symbol": "MultiLegLedgerExecutionService",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "_execute_accounting",
+          "required_symbols": [
+            "LedgerPnlReconciliation",
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "PublicOptionInstitutionalFactory.derive",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_futures",
+          "required_symbols": [
+            "UnifiedPortfolioLedger"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "_seed_spot_ledger",
           "required_symbols": [
             "UnifiedPortfolioLedger"
           ]
@@ -353,6 +502,20 @@
           "required_symbols": [
             "LifecycleEvent"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "PublicOptionInstitutionalFactory.derive",
+          "required_symbols": [
+            "adapt_option_lifecycle"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "PublicSpotFuturesConformanceService.run_spot",
+          "required_symbols": [
+            "apply_corporate_action"
+          ]
         }
       ],
       "evidence_role": "Binds effective and knowledge time for corporate actions, expiry, exercise, assignment, delivery, and resulting unified-ledger postings.",
@@ -381,7 +544,10 @@
       ],
       "allowed_constructor_modules": [
         "market_research.research.multi_asset.builtin_runner",
-        "market_research.research.multi_asset.market_state"
+        "market_research.research.multi_asset.market_state",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_option_profile",
+        "market_research.research.multi_asset.public_spot_futures_profile"
       ],
       "forbidden_constructor_symbols": [
         "SharedMarketState",
@@ -399,6 +565,35 @@
         {
           "module": "market_research.research.multi_asset.exposure",
           "symbol": "ExposureEngine",
+          "required_symbols": [
+            "MarketState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "MarketState",
+            "OptionChainState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "_fixture_market_state",
+          "required_symbols": [
+            "MarketState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t01_inputs",
+          "required_symbols": [
+            "MarketState"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_spot_futures_profile",
+          "symbol": "build_public_t02_inputs",
           "required_symbols": [
             "MarketState"
           ]
@@ -433,7 +628,9 @@
         "market_research.research.multi_asset.builtin_runner",
         "market_research.research.multi_asset.exposure",
         "market_research.research.multi_asset.option_analytics",
-        "market_research.research.multi_asset.option_pricing"
+        "market_research.research.multi_asset.option_pricing",
+        "market_research.research.multi_asset.public_integrated_profile",
+        "market_research.research.multi_asset.public_option_profile"
       ],
       "forbidden_constructor_symbols": [
         "DirectSupplierGreeks",
@@ -447,11 +644,25 @@
             "AuthoritativeOptionAnalyticsFactory",
             "OptionValuationAdapter"
           ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_integrated_profile",
+          "symbol": "build_public_t04_fixture_inputs",
+          "required_symbols": [
+            "OptionValuationAdapter"
+          ]
+        },
+        {
+          "module": "market_research.research.multi_asset.public_option_profile",
+          "symbol": "PublicOptionInstitutionalFactory.__post_init__",
+          "required_symbols": [
+            "AuthoritativeOptionAnalyticsFactory"
+          ]
         }
       ],
       "evidence_role": "Computes price and Greeks from source-owned models, compares supplier analytics under explicit tolerances, and binds quote, surface, model, margin, and input hashes.",
       "legacy_migration_id": "migrate_valuation_v1"
     }
   ],
-  "content_hash": "sha256:4e4de473983c0099189ac03756d6157dfd87ffff5b826586c4a54203a585be1f"
+  "content_hash": "sha256:f493a27c3d37a87468b0ce540e76518a25a6eba2574b8560798a2a8e8916f75e"
 }

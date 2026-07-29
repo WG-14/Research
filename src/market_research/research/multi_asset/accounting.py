@@ -1857,9 +1857,7 @@ class AdvancedAccountingReconciliation:
                     "ledger_hash": self.ledger_hash,
                     "ledger_reconciliation_hash": self.ledger_reconciliation_hash,
                     "tax_lot_projection_hash": self.tax_lot_projection_hash,
-                    "funding_fx_revaluation_hash": (
-                        self.funding_fx_revaluation_hash
-                    ),
+                    "funding_fx_revaluation_hash": (self.funding_fx_revaluation_hash),
                     "collateral_waterfall_hash": self.collateral_waterfall_hash,
                     "advanced_event_hashes": list(self.advanced_event_hashes),
                     "delivery_event_count": self.delivery_event_count,
@@ -1994,8 +1992,7 @@ class AdvancedAccountingReconciliation:
             if event.event_type is PortfolioEventType.FUNDING_FX_REVALUATION
         )
         if funding_events and not any(
-            funding_fx.content_hash in event.source_hashes
-            for event in funding_events
+            funding_fx.content_hash in event.source_hashes for event in funding_events
         ):
             raise AccountingReconciliationError(
                 "advanced_reconciliation_funding_fx_unbound"
@@ -2022,8 +2019,7 @@ class AdvancedAccountingReconciliation:
                 sorted(event.content_hash for event in exceptional)
             ),
             delivery_event_count=sum(
-                event.event_type is PortfolioEventType.DELIVERY
-                for event in exceptional
+                event.event_type is PortfolioEventType.DELIVERY for event in exceptional
             ),
             default_event_count=default_count,
             forced_liquidation_event_count=sum(

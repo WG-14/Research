@@ -481,6 +481,40 @@ class PublishedMultiAssetStudy:
     created: bool
 
 
+def validated_study_report_payload(
+    study: ValidatedMultiAssetStudy,
+) -> dict[str, object]:
+    """Build the exact report object used by publication and cold replay."""
+
+    if not isinstance(study, ValidatedMultiAssetStudy):
+        raise MultiAssetEvidenceError("validated study required for report")
+    return {
+        "schema_version": MULTI_ASSET_RESEARCH_SCHEMA_VERSION,
+        "experiment_id": study.experiment_id,
+        "study_content_hash": study.content_hash,
+        "scenario_statuses": {
+            item.scenario_id: item.status.value for item in study.scenarios
+        },
+        "all_mandatory_scenarios_passed": all(
+            item.status is ScenarioStatus.PASS for item in study.scenarios
+        ),
+        "accounting_reconciliation_hash": study.accounting_reconciliation_hash,
+        "accounting_reconciliation": study.accounting_evidence_payload(),
+        "ledger_nav_reconciled": (
+            study.accounting_reconciliation.ledger.nav_identity_error == 0
+        ),
+        "report_ledger_reconciled": (
+            study.accounting_reconciliation.report.report_rows()
+            == study.accounting_reconciliation.ledger.report_rows()
+        ),
+        "attribution_reconciled": (
+            study.accounting_reconciliation.ledger.attribution_identity_error == 0
+        ),
+        "exposure_reconciliation_hash": study.exposure_reconciliation_hash,
+        "attribution_reconciliation_hash": study.attribution_reconciliation_hash,
+    }
+
+
 def publish_validated_study(
     study: ValidatedMultiAssetStudy,
     *,
@@ -511,31 +545,7 @@ def publish_validated_study(
         artifact_path,
         artifact_payload,
     )
-    report_payload: dict[str, object] = {
-        "schema_version": MULTI_ASSET_RESEARCH_SCHEMA_VERSION,
-        "experiment_id": study.experiment_id,
-        "study_content_hash": study.content_hash,
-        "scenario_statuses": {
-            item.scenario_id: item.status.value for item in study.scenarios
-        },
-        "all_mandatory_scenarios_passed": all(
-            item.status is ScenarioStatus.PASS for item in study.scenarios
-        ),
-        "accounting_reconciliation_hash": study.accounting_reconciliation_hash,
-        "accounting_reconciliation": study.accounting_evidence_payload(),
-        "ledger_nav_reconciled": (
-            study.accounting_reconciliation.ledger.nav_identity_error == 0
-        ),
-        "report_ledger_reconciled": (
-            study.accounting_reconciliation.report.report_rows()
-            == study.accounting_reconciliation.ledger.report_rows()
-        ),
-        "attribution_reconciled": (
-            study.accounting_reconciliation.ledger.attribution_identity_error == 0
-        ),
-        "exposure_reconciliation_hash": study.exposure_reconciliation_hash,
-        "attribution_reconciliation_hash": study.attribution_reconciliation_hash,
-    }
+    report_payload = validated_study_report_payload(study)
     created_report = write_json_atomic_create_or_verify(report_path, report_payload)
     return PublishedMultiAssetStudy(
         artifact_path=artifact_path,
@@ -584,4 +594,5 @@ __all__ = [
     "evidence_hash",
     "publish_validated_study",
     "scenario_object_hashes",
+    "validated_study_report_payload",
 ]

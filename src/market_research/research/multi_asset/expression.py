@@ -862,12 +862,16 @@ class OptimizationLeg:
             value = getattr(self, name)
             if not isinstance(value, Decimal) or not value.is_finite():
                 raise ExpressionValidationError(f"optimization_leg_{name}_invalid")
-            if name in {
-                "unit_maximum_loss",
-                "unit_capital",
-                "unit_margin",
-                "unit_turnover",
-            } and value < ZERO:
+            if (
+                name
+                in {
+                    "unit_maximum_loss",
+                    "unit_capital",
+                    "unit_margin",
+                    "unit_turnover",
+                }
+                and value < ZERO
+            ):
                 raise ExpressionValidationError(
                     f"optimization_leg_{name}_must_be_nonnegative"
                 )
@@ -980,9 +984,7 @@ class JointOptimizationProblem:
                 "optimization_problem_instrument_ids_duplicate"
             )
         if not isinstance(self.constraints, JointOptimizationConstraints):
-            raise ExpressionValidationError(
-                "optimization_problem_constraints_required"
-            )
+            raise ExpressionValidationError("optimization_problem_constraints_required")
         if (
             isinstance(self.maximum_combinations, bool)
             or not isinstance(self.maximum_combinations, int)
@@ -1135,9 +1137,7 @@ class DeterministicJointOptimizer:
             ):
                 static_reasons[reason] = static_reasons.get(reason, 0) + 1
         if static_reasons:
-            return _infeasible_optimization_result(
-                problem, static_reasons, evaluated=0
-            )
+            return _infeasible_optimization_result(problem, static_reasons, evaluated=0)
 
         rejection_counts: dict[str, int] = {}
         feasible: list[

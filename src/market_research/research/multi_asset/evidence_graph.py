@@ -60,6 +60,62 @@ _ROOT_KINDS = frozenset(
     }
 )
 
+_RELATION_KIND_SIGNATURES: Mapping[
+    EvidenceRelation,
+    frozenset[tuple[EvidenceNodeKind, EvidenceNodeKind]],
+] = {
+    EvidenceRelation.DESCRIBES: frozenset(
+        {
+            (EvidenceNodeKind.DATA_CARD, EvidenceNodeKind.SOURCE_ROW),
+            (EvidenceNodeKind.DATA_CARD, EvidenceNodeKind.NORMALIZED),
+        }
+    ),
+    EvidenceRelation.NORMALIZES: frozenset(
+        {
+            (EvidenceNodeKind.SOURCE_ROW, EvidenceNodeKind.NORMALIZED),
+            (EvidenceNodeKind.IMMUTABLE_INPUT, EvidenceNodeKind.NORMALIZED),
+        }
+    ),
+    EvidenceRelation.DERIVES: frozenset(
+        {
+            (EvidenceNodeKind.NORMALIZED, EvidenceNodeKind.ANALYSIS),
+            (EvidenceNodeKind.ANALYSIS, EvidenceNodeKind.DERIVED),
+            (EvidenceNodeKind.DERIVED, EvidenceNodeKind.DERIVED),
+        }
+    ),
+    EvidenceRelation.CONFIGURES: frozenset(
+        {
+            (EvidenceNodeKind.CONFIGURATION, EvidenceNodeKind.ANALYSIS),
+            (EvidenceNodeKind.POLICY, EvidenceNodeKind.ANALYSIS),
+        }
+    ),
+    EvidenceRelation.CALCULATES: frozenset(
+        {
+            (EvidenceNodeKind.CODE, EvidenceNodeKind.ANALYSIS),
+            (EvidenceNodeKind.MODEL_CARD, EvidenceNodeKind.ANALYSIS),
+        }
+    ),
+    EvidenceRelation.RECONCILES: frozenset(
+        {
+            (EvidenceNodeKind.ANALYSIS, EvidenceNodeKind.ACCOUNTING),
+            (EvidenceNodeKind.DERIVED, EvidenceNodeKind.ACCOUNTING),
+        }
+    ),
+    EvidenceRelation.SUPPORTS: frozenset(
+        {
+            (EvidenceNodeKind.NORMALIZED, EvidenceNodeKind.NORMALIZED),
+            (EvidenceNodeKind.ANALYSIS, EvidenceNodeKind.DERIVED),
+        }
+    ),
+    EvidenceRelation.REPORTS: frozenset(
+        {
+            (EvidenceNodeKind.ACCOUNTING, EvidenceNodeKind.REPORT_CLAIM),
+            (EvidenceNodeKind.ANALYSIS, EvidenceNodeKind.REPORT_CLAIM),
+            (EvidenceNodeKind.DERIVED, EvidenceNodeKind.REPORT_CLAIM),
+        }
+    ),
+}
+
 
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
@@ -376,6 +432,13 @@ class EvidenceGraph:
                 or edge.target_content_hash != target.content_hash
             ):
                 raise EvidenceGraphError("evidence_graph.edge_content_hash_mismatch")
+            if (source.kind, target.kind) not in _RELATION_KIND_SIGNATURES[
+                edge.relation
+            ]:
+                raise EvidenceGraphError(
+                    "evidence_graph.relation_kind_mismatch:"
+                    f"{edge.source_id}:{edge.relation.value}:{edge.target_id}"
+                )
             incoming[target.node_id].add(source.node_id)
             outgoing[source.node_id].add(target.node_id)
         for node in self.nodes:
@@ -400,7 +463,9 @@ class EvidenceGraph:
         outgoing: Mapping[str, set[str]],
     ) -> None:
         indegree = {node_id: len(parents) for node_id, parents in incoming.items()}
-        queue = deque(sorted(node_id for node_id, count in indegree.items() if count == 0))
+        queue = deque(
+            sorted(node_id for node_id, count in indegree.items() if count == 0)
+        )
         visited = 0
         while queue:
             node_id = queue.popleft()
@@ -428,6 +493,115 @@ class EvidenceGraph:
             return result
 
         return {item.node_id for item in self.nodes if reaches(item.node_id)}
+
+    def _lineage_ids(self, node_id: str, *, upstream: bool) -> set[str]:
+        adjacency: dict[str, set[str]] = {item.node_id: set() for item in self.nodes}
+        for edge in self.edges:
+            if upstream:
+                adjacency[edge.target_id].add(edge.source_id)
+            else:
+                adjacency[edge.source_id].add(edge.target_id)
+        seen: set[str] = set()
+        queue = deque([node_id])
+        while queue:
+            current = queue.popleft()
+            if current in seen:
+                continue
+            seen.add(current)
+            queue.extend(sorted(adjacency[current]))
+        return seen
+
+    def require_resolvable_report_lineage(self) -> None:
+        """Reject aggregate-only graphs that cannot resolve report fields to rows."""
+
+        nodes = {item.node_id: item for item in self.nodes}
+        by_kind = {
+            kind: tuple(item for item in self.nodes if item.kind is kind)
+            for kind in EvidenceNodeKind
+        }
+        required_component_kinds = (
+            EvidenceNodeKind.SOURCE_ROW,
+            EvidenceNodeKind.NORMALIZED,
+            EvidenceNodeKind.ANALYSIS,
+            EvidenceNodeKind.ACCOUNTING,
+            EvidenceNodeKind.REPORT_CLAIM,
+        )
+        if any(not by_kind[kind] for kind in required_component_kinds):
+            raise EvidenceGraphError("evidence_graph.aggregate_only_lineage_forbidden")
+        if not by_kind[EvidenceNodeKind.MODEL_CARD]:
+            raise EvidenceGraphError(
+                "evidence_graph.report_lineage_model_card_required"
+            )
+        report_claim_ids = {
+            item.node_id for item in by_kind[EvidenceNodeKind.REPORT_CLAIM]
+        }
+        if report_claim_ids != set(self.terminal_ids):
+            raise EvidenceGraphError("evidence_graph.report_claim_terminals_required")
+
+        if not any(
+            nodes[edge.source_id].kind is EvidenceNodeKind.SOURCE_ROW
+            and nodes[edge.target_id].kind is EvidenceNodeKind.NORMALIZED
+            and edge.relation is EvidenceRelation.NORMALIZES
+            for edge in self.edges
+        ):
+            raise EvidenceGraphError(
+                "evidence_graph.source_normalization_edge_required"
+            )
+
+        for analysis in by_kind[EvidenceNodeKind.ANALYSIS]:
+            upstream_ids = self._lineage_ids(analysis.node_id, upstream=True)
+            upstream_kinds = {nodes[item].kind for item in upstream_ids}
+            if (
+                EvidenceNodeKind.SOURCE_ROW not in upstream_kinds
+                or EvidenceNodeKind.NORMALIZED not in upstream_kinds
+                or EvidenceNodeKind.MODEL_CARD not in upstream_kinds
+            ):
+                raise EvidenceGraphError(
+                    f"evidence_graph.analysis_lineage_incomplete:{analysis.node_id}"
+                )
+            if not any(
+                edge.target_id == analysis.node_id
+                and nodes[edge.source_id].kind is EvidenceNodeKind.MODEL_CARD
+                and edge.relation is EvidenceRelation.CALCULATES
+                for edge in self.edges
+            ):
+                raise EvidenceGraphError(
+                    f"evidence_graph.analysis_calculation_edge_missing:{analysis.node_id}"
+                )
+
+        required_claim_kinds = frozenset(
+            {
+                EvidenceNodeKind.SOURCE_ROW,
+                EvidenceNodeKind.NORMALIZED,
+                EvidenceNodeKind.MODEL_CARD,
+                EvidenceNodeKind.ANALYSIS,
+                EvidenceNodeKind.ACCOUNTING,
+                EvidenceNodeKind.REPORT_CLAIM,
+            }
+        )
+        for claim in by_kind[EvidenceNodeKind.REPORT_CLAIM]:
+            upstream_ids = self._lineage_ids(claim.node_id, upstream=True)
+            upstream_kinds = {nodes[item].kind for item in upstream_ids}
+            if not required_claim_kinds.issubset(upstream_kinds):
+                raise EvidenceGraphError(
+                    f"evidence_graph.report_claim_lineage_incomplete:{claim.node_id}"
+                )
+            if not any(
+                edge.target_id == claim.node_id
+                and nodes[edge.source_id].kind is EvidenceNodeKind.ACCOUNTING
+                and edge.relation is EvidenceRelation.REPORTS
+                for edge in self.edges
+            ):
+                raise EvidenceGraphError(
+                    f"evidence_graph.report_claim_accounting_edge_missing:{claim.node_id}"
+                )
+
+        for source in by_kind[EvidenceNodeKind.SOURCE_ROW]:
+            downstream_ids = self._lineage_ids(source.node_id, upstream=False)
+            if not report_claim_ids.intersection(downstream_ids):
+                raise EvidenceGraphError(
+                    f"evidence_graph.source_row_unresolved:{source.node_id}"
+                )
 
     def identity_payload(self) -> dict[str, object]:
         return {
@@ -569,9 +743,7 @@ class EvidenceGraphResolver:
             "graph_hash": self.graph.content_hash,
             "root_node_id": node_id,
             "direction": direction,
-            "nodes": [
-                self._nodes[item].as_dict() for item in sorted(ids)
-            ],
+            "nodes": [self._nodes[item].as_dict() for item in sorted(ids)],
             "edges": [item.as_dict() for item in edges],
         }
         return {**payload, "query_hash": _hash_payload(payload)}

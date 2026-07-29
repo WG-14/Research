@@ -520,9 +520,9 @@ def test_expression_compiler_prevents_leg_bypass_and_dynamic_aon_retries() -> No
         fill_at=second_time,
         ask_size="10",
     )
-    assert tuple(
-        item.quantity for item in first.command.order.legs
-    ) == tuple(item.quantity for item in decision.selected_legs)
+    assert tuple(item.quantity for item in first.command.order.legs) == tuple(
+        item.quantity for item in decision.selected_legs
+    )
     assert first.decision_hash == decision.content_hash
 
     with pytest.raises(ValueError, match="contract_coverage_mismatch"):
@@ -588,11 +588,16 @@ def test_expression_compiler_prevents_leg_bypass_and_dynamic_aon_retries() -> No
     assert result.attempts[0].ledger_before_hash == (
         result.attempts[0].ledger_after_hash
     )
-    assert result.content_hash == DynamicMultiLegExecutionService().execute(
-        plan,
-        ledger=_ledger("ledger.compiler.retry"),
-        fx_rates={"USD": Decimal("1")},
-    ).content_hash
+    assert (
+        result.content_hash
+        == DynamicMultiLegExecutionService()
+        .execute(
+            plan,
+            ledger=_ledger("ledger.compiler.retry"),
+            fx_rates={"USD": Decimal("1")},
+        )
+        .content_hash
+    )
 
     changed_decision = replace(
         decision,
@@ -620,17 +625,17 @@ def test_expression_compiler_prevents_leg_bypass_and_dynamic_aon_retries() -> No
             decision_hash=decision.content_hash,
             policy=policy,
             attempts=(
-                    DynamicExecutionAttempt(
-                        attempt_number=1,
-                        compiled=first,
-                        market_state_hash=_hash("a"),
-                        quote_state_hash=_hash("b"),
-                    ),
-                    DynamicExecutionAttempt(
-                        attempt_number=2,
-                        compiled=changed,
-                        market_state_hash=_hash("c"),
-                        quote_state_hash=_hash("d"),
-                    ),
+                DynamicExecutionAttempt(
+                    attempt_number=1,
+                    compiled=first,
+                    market_state_hash=_hash("a"),
+                    quote_state_hash=_hash("b"),
+                ),
+                DynamicExecutionAttempt(
+                    attempt_number=2,
+                    compiled=changed,
+                    market_state_hash=_hash("c"),
+                    quote_state_hash=_hash("d"),
+                ),
             ),
         )

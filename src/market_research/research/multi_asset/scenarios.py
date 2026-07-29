@@ -2736,9 +2736,7 @@ class EconomicProjectionPolicy:
                     "maximum_volatility_curvature": _decimal_text(
                         self.maximum_volatility_curvature
                     ),
-                    "require_derivative_repricers": (
-                        self.require_derivative_repricers
-                    ),
+                    "require_derivative_repricers": (self.require_derivative_repricers),
                     "require_liquidation_costs_for_liquidity_shock": (
                         self.require_liquidation_costs_for_liquidity_shock
                     ),
@@ -2793,9 +2791,7 @@ class EconomicConstraintEvidence:
                         for key, value in self.futures_basis_fractions
                     ],
                     "derivative_repricer_hash": self.derivative_repricer_hash,
-                    "volatility_constraint_hash": (
-                        self.volatility_constraint_hash
-                    ),
+                    "volatility_constraint_hash": (self.volatility_constraint_hash),
                     "liquidity_constraint_hash": self.liquidity_constraint_hash,
                 },
                 label="economic_constraint_evidence",
@@ -2868,8 +2864,7 @@ class ConstrainedJointScenarioEngine:
             build_common_market_projection(
                 market_state,
                 fallback_marks={
-                    item.instrument_id: item.mark_price
-                    for item in snapshot.positions
+                    item.instrument_id: item.mark_price for item in snapshot.positions
                 },
             ).futures_underlyings
         )
@@ -2987,9 +2982,7 @@ def _validate_volatility_no_arbitrage(
     by_underlying_strike: dict[
         tuple[str, Decimal], list[VolatilityPointProjection]
     ] = {}
-    by_underlying_expiry: dict[
-        tuple[str, str], list[VolatilityPointProjection]
-    ] = {}
+    by_underlying_expiry: dict[tuple[str, str], list[VolatilityPointProjection]] = {}
     for point in state.volatility_points:
         by_underlying_strike.setdefault(
             (point.underlying_instrument_id, point.strike), []
@@ -3016,15 +3009,11 @@ def _validate_volatility_no_arbitrage(
                 previous_total_variance is not None
                 and total_variance < previous_total_variance
             ):
-                raise ScenarioError(
-                    "economic_constraint_volatility_calendar_arbitrage"
-                )
+                raise ScenarioError("economic_constraint_volatility_calendar_arbitrage")
             previous_total_variance = total_variance
     for points in by_underlying_expiry.values():
         ordered = sorted(points, key=lambda item: item.strike)
-        for left, middle, right in zip(
-            ordered, ordered[1:], ordered[2:], strict=False
-        ):
+        for left, middle, right in zip(ordered, ordered[1:], ordered[2:], strict=False):
             left_width = middle.strike - left.strike
             right_width = right.strike - middle.strike
             if left_width <= _ZERO or right_width <= _ZERO:
@@ -3069,9 +3058,7 @@ class ScenarioFactorObservation:
         object.__setattr__(
             self,
             "observed_at",
-            _timestamp_text(
-                self.observed_at, "scenario_observation.observed_at"
-            ),
+            _timestamp_text(self.observed_at, "scenario_observation.observed_at"),
         )
         _require_id(self.regime_id, "scenario_observation.regime_id")
         for name in (
@@ -3084,9 +3071,7 @@ class ScenarioFactorObservation:
             object.__setattr__(
                 self,
                 name,
-                _normalize_pairs(
-                    getattr(self, name), f"scenario_observation.{name}"
-                ),
+                _normalize_pairs(getattr(self, name), f"scenario_observation.{name}"),
             )
         if any(
             value <= -_ONE
@@ -3222,9 +3207,7 @@ class GeneratedScenarioEvent:
         if self.sequence <= 0 or isinstance(self.sequence, bool):
             raise ScenarioError("generated_scenario_sequence_invalid")
         _require_id(self.event_id, "generated_scenario.event_id")
-        _require_hash(
-            self.predecessor_hash, "generated_scenario.predecessor_hash"
-        )
+        _require_hash(self.predecessor_hash, "generated_scenario.predecessor_hash")
         if not isinstance(self.shock, JointMarketShock):
             raise ScenarioError("generated_scenario_shock_invalid")
         if tuple(sorted(set(self.observation_hashes))) != self.observation_hashes:
@@ -3259,9 +3242,7 @@ class GeneratedScenarioPath:
     def __post_init__(self) -> None:
         if not isinstance(self.specification, ScenarioPathGenerationSpec):
             raise ScenarioError("generated_scenario_specification_invalid")
-        if any(
-            not isinstance(item, GeneratedScenarioEvent) for item in self.events
-        ):
+        if any(not isinstance(item, GeneratedScenarioEvent) for item in self.events):
             raise ScenarioError("generated_scenario_event_invalid")
         expected_root = sha256_prefixed(
             {
@@ -3310,9 +3291,7 @@ class GeneratedScenarioPath:
             raise ScenarioError("generated_scenario_effective_time_count_mismatch")
         steps: list[PathShockStep] = []
         predecessor = expected_base_state_hash
-        for event, effective_at in zip(
-            self.events, effective_times, strict=True
-        ):
+        for event, effective_at in zip(self.events, effective_times, strict=True):
             step = PathShockStep(
                 sequence=event.sequence,
                 step_id=event.event_id,
@@ -3345,8 +3324,7 @@ class ScenarioPathFactory:
         if not observations:
             raise ScenarioError("scenario_generation_observations_required")
         if any(
-            not isinstance(item, ScenarioFactorObservation)
-            for item in observations
+            not isinstance(item, ScenarioFactorObservation) for item in observations
         ):
             raise ScenarioError("scenario_generation_observation_invalid")
         ordered = tuple(sorted(observations, key=lambda item: item.observed_at))
@@ -3355,9 +3333,7 @@ class ScenarioPathFactory:
         start = _timestamp(
             specification.window_start, "scenario_generation.window_start"
         )
-        end = _timestamp(
-            specification.window_end, "scenario_generation.window_end"
-        )
+        end = _timestamp(specification.window_end, "scenario_generation.window_end")
         eligible = tuple(
             item
             for item in ordered
@@ -3368,9 +3344,7 @@ class ScenarioPathFactory:
         )
         if not eligible:
             raise ScenarioError("scenario_generation_window_regime_empty")
-        selected = _select_scenario_observations(
-            specification, eligible=eligible
-        )
+        selected = _select_scenario_observations(specification, eligible=eligible)
         chain_root = sha256_prefixed(
             {
                 "specification_hash": specification.content_hash,
@@ -3425,9 +3399,7 @@ def _select_scenario_observations(
                 if len(chosen) == specification.step_count:
                     break
     else:
-        return _stochastic_scenario_shocks(
-            specification, eligible=eligible, rng=rng
-        )
+        return _stochastic_scenario_shocks(specification, eligible=eligible, rng=rng)
     return tuple(
         (
             _observation_to_shock(
@@ -3476,9 +3448,7 @@ def _stochastic_scenario_shocks(
         *,
         floor: Decimal | None = None,
         ceiling: Decimal | None = None,
-    ) -> tuple[
-        tuple[str, Decimal], ...
-    ]:
+    ) -> tuple[tuple[str, Decimal], ...]:
         values_by_key: dict[str, list[Decimal]] = {}
         for observation in eligible:
             for key, value in getattr(observation, field_name):
@@ -3487,10 +3457,9 @@ def _stochastic_scenario_shocks(
         common_z = rng.gauss(0.0, 1.0)
         for key, values in sorted(values_by_key.items()):
             mean = sum(values, start=_ZERO) / Decimal(len(values))
-            variance = (
-                sum(((item - mean) ** 2 for item in values), start=_ZERO)
-                / Decimal(max(len(values) - 1, 1))
-            )
+            variance = sum(
+                ((item - mean) ** 2 for item in values), start=_ZERO
+            ) / Decimal(max(len(values) - 1, 1))
             std = variance.sqrt()
             z = Decimal(str((common_z + rng.gauss(0.0, 1.0)) / 2))
             drawn = mean + std * z
@@ -3518,18 +3487,13 @@ def _stochastic_scenario_shocks(
         )
         margins = [item.margin_multiplier for item in eligible]
         mean_margin = sum(margins, start=_ZERO) / Decimal(len(margins))
-        margin_variance = (
-            sum(
-                ((item - mean_margin) ** 2 for item in margins),
-                start=_ZERO,
-            )
-            / Decimal(max(len(margins) - 1, 1))
-        )
+        margin_variance = sum(
+            ((item - mean_margin) ** 2 for item in margins),
+            start=_ZERO,
+        ) / Decimal(max(len(margins) - 1, 1))
         margin_multiplier = max(
             Decimal("0.000001"),
-            mean_margin
-            + margin_variance.sqrt()
-            * Decimal(str(rng.gauss(0.0, 1.0))),
+            mean_margin + margin_variance.sqrt() * Decimal(str(rng.gauss(0.0, 1.0))),
         )
         shock = JointMarketShock(
             scenario_id=f"{specification.path_id}.shock.{index}",
@@ -3541,9 +3505,7 @@ def _stochastic_scenario_shocks(
             spread_multipliers=spreads,
             liquidity_haircuts=liquidity,
             margin_multiplier=margin_multiplier,
-            source_hashes=tuple(
-                sorted((*source_hashes, specification.model_hash))
-            ),
+            source_hashes=tuple(sorted((*source_hashes, specification.model_hash))),
         )
         results.append((shock, source_hashes))
     return tuple(results)
