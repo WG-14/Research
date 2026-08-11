@@ -46,6 +46,7 @@ from tests.test_run_lifecycle import _context
 from tests.test_strategy_research_package import (
     _bind_selected_candidate_artifact,
     _bind_validation_admission,
+    _bind_validation_experiment,
     _publish_terminal_usage_binding,
     _result,
 )
@@ -185,6 +186,7 @@ def _prepare_approval_report(
         label="final_holdout_confirmation",
     )
     _bind_selected_candidate_artifact(report, manager)
+    _bind_validation_experiment(report)
     report.update(
         {
             "reproduction_receipt_status": "AVAILABLE",

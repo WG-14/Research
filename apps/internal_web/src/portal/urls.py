@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.urls import path
 
-from . import api_views, views
+from . import api_views, project_views, views
 
 
 app_name = "portal"
@@ -99,6 +99,39 @@ urlpatterns = [
     path("logout/", views.PortalLogoutView.as_view(), name="logout"),
     path("", views.dashboard, name="dashboard"),
     path("research/", views.research_explorer, name="research-explorer"),
+    path("projects/", project_views.project_list, name="project-list"),
+    path("projects/create/", project_views.project_create, name="project-create"),
+    path("projects/impact/", project_views.project_impact, name="project-impact"),
+    path(
+        "projects/<str:project_id>/",
+        project_views.project_detail,
+        name="project-detail",
+    ),
+    path(
+        "projects/<str:project_id>/members/",
+        project_views.project_members,
+        name="project-members",
+    ),
+    path(
+        "projects/<str:project_id>/revise/",
+        project_views.project_revise,
+        name="project-revise",
+    ),
+    path(
+        "projects/<str:project_id>/references/",
+        project_views.project_reference,
+        name="project-reference",
+    ),
+    path(
+        "projects/<str:project_id>/transition/",
+        project_views.project_transition,
+        name="project-transition",
+    ),
+    path(
+        "projects/<str:project_id>/workspace/",
+        project_views.project_workspace,
+        name="project-workspace",
+    ),
     path(
         "research/<str:section>/<str:logical_id>/<str:version>/",
         views.research_explorer_detail,

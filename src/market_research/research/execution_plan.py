@@ -317,6 +317,9 @@ def build_research_execution_plan(
         "schema_version": 1,
         "manifest_hash": manifest.manifest_hash(),
         "simulation_seed_scope_hash": manifest.simulation_seed_scope_hash(),
+        "causal_execution_seed_scope_hash": (
+            manifest.causal_execution_seed_scope_hash()
+        ),
         "experiment_id": manifest.experiment_id,
         "dataset_hashes": {name: dataset_hashes[name] for name in split_names},
         "dataset_quality_hash": combined_dataset_quality_hash(

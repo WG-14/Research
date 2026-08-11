@@ -1214,6 +1214,7 @@ def _reserve_experiment_attempt(
             "snapshot_query_hash": holdout_snapshot.snapshot_query_hash(),
             "snapshot_data_hash": holdout_snapshot.snapshot_data_hash(),
             "snapshot_fingerprint_hash": holdout_snapshot.snapshot_fingerprint_hash(),
+            **_corporate_action_snapshot_lineage(holdout_snapshot),
             "quality_hash": quality_reports["final_holdout"].content_hash,
         }
         if holdout_snapshot is not None and "final_holdout" in quality_reports
@@ -1362,6 +1363,7 @@ def _reserve_experiment_attempt(
                     if snapshot.point_in_time_decision_evidence is not None
                     else {}
                 ),
+                **_corporate_action_snapshot_lineage(snapshot),
                 "quality_hash": quality_reports[name].content_hash,
                 "verification_status": snapshot.verification.overall_status.value
                 if snapshot.verification
@@ -2991,7 +2993,9 @@ def run_final_holdout_confirmation(
     execution_model = _execution_model_from_scenario(
         scenario,
         seed_context=_seed_context(
-            simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+            causal_execution_seed_scope_hash=(
+                manifest.causal_execution_seed_scope_hash()
+            ),
             scenario=scenario,
             scenario_id=scenario_id,
             parameter_candidate_id=selected_id,
@@ -3044,6 +3048,7 @@ def run_final_holdout_confirmation(
         "snapshot_query_hash": snapshot.snapshot_query_hash(),
         "snapshot_data_hash": snapshot.snapshot_data_hash(),
         "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+        **_corporate_action_snapshot_lineage(snapshot),
         "quality_hash": quality.content_hash,
     }
     holdout_hashes = final_holdout_hashes_from_manifest(
@@ -4097,6 +4102,9 @@ def _evaluate_candidates(
                         parameter_values=params,
                         portfolio_policy_hash=portfolio_policy_hash,
                         simulation_policy_hash=simulation_policy_hash,
+                        causal_execution_seed_scope_hash=(
+                            manifest.causal_execution_seed_scope_hash()
+                        ),
                     ),
                     original_metrics=validation_metrics,
                     metrics_v2=validation_metrics_v2,
@@ -5446,7 +5454,9 @@ def _evaluate_candidate_base_result(
             execution_model = _execution_model_from_scenario(
                 scenario,
                 seed_context=_seed_context(
-                    simulation_seed_scope_hash=simulation_seed_scope_hash,
+                    causal_execution_seed_scope_hash=(
+                        manifest.causal_execution_seed_scope_hash()
+                    ),
                     scenario=scenario,
                     scenario_id=scenario_id,
                     parameter_candidate_id=param_candidate_id,
@@ -6324,7 +6334,7 @@ def _signal_omission_stress_runs(
     rows: list[dict[str, Any]] = []
     for rate in contract.omission_rates_pct:
         seed_material = {
-            "manifest_hash": manifest.manifest_hash(),
+            "seed_policy": contract.seed_policy,
             "candidate_id": candidate_id,
             "scenario_id": scenario_id,
             "split_name": snapshot.split_name,
@@ -6338,7 +6348,9 @@ def _signal_omission_stress_runs(
         execution_model = _execution_model_from_scenario(
             scenario,
             seed_context=_seed_context(
-                simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+                causal_execution_seed_scope_hash=(
+                    manifest.causal_execution_seed_scope_hash()
+                ),
                 scenario=scenario,
                 scenario_id=scenario_id,
                 parameter_candidate_id=candidate_id,
@@ -7550,7 +7562,9 @@ def _walk_forward_metrics(
         execution_model = _execution_model_from_scenario(
             active_scenario,
             seed_context=_seed_context(
-                simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+                causal_execution_seed_scope_hash=(
+                    manifest.causal_execution_seed_scope_hash()
+                ),
                 scenario=active_scenario,
                 scenario_id=active_scenario_id,
                 parameter_candidate_id=parameter_candidate_id or "unknown_candidate",
@@ -7823,6 +7837,13 @@ def _report_payload(
                         snapshot.snapshot_fingerprint_hash()
                         for snapshot in snapshots
                         if snapshot.split_name == "final_holdout"
+                    ),
+                    **_corporate_action_snapshot_lineage(
+                        next(
+                            snapshot
+                            for snapshot in snapshots
+                            if snapshot.split_name == "final_holdout"
+                        )
                     ),
                     "quality_hash": next(
                         report.content_hash
@@ -8124,6 +8145,7 @@ def _report_payload(
                     if snapshot.point_in_time_decision_evidence is not None
                     else {}
                 ),
+                **_corporate_action_snapshot_lineage(snapshot),
                 "quality_hash": next(
                     report.content_hash
                     for report in quality_reports
@@ -8749,6 +8771,11 @@ def _report_payload(
     resource_budget = _resource_budget_report(manifest)
     resource_summary = _resource_integrity_summary(candidates)
     top_level_classification = _top_level_classification(candidates)
+    corporate_action_evidence_by_split = {
+        snapshot.split_name: snapshot.corporate_action_transformation_evidence
+        for snapshot in snapshots
+        if snapshot.corporate_action_transformation_evidence is not None
+    }
     payload = {
         "report_kind": report_kind,
         "experiment_id": manifest.experiment_id,
@@ -8784,6 +8811,15 @@ def _report_payload(
             str(report.payload["split_name"]): report.payload
             for report in quality_reports
         },
+        **(
+            {
+                "corporate_action_transformation_evidence": (
+                    corporate_action_evidence_by_split
+                )
+            }
+            if corporate_action_evidence_by_split
+            else {}
+        ),
         "market": manifest.market,
         "instrument_evidence": manifest.instrument_evidence(),
         "interval": manifest.interval,
@@ -8836,6 +8872,7 @@ def _report_payload(
                     if snapshot.point_in_time_decision_evidence is not None
                     else {}
                 ),
+                **_corporate_action_snapshot_lineage(snapshot),
                 "quality_hash": next(
                     report.content_hash
                     for report in quality_reports
@@ -9911,7 +9948,7 @@ def _scenario_id(scenario: ExecutionScenario, scenario_index: int) -> str:
 
 def _seed_context(
     *,
-    simulation_seed_scope_hash: str,
+    causal_execution_seed_scope_hash: str,
     scenario: ExecutionScenario,
     scenario_id: str,
     parameter_candidate_id: str,
@@ -9921,15 +9958,13 @@ def _seed_context(
         _execution_model_from_scenario(scenario).params_payload()
     )
     material: dict[str, Any] = {
-        "simulation_seed_scope_hash": simulation_seed_scope_hash,
+        "seed_policy": "causal_execution_request_scoped_v1",
+        "causal_execution_seed_scope_hash": causal_execution_seed_scope_hash,
         "scenario_id": scenario_id,
         "scenario_hash": scenario_hash,
         "parameter_candidate_id": parameter_candidate_id,
         "split_name": split_name,
-        "base_seed": scenario.seed,
     }
-    material["stress_seed_material"] = dict(material)
-    material["stress_seed_hash"] = sha256_prefixed(material)
     return material
 
 
@@ -10906,6 +10941,28 @@ def _quality_reports(
     }
 
 
+def _corporate_action_snapshot_lineage(
+    snapshot: DatasetSnapshot,
+) -> dict[str, object]:
+    evidence = snapshot.corporate_action_transformation_evidence
+    if evidence is None:
+        return {}
+    return {
+        "corporate_action_transformation_evidence_content_hash": evidence.get(
+            "content_hash"
+        ),
+        "corporate_action_known_at_authority_binding_hash": evidence.get(
+            "known_at_authority_binding_hash"
+        ),
+        "corporate_action_portfolio_event_plan_hash": evidence.get(
+            "portfolio_event_plan_hash"
+        ),
+        "corporate_action_materialization_evidence_hash": evidence.get(
+            "materialization_evidence_hash"
+        ),
+    }
+
+
 def _dataset_adapter_provenance_payload(
     *,
     manifest: ExperimentManifest,
@@ -10960,6 +11017,39 @@ def _dataset_adapter_provenance_payload(
             }
             if any(
                 snapshot.point_in_time_decision_evidence is not None
+                for snapshot in snapshots
+            )
+            else {}
+        ),
+        **(
+            {
+                "corporate_action_transformation_evidence_hashes": {
+                    snapshot.split_name: (
+                        snapshot.corporate_action_transformation_evidence or {}
+                    ).get("content_hash")
+                    for snapshot in snapshots
+                },
+                "corporate_action_known_at_authority_binding_hashes": {
+                    snapshot.split_name: (
+                        snapshot.corporate_action_transformation_evidence or {}
+                    ).get("known_at_authority_binding_hash")
+                    for snapshot in snapshots
+                },
+                "corporate_action_portfolio_event_plan_hashes": {
+                    snapshot.split_name: (
+                        snapshot.corporate_action_transformation_evidence or {}
+                    ).get("portfolio_event_plan_hash")
+                    for snapshot in snapshots
+                },
+                "corporate_action_materialization_evidence_hashes": {
+                    snapshot.split_name: (
+                        snapshot.corporate_action_transformation_evidence or {}
+                    ).get("materialization_evidence_hash")
+                    for snapshot in snapshots
+                },
+            }
+            if any(
+                snapshot.corporate_action_transformation_evidence is not None
                 for snapshot in snapshots
             )
             else {}

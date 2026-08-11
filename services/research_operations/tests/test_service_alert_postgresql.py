@@ -105,6 +105,23 @@ def _raise(
     )
 
 
+def _raise_episode(
+    store: ServiceAlertStore,
+    *,
+    key: str,
+    now: datetime,
+):
+    return store.raise_condition_episode(
+        condition_key=key,
+        condition_code="database_unavailable",
+        severity="CRITICAL",
+        source_actor_id="health-probe:database",
+        endpoint_id="primary-oncall",
+        acknowledgment_timeout_seconds=5,
+        now=now,
+    )
+
+
 def _deliver_one(
     store: ServiceAlertStore,
     *,
@@ -282,6 +299,85 @@ def test_raise_and_acknowledge_retries_converge_but_conflicts_fail_closed(
             reason_code="incident_owned",
             now=base + timedelta(minutes=4, seconds=1),
         )
+
+
+def test_condition_episode_suppresses_active_duplicates_and_reopens_after_resolution(
+    alert_live_dsn: str,
+) -> None:
+    store = ServiceAlertStore(alert_live_dsn)
+    base = datetime.now(UTC)
+    condition_key = "service-health:v1:release-1:database_unavailable"
+
+    first = _raise_episode(store, key=condition_key, now=base)
+    active_replay = _raise_episode(
+        store,
+        key=condition_key,
+        now=base + timedelta(seconds=1),
+    )
+    assert active_replay.alert_id == first.alert_id
+    assert first.idempotency_key.endswith(":episode:1")
+    with pytest.raises(AlertBindingConflict, match="binding_conflict"):
+        store.raise_condition_episode(
+            condition_key=condition_key,
+            condition_code="database_unavailable",
+            severity="WARNING",
+            source_actor_id="health-probe:database",
+            endpoint_id="primary-oncall",
+            acknowledgment_timeout_seconds=5,
+            now=base + timedelta(seconds=1),
+        )
+
+    claim = store.claim_delivery(
+        worker_id="service-alert-worker:episode",
+        lease_seconds=30,
+        now=base + timedelta(seconds=2),
+    )
+    assert claim is not None
+    store.mark_delivered(
+        claim,
+        response_code=202,
+        now=base + timedelta(seconds=3),
+    )
+    store.acknowledge(
+        alert_id=first.alert_id,
+        actor_id="operator:alice",
+        reason_code="incident_owned",
+        now=base + timedelta(seconds=4),
+    )
+    store.resolve(
+        alert_id=first.alert_id,
+        actor_id="operator:alice",
+        reason_code="service_recovered",
+        now=base + timedelta(seconds=5),
+    )
+
+    recurrence_barrier = threading.Barrier(2)
+
+    def reopen_concurrently():
+        recurrence_barrier.wait(timeout=5)
+        return _raise_episode(
+            store,
+            key=condition_key,
+            now=base + timedelta(seconds=6),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recurrences = tuple(pool.map(lambda _index: reopen_concurrently(), range(2)))
+
+    assert recurrences[0].alert_id == recurrences[1].alert_id
+    assert recurrences[0].alert_id != first.alert_id
+    assert recurrences[0].idempotency_key.endswith(":episode:2")
+    with psycopg.connect(alert_live_dsn) as conn:
+        counts = conn.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM research_ops.service_alert),
+                (SELECT count(*) FROM research_ops.service_alert_delivery),
+                (SELECT count(*) FROM research_ops.service_alert_delivery
+                 WHERE status = 'PENDING')
+            """
+        ).fetchone()
+    assert counts == (2, 2, 1)
 
 
 def test_stale_delivery_claim_cannot_publish_and_events_are_append_only(

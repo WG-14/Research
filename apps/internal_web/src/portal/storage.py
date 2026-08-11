@@ -16,6 +16,9 @@ from market_research.application.adapter_contracts import (
     report_content_hash_payload,
     sha256_prefixed,
 )
+from market_research.application.platform_contracts import (
+    finalize_file_publication,
+)
 
 from .security import (
     ensure_path_within_root,
@@ -112,6 +115,7 @@ def publish_manifest_bytes(*, content: bytes, content_hash: str) -> SafeArtifact
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+            finalize_file_publication(handle.fileno())
         descriptor = -1
         try:
             os.link(temporary, target, follow_symlinks=False)

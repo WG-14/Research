@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from market_research.storage_io import ATOMIC_PUBLICATION_MODE_ENV
 
 from portal.security import (
     normalize_display_filename,
@@ -62,6 +64,25 @@ def test_content_addressed_manifest_publication_is_idempotent() -> None:
 
     assert first == second
     assert resolve_artifact_ref(first).read_bytes() == content
+
+
+def test_manifest_publication_is_group_readable_in_native_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+    content = ('{"nonce":"' + uuid.uuid4().hex + '"}').encode()
+    content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
+
+    reference = publish_manifest_bytes(
+        content=content,
+        content_hash=content_hash,
+    )
+    target = resolve_artifact_ref(reference)
+
+    try:
+        assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def test_manifest_reads_are_bounded_and_verify_recorded_metadata(monkeypatch) -> None:

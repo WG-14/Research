@@ -24,6 +24,10 @@ from .hash_chain import (
     read_hash_chained_jsonl_snapshot,
 )
 from .hashing import content_hash_payload, sha256_prefixed
+from .governance_policy import (
+    require_current_policy_reference,
+    standard_research_governance_policy,
+)
 from .independent_verification import (
     IndependentVerificationError,
     IndependentVerificationRef,
@@ -293,6 +297,7 @@ _MATERIAL_STRATEGY_TARGETS = frozenset(
 )
 _MATERIAL_TRANSITION_POLICY_VERSION = "material-transition-policy.v1"
 _STRATEGY_APPROVAL_POLICY_VERSION = "strategy-approval-policy.v1"
+_GOVERNANCE_POLICY = standard_research_governance_policy()
 _APPROVAL_ELIGIBLE_HYPOTHESIS_STATES = frozenset(
     {
         HypothesisLifecycleState.SUPPORTED.value,
@@ -470,6 +475,7 @@ def _append_lifecycle_transition(
     payload = {
         "schema_version": GOVERNANCE_SCHEMA_VERSION,
         "event_type": "lifecycle_transition",
+        "governance_policy": _GOVERNANCE_POLICY.reference(),
         **subject.as_dict(),
         "from_state": from_state,
         "to_state": to_state,
@@ -590,6 +596,7 @@ def append_human_review(
             {
                 "schema_version": GOVERNANCE_SCHEMA_VERSION,
                 "event_type": "human_review_decision",
+                "governance_policy": _GOVERNANCE_POLICY.reference(),
                 **subject.as_dict(),
                 "decision": normalized_decision.value,
                 "reviewer_id": reviewer,
@@ -676,6 +683,7 @@ def approve_strategy_candidate(
         raise GovernanceError("strategy_approval_strategy_identity_required")
     semantic_request = {
         "schema_version": STRATEGY_APPROVAL_SCHEMA_VERSION,
+        "governance_policy": _GOVERNANCE_POLICY.reference(),
         "subject": subject.as_dict(),
         "hypothesis_subject": hypothesis_subject.as_dict(),
         "hypothesis_contract_hash": hypothesis_contract_hash,
@@ -846,6 +854,7 @@ def approve_strategy_candidate(
             {
                 "schema_version": GOVERNANCE_SCHEMA_VERSION,
                 "event_type": "human_review_decision",
+                "governance_policy": _GOVERNANCE_POLICY.reference(),
                 **subject.as_dict(),
                 "decision": HumanReviewDecision.APPROVED.value,
                 "reviewer_id": reviewer,
@@ -858,6 +867,9 @@ def approve_strategy_candidate(
                 "approval_request_hash": request_hash,
                 "independent_verification_ref": verification.ref().as_dict(),
                 "independent_verifier_id": verification.verifier_id,
+                "independent_verifier_subject": (
+                    verification.principal_assertion_subject
+                ),
                 "originator_actor_ids": sorted(originators),
                 **decision_binding,
                 "decided_at": timestamp,
@@ -867,6 +879,7 @@ def approve_strategy_candidate(
             {
                 "schema_version": GOVERNANCE_SCHEMA_VERSION,
                 "event_type": "lifecycle_transition",
+                "governance_policy": _GOVERNANCE_POLICY.reference(),
                 **subject.as_dict(),
                 "from_state": StrategyCandidateLifecycleState.OUT_OF_SAMPLE_PASSED.value,
                 "to_state": StrategyCandidateLifecycleState.RESEARCH_APPROVED.value,
@@ -881,6 +894,9 @@ def approve_strategy_candidate(
                 "approval_request_hash": request_hash,
                 "independent_verification_ref": verification.ref().as_dict(),
                 "independent_verifier_id": verification.verifier_id,
+                "independent_verifier_subject": (
+                    verification.principal_assertion_subject
+                ),
                 "originator_actor_ids": sorted(originators),
                 **decision_binding,
                 "recorded_at": timestamp,
@@ -965,7 +981,10 @@ def _require_independent_verification_for_approval(
         raise GovernanceError(
             "strategy_approval_independent_verification_research_mismatch"
         )
-    if result.verifier_id == reviewer or result.verifier_id in prohibited:
+    if (
+        result.principal_assertion_subject == reviewer
+        or result.principal_assertion_subject in prohibited
+    ):
         raise GovernanceError(
             "strategy_approval_independent_verifier_separation_violation"
         )
@@ -995,6 +1014,7 @@ def _material_transition_decision_binding(
     authority_hash = sha256_prefixed(
         {
             "schema_version": 1,
+            "governance_policy": _GOVERNANCE_POLICY.reference(),
             "subject": subject.as_dict(),
             "from_state": from_state,
             "to_state": to_state,
@@ -1018,6 +1038,7 @@ def _material_transition_decision_binding(
             "rationale": rationale,
             "evidence_hashes": dict(sorted(evidence.items())),
             "policy_version": _MATERIAL_TRANSITION_POLICY_VERSION,
+            "governance_policy": _GOVERNANCE_POLICY.reference(),
         },
         label="material_transition_decision_identity",
     )
@@ -1091,6 +1112,7 @@ def _strategy_approval_decision_binding(
     authority_hash = sha256_prefixed(
         {
             "schema_version": 1,
+            "governance_policy": _GOVERNANCE_POLICY.reference(),
             "subject": subject.as_dict(),
             "from_state": StrategyCandidateLifecycleState.OUT_OF_SAMPLE_PASSED.value,
             "to_state": StrategyCandidateLifecycleState.RESEARCH_APPROVED.value,
@@ -1252,6 +1274,7 @@ def _strategy_approval_artifact(
     material = {
         "schema_version": STRATEGY_APPROVAL_SCHEMA_VERSION,
         "artifact_type": "strategy_research_approval",
+        "governance_policy": _GOVERNANCE_POLICY.reference(),
         **subject.as_dict(),
         "approved_state": StrategyCandidateLifecycleState.RESEARCH_APPROVED.value,
         "source_report_hash": source_report_hash,
@@ -1268,6 +1291,10 @@ def _strategy_approval_artifact(
             **verification.ref().as_dict(),
             "verifier_id": verification.verifier_id,
             "verifier_role": verification.verifier_role,
+            "principal_assertion_hash": verification.principal_assertion_hash,
+            "principal_assertion_issuer": verification.principal_assertion_issuer,
+            "principal_assertion_key_id": verification.principal_assertion_key_id,
+            "principal_assertion_subject": (verification.principal_assertion_subject),
             "verified_at": verification.verified_at,
             "status": verification.status,
             "experiment_id": verification.experiment_id,
@@ -1511,10 +1538,12 @@ def validate_strategy_approval(
     verification_binding = approval.get("independent_verification")
     verification_ref: IndependentVerificationRef | None = None
     verification_verifier_id: object | None = None
+    verification_subject: object | None = None
     if not isinstance(verification_binding, dict):
         reasons.append("strategy_approval_independent_verification_missing")
     else:
         verification_verifier_id = verification_binding.get("verifier_id")
+        verification_subject = verification_binding.get("principal_assertion_subject")
         try:
             verification_ref = IndependentVerificationRef(
                 verification_id=str(verification_binding.get("verification_id") or ""),
@@ -1526,8 +1555,18 @@ def validate_strategy_approval(
         if (
             verification_binding.get("status") != "PASS"
             or verification_binding.get("verifier_role") != "independent_verifier"
-            or verification_binding.get("verifier_id") == approval.get("reviewer_id")
-            or verification_binding.get("verifier_id") in originator_ids
+            or verification_subject == approval.get("reviewer_id")
+            or verification_subject in originator_ids
+            or not str(
+                verification_binding.get("principal_assertion_hash") or ""
+            ).strip()
+            or not str(
+                verification_binding.get("principal_assertion_issuer") or ""
+            ).strip()
+            or not str(
+                verification_binding.get("principal_assertion_key_id") or ""
+            ).strip()
+            or not str(verification_subject or "").strip()
             or not str(verification_binding.get("experiment_id") or "").strip()
             or verification_binding.get("research_version")
             != verification_binding.get("manifest_hash")
@@ -1553,6 +1592,13 @@ def validate_strategy_approval(
                     verified.status != "PASS"
                     or verified.source_report_hash != source_report_hash
                     or verified.verifier_id != verification_verifier_id
+                    or verified.principal_assertion_subject != verification_subject
+                    or verified.principal_assertion_hash
+                    != verification_binding.get("principal_assertion_hash")
+                    or verified.principal_assertion_issuer
+                    != verification_binding.get("principal_assertion_issuer")
+                    or verified.principal_assertion_key_id
+                    != verification_binding.get("principal_assertion_key_id")
                     or verified.verified_at != verification_binding.get("verified_at")
                     or verified.experiment_id
                     != verification_binding.get("experiment_id")
@@ -1700,6 +1746,7 @@ def validate_strategy_approval(
         if isinstance(verification_ref, IndependentVerificationRef) and (
             review.get("independent_verification_ref") != verification_ref.as_dict()
             or review.get("independent_verifier_id") != verification_verifier_id
+            or review.get("independent_verifier_subject") != verification_subject
         ):
             reasons.append("strategy_approval_review_verification_mismatch")
         if review.get("originator_actor_ids") != list(originator_ids):
@@ -1728,6 +1775,7 @@ def validate_strategy_approval(
             or transition.get("independent_verification_ref")
             != verification_ref.as_dict()
             or transition.get("independent_verifier_id") != verification_verifier_id
+            or transition.get("independent_verifier_subject") != verification_subject
         ):
             reasons.append("strategy_approval_transition_verification_mismatch")
         if transition.get("originator_actor_ids") != list(originator_ids):
@@ -1839,6 +1887,13 @@ def validate_governance_registry(manager: ResearchPathManager) -> dict[str, Any]
         try:
             if row.get("schema_version") != GOVERNANCE_SCHEMA_VERSION:
                 raise GovernanceError("schema_version_unsupported")
+            # Schema-v1 rows that predate the policy authority remain readable.
+            # Every newly written row carries this reference; if present it is
+            # always validated so a policy swap cannot be hidden by rehashing
+            # the append-only stream.
+            policy_reference = row.get("governance_policy")
+            if policy_reference is not None:
+                require_current_policy_reference(policy_reference)
             subject_type = GovernanceSubjectType(str(row["subject_type"]))
             key = (
                 subject_type.value,
@@ -2188,6 +2243,7 @@ def _human_review_request_hash(
 ) -> str:
     semantic_request = {
         "schema_version": GOVERNANCE_SCHEMA_VERSION,
+        "governance_policy": _GOVERNANCE_POLICY.reference(),
         "subject": {
             "subject_type": str(subject.get("subject_type") or ""),
             "subject_id": str(subject.get("subject_id") or ""),

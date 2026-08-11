@@ -10,20 +10,28 @@ After=research-operations-job-worker.service research-operations-validator.servi
 
 [Service]
 Type=oneshot
-User=research-ops
-Group=research-ops
+User=research-backup
+Group=research-backup
+SupplementaryGroups=research-ops
 WorkingDirectory=/opt/research-platform/current
 EnvironmentFile=/etc/research-ops/runtime.env
 Environment=RESEARCH_OPS_DATABASE_ROLE=backup
-Environment=RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY=/run/research-operations
+Environment=POSTGRES_BACKUP_PASSWORD_FILE=%d/postgres-backup-password
+Environment=DJANGO_SECRET_KEY_FILE=%d/django-secret-key
+Environment=BACKUP_SIGNING_KEY_FILE=%d/backup-signing.key
+Environment=RESEARCH_OPS_BACKUP_SIGNING_KEY_FILE=%d/backup-signing.key
+Environment=RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY=/run/research-operations-backup
 Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LoadCredential=postgres-backup-password:/etc/research-ops/secrets/postgres-backup-password
+LoadCredential=django-secret-key:/etc/research-ops/secrets/django-secret-key
+LoadCredential=backup-signing.key:/etc/research-ops/secrets/backup-signing.key
 ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /bin/sh /opt/research-platform/current/services/research_operations/deploy/native/bin/native-backup.sh
 KillSignal=SIGTERM
 KillMode=control-group
 TimeoutStartSec=90min
 TimeoutStopSec=5min
-UMask=0077
-RuntimeDirectory=research-operations
+UMask=0027
+RuntimeDirectory=research-operations-backup
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 NoNewPrivileges=true
@@ -33,11 +41,13 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+InaccessiblePaths=/etc/research-ops/secrets
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
@@ -45,7 +55,7 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadOnlyPaths=/srv/research/data /srv/research/artifacts /srv/research/reports /srv/research/registry
-ReadWritePaths=/srv/research-backups /srv/research-offsite-receipts /run/research-operations
+ReadWritePaths=/srv/research-backups /srv/research-offsite-receipts /run/research-operations-backup
 TasksMax=64
 LimitNOFILE=4096
 MemoryMax=2G

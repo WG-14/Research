@@ -190,7 +190,10 @@ def validate_execution_evidence(
         if getattr(fill, "fill_status", "") in {"filled", "partial"}
         and float(getattr(fill, "filled_qty", 0.0)) > 0
     )
-    if filled != len(run.ledger_entries) + _evidence_int(
+    fill_ledger_entry_count = sum(
+        1 for entry in run.ledger_entries if entry.entry_type == "fill"
+    )
+    if filled != fill_ledger_entry_count + _evidence_int(
         evidence.get("pending_execution_count") or 0
     ):
         errors.append("filled_portfolio_lineage_count_mismatch")

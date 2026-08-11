@@ -15,8 +15,8 @@
 
 # 2. 감사 범위와 제한
 
-- 브랜치/기준 commit: `main` / `cb8f58bdac235577aa7363e138a67fc98740125a`
-- 평가 소스 스냅샷: `sha256:edeb1460f4916806933ce53adcec4c372341d7c555afd9f14b3864d9d06088ef` (경로와 바이트를 함께 해시; 생성 report/result는 재귀 방지를 위해 제외)
+- 브랜치/기준 commit: `main` / `8de57440fd3230aad12e72b5963093fa4f60a512`
+- 평가 소스 스냅샷: `sha256:ea069d0276e27f9aa016d8a964894640643e009e2d4ca9653b9b57231eda5ce8` (경로와 바이트를 함께 해시; 생성 report/result는 재귀 방지를 위해 제외)
 - 작업트리: 변경 있음(기준 commit 이후 구현·테스트·감사 산출물이 미커밋 상태)
 - 검사 경로: `src`, `tests`, `tools`, `apps/internal_web`, `services/research_operations`, `.github`, `docs`, `scripts`
 - 제외 경로: `/home/vorac/work/Operation` 전체(AGENTS 경계), 외부 운영 시스템, 실계정, 실주문, 네트워크 시장데이터
@@ -560,8 +560,8 @@ PASS는 해당 fatal pattern이 현재 지원 경로에서 재현되지 않았�
     "reproducibility": "complete",
     "spot": "substantial"
   },
-  "evaluated_commit": "cb8f58bdac235577aa7363e138a67fc98740125a",
-  "evaluated_source_snapshot_hash": "sha256:edeb1460f4916806933ce53adcec4c372341d7c555afd9f14b3864d9d06088ef",
+  "evaluated_commit": "8de57440fd3230aad12e72b5963093fa4f60a512",
+  "evaluated_source_snapshot_hash": "sha256:ea069d0276e27f9aa016d8a964894640643e009e2d4ca9653b9b57231eda5ce8",
   "evidence_confidence": "high",
   "evidence_confidence_scope": "criterion-focused evidence and required T-01 through T-05 scenarios",
   "grade": "S",

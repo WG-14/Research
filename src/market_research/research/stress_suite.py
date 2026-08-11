@@ -40,6 +40,7 @@ class StressSuiteContext:
     parameter_values: dict[str, Any]
     portfolio_policy_hash: str | None = None
     simulation_policy_hash: str | None = None
+    causal_execution_seed_scope_hash: str | None = None
 
 
 def stress_suite_required(manifest_or_payload: Any) -> bool:
@@ -98,17 +99,29 @@ def analyze_stress_suite(
         for name, component in required_components.items()
         if contract.required_for_validation and component is None
     )
+    causal_execution_seed_scope_hash = (
+        context.causal_execution_seed_scope_hash
+        or "direct_stress_analysis_without_manifest_scope"
+    )
+    monte_carlo_contract = contract.trade_order_monte_carlo
     seed_material = {
-        "manifest_hash": context.manifest_hash,
-        "experiment_id": context.experiment_id,
-        "candidate_id": context.candidate_id,
-        "scenario_id": context.scenario_id,
-        "split_name": context.split_name,
+        "seed_policy": (
+            monte_carlo_contract.seed_policy
+            if monte_carlo_contract is not None
+            else "bounded_closed_trade_stream_contract_scoped_v1"
+        ),
+        "causal_execution_seed_scope_hash": causal_execution_seed_scope_hash,
         "parameter_values": context.parameter_values,
-        "contract_hash": contract_hash,
+        "trade_order_monte_carlo_contract_hash": (
+            sha256_prefixed(monte_carlo_contract.as_dict())
+            if monte_carlo_contract is not None
+            else None
+        ),
         "portfolio_policy_hash": context.portfolio_policy_hash,
-        "simulation_policy_hash": context.simulation_policy_hash,
         "starting_cash": float(starting_cash),
+        "closed_trade_stream_hash": sha256_prefixed(
+            [trade.as_dict() for trade in closed_trades]
+        ),
     }
     fail_reasons: list[str] = [
         f"stress_suite_required_component_missing:{name}"
@@ -126,6 +139,7 @@ def analyze_stress_suite(
             "split_name": context.split_name,
             "portfolio_policy_hash": context.portfolio_policy_hash,
             "simulation_policy_hash": context.simulation_policy_hash,
+            "causal_execution_seed_scope_hash": (causal_execution_seed_scope_hash),
         },
         "starting_cash": float(starting_cash),
     }

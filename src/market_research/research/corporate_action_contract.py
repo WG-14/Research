@@ -88,6 +88,13 @@ class CorporateActionEvent:
         effective = _timestamp(self.effective_at, "corporate_action.effective_at")
         published = _timestamp(self.published_at, "corporate_action.published_at")
         observed = _timestamp(self.observed_at, "corporate_action.observed_at")
+        if any(
+            value.microsecond % 1000 != 0
+            for value in (effective, published, observed)
+        ):
+            raise CorporateActionContractError(
+                "corporate_action_timestamp_millisecond_alignment_required"
+            )
         if observed < published:
             raise CorporateActionContractError(
                 "corporate_action_observed_before_publication"
@@ -113,6 +120,20 @@ class CorporateActionEvent:
             ):
                 raise CorporateActionContractError(
                     "corporate_action.cash_amount_and_currency_required"
+                )
+        elif self.event_type in {"delisting", "etf_merger", "etf_liquidation"}:
+            if (self.cash_amount is None) != (self.cash_currency is None):
+                raise CorporateActionContractError(
+                    "corporate_action.terminal_cash_terms_must_be_complete"
+                )
+            if self.cash_amount is not None and (
+                not self.cash_amount.is_finite()
+                or self.cash_amount < 0
+                or self.cash_currency is None
+                or not _CURRENCY.fullmatch(self.cash_currency)
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.terminal_cash_terms_invalid"
                 )
         elif self.cash_amount is not None or self.cash_currency is not None:
             raise CorporateActionContractError(

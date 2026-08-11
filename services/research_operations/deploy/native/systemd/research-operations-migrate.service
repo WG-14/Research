@@ -11,15 +11,20 @@ PartOf=research-operations.target
 [Service]
 Type=oneshot
 RemainAfterExit=true
-User=research-ops
+User=research-migrate
 Group=research-ops
 WorkingDirectory=/opt/research-platform/current
 EnvironmentFile=/etc/research-ops/runtime.env
 Environment=RESEARCH_OPS_DATABASE_ROLE=owner
+Environment=POSTGRES_OWNER_PASSWORD_FILE=%d/postgres-owner-password
+Environment=DJANGO_SECRET_KEY_FILE=%d/django-secret-key
+Environment=MARKET_RESEARCH_ATOMIC_PUBLICATION_MODE=0640
 Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LoadCredential=postgres-owner-password:/etc/research-ops/secrets/postgres-owner-password
+LoadCredential=django-secret-key:/etc/research-ops/secrets/django-secret-key
 ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /bin/sh /opt/research-platform/current/services/research_operations/scripts/apply-migrations.sh
 UMask=0027
-RuntimeDirectory=research-operations
+RuntimeDirectory=research-operations-migrate
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 NoNewPrivileges=true
@@ -29,20 +34,21 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+InaccessiblePaths=/etc/research-ops/secrets
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadOnlyPaths=/srv/research/data
-ReadWritePaths=/srv/research/data/_internal_web/manifests
-ReadWritePaths=/srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
+ReadOnlyPaths=/srv/research/data /srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
+ReadWritePaths=/srv/research/artifacts/_internal_web/static
 TasksMax=64
 LimitNOFILE=8192
 MemoryMax=1G

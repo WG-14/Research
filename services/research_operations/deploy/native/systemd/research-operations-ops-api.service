@@ -9,12 +9,16 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=research-ops
-Group=research-ops
+User=research-diagnostics
+Group=research-ops-proxy
+SupplementaryGroups=research-ops
 WorkingDirectory=/opt/research-platform/current
 EnvironmentFile=/etc/research-ops/runtime.env
 Environment=RESEARCH_OPS_DATABASE_ROLE=diagnostics
+Environment=POSTGRES_DIAGNOSTICS_PASSWORD_FILE=%d/postgres-diagnostics-password
+Environment=DJANGO_SECRET_KEY_FILE=
 Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LoadCredential=postgres-diagnostics-password:/etc/research-ops/secrets/postgres-diagnostics-password
 ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /opt/research-platform/current/.venv/bin/gunicorn --config /opt/research-platform/current/services/research_operations/deploy/native/gunicorn-ops.conf.py research_operations.runtime:operations_application
 Restart=on-failure
 RestartSec=3s
@@ -34,11 +38,13 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+InaccessiblePaths=/etc/research-ops/secrets
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true

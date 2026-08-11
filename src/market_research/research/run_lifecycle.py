@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import append_jsonl
+from market_research.storage_io import append_jsonl, open_lock_file
 
 from .code_provenance import collect_code_provenance
 from .hashing import content_hash_payload, sha256_prefixed
@@ -194,7 +194,7 @@ def _utc_now() -> str:
 @contextmanager
 def _locked_registry(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path.with_suffix(path.suffix + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(path.with_suffix(path.suffix + ".lock"))
     try:
         try:
             import fcntl

@@ -37,7 +37,12 @@ A calendar authority covers either continuous 24x7 or explicit sessions using
 an IANA timezone, tzdb version, holidays, early closes, and a fail-closed DST
 policy. Corporate-action evidence binds event, publication, and observation
 times and hashes exact raw and adjusted rows before and after each applied
-split or dividend; known post-delisting rows are rejected. These inputs are
+split or dividend; known post-delisting rows are rejected. Official strategy
+runs keep raw execution candles and bind a causal portfolio-event plan into the
+snapshot. Supported quantity, cash, tradability, stable-identity, and explicit
+cash-terminal transitions are applied by the replayable portfolio ledger at
+their known-and-effective boundary. Missing precedence, conversion,
+cash-in-lieu, or fractional-entitlement terms fail closed. These inputs are
 externally prepared immutable local artifacts, never network discoveries.
 
 Those contracts are hash-bound into manifest, dataset-query, readiness, and

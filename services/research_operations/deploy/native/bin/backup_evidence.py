@@ -72,19 +72,40 @@ def _regular_file(path: Path, code: str, *, maximum: int) -> os.stat_result:
 
 
 def _read_file(path: Path, code: str, *, maximum: int) -> bytes:
-    _regular_file(path, code, maximum=maximum)
+    payload, _status = _read_file_with_status(path, code, maximum=maximum)
+    return payload
+
+
+def _read_file_with_status(
+    path: Path,
+    code: str,
+    *,
+    maximum: int,
+) -> tuple[bytes, os.stat_result]:
+    expected_status = _regular_file(path, code, maximum=maximum)
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as handle:
+            opened_status = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(opened_status.st_mode)
+                or opened_status.st_size < 1
+                or opened_status.st_size > maximum
+                or (opened_status.st_dev, opened_status.st_ino)
+                != (expected_status.st_dev, expected_status.st_ino)
+            ):
+                raise EvidenceError(code)
             payload = handle.read(maximum + 1)
+    except EvidenceError:
+        raise
     except OSError as exc:
         raise EvidenceError(code) from exc
     if not payload or len(payload) > maximum:
         raise EvidenceError(code)
-    return payload
+    return payload, opened_status
 
 
 def trusted_public_key(path: Path) -> Path:
@@ -120,7 +141,7 @@ def trusted_public_key(path: Path) -> Path:
 
 def _run(
     arguments: list[str], *, capture_stdout: bool = False
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
             arguments,
@@ -178,11 +199,76 @@ def verify_signature(payload: bytes, signature: bytes, public_key: Path) -> None
             raise EvidenceError("signature")
 
 
-def read_offsite_receipt(path: Path) -> dict[str, object]:
-    status = _regular_file(path, "receipt_file", maximum=65_536)
-    if status.st_uid != os.geteuid() or stat.S_IMODE(status.st_mode) & 0o077:
+def validate_offsite_receipt_access(
+    status: os.stat_result,
+    *,
+    expected_owner_uid: int,
+    expected_group_gid: int,
+    reader_uid: int,
+    reader_group_ids: frozenset[int],
+    require_group_readable: bool = False,
+) -> None:
+    """Validate the exact private or cross-principal receipt file contract.
+
+    The producing identity owns the file and its dedicated backup group.  The
+    owner may read an exact ``0600`` local receipt (used by direct verification)
+    or the production ``0640`` form.  A different identity is accepted only
+    for exact ``0640`` and only when the kernel has placed it in the expected
+    group.  Group/world write and world read are therefore never tolerated.
+    """
+
+    identity_values = (
+        expected_owner_uid,
+        expected_group_gid,
+        reader_uid,
+        *reader_group_ids,
+    )
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in identity_values
+    ):
         raise EvidenceError("receipt_file")
-    payload = _read_file(path, "receipt_file", maximum=65_536)
+    mode = stat.S_IMODE(status.st_mode)
+    if (
+        status.st_uid != expected_owner_uid
+        or status.st_gid != expected_group_gid
+        or mode not in {0o600, 0o640}
+    ):
+        raise EvidenceError("receipt_file")
+    if reader_uid == expected_owner_uid:
+        if require_group_readable and mode != 0o640:
+            raise EvidenceError("receipt_file")
+        return
+    if mode != 0o640 or expected_group_gid not in reader_group_ids:
+        raise EvidenceError("receipt_file")
+
+
+def read_offsite_receipt(
+    path: Path,
+    *,
+    expected_owner_uid: int | None = None,
+    expected_group_gid: int | None = None,
+    require_group_readable: bool = False,
+) -> dict[str, object]:
+    payload, status = _read_file_with_status(
+        path,
+        "receipt_file",
+        maximum=65_536,
+    )
+    actual_reader_uid = os.geteuid()
+    actual_reader_groups = frozenset({os.getegid(), *os.getgroups()})
+    validate_offsite_receipt_access(
+        status,
+        expected_owner_uid=(
+            actual_reader_uid if expected_owner_uid is None else expected_owner_uid
+        ),
+        expected_group_gid=(
+            os.getegid() if expected_group_gid is None else expected_group_gid
+        ),
+        reader_uid=actual_reader_uid,
+        reader_group_ids=actual_reader_groups,
+        require_group_readable=require_group_readable,
+    )
     try:
         value = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -475,6 +561,7 @@ __all__ = [
     "EvidenceError",
     "canonical_json",
     "read_offsite_receipt",
+    "validate_offsite_receipt_access",
     "verify_backup_directory",
     "verify_offsite_receipt",
 ]

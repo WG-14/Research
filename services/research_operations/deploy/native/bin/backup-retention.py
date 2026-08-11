@@ -28,7 +28,11 @@ def _safe_directory(path: Path, code: str) -> None:
         status = path.stat()
     except OSError as error:
         raise SystemExit(f"retention_invalid:{code}") from error
-    if stat.S_ISLNK(link_status.st_mode) or not stat.S_ISDIR(status.st_mode):
+    if (
+        stat.S_ISLNK(link_status.st_mode)
+        or not stat.S_ISDIR(status.st_mode)
+        or stat.S_IMODE(status.st_mode) & 0o022
+    ):
         raise SystemExit(f"retention_invalid:{code}")
 
 
@@ -63,6 +67,7 @@ def main() -> int:
         raise SystemExit("retention_invalid:policy")
     _safe_directory(args.backup_root, "backup_root")
     _safe_directory(args.receipt_root, "receipt_root")
+    receipt_root_status = args.receipt_root.stat()
 
     complete: list[tuple[float, str]] = []
     incomplete: list[str] = []
@@ -70,22 +75,30 @@ def main() -> int:
     for candidate in args.backup_root.iterdir():
         if not _UUID.fullmatch(candidate.name):
             continue
+        is_held = (
+            not candidate.is_symlink()
+            and candidate.is_dir()
+            and (candidate / "LEGAL_HOLD").exists()
+        ) or (args.receipt_root / f"{candidate.name}.LEGAL_HOLD").exists()
+        if is_held:
+            # A hold changes deletion eligibility only.  It must never bypass
+            # the cryptographic completeness checks below.
+            held.append(candidate.name)
         try:
             if candidate.is_symlink() or not candidate.is_dir():
                 incomplete.append(candidate.name)
                 continue
             receipt = args.receipt_root / f"{candidate.name}.json"
-            if (candidate / "LEGAL_HOLD").exists() or (
-                args.receipt_root / f"{candidate.name}.LEGAL_HOLD"
-            ).exists():
-                held.append(candidate.name)
-                continue
             manifest_hash, created_at = verify_backup_directory(
                 candidate,
                 public_key=args.backup_verification_public_key,
                 backup_id=candidate.name,
             )
-            offsite_receipt = read_offsite_receipt(receipt)
+            offsite_receipt = read_offsite_receipt(
+                receipt,
+                expected_owner_uid=receipt_root_status.st_uid,
+                expected_group_gid=receipt_root_status.st_gid,
+            )
             verify_offsite_receipt(
                 offsite_receipt,
                 public_key=args.offsite_receipt_verification_public_key,
@@ -107,6 +120,7 @@ def main() -> int:
         for index, (modified, backup_id) in enumerate(complete)
         if index >= args.minimum_count
         and datetime.fromtimestamp(modified, UTC) < cutoff
+        and backup_id not in held
     ]
     result = {
         "schema_version": 1,
@@ -119,7 +133,10 @@ def main() -> int:
         "incomplete_backup_ids": sorted(incomplete),
     }
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-    return 0
+    # A finalized UUID-named set that cannot be verified is an operational
+    # integrity failure, not a successful dry-run observation. Staging names
+    # are excluded above, so an active backup does not make the timer fail.
+    return 2 if incomplete else 0
 
 
 if __name__ == "__main__":

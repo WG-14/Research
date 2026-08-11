@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 import json
 from pathlib import Path
@@ -79,7 +80,7 @@ def _benchmark_contract(
         required_for_validation=True,
         random_entry=RandomEntryBenchmarkContract(
             iterations=8,
-            seed_policy="derived_from_manifest_split_benchmark_contract_hash",
+            seed_policy=("derived_from_market_interval_split_benchmark_contract_hash"),
             entry_index_policy="uniform_causal_entry_holding_to_split_end",
         ),
         same_holding_period=SameHoldingPeriodBenchmarkContract(
@@ -126,6 +127,7 @@ def _manifest(
         benchmark_suite=benchmark_suite,
         manifest_hash=lambda: "sha256:" + "a" * 64,
         simulation_seed_scope_hash=lambda: "sha256:" + "e" * 64,
+        causal_execution_seed_scope_hash=lambda: "sha256:" + "f" * 64,
         simulation_policy_hash=lambda: simulation_hash,
         portfolio_policy_hash=portfolio.policy_hash,
         risk_policy_hash=risk.policy_hash,
@@ -200,6 +202,102 @@ def test_complete_benchmark_suite_is_deterministic_and_execution_backed(
         split["approved_strategy"]["approval_evidence"]["approval_artifact_hash"]
         == approval_hash
     )
+
+
+def test_random_entry_seed_excludes_manifest_and_future_candle_values() -> None:
+    contract = _benchmark_contract("/unused/approval.json", "sha256:" + "1" * 64)
+    first_manifest = _manifest(
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        benchmark_suite=contract,
+    )
+    changed_values = dict(vars(first_manifest))
+    changed_values["manifest_hash"] = lambda: "sha256:" + "b" * 64
+    changed_manifest = SimpleNamespace(**changed_values)
+    registry = builtin_strategy_registry()
+    snapshot = _snapshot()
+    first_runner = BenchmarkSuiteRunner(first_manifest, registry)
+    changed_runner = BenchmarkSuiteRunner(changed_manifest, registry)
+    scenario_index, scenario = first_runner._base_scenario()
+    scenario_id = "benchmark_seed_scope"
+
+    first = first_runner._random_entry_benchmark(
+        snapshot=snapshot,
+        scenario=scenario,
+        scenario_index=scenario_index,
+        scenario_id=scenario_id,
+    )
+    changed = changed_runner._random_entry_benchmark(
+        snapshot=snapshot,
+        scenario=scenario,
+        scenario_index=scenario_index,
+        scenario_id=scenario_id,
+    )
+    last = snapshot.candles[-1]
+    future_price_changed_snapshot = replace(
+        snapshot,
+        candles=(
+            *snapshot.candles[:-1],
+            Candle(
+                last.ts,
+                last.open * 10.0,
+                last.high * 10.0,
+                last.low * 10.0,
+                last.close * 10.0,
+                last.volume,
+            ),
+        ),
+    )
+    future_price_changed = first_runner._random_entry_benchmark(
+        snapshot=future_price_changed_snapshot,
+        scenario=scenario,
+        scenario_index=scenario_index,
+        scenario_id=scenario_id,
+    )
+
+    assert first == changed
+    assert first["seed_material_hash"].startswith("sha256:")
+    assert first["seed"] == future_price_changed["seed"]
+    assert first["seed_material_hash"] == future_price_changed["seed_material_hash"]
+    assert [sample["entry_index"] for sample in first["samples"]] == [
+        sample["entry_index"] for sample in future_price_changed["samples"]
+    ]
+
+
+def test_random_entry_benchmark_supports_stochastic_base_scenario() -> None:
+    contract = _benchmark_contract("/unused/approval.json", "sha256:" + "1" * 64)
+    manifest = _manifest(
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        benchmark_suite=contract,
+    )
+    stress = ExecutionScenario(
+        type="stress",
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        partial_fill_rate=0.5,
+        seed=1,
+        scenario_role="base",
+    )
+    values = dict(vars(manifest))
+    values["execution_model"] = ExecutionModelConfig(
+        scenarios=(stress,),
+        source="execution_model",
+        scenario_policy="single_scenario",
+    )
+    runner = BenchmarkSuiteRunner(
+        SimpleNamespace(**values), builtin_strategy_registry()
+    )
+
+    result = runner._random_entry_benchmark(
+        snapshot=_snapshot(),
+        scenario=stress,
+        scenario_index=0,
+        scenario_id="benchmark_stress_base",
+    )
+
+    assert result["status"] == "PASS"
+    assert result["iterations"] == contract.random_entry.iterations
 
 
 def test_validation_benchmark_contract_requires_all_explicit_policy_choices(

@@ -9,12 +9,16 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=research-ops
+User=research-validator
 Group=research-ops
 WorkingDirectory=/opt/research-platform/current
 EnvironmentFile=/etc/research-ops/runtime.env
 Environment=RESEARCH_OPS_DATABASE_ROLE=validator
+Environment=POSTGRES_VALIDATOR_PASSWORD_FILE=%d/postgres-validator-password
+Environment=DJANGO_SECRET_KEY_FILE=%d/django-secret-key
 Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LoadCredential=postgres-validator-password:/etc/research-ops/secrets/postgres-validator-password
+LoadCredential=django-secret-key:/etc/research-ops/secrets/django-secret-key
 ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /bin/sh /opt/research-platform/current/services/research_operations/scripts/audit-validator-loop.sh
 Restart=on-failure
 RestartSec=3s
@@ -24,7 +28,7 @@ TimeoutStopSec=30s
 TimeoutStopFailureMode=kill
 OOMPolicy=stop
 UMask=0077
-RuntimeDirectory=research-operations
+RuntimeDirectory=research-operations-validator
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 NoNewPrivileges=true
@@ -34,19 +38,20 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+InaccessiblePaths=/etc/research-ops/secrets
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadOnlyPaths=/srv/research/data /srv/research/reports /srv/research/cache /srv/research/registry
-ReadWritePaths=/srv/research/artifacts
+ReadOnlyPaths=/srv/research/data /srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
 TasksMax=64
 LimitNOFILE=4096
 MemoryMax=1G

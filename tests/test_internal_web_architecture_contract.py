@@ -174,6 +174,7 @@ def test_every_required_capability_has_an_explicit_web_workflow_contract() -> No
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
         "RESEARCH_DB_PATH",
     ),
 )
@@ -187,6 +188,7 @@ def test_research_environment_rejects_relative_storage_paths(
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
         "RESEARCH_DB_PATH",
     ):
         monkeypatch.delenv(name, raising=False)

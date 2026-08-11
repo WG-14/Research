@@ -8,6 +8,7 @@ results to the portfolio ledger.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import math
 from typing import Any, TypedDict, cast
 
@@ -20,6 +21,15 @@ from .backtest_types import (
     BacktestResourceLimitExceeded,
 )
 from .dataset_snapshot import DatasetSnapshot
+from .corporate_action_portfolio import (
+    CASH_INCOME_EVENT_TYPES,
+    QUANTITY_ADJUSTMENT_EVENT_TYPES,
+    TERMINAL_PORTFOLIO_EVENT_TYPES,
+    CorporateActionPortfolioEvent,
+    CorporateActionPortfolioPlan,
+    latest_causally_applicable_events,
+    parse_corporate_action_portfolio_plan,
+)
 from .decision_event import IntentSizing, OrderIntent, ResearchDecisionEvent
 from .execution_model import (
     ExecutionFill,
@@ -426,6 +436,34 @@ def _run_common_simulation_backtest(
     source_dataset_period_start = str(dataset.date_range.start)
     source_dataset_period_end = str(dataset.date_range.end)
     source_dataset_artifact_manifest_hash = dataset.artifact_manifest_hash
+    source_corporate_action_evidence = (
+        dataset.corporate_action_transformation_evidence
+    )
+    corporate_action_plan: CorporateActionPortfolioPlan | None = None
+    corporate_action_materialization_hash: str | None = None
+    if source_corporate_action_evidence is not None:
+        raw_plan = source_corporate_action_evidence.get("portfolio_event_plan")
+        if not isinstance(raw_plan, dict):
+            raise ValueError("corporate_action_portfolio_event_plan_missing")
+        corporate_action_plan = parse_corporate_action_portfolio_plan(raw_plan)
+        if source_corporate_action_evidence.get(
+            "portfolio_event_plan_hash"
+        ) != corporate_action_plan.plan_hash:
+            raise ValueError("corporate_action_portfolio_event_plan_binding_mismatch")
+        corporate_action_materialization_hash = cast(
+            str | None,
+            source_corporate_action_evidence.get("materialization_evidence_hash"),
+        )
+        evidence_material = {
+            key: value
+            for key, value in source_corporate_action_evidence.items()
+            if key != "materialization_evidence_hash"
+        }
+        if corporate_action_materialization_hash != sha256_prefixed(
+            evidence_material,
+            label="corporate_action_materialization_evidence",
+        ):
+            raise ValueError("corporate_action_materialization_evidence_hash_mismatch")
     dataset, point_in_time_evidence = point_in_time_execution_snapshot(
         snapshot=dataset,
         expected_decision_guard_ms=int(timing.decision_guard_ms),
@@ -526,6 +564,11 @@ def _run_common_simulation_backtest(
     model_invocations = 0
     exit_decision_evidence: list[dict[str, object]] = []
     sell_event_keys: set[tuple[str, int]] = set()
+    applied_corporate_action_versions: dict[str, str] = {}
+    corporate_action_application_evidence: list[dict[str, object]] = []
+    tradability_decision_evidence: list[dict[str, object]] = []
+    tradability_state = "tradable"
+    terminal_event: CorporateActionPortfolioEvent | None = None
     peak = float(policy.starting_cash_krw)
     max_dd = 0.0
     run_id = sha256_prefixed(
@@ -610,74 +653,62 @@ def _run_common_simulation_backtest(
                 raise BacktestResourceLimitExceeded(
                     "backtest_memory_limit_exceeded", evidence | {"rss_delta_mb": delta}
                 )
-        if limits.max_trades is not None and len(ledger.entries) > limits.max_trades:
+        applied_trade_count = sum(
+            1 for entry in ledger.entries if entry.entry_type == "fill"
+        )
+        if limits.max_trades is not None and applied_trade_count > limits.max_trades:
             raise BacktestResourceLimitExceeded(
                 "backtest_trade_limit_exceeded",
-                evidence | {"trade_count": len(ledger.entries)},
+                evidence | {"trade_count": applied_trade_count},
             )
 
-    def apply_ready(
-        boundary: int, *, defer_next_open_at_boundary: bool = False
+    def _apply_corporate_action_event(
+        corporate_event: CorporateActionPortfolioEvent,
     ) -> None:
-        nonlocal pending_buy, open_entry, last_execution_status
-        for resolved in sorted(
-            tuple(pending_status),
-            key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id),
-        ):
-            if int(resolved.portfolio_effective_ts or 0) <= boundary:
-                pending_status.remove(resolved)
-                last_execution_status = resolved.fill_status
-        for fill in sorted(
-            tuple(pending),
-            key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id),
-        ):
-            effective_ts = int(fill.portfolio_effective_ts or 0)
-            if effective_ts > boundary:
-                continue
-            # A contiguous candle's next-open timestamp is equal to the prior
-            # candle's close timestamp.  The close mark must be finalized before
-            # that next-open fill becomes portfolio-effective; timestamp equality
-            # alone is therefore insufficient to order these two market events.
-            if (
-                defer_next_open_at_boundary
-                and effective_ts == boundary
-                and fill.fill_reference_policy == "next_candle_open"
-            ):
-                continue
-            pending.remove(fill)
-            entry = ledger.apply(fill)
-            if entry is not None:
-                risk_runtime_state.record_portfolio_applied_fill(
-                    effective_ts=int(entry.effective_ts),
-                    realized_pnl=entry.realized_pnl,
+        nonlocal open_entry, tradability_state, terminal_event, pending_buy
+        if corporate_action_plan is None:
+            raise ValueError("corporate_action_portfolio_event_plan_missing")
+        already_applied = applied_corporate_action_versions.get(
+            corporate_event.event_id
+        )
+        if already_applied is not None:
+            if already_applied != corporate_event.event_version_id:
+                raise ValueError(
+                    "corporate_action_correction_after_application_unsupported"
                 )
-                trace_lineage_event(
-                    context, stream="ledger_entry", payload=entry.as_dict()
+            return
+        if corporate_event.observed_ts_ms > corporate_event.effective_ts_ms:
+            raise ValueError(
+                "corporate_action_late_observation_retroactive_accounting_unsupported"
+            )
+        if terminal_event is not None:
+            raise ValueError("corporate_action_event_after_terminal_unsupported")
+        if corporate_event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES and pending:
+            raise ValueError(
+                "corporate_action_terminal_with_pending_execution_unsupported"
+            )
+        before = ledger.snapshot()
+        if corporate_event.event_type in QUANTITY_ADJUSTMENT_EVENT_TYPES:
+            ratio = float(corporate_event.ratio_value or 0.0)
+            quantity_step = float(corporate_action_plan.quantity_step)
+            projected_qty = before.asset_qty * ratio
+            aligned_qty = round(projected_qty / quantity_step) * quantity_step
+            if abs(projected_qty - aligned_qty) > max(1e-8, quantity_step * 1e-8):
+                raise ValueError(
+                    "corporate_action_fractional_entitlement_cash_in_lieu_terms_required"
                 )
-            last_execution_status = fill.fill_status
-            trade = _trade_from_fill(fill, ledger, entry)
-            trades.append(trade)
-            if fill.side == "BUY":
-                pending_buy = False
-                if open_entry is None:
-                    open_entry = (
-                        int(fill.portfolio_effective_ts or boundary),
-                        float(fill.avg_fill_price or 0.0),
-                        float(fill.filled_qty),
-                        float(fill.fee),
-                        abs(
-                            float(fill.avg_fill_price or fill.reference_price)
-                            - fill.reference_price
-                        )
-                        * float(fill.filled_qty),
-                        0.0,
-                    )
-                    intervals.append(
-                        PositionInterval(
-                            open_ts=int(fill.portfolio_effective_ts or boundary)
-                        )
-                    )
-            elif entry is not None and open_entry is not None:
+        entry = ledger.apply_corporate_action(corporate_event)
+        after = ledger.snapshot()
+        applied_corporate_action_versions[corporate_event.event_id] = (
+            corporate_event.event_version_id
+        )
+        risk_runtime_state.record_portfolio_adjustment(
+            effective_ts=entry.effective_ts,
+            realized_pnl=entry.realized_pnl,
+        )
+        if corporate_event.event_type in QUANTITY_ADJUSTMENT_EVENT_TYPES:
+            ratio = float(corporate_event.ratio_value or 0.0)
+            if open_entry is not None:
                 (
                     entry_ts,
                     entry_price,
@@ -686,36 +717,253 @@ def _run_common_simulation_backtest(
                     accumulated_slippage,
                     accumulated_pnl,
                 ) = open_entry
-                accumulated_fee += entry.fee
-                accumulated_slippage += entry.slippage
+                open_entry = (
+                    entry_ts,
+                    entry_price / ratio,
+                    entry_qty * ratio,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl,
+                )
+        elif corporate_event.event_type in CASH_INCOME_EVENT_TYPES:
+            if open_entry is not None:
+                (
+                    entry_ts,
+                    entry_price,
+                    entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl,
+                ) = open_entry
+                open_entry = (
+                    entry_ts,
+                    entry_price,
+                    entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl + float(entry.realized_pnl or 0.0),
+                )
+        elif corporate_event.event_type == "trading_halt":
+            if tradability_state != "tradable":
+                raise ValueError(
+                    "corporate_action_tradability_transition_invalid:halt"
+                )
+            tradability_state = "halted"
+        elif corporate_event.event_type == "trading_resume":
+            if tradability_state != "halted":
+                raise ValueError(
+                    "corporate_action_tradability_transition_invalid:resume"
+                )
+            tradability_state = "tradable"
+        elif corporate_event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES:
+            terminal_event = corporate_event
+            tradability_state = "terminal"
+            pending_buy = False
+            if open_entry is not None:
+                (
+                    entry_ts,
+                    entry_price,
+                    _entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl,
+                ) = open_entry
                 accumulated_pnl += float(entry.realized_pnl or 0.0)
-                if ledger.asset_qty <= 1e-12:
-                    closed.append(
-                        ClosedTradeRecord(
-                            exit_ts=int(entry.effective_ts),
-                            entry_ts=entry_ts,
-                            net_pnl=accumulated_pnl,
-                            entry_price=entry_price,
-                            exit_price=float(fill.avg_fill_price or 0.0),
-                            fee_total=accumulated_fee,
-                            slippage_total=accumulated_slippage,
-                            exit_rule=fill.exit_rule,
-                            exit_reason=fill.exit_reason,
-                        )
+                closed.append(
+                    ClosedTradeRecord(
+                        exit_ts=entry.effective_ts,
+                        entry_ts=entry_ts,
+                        net_pnl=accumulated_pnl,
+                        entry_price=entry_price,
+                        exit_price=float(corporate_event.cash_amount_value or 0.0),
+                        fee_total=accumulated_fee,
+                        slippage_total=accumulated_slippage,
+                        exit_rule="corporate_action_terminal_recovery",
+                        exit_reason=corporate_event.event_type,
                     )
-                    intervals[-1] = PositionInterval(
-                        open_ts=intervals[-1].open_ts, close_ts=int(entry.effective_ts)
+                )
+                if not intervals:
+                    raise ValueError("corporate_action_open_position_interval_missing")
+                intervals[-1] = PositionInterval(
+                    open_ts=intervals[-1].open_ts,
+                    close_ts=entry.effective_ts,
+                )
+                open_entry = None
+        application = {
+            "event_id": corporate_event.event_id,
+            "event_version_id": corporate_event.event_version_id,
+            "event_contract_hash": corporate_event.event_contract_hash,
+            "behavior_terms_hash": corporate_event.behavior_terms_hash(),
+            "event_type": corporate_event.event_type,
+            "effective_ts": corporate_event.effective_ts_ms,
+            "observed_ts": corporate_event.observed_ts_ms,
+            "ledger_entry_id": entry.ledger_entry_id,
+            "state_before": before.__dict__.copy(),
+            "state_after": after.__dict__.copy(),
+            "tradability_state_after": tradability_state,
+        }
+        application["application_hash"] = sha256_prefixed(
+            application, label="corporate_action_portfolio_application"
+        )
+        corporate_action_application_evidence.append(application)
+        trace_lineage_event(context, stream="ledger_entry", payload=entry.as_dict())
+        trace_lineage_event(
+            context, stream="corporate_action_application", payload=application
+        )
+
+    def _apply_fill_to_portfolio(fill: ExecutionFill, boundary: int) -> None:
+        nonlocal pending_buy, open_entry, last_execution_status
+        if tradability_state != "tradable":
+            raise ValueError(
+                f"corporate_action_pending_fill_nontradable:{tradability_state}"
+            )
+        entry = ledger.apply(fill)
+        if entry is not None:
+            risk_runtime_state.record_portfolio_applied_fill(
+                effective_ts=int(entry.effective_ts),
+                realized_pnl=entry.realized_pnl,
+            )
+            trace_lineage_event(
+                context, stream="ledger_entry", payload=entry.as_dict()
+            )
+        last_execution_status = fill.fill_status
+        trade = _trade_from_fill(fill, ledger, entry)
+        trades.append(trade)
+        if fill.side == "BUY":
+            pending_buy = False
+            if open_entry is None:
+                open_entry = (
+                    int(fill.portfolio_effective_ts or boundary),
+                    float(fill.avg_fill_price or 0.0),
+                    float(fill.filled_qty),
+                    float(fill.fee),
+                    abs(
+                        float(fill.avg_fill_price or fill.reference_price)
+                        - fill.reference_price
                     )
-                    open_entry = None
-                else:
-                    open_entry = (
-                        entry_ts,
-                        entry_price,
-                        entry_qty,
-                        accumulated_fee,
-                        accumulated_slippage,
-                        accumulated_pnl,
+                    * float(fill.filled_qty),
+                    0.0,
+                )
+                intervals.append(
+                    PositionInterval(
+                        open_ts=int(fill.portfolio_effective_ts or boundary)
                     )
+                )
+        elif entry is not None and open_entry is not None:
+            (
+                entry_ts,
+                entry_price,
+                entry_qty,
+                accumulated_fee,
+                accumulated_slippage,
+                accumulated_pnl,
+            ) = open_entry
+            accumulated_fee += entry.fee
+            accumulated_slippage += entry.slippage
+            accumulated_pnl += float(entry.realized_pnl or 0.0)
+            if ledger.asset_qty <= 1e-12:
+                closed.append(
+                    ClosedTradeRecord(
+                        exit_ts=int(entry.effective_ts),
+                        entry_ts=entry_ts,
+                        net_pnl=accumulated_pnl,
+                        entry_price=entry_price,
+                        exit_price=float(fill.avg_fill_price or 0.0),
+                        fee_total=accumulated_fee,
+                        slippage_total=accumulated_slippage,
+                        exit_rule=fill.exit_rule,
+                        exit_reason=fill.exit_reason,
+                    )
+                )
+                intervals[-1] = PositionInterval(
+                    open_ts=intervals[-1].open_ts, close_ts=int(entry.effective_ts)
+                )
+                open_entry = None
+            else:
+                open_entry = (
+                    entry_ts,
+                    entry_price,
+                    entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl,
+                )
+
+    def _unapplied_corporate_action_events(
+        boundary: int,
+    ) -> tuple[CorporateActionPortfolioEvent, ...]:
+        action_events = (
+            latest_causally_applicable_events(
+                corporate_action_plan.events, boundary_ms=boundary
+            )
+            if corporate_action_plan is not None
+            else ()
+        )
+        ready: list[CorporateActionPortfolioEvent] = []
+        for corporate_event in action_events:
+            prior = applied_corporate_action_versions.get(corporate_event.event_id)
+            if prior == corporate_event.event_version_id:
+                continue
+            if prior is not None:
+                raise ValueError(
+                    "corporate_action_correction_after_application_unsupported"
+                )
+            ready.append(corporate_event)
+        effective_counts: dict[int, int] = {}
+        for corporate_event in ready:
+            effective_counts[corporate_event.effective_ts_ms] = (
+                effective_counts.get(corporate_event.effective_ts_ms, 0) + 1
+            )
+        if any(count > 1 for count in effective_counts.values()):
+            raise ValueError(
+                "corporate_action_same_timestamp_event_ordering_terms_required"
+            )
+        return tuple(ready)
+
+    def apply_ready(
+        boundary: int, *, defer_next_open_at_boundary: bool = False
+    ) -> None:
+        nonlocal last_execution_status
+        for resolved in sorted(
+            tuple(pending_status),
+            key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id),
+        ):
+            if int(resolved.portfolio_effective_ts or 0) <= boundary:
+                pending_status.remove(resolved)
+                last_execution_status = resolved.fill_status
+        timeline: list[
+            tuple[int, int, str, CorporateActionPortfolioEvent | ExecutionFill]
+        ] = []
+        for corporate_event in _unapplied_corporate_action_events(boundary):
+            timeline.append(
+                (
+                    corporate_event.effective_ts_ms,
+                    0,
+                    corporate_event.event_id,
+                    corporate_event,
+                )
+            )
+        for fill in tuple(pending):
+            effective_ts = int(fill.portfolio_effective_ts or 0)
+            if effective_ts > boundary:
+                continue
+            if (
+                defer_next_open_at_boundary
+                and effective_ts == boundary
+                and fill.fill_reference_policy == "next_candle_open"
+            ):
+                continue
+            timeline.append((effective_ts, 1, fill.fill_id, fill))
+        for _ts, precedence, _identity, item in sorted(timeline):
+            if precedence == 0:
+                if not isinstance(item, CorporateActionPortfolioEvent):
+                    raise ValueError("corporate_action_timeline_item_invalid")
+                _apply_corporate_action_event(item)
+            else:
+                if not isinstance(item, ExecutionFill):
+                    raise ValueError("execution_fill_timeline_item_invalid")
+                pending.remove(item)
+                _apply_fill_to_portfolio(item, boundary)
 
     all_decisions: list[ResearchDecisionEvent] = []
     all_equity: list[EquityPoint] = []
@@ -934,6 +1182,36 @@ def _run_common_simulation_backtest(
                             else True,
                         }
                     )
+            if intent is not None and corporate_action_plan is not None:
+                tradability_record: dict[str, object] = {
+                    "decision_id": decision_id,
+                    "intent_id": intent.intent_id,
+                    "decision_ts": int(event.decision_ts),
+                    "tradability_state": tradability_state,
+                    "allowed": tradability_state == "tradable",
+                    "reason": (
+                        "corporate_action_tradable"
+                        if tradability_state == "tradable"
+                        else f"corporate_action_{tradability_state}"
+                    ),
+                    "terminal_event_version_id": (
+                        terminal_event.event_version_id
+                        if terminal_event is not None
+                        else None
+                    ),
+                }
+                tradability_record["evidence_hash"] = sha256_prefixed(
+                    tradability_record,
+                    label="corporate_action_tradability_decision",
+                )
+                tradability_decision_evidence.append(tradability_record)
+                trace_lineage_event(
+                    context,
+                    stream="corporate_action_tradability_decision",
+                    payload=tradability_record,
+                )
+                if tradability_state != "tradable":
+                    intent = None
             if intent is not None and intent.decision_id != decision_id:
                 raise ValueError("intent_decision_lineage_mismatch")
             requested_notional: float | None = None
@@ -1149,6 +1427,63 @@ def _run_common_simulation_backtest(
                     else:
                         pending_status.append(fill)
             complete_candle_lifecycle(index, candle, mark_ts)
+        last_market_boundary_ts = (
+            build_signal_event(
+                candle=dataset.candles[-1],
+                interval=dataset.interval,
+                side="HOLD",
+                policy=timing,
+                feature_snapshot={},
+                regime_snapshot={},
+            ).signal_candle_close_ts
+            if dataset.candles
+            else 0
+        )
+        split_end_exclusive = datetime.fromisoformat(
+            source_dataset_period_end
+        ).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        split_end_boundary_ts = int(split_end_exclusive.timestamp() * 1000) - 1
+        terminal_before_final_drain = terminal_event
+        for corporate_event in _unapplied_corporate_action_events(
+            split_end_boundary_ts
+        ):
+            if (
+                corporate_event.effective_ts_ms > last_market_boundary_ts
+                and corporate_event.event_type
+                in QUANTITY_ADJUSTMENT_EVENT_TYPES | CASH_INCOME_EVENT_TYPES
+            ):
+                raise ValueError(
+                    "corporate_action_economic_event_after_last_market_observation_unsupported"
+                )
+            _apply_corporate_action_event(corporate_event)
+        if (
+            terminal_event is not None
+            and terminal_event is not terminal_before_final_drain
+        ):
+            terminal_snapshot = ledger.snapshot()
+            terminal_equity = terminal_snapshot.cash
+            peak = max(peak, terminal_equity)
+            max_dd = max(
+                max_dd,
+                ((peak - terminal_equity) / peak * 100.0) if peak else 0.0,
+            )
+            terminal_point = EquityPoint(
+                ts=terminal_event.effective_ts_ms,
+                equity=terminal_equity,
+                cash=terminal_snapshot.cash,
+                asset_qty=terminal_snapshot.asset_qty,
+                mark_price=terminal_event.cash_amount_value,
+                mark_price_source="corporate_action_terminal_cash_recovery",
+            )
+            equity.append(terminal_point)
+            all_equity.append(terminal_point)
+            trace_equity_mark(
+                context,
+                ts=terminal_point.ts,
+                equity=terminal_point.equity,
+                cash=terminal_point.cash,
+                asset_qty=terminal_point.asset_qty,
+            )
     except Exception as exc:
         audit_index = complete_audit_trace(context, status="failed")
         if audit_index is not None:
@@ -1156,18 +1491,7 @@ def _run_common_simulation_backtest(
             if isinstance(exc, BacktestResourceLimitExceeded):
                 exc.evidence["audit_trace_index"] = audit_index
         raise
-    final_ts = (
-        build_signal_event(
-            candle=dataset.candles[-1],
-            interval=dataset.interval,
-            side="HOLD",
-            policy=timing,
-            feature_snapshot={},
-            regime_snapshot={},
-        ).signal_candle_close_ts
-        if dataset.candles
-        else 0
-    )
+    final_ts = last_market_boundary_ts
     for fill in pending:
         trades.append(
             _trade_from_fill(fill, ledger, None)
@@ -1180,7 +1504,13 @@ def _run_common_simulation_backtest(
     final = ledger.snapshot()
     last_price = float(dataset.candles[-1].close) if dataset.candles else 0.0
     ledger_entries = tuple(ledger.entries)
-    applied_fill_ids = {entry.fill_id for entry in ledger_entries}
+    fill_ledger_entries = tuple(
+        entry for entry in ledger_entries if entry.entry_type == "fill"
+    )
+    corporate_action_ledger_entries = tuple(
+        entry for entry in ledger_entries if entry.entry_type == "corporate_action"
+    )
+    applied_fill_ids = {entry.fill_id for entry in fill_ledger_entries}
     # Performance accounting covers only fills that became effective inside the
     # study period.  Attempts and after-period fills remain in the authoritative
     # execution streams and execution evidence summary, but cannot create costs
@@ -1383,6 +1713,64 @@ def _run_common_simulation_backtest(
             ),
         }
     )
+    if corporate_action_plan is not None:
+        portfolio_event_evidence: dict[str, object] = {
+            "schema_version": 1,
+            "portfolio_event_plan_hash": corporate_action_plan.plan_hash,
+            "action_set_id": corporate_action_plan.action_set_id,
+            "action_set_hash": corporate_action_plan.action_set_hash,
+            "source_materialization_evidence_hash": (
+                corporate_action_materialization_hash
+            ),
+            "raw_execution_price_policy": "never_adjust_execution_candles",
+            "event_time_policy": (
+                "latest_version_known_and_effective_at_decision_boundary"
+            ),
+            "same_timestamp_precedence": (
+                "corporate_action_before_execution_fill"
+            ),
+            "accounting_authority": "portfolio_ledger",
+            "application_evidence": corporate_action_application_evidence,
+            "application_stream_hash": canonical_payload_hash(
+                corporate_action_application_evidence
+            ),
+            "corporate_action_ledger_entry_ids": [
+                entry.ledger_entry_id for entry in corporate_action_ledger_entries
+            ],
+            "corporate_action_ledger_stream_hash": _stream_hash(
+                corporate_action_ledger_entries
+            ),
+            "applied_event_version_ids": [
+                event["event_version_id"]
+                for event in corporate_action_application_evidence
+            ],
+            "final_tradability_state": tradability_state,
+            "terminal_event_version_id": (
+                terminal_event.event_version_id
+                if terminal_event is not None
+                else None
+            ),
+            "accounting_replay_invariant_status": "PASS",
+            "tradability_decision_evidence": tradability_decision_evidence,
+            "tradability_decision_stream_hash": canonical_payload_hash(
+                tradability_decision_evidence
+            ),
+        }
+        portfolio_event_evidence["evidence_hash"] = sha256_prefixed(
+            portfolio_event_evidence,
+            label="corporate_action_portfolio_execution_evidence",
+        )
+        summary.update(
+            {
+                "corporate_action_portfolio_evidence": portfolio_event_evidence,
+                "corporate_action_ledger_entry_count": len(
+                    corporate_action_ledger_entries
+                ),
+                "corporate_action_portfolio_event_plan_hash": (
+                    corporate_action_plan.plan_hash
+                ),
+            }
+        )
     trace_lineage_event(
         context,
         stream="metrics",
@@ -1455,6 +1843,18 @@ def _run_common_simulation_backtest(
             "decision_stream_perturbation_evidence": summary[
                 "decision_stream_perturbation_evidence"
             ],
+            **(
+                {
+                    "corporate_action_portfolio_evidence": summary[
+                        "corporate_action_portfolio_evidence"
+                    ],
+                    "corporate_action_ledger_entry_count": len(
+                        corporate_action_ledger_entries
+                    ),
+                }
+                if corporate_action_plan is not None
+                else {}
+            ),
             "compiled_strategy_contract": compiled.as_dict(),
             "compiled_strategy_contract_hash": compiled.compiled_contract_hash,
             "strategy_registry_hash": compiled.strategy_registry_hash,

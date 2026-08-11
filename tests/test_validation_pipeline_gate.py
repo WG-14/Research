@@ -45,6 +45,7 @@ def _artifact(candidate: dict[str, object]) -> dict[str, object]:
 
 def _manifest(*, holdout_required: bool = False, holdout_present: bool = False):
     return SimpleNamespace(
+        research_classification="research_only",
         acceptance_gate=SimpleNamespace(
             walk_forward_required=False,
             final_holdout_required_for_validation=holdout_required,

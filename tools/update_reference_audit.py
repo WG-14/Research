@@ -12,24 +12,57 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
+import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+from market_research.storage_io import write_json_atomic_create_or_verify
+
 try:
+    from tools.reference_audit_receipt import (
+        DEFAULT_RECEIPT,
+        ReceiptValidation,
+        validate_receipt,
+    )
     from tools.reference_audit_surface import audit_surface
 except ModuleNotFoundError:  # direct ``python tools/...`` execution
+    from reference_audit_receipt import (  # type: ignore[import-not-found,no-redef]
+        DEFAULT_RECEIPT,
+        ReceiptValidation,
+        validate_receipt,
+    )
     from reference_audit_surface import audit_surface  # type: ignore[import-not-found,no-redef]
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT_ROOT / "docs" / "investment-research-platform-audit.json"
+HISTORY_ROOT = (
+    PROJECT_ROOT / "docs" / "investment-research-platform-audit-history"
+)
 RUBRIC_COPY = PROJECT_ROOT / "docs" / "investment-research-platform-audit-rubric.md"
 INSTRUCTION_COPY = (
     PROJECT_ROOT / "docs" / "investment-research-platform-audit-instructions.md"
 )
-RUBRIC_SHA256 = "f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae"
+RUBRIC_SHA256 = "ce507e16b37a8915ba34f12907aac3145dd512859951d391781e5a390fb675a5"
 INSTRUCTION_SHA256 = "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
-ASSESSED_COMMIT = "cb8f58bdac235577aa7363e138a67fc98740125a"
+REPOSITORY_COMMIT_ROLE = (
+    "generation_base_commit_only; assessment_surface is the evaluated identity"
+)
+
+_AUDIT_PHASES = (
+    "baseline_inventory_and_score",
+    "core_project_engine_validation_and_retention",
+    "principal_bound_adapters_and_governance",
+    "operations_immutability_alerting_and_least_privilege",
+    "adversarial_receipt_trust_and_conservative_reassessment",
+    "causal_seed_validation_bundle_and_evidence_honesty_hardening",
+    "corporate_action_ledger_and_manifest_authoritative_validation",
+    "cross_domain_adversarial_reassessment",
+    "independent_reproduction_and_external_boundary_reassessment",
+    "final_reference_completeness_reassessment",
+)
 
 _CRITERIA_TEXT = """
 A-01|C|연구 전용 플랫폼 목적이 코드와 문서에 일관되게 정의되어 있는가
@@ -233,46 +266,69 @@ _LEVELS = {
 
 _FINAL_LEVEL_OVERRIDES = {
     "A-06": 3,
+    "B-08": 3,
     "B-14": 3,
     "B-17": 3,
     "B-18": 3,
     "B-19": 3,
     "B-20": 4,
     "B-22": 3,
+    "C-05": 4,
     "C-08": 3,
     "C-15": 2,
     "C-16": 3,
     "C-19": 3,
     "C-20": 3,
-    "D-01": 0,
+    "D-01": 4,
     "D-10": 3,
     "D-15": 2,
     "D-16": 4,
     "D-17": 4,
+    "E-05": 4,
+    "E-06": 3,
+    "E-15": 4,
+    "E-16": 4,
+    "E-17": 4,
+    "E-18": 4,
+    "E-19": 4,
     "E-24": 3,
     "E-26": 3,
-    "F-05": 2,
+    "F-05": 3,
     "F-06": 3,
+    "F-12": 3,
+    "F-16": 3,
+    "F-21": 3,
     "F-24": 3,
-    "G-01": 3,
+    "G-01": 4,
+    "G-02": 4,
     "G-03": 4,
     "G-04": 4,
+    "G-08": 4,
+    "G-11": 3,
     "G-12": 2,
     "G-13": 2,
+    "G-15": 4,
     "G-16": 2,
+    "H-01": 4,
     "H-04": 3,
-    "H-05": 2,
+    "H-05": 3,
     "H-06": 3,
+    "H-07": 4,
     "H-08": 3,
     "H-09": 3,
-    "H-11": 3,
+    "H-11": 4,
     "H-18": 3,
     "H-19": 2,
     "H-21": 3,
     "I-02": 3,
+    "I-03": 3,
+    "I-04": 3,
     "I-10": 2,
     "I-13": 2,
+    "I-14": 2,
+    "J-03": 3,
     "J-04": 3,
+    "J-08": 3,
     "J-09": 2,
     "J-12": 3,
 }
@@ -346,6 +402,16 @@ _EVIDENCE_CATALOG = {
         "versioned corporate-action and delisting contracts",
         "tests/test_instrument_domain_contracts.py",
     ),
+    "corporate_action_strategy_admission": (
+        "src/market_research/research/dataset_snapshot.py",
+        "known-at/effective-time bounded corporate-action materialization and fail-closed admission for unsupported accounting terms",
+        "tests/test_corporate_action_dataset_materialization.py",
+    ),
+    "corporate_action_portfolio": (
+        "src/market_research/research/corporate_action_portfolio.py",
+        "hash-bound causal event plan plus quantity, cash, basis, tradability, terminal-recovery, and replay ledger transitions",
+        "tests/test_corporate_action_dataset_materialization.py",
+    ),
     "instrument": (
         "src/market_research/research/instrument_contract.py",
         "instrument identity, currency, unit, and lifecycle contract",
@@ -416,6 +482,16 @@ _EVIDENCE_CATALOG = {
         "seed scope and deterministic execution-plan binding",
         "tests/test_simulation_seed_scope.py",
     ),
+    "causal_rng": (
+        "src/market_research/research/execution_model/stress.py",
+        "request-scoped causal stochastic execution seed derivation separated from full evidence identity",
+        "tests/test_future_suffix_invariance.py",
+    ),
+    "parallel_determinism": (
+        "src/market_research/research/validation_protocol.py",
+        "official serial/process-parallel execution with mode-bound evidence and identical causal stochastic behavior",
+        "tests/test_frozen_dataset_multi_split_integration.py",
+    ),
     "reproduction_cli": (
         "src/market_research/research/cli.py",
         "research-reproduce-run same-state replay command",
@@ -480,6 +556,21 @@ _EVIDENCE_CATALOG = {
         "src/market_research/research/resource_planner.py",
         "bounded worker, memory, row, and runtime planning",
         "tests/test_common_engine_resource_guards.py",
+    ),
+    "research_project": (
+        "src/market_research/research/research_project.py",
+        "hash-chained project aggregate, object ownership, role-scoped lifecycle, and external compute/cache namespaces",
+        "tests/test_research_project.py",
+    ),
+    "project_service": (
+        "src/market_research/application/project_service.py",
+        "published application capabilities for project creation, membership, lineage, impact, lifecycle, and authorization",
+        "tests/test_research_project.py",
+    ),
+    "project_portal": (
+        "apps/internal_web/src/portal/project_views.py",
+        "authenticated project list, create, detail, reference, membership, and lifecycle adapter",
+        "apps/internal_web/tests/test_project_workflow.py",
     ),
     "project_absence": (
         "docs/investment-research-platform.md",
@@ -576,6 +667,21 @@ _EVIDENCE_CATALOG = {
         "explicit supported and unavailable execution capabilities",
         "tests/test_unsupported_strategy_capabilities.py",
     ),
+    "multi_asset_cost_capacity": (
+        "src/market_research/research/multi_asset/costs.py",
+        "calibrated nonlinear impact, participation limits, implementation shortfall, and capacity sweeps",
+        "tests/test_multi_asset_cost_capacity.py",
+    ),
+    "multi_asset_borrow": (
+        "src/market_research/research/multi_asset/spot.py",
+        "point-in-time borrow availability, capacity, fees, recall, and forced buy-in",
+        "tests/test_multi_asset_spot.py",
+    ),
+    "multi_asset_financing": (
+        "src/market_research/research/multi_asset/costs.py",
+        "hash-bound borrow and financing cost components reconciled through the portfolio ledger",
+        "tests/test_multi_asset_portfolio.py",
+    ),
     "execution_invariants": (
         "src/market_research/research/execution_invariants.py",
         "halt, tradability, and execution timeline invariants",
@@ -611,6 +717,21 @@ _EVIDENCE_CATALOG = {
         "label intervals, purge, embargo, and nested fold plans",
         "tests/test_temporal_validation.py",
     ),
+    "validation_experiments": (
+        "src/market_research/research/validation_experiments.py",
+        "fully nested temporal selection, falsification experiments, HAC factor exposure, and provider-result sensitivity",
+        "tests/test_validation_experiments.py",
+    ),
+    "validation_experiment_gate": (
+        "src/market_research/research/validation_experiment_bundle.py",
+        "strict result reconstruction plus manifest, dataset, temporal-plan, candidate, policy, component-hash, and terminal-gate binding",
+        "tests/test_validation_experiment_bundle.py",
+    ),
+    "validation_experiment_cli": (
+        "src/market_research/application/service.py",
+        "repository-external validation bundle CLI/request/service forwarding into the official validation pipeline",
+        "tests/test_application_contracts_and_capabilities.py",
+    ),
     "cross_section": (
         "src/market_research/research/cross_section_validation.py",
         "cross-sectional subgroup robustness",
@@ -641,10 +762,25 @@ _EVIDENCE_CATALOG = {
         "immutable verifier result, receipt/report fingerprint binding, and comparison registry",
         "tests/test_independent_verification.py",
     ),
+    "principal_assertion": (
+        "src/market_research/research/principal_assertion.py",
+        "trust-store verified, scoped, expiring and replay-resistant principal assertion",
+        "tests/test_principal_assertion.py",
+    ),
     "production_reproduction_e2e": (
         "src/market_research/research/independent_verification.py",
         "terminal validation through reproduction, independent result, approval, and governed package",
         "tests/test_strategy_extension_production_e2e.py",
+    ),
+    "cold_public_package": (
+        "src/market_research/research/multi_asset/public_package.py",
+        "self-contained immutable public package with isolated stdlib verify/reproduce entrypoints and fail-closed tamper checks",
+        "tests/test_multi_asset_builtin_public_package.py",
+    ),
+    "engine_admission": (
+        "src/market_research/research/engine_admission.py",
+        "common metadata, experiment, artifact, and specialist-capability admission across research engines",
+        "tests/test_engine_admission.py",
     ),
     "governance": (
         "src/market_research/research/governance.py",
@@ -657,9 +793,9 @@ _EVIDENCE_CATALOG = {
         "apps/internal_web/tests/test_governance_database_authority.py",
     ),
     "governance_policy": (
-        "docs/research-standard-authority.md",
-        "review roles and required research policy",
-        "tests/test_documentation_contract.py",
+        "src/market_research/research/governance_policy.py",
+        "versioned twelve-policy authority, accountable roles, separation rules, and installed enforcement bindings",
+        "tests/test_governance_policy.py",
     ),
     "decision_report": (
         "src/market_research/research/research_decision_report.py",
@@ -701,6 +837,11 @@ _EVIDENCE_CATALOG = {
         "transactional audit intent and protected event projection",
         "apps/internal_web/tests/test_audit_outbox.py",
     ),
+    "database_immutability": (
+        "apps/internal_web/src/portal/migrations/0011_database_immutability_guards.py",
+        "PostgreSQL BEFORE UPDATE OR DELETE guards for audit and governance authorities",
+        "apps/internal_web/tests/test_database_immutability_static.py",
+    ),
     "web_security": (
         "apps/internal_web/src/portal/security.py",
         "safe path, download, content, and secret controls",
@@ -736,15 +877,20 @@ _EVIDENCE_CATALOG = {
         "durable delivery, acknowledgement, and escalation",
         "services/research_operations/tests/test_service_alert_unit.py",
     ),
+    "alert_worker": (
+        "services/research_operations/src/research_operations/alert_worker.py",
+        "persistent allowlisted service-health evaluator, delivery retry, and escalation worker",
+        "services/research_operations/tests/test_service_alert_worker_unit.py",
+    ),
     "retention": (
-        "docs/storage-layout.md",
-        "artifact and runtime retention constraints",
-        "tests/test_common_engine_retention.py",
+        "src/market_research/research/retention_policy.py",
+        "class-specific retention, legal hold, active-reference protection, and two-person hash-bound deletion authorization",
+        "tests/test_retention_policy.py",
     ),
     "web_portal": (
-        "apps/internal_web/src/portal/views.py",
-        "authenticated research portal and workflow views",
-        "apps/internal_web/tests/test_browser_e2e.py",
+        "apps/internal_web/src/portal/project_views.py",
+        "authenticated research project portal and workflow views",
+        "apps/internal_web/tests/test_project_workflow.py",
     ),
     "comparison": (
         "src/market_research/research/research_reporting.py",
@@ -784,7 +930,7 @@ _EVIDENCE_CATALOG = {
     "operations_handoff": (
         "docs/internal-web-operations-handoff.md",
         "phased migration, deployment, backup, and operations handoff",
-        "services/research_operations/tests/test_prior_release_upgrade.py",
+        "services/research_operations/tests/test_native_deployment.py",
     ),
 }
 
@@ -839,7 +985,7 @@ _CRITERION_EVIDENCE_KEYS = {
     "C-18": "artifact_store",
     "C-19": "secret_separation",
     "C-20": "resource_planner",
-    "D-01": "project_absence",
+    "D-01": "research_project",
     "D-02": "research_standard",
     "D-03": "hypothesis",
     "D-04": "hypothesis",
@@ -870,15 +1016,15 @@ _CRITERION_EVIDENCE_KEYS = {
     "E-12": "portfolio_ledger",
     "E-13": "execution_timing",
     "E-14": "depth_walk",
-    "E-15": "depth_walk",
-    "E-16": "execution_limitations",
-    "E-17": "execution_limitations",
-    "E-18": "execution_limitations",
-    "E-19": "simulation",
+    "E-15": "multi_asset_cost_capacity",
+    "E-16": "multi_asset_cost_capacity",
+    "E-17": "multi_asset_cost_capacity",
+    "E-18": "multi_asset_borrow",
+    "E-19": "multi_asset_financing",
     "E-20": "execution_invariants",
     "E-21": "portfolio_ledger",
     "E-22": "portfolio_ledger",
-    "E-23": "strategy_extension",
+    "E-23": "engine_admission",
     "E-24": "benchmark_suite",
     "E-25": "portfolio_ledger",
     "E-26": "resource_planner",
@@ -886,28 +1032,28 @@ _CRITERION_EVIDENCE_KEYS = {
     "F-02": "statistical_selection",
     "F-03": "split_usage",
     "F-04": "walk_forward",
-    "F-05": "temporal_validation",
+    "F-05": "validation_experiments",
     "F-06": "temporal_validation",
     "F-07": "statistical_selection",
     "F-08": "stress_suite",
     "F-09": "cross_section",
     "F-10": "stress_suite",
     "F-11": "decision_perturbation",
-    "F-12": "stress_suite",
+    "F-12": "validation_experiments",
     "F-13": "concentration",
     "F-14": "concentration",
     "F-15": "return_panel",
-    "F-16": "statistical_selection",
+    "F-16": "validation_experiments",
     "F-17": "statistical_selection",
     "F-18": "hypothesis",
     "F-19": "forward_diagnostics",
     "F-20": "stress_suite",
-    "F-21": "data_governance",
+    "F-21": "validation_experiments",
     "F-22": "statistical_selection",
     "F-23": "statistical_selection",
     "F-24": "negative_validation",
     "F-25": "validation_pipeline",
-    "G-01": "independent_verification",
+    "G-01": "principal_assertion",
     "G-02": "reproduction_cli",
     "G-03": "independent_verification",
     "G-04": "governance",
@@ -917,7 +1063,7 @@ _CRITERION_EVIDENCE_KEYS = {
     "G-08": "governance_policy",
     "G-09": "governance",
     "G-10": "knowledge",
-    "G-11": "knowledge",
+    "G-11": "research_project",
     "G-12": "data_governance",
     "G-13": "data_governance",
     "G-14": "decision_report",
@@ -946,29 +1092,29 @@ _CRITERION_EVIDENCE_KEYS = {
     "H-21": "research_reporting",
     "I-01": "authorization",
     "I-02": "dataset_authorization",
-    "I-03": "project_absence",
+    "I-03": "research_project",
     "I-04": "audit_log",
     "I-05": "web_security",
     "I-06": "web_security",
     "I-07": "masking",
     "I-08": "integrity",
     "I-09": "data_governance",
-    "I-10": "process_isolation",
+    "I-10": "research_project",
     "I-11": "operations_metrics",
     "I-12": "trace_correlation",
     "I-13": "alerting",
     "I-14": "retention",
     "J-01": "architecture",
     "J-02": "web_portal",
-    "J-03": "project_absence",
+    "J-03": "research_project",
     "J-04": "comparison",
     "J-05": "data_explorer",
     "J-06": "web_review",
     "J-07": "architecture",
-    "J-08": "strategy_sdk",
+    "J-08": "engine_admission",
     "J-09": "operations",
     "J-10": "resource_planner",
-    "J-11": "application_contracts",
+    "J-11": "engine_admission",
     "J-12": "onboarding",
     "J-13": "architecture_history",
     "J-14": "collaboration_docs",
@@ -976,28 +1122,58 @@ _CRITERION_EVIDENCE_KEYS = {
 }
 
 _ADDITIONAL_EVIDENCE_KEYS = {
-    "G-02": ("production_reproduction_e2e",),
-    "G-03": ("production_reproduction_e2e",),
-    "G-04": ("production_reproduction_e2e",),
-    "H-08": ("production_reproduction_e2e",),
+    "B-08": ("corporate_action_strategy_admission", "corporate_action_portfolio"),
+    "C-05": ("causal_rng", "parallel_determinism"),
+    "D-01": ("project_service",),
+    "E-05": ("corporate_action_strategy_admission", "corporate_action_portfolio"),
+    "E-06": ("corporate_action_strategy_admission", "corporate_action_portfolio"),
+    "F-05": (
+        "validation_experiment_gate",
+        "validation_experiment_cli",
+        "production_reproduction_e2e",
+    ),
+    "F-12": (
+        "validation_experiment_gate",
+        "validation_experiment_cli",
+        "production_reproduction_e2e",
+    ),
+    "F-16": (
+        "validation_experiment_gate",
+        "validation_experiment_cli",
+        "production_reproduction_e2e",
+    ),
+    "F-21": (
+        "validation_experiment_gate",
+        "validation_experiment_cli",
+        "production_reproduction_e2e",
+    ),
+    "G-02": ("production_reproduction_e2e", "cold_public_package"),
+    "G-03": ("production_reproduction_e2e", "principal_assertion"),
+    "G-04": ("production_reproduction_e2e", "principal_assertion"),
+    "G-11": ("project_service",),
+    "H-01": ("cold_public_package",),
+    "H-04": ("cold_public_package",),
+    "H-05": ("cold_public_package",),
+    "H-07": ("cold_public_package",),
+    "H-08": ("production_reproduction_e2e", "cold_public_package"),
+    "H-11": ("cold_public_package",),
+    "H-12": ("cold_public_package",),
+    "I-04": ("database_immutability",),
+    "I-03": ("project_service",),
+    "I-10": ("project_service",),
+    "J-03": ("project_service", "project_portal"),
+    "I-13": ("alert_worker",),
 }
-
-_RETAINED_PRODUCTION_E2E_EVIDENCE = (
-    "/home/vorac/.local/share/market-research/reference-audit/2026-07-22/"
-    "production-e2e-retained-evidence.json"
-)
-_RETAINED_PRODUCTION_E2E_SHA256 = (
-    "e2e4fd39efe46dabf46b1780fb21c94478f0442e3351cb9fe47f5020d00eb645"
-)
 
 _EVIDENCE_RESULT_NOTES = {
     "B-14": "Exact validated-result and governed strategy-package DataUsageBinding reads reject missing, wrong, or extra artifact identities.",
     "B-19": "Validated-result and governed package reads require the exact dataset admission and license-governance binding used at publication.",
     "C-14": "Rehashed reports, copied fingerprints, and receipt/report source-identity drift are rejected.",
-    "G-02": "The retained local production E2E reaches same-state reproduction, but it is not a cold-host restore.",
-    "G-03": "The retained local production E2E stores a hash-bound IndependentVerificationResult and registry row.",
-    "G-04": "The retained local production E2E reaches approval only through a canonical PASS result; negative gate tests cover missing, drifted, and non-independent evidence.",
-    "H-08": "The retained local production E2E binds the independent-verification object into approval and package evidence.",
+    "G-02": "The public built-in package carries immutable input evidence, engine source, and a stdlib runtime, then verifies and reproduces twice under /usr/bin/python3 -I with empty cwd/HOME/PYTHONPATH; the classic package path remains a narrower scope limitation.",
+    "G-01": "Verifier identity is accepted only through a trust-store verified assertion whose subject, role, scope, expiry, key id, and nonce are bound into the immutable result.",
+    "G-03": "The production E2E stores a hash-bound IndependentVerificationResult and registry row.",
+    "G-04": "The production E2E reaches approval only through a canonical PASS result; negative gate tests cover missing, drifted, and non-independent evidence.",
+    "H-08": "The production E2E binds the independent-verification object into approval and package evidence; the public package adds isolated cold verification and replay.",
     "I-02": "HTML and JSON package list/detail/diff/lineage paths filter or deny every package whose bound dataset is not granted.",
 }
 
@@ -1010,93 +1186,122 @@ _GAP_OVERRIDES = {
     "E-06": "기업행위 변환기는 존재하지만 공식 dataset materialization/backtest 호출 경로가 이를 소비하지 않는다.",
     "E-08": "단일자산 intent 외의 일반 target-portfolio 리밸런싱 계약이 없다.",
     "E-10": "고정/시나리오 비용과 depth walk는 있으나 자산·시장·유효기간별 비용 schedule 권위가 없다.",
-    "E-15": "거래량 대비 주문·ADV·최대 참여율을 실제 체결에 적용하는 계약이 없다.",
-    "E-16": "주문 크기와 유동성에 반응하는 시장충격 모형이 명시적으로 unavailable이다.",
-    "E-17": "자본 grid, 비용/미체결 curve, 손익분기 및 최대 수용 자본 분석이 없다.",
-    "E-18": "공매도 locate·대차비·회수 위험을 지원하지 않는다.",
-    "E-19": "현금이자 정책은 zero만 허용하며 자금조달/현금수익 모형이 없다.",
-    "F-05": "중첩된 외부 평가/내부 선택 시간 교차검증 계약이 없다.",
+    "E-15": "calibration-bound 참여율 한도와 부분 체결·OOD 차단은 구현됐으나 모든 classic 전략 실행 경로가 동일 liquidity authority를 소비하지는 않는다.",
+    "E-16": "비선형 square-root 및 empirical impact는 구현됐으나 calibration은 합성 fixture이며 실제 시장 추정·재보정 운영 증거가 없다.",
+    "E-17": "결정론적 capacity sweep과 liquidation days·target degradation은 구현됐으나 실제 대규모 자본의 외부 시장 검증은 없다.",
+    "E-18": "borrow availability·capacity·fee·recall·forced buy-in은 구현됐으나 실제 locate 공급자와의 현장 결속은 없다.",
+    "E-19": "borrow와 financing 비용이 공통 원장에 대사되지만 실제 funding curve·cash yield 공급자 증거는 없다.",
+    "F-05": "outer-train 안에서만 후보를 선택하는 fully nested executor가 있으나 공식 validation pipeline의 필수 gate로 모든 연구 유형에 연결되지는 않았다.",
     "F-06": "시간 구간 비중첩은 강제하지만 label interval 기반 purge/embargo가 없다.",
     "F-10": "파라미터와 신호 생략 외의 정의 변형 matrix가 일반 계약으로 승격되지 않았다.",
-    "F-12": "placebo 날짜·label shuffle·무관 대상·대체 설명 변수를 실행하는 반증 executor가 없다.",
-    "F-16": "표준 시장/규모/가치/모멘텀/산업/국가 factor exposure 회귀가 없다.",
-    "F-21": "동일 의미의 공급자 대체 dataset 결과 차이를 비교하고 차단하는 gate가 없다.",
+    "F-12": "label/signal shuffle, placebo, negative control, confounder 실험은 구현됐으나 모든 공식 연구 유형의 필수 gate는 아니다.",
+    "F-16": "Newey-West/HAC factor exposure 추정은 구현됐으나 표준 factor dataset 공급·버전 권위와 자동 필수 gate가 없다.",
+    "F-21": "동일 의미 provider의 full-result sensitivity와 semantic mismatch 차단은 구현됐으나 실제 복수 공급자 현장 실행 증거가 없다.",
     "F-23": "예측 모델 capability에 조건부인 calibration·drift·불균형·threshold 안정성 계약이 없다.",
     "G-03": "독립 검증 ID·검증자·연구 버전·차이·미해결 문제·판정을 가진 불변 공식 객체가 없다.",
     "G-04": "후보 승격은 독립 재현 PASS를 필수 입력으로 확인하지 않는다.",
-    "G-11": "대체/저하는 표현하지만 CHALLENGED와 DEPRECATED를 일관된 연구 상태로 제공하지 않는다.",
+    "G-11": "ResearchProject가 CHALLENGED·SUPERSEDED·DEPRECATED를 강제하고 이력을 보존하지만 기존 개별 연구 registry의 상태와 단일 migration authority로 통합되지는 않았다.",
     "G-12": "사유·승인자·범위·만료를 가진 정책 예외 객체와 만료 차단이 없다.",
     "G-13": "데이터 오류에서 영향 연구를 찾고 상태를 전환하는 governed workflow가 없다.",
     "H-08": "검증 결정은 있으나 별도 검증자의 독립 실행·차이·미해결 쟁점을 포함한 검증 보고서가 없다.",
     "H-17": "검색은 구조화 필터를 제공하지만 메커니즘·팩터·상충·비용 기각·재현 실패 질의를 직접 지원하지 않는다.",
     "H-18": "dataset 필터의 수동 조합은 가능하지만 데이터 문제 객체에서 영향 연구로 가는 역검색 API가 없다.",
     "I-02": "ResourceAccessGrant에 DATASET resource type과 entitlement 검증이 없다.",
-    "I-03": "ResearchProject 권위와 프로젝트 단위 권한/격리 경계가 없다.",
+    "I-03": "ResearchProject membership·role·cross-project hiding은 구현됐으나 Web/Operations의 모든 기존 객체 접근이 project authority를 필수로 소비하지는 않는다.",
     "I-09": "데이터 license metadata가 웹 authorization과 download 결정에 연결되지 않는다.",
     "I-12": "감사 이벤트에는 상관 ID가 있으나 metrics/trace에 연구·실험 상관관계가 완결되지 않았다.",
-    "I-14": "공식·기각·실패 연구별 보존/법적 보류 정책의 실행 계약이 없다.",
-    "J-03": "가설·데이터·코드·실험·결과·검증·리뷰·산출물을 소유하는 프로젝트 workspace aggregate가 없다.",
+    "I-14": "class별 영구/기간 보존, active reference·legal hold, 2인 hash-bound 삭제 authorization은 구현됐으나 실제 artifact 삭제 executor와 운영 evidence는 별도다.",
+    "J-03": "portal이 ResearchProject 생성·목록·상세·membership·reference·lifecycle 화면을 제공하지만 기존 hypothesis·dataset·experiment·result·verification·review·package authority 전체를 resolve하는 단일 workspace projection과 migration은 불완전하다.",
     "J-10": "작업자·메모리·시간 제한은 있으나 CPU quota/core와 GPU request 계약이 없다.",
 }
 
 _FINAL_GAP_OVERRIDES = {
     "A-06": "정적 research package handoff는 통합되어 있으나 요구되는 liquidity/capacity estimate와 명시적 research confidence 계약이 없다.",
+    "B-08": "공식 raw-price 전략 경로가 manifest known-at 및 실제 decision boundary의 observed/effective 시각으로 버전을 선택하고 split/reverse/stock-dividend 수량, 현금배당·ETF distribution, halt/resume, 안정적 ticker identity, cash-only terminal recovery를 hash-bound 원장에 반영한다. 다만 기준이 열거한 유상증자·권리락·capital reduction·일반 stock/mixed merger·특별 세금/cash-in-lieu와 동일시각 entitlement precedence는 manifest가 표현하지 못해 fail-closed하므로 M3이다.",
     "B-14": "validated result와 governed strategy package 소비 시 artifact ID·version·content hash와 정확한 dataset usage binding을 read-side에서 재검증하지만 publication과 append-only binding 기록은 별도 쓰기라 원자적 단일 commit은 아니다. binding append 실패 뒤 남는 orphan artifact는 후속 소비에서 차단된다.",
     "B-17": "불변 ProviderComparison이 동일 의미 값 차이와 대체 판정을 보존하지만 실제 복수 공급자 현장 데이터 비교는 외부 증거가 필요하다.",
     "B-18": "DatasetSuitabilityAssessment와 명시적 사용 결정이 validation admission에 결속되었으나 독립 데이터 steward의 현장 승인은 이번 로컬 감사에서 확인하지 못했다.",
     "B-19": "목적·사용자·파생물 보존·반출 범위를 가진 license policy/use decision과 exact artifact usage binding이 validated result/package 소비를 차단하지만 웹 다운로드·외부 반출 entitlement와의 직접 결속은 I-09 공백으로 남는다.",
-    "B-20": "결정론적 합성 SQLite/manifest fixture와 E2E 사용은 있으나 독립 사용자의 cold replay 증거는 없다.",
+    "B-20": "결정론적 합성 fixture와 package-contained normalized/raw evidence의 isolated cold replay는 있으나 실제 외부 공급자 표본의 독립 현장 증거는 없다.",
     "C-08": "공식 산출물은 CLI/module 경로로 생성되지만 탐색 notebook과 공식 notebook을 구분·차단하는 실행 정책은 없다.",
+    "C-05": "전체 manifest·dataset hash는 재현 evidence identity로 보존하면서 확률 체결은 request-scoped causal seed authority를 사용한다. 공식 frozen-artifact stochastic E2E에서 serial 1-worker와 실제 process-parallel 2-worker의 derived seed·decision/fill·원장·지표·equity·behavior hash가 정확히 일치하고, 각 mode의 manifest/artifact/work-unit/PID 증거는 정직하게 구분된다. 지원 executor는 NumPy·ML·GPU RNG를 사용하거나 승인하지 않는다(NumPy는 pandas의 전이 의존성으로 잠금 파일에 존재한다). 독립 분산 환경의 E5 attestation은 남는다.",
     "C-15": "worker-local cache와 content-bound key 구현은 있으나 cache invalidation 및 cache-on/off 결과 동등성 테스트가 없다.",
-    "C-16": "CI workflow에 same-state 재현 명령과 계약 테스트는 있으나 이번 감사에서 실제 원격 CI run receipt를 확인하지 못했고 cold restore도 FG-06으로 실패한다.",
+    "C-16": "CI workflow에 재현 명령과 계약 테스트가 있고 public built-in package의 isolated cold replay도 있으나 이번 감사에서 실제 원격 CI run receipt는 확인하지 못했다.",
     "C-19": "결과 영향 환경 allowlist와 package secret 검사는 있으나 secret을 reproduction receipt에 주입하는 직접 음성 테스트가 없다.",
     "C-20": "resource planner가 계획 상한을 강제하지만 실제 CPU·메모리·runtime·storage 사용량을 공식 결과에 함께 기록하는 종단 간 증거는 없다.",
     "B-22": "문제·resolution·waiver·usage registry는 통합됐지만 issue별 workaround와 관련 waiver/resolution을 포함한 완전한 영향 view 및 원자적 publication이 부족하다.",
-    "D-01": "고유 ID·상태·버전·소유자를 가진 ResearchProject aggregate가 없다. ResearchStandard/Hypothesis는 프로젝트 객체를 대체하지 않는다.",
+    "D-01": "ResearchProject가 고유 연구 ID·상태·버전·소유자·hash-chain 이력과 repository-external namespace를 공식 application contract 및 registry로 강제한다. 로컬 E4 범위는 충족하지만 독립 운영 환경의 E5 실행 증거는 없다. attach된 외부 객체 reference의 authority 해석과 전 객체 workspace migration 공백은 B-14·C-10·H-11/H-12/H-18·J-03에서 별도로 보수 평가한다.",
     "D-10": "확정 후보 admission이 데이터 적합성·license·미해결 critical issue를 hash로 검증하지만 이를 소유하는 ResearchProject aggregate와 독립 steward 현장 승인은 없다.",
     "D-15": "지식 registry는 명시적 관계와 동일 identity 충돌을 다루지만 새 연구 시작 전 의미 기반 유사 연구 탐지를 제공하지 않는다.",
     "D-16": "post-hoc 조건을 새 가설 버전과 후속 reference로 등록하는 경로는 있으나 독립 E5 replay 증거는 없다.",
     "D-17": "review queue/detail과 job 진행 상태 UI가 있으나 독립 브라우저 환경에서의 E5 재생 증거는 없다.",
+    "E-05": "상장폐지·ETF liquidation·cash-only ETF merger의 manifest-declared cash-per-unit recovery가 terminal 시각에 수량·원가를 0으로 만들고 현금·실현손익·closed trade·거래불가 상태·terminal equity를 함께 기록한다. 마지막 candle 뒤 split 종료 전 terminal도 별도 cash mark로 drain되며 post-terminal row·주문은 차단된다. 로컬 E4는 충족하지만 실제 외부 delisting 표본과 독립 E5 attestation은 없다.",
+    "E-06": "static backward-adjusted 전략 candle은 미래 prefix를 다시 쓰므로 금지하고 raw execution price 위에서 지원 event의 수량·현금·총원가 전이를 decision boundary 순서로 처리하며 원장 replay/evidence hash를 검증한다. stock/mixed merger, capital reduction, tax/cash-in-lieu, 동일시각 복합 entitlement 및 마지막 mark 뒤 비terminal 경제 이벤트는 명시적 terms가 없어 fail-closed하므로 전체 기업행위 조정 일관성은 M3이다.",
     "E-24": "공통 엔진 benchmark와 결정론·비용·시간 테스트는 있으나 split/dividend/delisting 회계 benchmark가 없다.",
     "E-26": "resource planner와 guard는 통합됐지만 대규모 실제 workload 및 측정된 memory envelope 검증이 없다.",
-    "F-05": "외부/내부 fold는 불변 계획으로 사전 고정되지만 내부 fold가 후보 선택을 실제로 실행하지 않아 selection_is_fully_nested=false이다.",
+    "F-05": "validated_candidate 분류에서 파생된 manifest-bound capability가 fully nested component를 필수화하고, envelope를 manifest·dataset·temporal plan·선택 후보·capability에 hash 결속한다. 전체 필드 삭제, legacy marker 승격, 구성요소 정책 제거, 기존 scope 재결속은 terminal FAIL이다. frozen-source 합성 E2E에서는 사전고정 전체 후보 grid의 모든 outer winner를 terminal 후보에 일치시켰다. 그러나 이는 test-only external preparer이며 capability 자체는 nested metric·표본·winner 도출 정책을 권위화하지 않고 일반 gate도 candidate membership만 검사한다. 계산·source hash도 외부 자기진술이라 M3이다.",
     "F-06": "temporal config는 선언된 일 단위 label horizon으로 purge와 forward embargo를 구성하지만 실제 target/forward-label 정의 및 표본 timestamp와 horizon을 결속하지 않는다.",
     "F-24": "부정 결과를 보존하는 lifecycle 결정과 합성 테스트는 있으나 실제 negative run_research_validation 경로가 양성 결과와 동일한 terminal/package 증거를 생성하는 종단 간 검증은 없다.",
-    "G-01": "역할 불일치와 originator 분리는 강제하지만 CLI actor ID는 인증된 principal이 아닌 호출자 제공 문자열이라 한 운영자가 alias를 만들 수 있다.",
-    "G-02": "retained local production E2E에서 terminal 결과의 reproduce→비교→독립 판정 경로는 실행됐지만 빈 호스트에서 환경·외부 immutable dataset을 복원하지 못한다. 또한 독립 verifier 내부의 schema-3 terminal source report 검사는 schema·identity·content hash 수준에 머물고 전체 validated-result 계약 검사는 downstream governance validator에 의존한다.",
-    "G-03": "retained production E2E가 IndependentVerificationResult와 append-only registry row를 실제 생성·보존하지만 독립 verifier 자체는 schema-3 terminal source report의 전체 validated-result 계약을 검증하지 않는다. 빈 호스트 E5 재현도 FG-06으로 남는다.",
-    "G-04": "distinct-verifier canonical PASS와 대상 hash 없이는 승격이 차단되고 retained terminal reproduce→publish→approve E2E 및 음성 테스트가 확인됐다. 다만 schema-3 terminal source의 전체 계약 검사는 independent verifier가 아니라 downstream governance validator에서 수행되며 FG-06 cold restore는 실패한다.",
+    "F-12": "validated_candidate의 manifest-derived capability가 falsification component를 필수화하고 내부 불변식·native source binding·scope를 재검증하며 누락·FAIL·필드 삭제를 terminal FAIL로 보존한다. 합성 E2E가 frozen candle 관측치로 native suite를 실행하지만 test-only preparer다. capability가 baseline/control/retention 임계값을 권위화하지 않아 caller가 자기일관적으로 느슨한 policy를 선택할 수 있고, 계산/source hash도 외부 자기진술이라 M3이다.",
+    "F-16": "validated_candidate capability가 Newey-West/HAC factor component를 필수화하고 내부 불변식/hash와 scope를 검증하며 합성 E2E가 frozen return 관측치로 native estimator를 실행한다. 그러나 preparer는 test-only이고 표준 factor dataset·model/lag 정책 권위, keyed native 계산 provenance, factor-adjusted 승인 임계값은 없다.",
+    "F-21": "validated_candidate capability가 provider full-result sensitivity component를 필수화하고 합성 E2E는 서로 다른 frozen bytes/content hash의 두 fixture provider를 비교한다. 그러나 metric tolerance는 manifest/capability 권위가 아니며 이는 실제 독립 공급자가 아닌 test-only preparer다. keyed provenance와 원 관측치 replay도 없다.",
+    "G-01": "trust-store verified principal assertion이 subject·role·scope·expiry·nonce를 immutable verification result에 결속하고 alias 문자열만으로 verifier를 만들 수 없게 한다. 다만 실제 조직 IdP/HSM key issuance·revocation 운영은 외부 증거가 필요하다.",
+    "G-02": "public built-in package는 engine source·runtime·불변 input evidence를 포함해 격리된 /usr/bin/python3 -I 환경에서 verify와 두 번의 동일-hash reproduce를 수행한다. classic package의 일반 portable replay는 별도 범위 공백이다.",
+    "G-03": "production E2E가 IndependentVerificationResult와 append-only registry row를 생성·보존하지만 독립 verifier 자체의 schema-3 terminal source full-contract 검사는 downstream governance validator에 일부 의존한다.",
+    "G-04": "distinct-verifier canonical PASS, scoped principal assertion과 대상 hash 없이는 승격이 차단되고 terminal reproduce→publish→approve 및 음성 테스트가 있다. 실제 조직 credential issuance·revocation 운영은 외부 검증 대상이다.",
     "G-12": "GovernanceWaiver가 목적·사유·승인자·만료를 보존하고 admission에서 scope/expiry를 검사하지만 데이터 거버넌스에 한정되며 직접 expired/future 음성 테스트가 부족하다.",
     "G-13": "데이터 문제에서 usage binding으로 영향 연구를 역조회하고 향후 admission을 차단하지만 이미 승인된 연구의 상태를 자동 전환하는 workflow가 없다.",
     "G-16": "CI와 앱 역할 권한은 있으나 CODEOWNERS·branch protection·승인 규칙이 연구자/검증자 분리를 강제한다는 실행 증거가 없다.",
     "H-04": "package는 dataset snapshot/admission hash ref를 보존하지만 추출 시점·PIT·universe·quality·license를 포함한 완전한 data manifest를 자체 포함하지 않는다.",
-    "H-05": "reproduction receipt ref와 recipe 일부는 있으나 repo·commit·실행 명령·환경 image·lock·seed를 한 code manifest로 포함하지 않는다.",
+    "H-05": "public package가 engine source ZIP과 stdlib runtime·replay descriptor를 포함하지만 repo commit·dependency lock·seed를 하나의 일반 code manifest로 모든 engine에 강제하지는 않는다.",
     "H-06": "experiment spec ref와 일부 parameter/cost hash는 있으나 기간·portfolio constraint·benchmark·전체 lineage를 포함한 완전한 experiment manifest가 없다.",
-    "H-08": "retained E2E에서 공식 IndependentVerificationResult가 승인·패키지에 hash로 결속되지만 schema-3 terminal source 전체 계약은 independent verifier 내부에서 검증되지 않고 수정 내역을 일급 필드로 보존하는 완전한 검증 보고서도 아니다. cold-host 독립 실행은 FG-06으로 남는다.",
+    "H-08": "IndependentVerificationResult가 승인·패키지에 hash로 결속되고 public package는 isolated cold verify/reproduce를 제공하지만 schema-3 terminal source 전체 계약과 수정 내역을 독립 보고서 내부에서 완결하지는 않는다.",
     "H-09": "package에 제한사항 컨테이너는 있으나 표본·비용추정·시장구조·적용 불가 환경·알 수 없는 위험 범주와 비어 있지 않은 검토 내용을 필수로 강제하지 않는다.",
-    "H-11": "execution intent→fill→ledger 계보는 검증되지만 특정 보고 지표에서 결과·실험·commit·parameter·snapshot·원천까지 이어지는 단일 종단 간 trace 증거는 없다.",
+    "H-11": "public package evidence graph에서 report claim→model card→source row 양방향 trace를 실행 검증하지만 classic 연구 보고서와 모든 지표가 동일 resolver를 필수로 소비하지는 않는다.",
     "H-18": "DataQualityIncident/KnownDataIssue의 impact refs와 사용 binding 역검색 API는 있으나 승인된 연구의 상태 전환 및 외부 catalog UI 통합은 없다.",
     "H-19": "동일 identity 충돌은 차단하지만 제목·메커니즘·데이터·가설 의미를 비교하는 사전 유사도/중복 탐지 workflow는 없다.",
     "H-21": "Markdown/JSON renderer는 있으나 공식 내보내기 명령의 독립 E2E·edge 검증이 불완전하다.",
     "I-02": "정확 ID 기반 DATASET grant와 broad-dataset permission이 dataset explorer 및 package HTML/JSON 목록·상세·diff·lineage에서 fail-closed로 적용되지만 job 실행, 일반 연구 검색, 파일 다운로드·반출 등 모든 데이터 소비 경로의 중앙 entitlement로 통합되지는 않았다.",
-    "I-10": "strategy subprocess 격리는 있으나 ResearchProject aggregate가 없어 프로젝트별 컴퓨팅 환경·캐시·credential 격리 경계를 구현하지 못한다.",
-    "I-13": "내구성 alert delivery/ack/escalation 구현과 unit loopback은 있으나 실제 PostgreSQL 통합은 외부 테스트 DB 부재로 검증되지 않았다.",
+    "I-04": "ORM/append-only audit 보호와 PostgreSQL trigger DDL의 정적 계약은 로컬에서 검증했다. 실제 PostgreSQL에서 raw UPDATE·DELETE·TRUNCATE가 거부되는 통합 테스트는 외부 role/DSN이 없어 UNVERIFIED_EXTERNAL이며 로컬 E4 receipt 대상에서 분리한다.",
+    "I-10": "ResearchProject별 repository-external compute/cache namespace와 USE_COMPUTE 권한은 있으나 OS/container 수준 자원·credential 격리를 모든 실행 경로에서 강제하지는 않는다.",
+    "I-13": "persistent allowlisted health evaluator와 내구성 delivery/ack/escalation·retry worker를 unit loopback으로 검증했고, database_unavailable은 같은 DB를 우회하는 bounded deterministic direct-receiver fallback을 사용한다. 다만 실제 PostgreSQL 장애와 운영 HTTPS receiver/on-call 전달은 외부 role/DSN/endpoint 부재로 UNVERIFIED_EXTERNAL이다.",
     "J-04": "선택 후보 간 보고서 비교는 제공하지만 전체 실험 분포와 실패 결과를 함께 비교하는 화면/API가 없다.",
     "J-09": "offline validation dispatch와 PostgreSQL lease/fencing 구현은 있으나 실제 PostgreSQL DSN 통합이 이번 로컬 감사에서 실행되지 않아 내구성 복구를 검증하지 못했다.",
-    "J-12": "locked setup과 명령은 문서화됐지만 빈 환경 설치→sample data 준비→sample 실행→결과 확인을 자동화한 cold onboarding 테스트가 없고 FG-06도 남아 있다.",
+    "J-12": "locked setup과 명령은 문서화됐지만 빈 환경 설치→sample data 준비→sample 실행→결과 확인 전체를 자동화한 일반 onboarding test는 없다. FG-06의 public multi-asset cold replay는 더 좁은 재현 계약만 검증한다.",
 }
 
 _REMEDIATION_OVERRIDES = {
     "B-14": "artifact publication과 exact DataUsageBinding append를 복구 가능한 단일 transaction/staging protocol로 묶고, 모든 보고 지표·package·impact consumer가 동일 resolver를 호출하도록 확장한다.",
+    "B-08": "유상증자·권리락·capital reduction·일반 merger/spin-off와 특별배당 세금·cash-in-lieu·동일시각 entitlement precedence를 versioned manifest terms 및 다중자산 원장에 추가한다.",
     "B-17": "서로 독립된 실제 공급자 dataset으로 정의·값 차이, 대체 판정, 전환 이력을 실행하고 hash-bound 비교 증거를 보존한다.",
     "B-18": "독립 data steward principal의 승인과 실제 현장 dataset 적합성 결과를 admission에 결속하고 실패·만료·재평가 경로를 검증한다.",
     "B-19": "license policy를 dataset grant, 다운로드, 외부 반출, 공개, 보존·삭제 결정의 공통 authorization authority로 연결하고 음성 E2E를 추가한다.",
-    "G-01": "researcher·verifier·approver ID를 호출자 문자열이 아닌 인증된 immutable principal/credential claim에서 도출하고 alias·impersonation을 차단한다.",
-    "G-02": "빈 호스트에서 lock 환경과 immutable dataset을 자동 복원하는 verifier workflow를 추가하고 schema-3 terminal source에 전체 validated-result validator를 직접 적용한다.",
+    "C-05": "동일 계약을 별도 호스트·worker pool에서 반복해 E5 attestation을 보존하고, 향후 NumPy·ML·GPU runtime을 지원 범위에 추가할 때 해당 library/device 결정성 정책과 음성 회귀를 capability admission에 추가한다.",
+    "D-01": "동일 프로젝트 객체 계약을 독립 운영 환경에서 반복 검증하고 장기 운영 이력을 보존해 E5 증거를 확보한다. 외부 객체 reference resolver와 기존 객체 migration은 관련 lineage/workspace 기준의 별도 보완으로 추적한다.",
+    "E-05": "실제 외부 상장폐지/청산 표본에서 recovery policy와 terminal tradability를 독립 재현해 E5 증거를 확보하고 시장별 회수 시나리오 calibration을 추가한다.",
+    "E-06": "미지원 복합 corporate-action terms와 다중자산 conversion 원장을 구현하고 raw execution price와 인과적 adjusted analytical view의 scale을 별도 증거로 검증한다.",
+    "E-15": "공통 liquidity/participation authority를 classic과 multi-asset의 모든 체결 경로에 연결하고 실제 calibration dataset으로 경계·부분체결을 검증한다.",
+    "E-16": "실제 시장 calibration의 version·known_at·holdout error를 보존하고 재보정·regime OOD·fallback 정책을 검증한다.",
+    "E-17": "실제 외부 유동성 표본에서 자본 grid·liquidation days·손익분기 용량을 검증하고 공식 보고서 gate에 결속한다.",
+    "E-18": "실제 borrow/locate 공급자 snapshot과 recall event를 version·known_at에 결속하고 모든 short 연구 admission에 강제한다.",
+    "E-19": "versioned funding/cash-yield curve를 원장과 공식 net 성과에 결속하고 누락·stale curve를 차단한다.",
+    "F-05": "manifest/capability가 nested metric·표본·tie-break 정책과 terminal 후보 도출 규칙을 권위화하고, 공식 pipeline이 계산을 직접 실행하거나 인증된 producer replay를 검증하며 selection_is_fully_nested=false 경로를 제거한다.",
+    "F-12": "manifest/capability가 falsification 종류와 baseline/control/retention 임계값을 권위화하고, 공식 pipeline이 계산을 직접 실행하거나 인증된 producer replay를 검증한다.",
+    "F-16": "versioned factor dataset과 model/lag 명세를 manifest capability에 결속하고 factor-adjusted 결론을 필수 review evidence로 승격한다.",
+    "F-21": "metric별 provider tolerance를 manifest capability에서 권위화하고 실제 복수 공급자 full-result 비교를 dataset suitability와 release gate에 연결한다.",
+    "G-01": "조직 IdP/HSM에서 assertion signing key의 issuance·rotation·revocation을 운영하고 실제 서로 다른 인간 principal로 alias·replay·expired assertion 차단 증거를 보존한다.",
+    "G-02": "public built-in cold package 계약을 classic 공식 package에도 확장하고 verifier workflow가 schema-3 terminal source 전체 계약을 직접 검증하게 한다.",
     "G-03": "independent verifier가 schema-3 terminal source 전체 계약을 직접 검증하게 하고 별도 cold-host 실행의 result·registry·artifact hash를 retained evidence로 보존한다.",
     "G-04": "schema-3 terminal source 전체 계약 검증을 독립 PASS 생성 전에 강제하고 cold-host 재현 실패·drift·변조가 모든 승격 경로를 차단하는 E2E를 추가한다.",
     "H-08": "검증 보고서에 수정 내역을 일급 필드로 추가하고 schema-3 source 전체 계약, 발견·미해결 문제, 판정 근거를 독립 cold-host receipt와 함께 package에 결속한다.",
     "I-02": "동일 exact-dataset entitlement resolver를 job submit/execute, 일반 검색, download/export와 모든 package consumer에 적용하고 grant 누락·부분 lineage 누출 음성 E2E를 유지한다.",
+    "I-03": "모든 Web/Operations read·write·job 경로가 동일 ResearchProject membership authority와 immutable project identity를 필수로 소비하게 한다.",
+    "I-04": "격리된 PostgreSQL role/DSN으로 migration을 적용하고 ORM을 우회한 UPDATE·DELETE·TRUNCATE 거부를 실행해 외부 hash-bound 증거를 보존한다.",
+    "I-10": "project compute/cache namespace를 worker sandbox, resource quota, credential scope와 연결하고 cross-project filesystem/process 접근 음성 E2E를 추가한다.",
+    "I-14": "retention authorization을 repository-external artifact deletion executor·감사 event에 연결하고 legal hold/active ref/race를 fail-closed로 재검증한다.",
+    "I-13": "실제 PostgreSQL과 승인된 HTTPS 수신처에서 delivery lease·retry·escalation·ack·restart 복구를 실행하고 외부 receipt를 보존한다.",
+    "J-03": "ResearchProject aggregate를 portal workspace와 모든 lifecycle mutation의 공통 owner로 연결하고 기존 객체를 migration한다.",
+    "J-08": "engine admission profile을 제3자 extension 등록·호환성 검증·version migration에 연결하되 runtime discovery/network loading은 계속 차단한다.",
 }
 
 _FATAL_GATES = (
@@ -1118,7 +1323,7 @@ _FATAL_GATES = (
         "FG-03",
         "미래정보 누출",
         "PASS",
-        "causal prefix view와 future-suffix invariance/knowledge-time 음성 테스트가 미래 사용을 차단한다.",
+        "causal prefix view and deterministic plus stochastic future-suffix invariance tests block future rows, values, and source identities from changing prior supported-strategy behavior; unsupported corporate-action accounting is assessed separately and fails closed.",
         "tests/test_future_suffix_invariance.py",
     ),
     (
@@ -1138,9 +1343,9 @@ _FATAL_GATES = (
     (
         "FG-06",
         "결과 재현 불가",
-        "FAIL",
-        "retained local production E2E의 same-state 재실행·비교는 PASS지만 새 환경에서 잠금 환경과 외부 immutable dataset을 자동 복원하지 않는다.",
-        "tests/test_research_reproduction_cli.py",
+        "PASS",
+        "공개 built-in package가 normalized/raw evidence, request/config, engine source와 stdlib runtime을 포함하고 빈 cwd/HOME/PYTHONPATH의 /usr/bin/python3 -I에서 verify 및 두 번의 동일-hash reproduce를 수행하며 변조·누락을 차단한다. classic package 경로의 portable replay 범위는 별도 제한으로 남긴다.",
+        "tests/test_multi_asset_builtin_public_package.py",
     ),
     (
         "FG-07",
@@ -1202,6 +1407,80 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _validated_snapshot_identity(
+    payload: object,
+) -> tuple[int, str]:
+    if not isinstance(payload, dict):
+        raise ValueError("audit_history_snapshot_root_invalid")
+    assessment = payload.get("assessment")
+    criteria = payload.get("criteria")
+    if not isinstance(assessment, dict) or not isinstance(criteria, list):
+        raise ValueError("audit_history_snapshot_shape_invalid")
+    iteration = assessment.get("iteration")
+    surface = assessment.get("assessment_surface")
+    if (
+        isinstance(iteration, bool)
+        or not isinstance(iteration, int)
+        or iteration < 6
+        or iteration >= 10
+        or not isinstance(surface, dict)
+        or not isinstance(surface.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", surface["sha256"]) is None
+    ):
+        raise ValueError("audit_history_snapshot_identity_invalid")
+    expected_ids = [row[0] for row in _criteria_rows()]
+    actual_ids = [
+        row.get("id") if isinstance(row, dict) else None for row in criteria
+    ]
+    if actual_ids != expected_ids:
+        raise ValueError("audit_history_snapshot_criteria_invalid")
+    return iteration, surface["sha256"]
+
+
+def _snapshot_previous_matrix_if_source_changed() -> None:
+    """Retain the prior real assessment before replacing its generated view.
+
+    Audit outputs are excluded from their own source hash.  A hash-addressed
+    historical snapshot is not excluded, so the next assessment is bound to
+    the exact prior matrix instead of retrospectively inventing maturity.
+    """
+
+    if not OUTPUT.is_file():
+        return
+    payload = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    iteration, prior_surface_sha256 = _validated_snapshot_identity(payload)
+    current_surface_sha256 = str(audit_surface(PROJECT_ROOT)["sha256"])
+    if current_surface_sha256 == prior_surface_sha256:
+        return
+    target = HISTORY_ROOT / (
+        f"iteration-{iteration:03d}-{prior_surface_sha256}.json"
+    )
+    write_json_atomic_create_or_verify(target, payload)
+
+
+def _latest_retained_snapshot() -> tuple[Path, dict[str, Any]] | None:
+    if not HISTORY_ROOT.exists():
+        return None
+    candidates = sorted(HISTORY_ROOT.glob("iteration-*.json"))
+    if not candidates:
+        return None
+    retained: list[tuple[int, Path, dict[str, Any]]] = []
+    for path in candidates:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("audit_history_snapshot_path_invalid")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        iteration, surface_sha256 = _validated_snapshot_identity(payload)
+        expected_name = f"iteration-{iteration:03d}-{surface_sha256}.json"
+        if path.name != expected_name:
+            raise ValueError("audit_history_snapshot_name_invalid")
+        retained.append((iteration, path, payload))
+    retained.sort(key=lambda item: item[0])
+    if [item[0] for item in retained] != list(range(6, retained[-1][0] + 1)):
+        raise ValueError("audit_history_snapshot_sequence_invalid")
+    _iteration, path, payload = retained[-1]
+    return path, payload
+
+
 def _rubric_details() -> dict[str, dict[str, str]]:
     if _sha256(RUBRIC_COPY) != RUBRIC_COPY_SHA256:
         raise ValueError("canonical_rubric_copy_hash_mismatch")
@@ -1237,8 +1516,10 @@ def _rubric_details() -> dict[str, dict[str, str]]:
 
 
 def _status(level: int) -> str:
-    if level >= 4:
+    if level >= 5:
         return "VERIFIED"
+    if level == 4:
+        return "VERIFIED_LOCAL_SELF_ATTESTED"
     if level == 3:
         return "IMPLEMENTED_NOT_VERIFIED"
     if level == 2:
@@ -1248,11 +1529,35 @@ def _status(level: int) -> str:
     return "MISSING"
 
 
-def _evidence_result(criterion_id: str, level: int) -> str:
+def _evidence_result(
+    criterion_id: str,
+    level: int,
+    *,
+    receipt_clean_local_run: bool,
+    receipt_content_sha256: str | None,
+) -> str:
     if level >= 4:
-        result = "PASS in the final repository validation: cited production contract and important boundary/failure tests were exercised; independent E5 replay is not claimed."
+        if receipt_content_sha256 is None:
+            raise ValueError("verified_evidence_requires_execution_receipt")
+        result = (
+            "PASS in the exact local self-attested audit evidence run "
+            f"(receipt sha256:{receipt_content_sha256}); the unkeyed receipt "
+            "does not authenticate who executed it, and independent E5/CI "
+            "attestation is not claimed."
+        )
     elif level == 3:
-        result = "PASS for the cited implemented scope: production integration/basic tests exist, but the criterion's complete end-to-end or external proof is absent."
+        if receipt_clean_local_run:
+            result = (
+                "PASS in the exact local self-attested audit evidence run, but "
+                "the criterion remains M3 because its stated capability/scope "
+                "gap is not closed; test execution alone does not authorize M4."
+            )
+        else:
+            result = (
+                "IMPLEMENTED_NOT_VERIFIED: production integration/basic tests "
+                "exist, but no current clean-PASS execution receipt authorizes "
+                "a local M4 claim."
+            )
     elif level == 2:
         result = "PARTIAL evidence: cited code/test covers an adjacent fragment only; no integrated criterion-level pass is claimed."
     elif level == 1:
@@ -1262,13 +1567,6 @@ def _evidence_result(criterion_id: str, level: int) -> str:
     note = _EVIDENCE_RESULT_NOTES.get(criterion_id)
     if note:
         result += f" {note}"
-    if criterion_id in _ADDITIONAL_EVIDENCE_KEYS:
-        result += (
-            f" Retained local production E2E manifest: "
-            f"{_RETAINED_PRODUCTION_E2E_EVIDENCE} "
-            f"(sha256:{_RETAINED_PRODUCTION_E2E_SHA256}, PASS); "
-            "this is not cold-host evidence."
-        )
     return result
 
 
@@ -1317,7 +1615,172 @@ def _remediation(criterion_id: str, title: str, level: int) -> str:
     return f"{criterion_id}의 {title} 요구를 일급 불변 계약으로 구현하고 실제 workflow, 실패 차단, 계보, focused 음성 테스트에 연결한다."
 
 
-def build_matrix() -> dict[str, Any]:
+def _current_generation_context() -> dict[str, object]:
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ("git", *arguments),
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+
+    commit = git("rev-parse", "--verify", "HEAD")
+    branch = git("branch", "--show-current") or "DETACHED"
+    dirty = bool(git("status", "--porcelain=v1", "--untracked-files=all"))
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ValueError("audit_generation_base_commit_invalid")
+    return {
+        "assessed_at": date.today().isoformat(),
+        "repository_commit": commit,
+        "repository_branch": branch,
+        "worktree_was_clean": not dirty,
+    }
+
+
+def _stored_generation_context() -> dict[str, object]:
+    if OUTPUT.is_file():
+        try:
+            value = json.loads(OUTPUT.read_text(encoding="utf-8"))
+            assessment = value["assessment"]
+            return {
+                "assessed_at": assessment["assessed_at"],
+                "repository_commit": assessment["repository_commit"],
+                "repository_branch": assessment["repository_branch"],
+                "worktree_was_clean": assessment["worktree_was_clean"],
+            }
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return _current_generation_context()
+
+
+def _required_test_hashes() -> dict[str, str]:
+    evidence_keys = set(_CRITERION_EVIDENCE_KEYS.values())
+    for additional in _ADDITIONAL_EVIDENCE_KEYS.values():
+        evidence_keys.update(additional)
+    targets = {_EVIDENCE_CATALOG[key][2] for key in evidence_keys} | {
+        test for _gate, _title, _status, _evidence, test in _FATAL_GATES
+    }
+    return {target: _sha256(PROJECT_ROOT / target) for target in sorted(targets)}
+
+
+def _receipt_validation(
+    *,
+    source_surface: dict[str, object],
+    receipt_path: Path,
+) -> ReceiptValidation:
+    return validate_receipt(
+        receipt_path,
+        source_surface=source_surface,
+        required_tests=_required_test_hashes(),
+    )
+
+
+def _receipt_summary(
+    validation: ReceiptValidation,
+    *,
+    receipt_path: Path,
+) -> dict[str, object]:
+    try:
+        relative = receipt_path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        relative = str(receipt_path.resolve())
+    return validation.summary(relative_path=relative)
+
+
+def _differences(
+    actual: object,
+    expected: object,
+    *,
+    path: str = "$",
+    limit: int = 8,
+) -> list[str]:
+    if limit <= 0:
+        return []
+    if type(actual) is not type(expected):
+        return [
+            f"{path}:type actual={type(actual).__name__} "
+            f"expected={type(expected).__name__}"
+        ]
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        differences: list[str] = []
+        for key in sorted(set(actual) | set(expected)):
+            child = f"{path}.{key}"
+            if key not in actual:
+                differences.append(f"{child}:missing")
+            elif key not in expected:
+                differences.append(f"{child}:unexpected")
+            else:
+                differences.extend(
+                    _differences(
+                        actual[key],
+                        expected[key],
+                        path=child,
+                        limit=limit - len(differences),
+                    )
+                )
+            if len(differences) >= limit:
+                break
+        return differences
+    if isinstance(actual, list) and isinstance(expected, list):
+        if len(actual) != len(expected):
+            return [f"{path}:length actual={len(actual)} expected={len(expected)}"]
+        differences = []
+        for index, (actual_item, expected_item) in enumerate(zip(actual, expected)):
+            differences.extend(
+                _differences(
+                    actual_item,
+                    expected_item,
+                    path=f"{path}[{index}]",
+                    limit=limit - len(differences),
+                )
+            )
+            if len(differences) >= limit:
+                break
+        return differences
+    if actual != expected:
+        actual_text = repr(actual)
+        expected_text = repr(expected)
+        return [f"{path}:actual={actual_text[:160]} expected={expected_text[:160]}"]
+    return []
+
+
+def build_matrix(
+    *,
+    generation_context: dict[str, object] | None = None,
+    receipt_path: Path = DEFAULT_RECEIPT,
+) -> dict[str, Any]:
+    context = (
+        _stored_generation_context()
+        if generation_context is None
+        else generation_context
+    )
+    source_surface = audit_surface(PROJECT_ROOT)
+    retained_snapshot = _latest_retained_snapshot()
+    retained_snapshot_path: Path | None = None
+    retained_snapshot_payload: dict[str, Any] | None = None
+    retained_snapshot_iteration = 5
+    if retained_snapshot is not None:
+        retained_snapshot_path, retained_snapshot_payload = retained_snapshot
+        retained_snapshot_iteration, _surface_sha256 = _validated_snapshot_identity(
+            retained_snapshot_payload
+        )
+    current_iteration = retained_snapshot_iteration + 1
+    if current_iteration > len(_AUDIT_PHASES):
+        raise ValueError("audit_iteration_limit_exceeded")
+    retained_criteria: dict[str, dict[str, Any]] = {}
+    if retained_snapshot_payload is not None:
+        retained_criteria = {
+            str(row["id"]): row
+            for row in retained_snapshot_payload["criteria"]
+            if isinstance(row, dict)
+        }
+    receipt = _receipt_validation(
+        source_surface=source_surface,
+        receipt_path=receipt_path,
+    )
+    score_cap = 100 if receipt.clean_local_run else 75
     rubric_details = _rubric_details()
     inventory_ids = {row[0] for row in _criteria_rows()}
     if set(_CRITERION_EVIDENCE_KEYS) != inventory_ids:
@@ -1332,48 +1795,91 @@ def build_matrix() -> dict[str, Any]:
         index = domain_indexes[domain]
         initial_level = _LEVELS[domain][index]
         level = _FINAL_LEVEL_OVERRIDES.get(criterion_id, initial_level)
-        # FG-06 means an independent user cannot restore the full audited state
-        # without pre-existing local inputs.  The rubric's M5 definition requires
-        # that independent replay, so this assessment cannot award M5 anywhere.
+        # A local hash-bound receipt establishes E4 execution, while M5 requires
+        # repeated independent operational evidence beyond this local audit.
         level = min(level, 4)
+        # A current execution receipt is mandatory for every M4/VERIFIED claim.
+        # In its absence the implementation evidence remains M3 at most.
+        if not receipt.clean_local_run:
+            level = min(level, 3)
         domain_indexes[domain] += 1
         evidence_key = _CRITERION_EVIDENCE_KEYS[criterion_id]
         path, symbol, test = _EVIDENCE_CATALOG[evidence_key]
-        result = _evidence_result(criterion_id, level)
+        result = _evidence_result(
+            criterion_id,
+            level,
+            receipt_clean_local_run=receipt.clean_local_run,
+            receipt_content_sha256=(
+                receipt.content_sha256 if receipt.clean_local_run else None
+            ),
+        )
         evidence_keys = (
             evidence_key,
             *_ADDITIONAL_EVIDENCE_KEYS.get(criterion_id, ()),
         )
-        history = []
-        phases = (
-            "baseline_inventory_and_score",
-            "canonical_rubric_and_dataset_authorization",
-            "governance_temporal_and_verification_implementation",
-            "adversarial_overclaim_and_binding_review",
-            "provenance_license_and_terminal_replay_validation",
-        )
-        for iteration in range(1, 6):
-            iteration_level = initial_level if iteration < 3 else level
-            entry = {
-                "iteration": iteration,
-                "assessed_at": "2026-07-22",
-                "commit": ASSESSED_COMMIT,
-                "phase": phases[iteration - 1],
-                "maturity": f"M{iteration_level}",
-                "status": (
-                    _status(initial_level)
-                    if iteration < 3
-                    else _STATUS_OVERRIDES.get(criterion_id, _status(iteration_level))
+        history: list[dict[str, Any]] = []
+        retained_row = retained_criteria.get(criterion_id)
+        if retained_row is not None:
+            prior_history = retained_row.get("assessment_history")
+            if not isinstance(prior_history, list) or not prior_history:
+                raise ValueError("audit_history_snapshot_criterion_history_invalid")
+            history = [dict(entry) for entry in prior_history if isinstance(entry, dict)]
+            if (
+                len(history) != len(prior_history)
+                or history[-1].get("iteration") != retained_snapshot_iteration
+                or retained_snapshot_path is None
+                or retained_snapshot_payload is None
+            ):
+                raise ValueError("audit_history_snapshot_criterion_sequence_invalid")
+            relative_snapshot = retained_snapshot_path.relative_to(PROJECT_ROOT).as_posix()
+            history[-1] = {
+                **history[-1],
+                "history_kind": "retained_assessment_snapshot",
+                "evidence_scope": (
+                    f"retained_snapshot:{relative_snapshot};"
+                    f"assessment_surface:"
+                    f"{retained_snapshot_payload['assessment']['assessment_surface']['sha256']}"
                 ),
-                "diagnosis": (
-                    _initial_gap(criterion_id, title, initial_level)
-                    if iteration < 3
-                    else _gap(criterion_id, title, level)
-                ),
+                "retained_snapshot_sha256": _sha256(retained_snapshot_path),
             }
-            if iteration > 1:
-                entry["worktree_patch"] = "uncommitted_audited_changes"
-            history.append(entry)
+        else:
+            for iteration in range(1, current_iteration):
+                entry = {
+                    "iteration": iteration,
+                    "assessed_at": context["assessed_at"],
+                    "commit": context["repository_commit"],
+                    "phase": _AUDIT_PHASES[iteration - 1],
+                    "maturity": "M0",
+                    "status": "MISSING",
+                    "diagnosis": (
+                        "논리적 작업 단계 라벨만 복원했으며 이 단계별 immutable "
+                        "source surface와 실행 receipt를 별도로 보존하지 않았다. "
+                        "따라서 역사적 maturity를 소급 부여하지 않는다."
+                    ),
+                    "history_kind": "logical_phase_without_retained_snapshot",
+                    "evidence_scope": "not_retained_for_this_logical_phase",
+                }
+                if not bool(context["worktree_was_clean"]):
+                    entry["worktree_patch"] = (
+                        "generation_context_had_uncommitted_changes"
+                    )
+                history.append(entry)
+        current_entry = {
+            "iteration": current_iteration,
+            "assessed_at": context["assessed_at"],
+            "commit": context["repository_commit"],
+            "phase": _AUDIT_PHASES[current_iteration - 1],
+            "maturity": f"M{level}",
+            "status": _STATUS_OVERRIDES.get(criterion_id, _status(level)),
+            "diagnosis": _gap(criterion_id, title, level),
+            "history_kind": "current_surface_reassessment",
+            "evidence_scope": f"assessment_surface:{source_surface['sha256']}",
+        }
+        if not bool(context["worktree_was_clean"]):
+            current_entry["worktree_patch"] = (
+                "generation_context_had_uncommitted_changes"
+            )
+        history.append(current_entry)
         criteria.append(
             {
                 "id": criterion_id,
@@ -1387,11 +1893,6 @@ def build_matrix() -> dict[str, Any]:
                     path,
                     test,
                     f"{domain} 영역 production call graph",
-                    *(
-                        [_RETAINED_PRODUCTION_E2E_EVIDENCE]
-                        if criterion_id in _ADDITIONAL_EVIDENCE_KEYS
-                        else []
-                    ),
                 ],
                 "objective_evidence": [
                     {
@@ -1408,7 +1909,7 @@ def build_matrix() -> dict[str, Any]:
                     )
                 ],
                 "status_scale": {
-                    "full": "M4 이상, 실제 workflow와 중요한 실패/경계 테스트가 확인됨",
+                    "full": "M4는 VERIFIED_LOCAL_SELF_ATTESTED로 실제 local workflow·실패/경계 실행을 뜻하고, VERIFIED는 authenticated M5 evidence에만 사용",
                     "partial": "M1~M3, 문서·단편·통합 구현 중 하나 이상의 증거 계층이 부족함",
                     "missing": "M0, 관련 실행 구현을 찾지 못함",
                     "unverified": "외부 인프라·조직·실데이터 증거가 필요하여 로컬에서 확인할 수 없음",
@@ -1433,15 +1934,34 @@ def build_matrix() -> dict[str, Any]:
         {
             "id": gate_id,
             "title": title,
-            "status": status,
-            "evidence": evidence,
+            "status": (
+                status if status != "PASS" or receipt.clean_local_run else "UNVERIFIED"
+            ),
+            "evidence": (
+                evidence
+                if status != "PASS" or receipt.clean_local_run
+                else (
+                    f"{evidence} 실행 파일은 존재하지만 현재 평가 표면에 결속된 "
+                    f"성공 영수증이 없어 PASS로 인정하지 않는다 "
+                    f"({receipt.status}: {', '.join(receipt.findings)})."
+                )
+            ),
             "verification_method": _evidence_command(test),
             "mitigation_possible": True,
             "impact": "FAIL 또는 UNVERIFIED이면 점수와 무관하게 완전한 플랫폼 판정을 금지한다.",
             "required_remediation": (
                 "현재 음성/회귀 증거를 유지한다."
-                if status == "PASS"
-                else "잠금 환경과 immutable dataset을 빈 외부 root에서 복원하고 별도 검증자가 수동 개입 없이 재실행한 불변 PASS 증거를 승격 gate에 결속한다."
+                if status == "PASS" and receipt.clean_local_run
+                else (
+                    "잠금 환경과 immutable dataset을 빈 외부 root에서 복원하고 "
+                    "별도 검증자가 수동 개입 없이 재실행한 불변 PASS 증거를 "
+                    "승격 gate에 결속한다."
+                    if status == "FAIL"
+                    else (
+                        "tools/reference_audit_receipt.py로 정확한 현재 증거 "
+                        "테스트를 실행해 hash-bound clean-PASS 영수증을 생성한다."
+                    )
+                )
             ),
         }
         for gate_id, title, status, evidence, test in _FATAL_GATES
@@ -1457,9 +1977,14 @@ def build_matrix() -> dict[str, Any]:
             "domain_count": 10,
             "repository_copy": {
                 "rubric_path": "docs/investment-research-platform-audit-rubric.md",
-                "rubric_normalized_sha256": RUBRIC_COPY_SHA256,
+                "rubric_repository_inventory_sha256": RUBRIC_COPY_SHA256,
                 "instruction_path": "docs/investment-research-platform-audit-instructions.md",
-                "instruction_normalized_sha256": INSTRUCTION_COPY_SHA256,
+                "instruction_repository_copy_sha256": INSTRUCTION_COPY_SHA256,
+                "copy_role": (
+                    "reviewed semantic inventory used to parse all 184 headings; "
+                    "not claimed to be a byte-normalization of the canonical "
+                    "attachment authorities above"
+                ),
             },
         },
         "scoring": {
@@ -1484,18 +2009,62 @@ def build_matrix() -> dict[str, Any]:
                 "I": 5,
                 "J": 5,
             },
-            "completion_policy": "score>=95, no failed/unverified fatal gate, all Critical M4+, every criterion VERIFIED; evidence is never inferred from narrative score",
+            "completion_policy": (
+                "score>=95, current hash-bound clean-PASS execution receipt, no "
+                "failed/unverified fatal gate, all Critical M4+, every criterion "
+                "authenticated VERIFIED (local self-attested M4 is insufficient); "
+                "evidence is never inferred from narrative score"
+            ),
         },
         "assessment": {
-            "iteration": 5,
-            "assessed_at": "2026-07-22",
-            "repository_commit": ASSESSED_COMMIT,
-            "repository_branch": "main",
-            "worktree_was_clean": False,
-            "diagnosis": "post-remediation reassessment; committed implementation plus uncommitted audit-provenance refresh",
-            "score_cap": 84,
-            "score_cap_reason": "FG-06: retained local production E2E의 same-state 실행은 PASS지만 빈 환경의 독립 복원·재현 증거가 없어 원문 상한 규칙을 적용한다.",
-            "assessment_surface": audit_surface(PROJECT_ROOT),
+            "iteration": current_iteration,
+            "history_semantics": (
+                f"{current_iteration} labels summarize logical work phases in this "
+                "audit session. Iterations 1-5 have no separately retained source "
+                "surface or execution receipt and therefore carry M0 only; "
+                + (
+                    f"iteration {retained_snapshot_iteration} is preserved as a "
+                    "hash-addressed full matrix snapshot; its execution receipt "
+                    "is retained only as the matrix's summary/content hash, not "
+                    "as separately replayable receipt bytes, and "
+                    if retained_snapshot is not None
+                    else ""
+                )
+                + f"iteration {current_iteration} is the current-surface maturity "
+                "assessment."
+            ),
+            "assessed_at": context["assessed_at"],
+            "repository_commit": context["repository_commit"],
+            "repository_commit_role": REPOSITORY_COMMIT_ROLE,
+            "repository_branch": context["repository_branch"],
+            "worktree_was_clean": context["worktree_was_clean"],
+            "diagnosis": (
+                "A--J canonical reassessment bound to the deterministic excluded "
+                f"source surface; execution receipt status={receipt.status}. "
+                "The Git commit records generation context only and is not the "
+                "self-referential evaluated identity."
+            ),
+            "score_cap": score_cap,
+            "score_cap_reason": (
+                "현재 local self-attested clean-PASS receipt가 canonical public "
+                "package의 isolated cold replay를 실제 실행했으므로 M4 local "
+                "execution을 판정한다. 다만 unkeyed receipt는 실행 주체를 "
+                "인증하지 않으므로 independent E5/CI 증거가 아니며 M5를 "
+                "부여하지 않는다. classic portable replay의 좁은 범위 한계는 "
+                "관련 기준 gap에 반영한다."
+                if receipt.clean_local_run
+                else (
+                    "현재 assessment surface에 결속된 실행 receipt가 없어 종단 간 "
+                    "재현을 이번 감사 실행으로 확인하지 못했으므로 원문의 "
+                    "'단위 테스트는 있으나 종단 간 재현이 없는 레포' 75점 상한을 "
+                    "보수적으로 적용한다."
+                )
+            ),
+            "assessment_surface": source_surface,
+            "execution_receipt": _receipt_summary(
+                receipt,
+                receipt_path=receipt_path,
+            ),
         },
         "fatal_gates": gates,
         "criteria": criteria,
@@ -1506,12 +2075,48 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    rendered = json.dumps(build_matrix(), ensure_ascii=False, indent=2) + "\n"
     if args.check:
-        if not OUTPUT.exists() or OUTPUT.read_text(encoding="utf-8") != rendered:
-            raise SystemExit("reference_audit_matrix_out_of_date")
+        if not OUTPUT.is_file():
+            print(
+                f"STALE: {OUTPUT.relative_to(PROJECT_ROOT)}:missing",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            actual = json.loads(OUTPUT.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            print(
+                "STALE: "
+                f"{OUTPUT.relative_to(PROJECT_ROOT)}:invalid_json:"
+                f"{type(error).__name__}",
+                file=sys.stderr,
+            )
+            return 1
+        expected = build_matrix()
+        differences = _differences(actual, expected)
+        if differences:
+            for difference in differences:
+                print(
+                    f"STALE: {OUTPUT.relative_to(PROJECT_ROOT)}:{difference}",
+                    file=sys.stderr,
+                )
+            return 1
+        print(
+            "VALID: canonical A--J audit matrix matches the current excluded "
+            "source surface"
+        )
         return 0
+    _snapshot_previous_matrix_if_source_changed()
+    rendered = (
+        json.dumps(
+            build_matrix(generation_context=_current_generation_context()),
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
     OUTPUT.write_text(rendered, encoding="utf-8")
+    print(f"WROTE: {OUTPUT.relative_to(PROJECT_ROOT)}")
     return 0
 
 

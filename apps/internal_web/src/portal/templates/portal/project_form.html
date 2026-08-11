@@ -1,0 +1,20 @@
+{% extends "portal/base.html" %}
+{% block title %}연구 프로젝트 변경 · Research Console{% endblock %}
+{% block breadcrumbs %}연구 프로젝트 / {{ action }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">VERSIONED PROJECT CHANGE</p>
+    <h1>{% if action == "create" %}프로젝트 만들기{% else %}{{ project.project_id }} · {{ action }}{% endif %}</h1>
+    <p>변경은 외부 append-only registry에 새 버전으로 기록됩니다.</p>
+  </div>
+</section>
+<section class="panel">
+  <form method="post" class="form-grid">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button class="button button-primary" type="submit">검토한 변경 기록</button>
+    {% if project %}<a class="button" href="{% url 'portal:project-detail' project.project_id %}">취소</a>{% endif %}
+  </form>
+</section>
+{% endblock %}

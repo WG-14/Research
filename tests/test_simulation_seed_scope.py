@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from market_research.research.experiment_manifest import (
+    DateRange,
     TopOfBookDatasetSpec,
     _simulation_seed_scope_projection,
 )
@@ -201,6 +202,32 @@ def test_seed_scope_projects_dataset_and_authority_locations_only(
     changed_dataset = replace(second_dataset, source_content_hash=_hash("7"))
     changed = replace(second, dataset=changed_dataset)
     assert changed.simulation_seed_scope_hash() != second.simulation_seed_scope_hash()
+    assert (
+        changed.causal_execution_seed_scope_hash()
+        == second.causal_execution_seed_scope_hash()
+    )
+
+    extended_range = replace(
+        second,
+        dataset=replace(
+            second_dataset,
+            split=replace(
+                second_dataset.split,
+                train=DateRange(
+                    second_dataset.split.train.start,
+                    "2099-12-31",
+                ),
+            ),
+        ),
+    )
+    assert (
+        extended_range.simulation_seed_scope_hash()
+        != second.simulation_seed_scope_hash()
+    )
+    assert (
+        extended_range.causal_execution_seed_scope_hash()
+        == second.causal_execution_seed_scope_hash()
+    )
 
 
 def test_seed_scope_projection_retains_logical_authority_and_hashes() -> None:

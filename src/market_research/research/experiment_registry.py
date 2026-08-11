@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, SupportsIndex, SupportsInt, cast
 
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import append_jsonl
+from market_research.storage_io import append_jsonl, open_lock_file
 
 from .research_classification import requires_candidate_validation
 from .hashing import content_hash_payload, sha256_prefixed
@@ -1411,7 +1411,7 @@ def _as_int(value: object) -> int | None:
 def _locked_registry(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(lock_path)
     try:
         try:
             import fcntl

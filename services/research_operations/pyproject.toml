@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 research-ops = "research_operations.cli:main"
+research-alert-worker = "research_operations.alert_worker:main"
 research-job-worker = "research_operations.research_job_worker:main"
 research-outbox-worker = "research_operations.worker:main"
 

@@ -38,6 +38,11 @@
         <a class="nav-item {% if active_nav == 'research-explorer' %}is-active{% endif %}" href="{% url 'portal:research-explorer' %}"{% if active_nav == 'research-explorer' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">⌕</span><span>연구 증거 탐색</span>
         </a>
+        {% if perms.portal.view_research_project %}
+        <a class="nav-item {% if active_nav == 'projects' %}is-active{% endif %}" href="{% url 'portal:project-list' %}"{% if active_nav == 'projects' %} aria-current="page"{% endif %}>
+          <span aria-hidden="true">▦</span><span>연구 프로젝트</span>
+        </a>
+        {% endif %}
         {% if perms.portal.record_research_review or perms.portal.approve_research_candidate %}
         <a class="nav-item {% if active_nav == 'review' %}is-active{% endif %}" href="{% url 'portal:review-queue' %}"{% if active_nav == 'review' %} aria-current="page"{% endif %}>
           <span aria-hidden="true">✓</span><span>검토함</span>

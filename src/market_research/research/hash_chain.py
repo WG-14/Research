@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Generic, Iterator, TypeVar
 
-from market_research.storage_io import write_jsonl_atomic
+from market_research.storage_io import open_lock_file, write_jsonl_atomic
 
 from .hashing import canonical_json_bytes, content_hash_payload, sha256_prefixed
 
@@ -310,7 +310,7 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path.with_suffix(path.suffix + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(path.with_suffix(path.suffix + ".lock"))
     lock_module: Any | None = None
     try:
         try:

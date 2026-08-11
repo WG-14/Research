@@ -14,17 +14,17 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from market_research.paths import ResearchPathManager
 from market_research.storage_io import write_json_atomic_create_or_verify
 
-from .artifact_store import ArtifactStore
 from .hash_chain import (
-    append_hash_chained_jsonl_idempotent,
+    HashChainSnapshot,
+    mutate_hash_chained_jsonl_atomic,
     read_hash_chained_jsonl_snapshot,
 )
-from .hashing import content_hash_payload, sha256_prefixed
+from .hashing import canonical_json_bytes, content_hash_payload, sha256_prefixed
 from .hashing import report_content_hash_payload
 from .experiment_registry import (
     experiment_registry_path,
@@ -40,11 +40,17 @@ from .reproduction import (
     load_reproduction_receipt,
     validate_reproduction_receipt_report_binding,
 )
+from .principal_assertion import (
+    INDEPENDENT_VERIFIER_ROLE,
+    IndependentVerificationAssertionScope,
+    PrincipalAssertion,
+    PrincipalAssertionError,
+    verify_principal_assertion,
+)
 
 
-INDEPENDENT_VERIFICATION_SCHEMA_VERSION = 2
+INDEPENDENT_VERIFICATION_SCHEMA_VERSION = 3
 INDEPENDENT_VERIFICATION_HASH_LABEL = "independent_verification"
-INDEPENDENT_VERIFIER_ROLE = "independent_verifier"
 INDEPENDENT_REPRODUCTION_RESULT_HASH_LABEL = (
     "independent_verification_reproduction_result"
 )
@@ -91,6 +97,11 @@ class IndependentVerificationResult:
     version: str
     verifier_id: str
     verifier_role: str
+    principal_assertion: Mapping[str, Any]
+    principal_assertion_hash: str
+    principal_assertion_issuer: str
+    principal_assertion_key_id: str
+    principal_assertion_subject: str
     verified_at: str
     experiment_id: str
     research_version: str
@@ -118,14 +129,59 @@ class IndependentVerificationResult:
         _require_identifier(self.version, "version")
         _require_identifier(self.verifier_id, "verifier_id")
         _require_identifier(self.experiment_id, "experiment_id")
+        if not isinstance(self.principal_assertion, Mapping):
+            raise IndependentVerificationError(
+                "independent_verification_principal_assertion_invalid"
+            )
+        try:
+            assertion = PrincipalAssertion.from_dict(self.principal_assertion)
+        except PrincipalAssertionError as exc:
+            raise IndependentVerificationError(
+                f"independent_verification_principal_assertion_invalid:{exc}"
+            ) from exc
+        if (
+            self.principal_assertion_hash != assertion.content_hash
+            or self.principal_assertion_issuer != assertion.issuer
+            or self.principal_assertion_key_id != assertion.key_id
+            or self.principal_assertion_subject != assertion.subject
+        ):
+            raise IndependentVerificationError(
+                "independent_verification_principal_assertion_binding_mismatch"
+            )
+        _require_hash(
+            self.principal_assertion_hash,
+            "principal_assertion_hash",
+        )
+        if self.verifier_role not in assertion.roles:
+            raise IndependentVerificationError(
+                "independent_verification_verifier_role_invalid"
+            )
         if self.verifier_role != INDEPENDENT_VERIFIER_ROLE:
             raise IndependentVerificationError(
                 "independent_verification_verifier_role_invalid"
+            )
+        expected_scope = IndependentVerificationAssertionScope(
+            verification_id=self.verification_id,
+            verification_version=self.version,
+            experiment_id=self.experiment_id,
+            research_version=self.research_version,
+            source_report_hash=self.source_report_hash,
+            baseline_receipt_hash=self.baseline_receipt_hash,
+        )
+        if assertion.scope != expected_scope:
+            raise IndependentVerificationError(
+                "independent_verification_principal_assertion_scope_mismatch"
             )
         verified_at = _require_timezone(self.verified_at)
         if verified_at.astimezone(timezone.utc) > datetime.now(timezone.utc):
             raise IndependentVerificationError(
                 "independent_verification_verified_at_in_future"
+            )
+        authenticated_at = _require_timezone(assertion.authenticated_at)
+        expires_at = _require_timezone(assertion.expires_at)
+        if not authenticated_at <= verified_at <= expires_at:
+            raise IndependentVerificationError(
+                "independent_verification_verified_at_outside_assertion"
             )
         if (
             not isinstance(self.research_version, str)
@@ -198,6 +254,11 @@ class IndependentVerificationResult:
             "comparison_deltas",
             tuple(_deep_freeze(delta) for delta in self.comparison_deltas),
         )
+        object.__setattr__(
+            self,
+            "principal_assertion",
+            _deep_freeze(assertion.as_dict()),
+        )
         if self.status == "PASS":
             if (
                 self.actual_fingerprint_hash != self.expected_fingerprint_hash
@@ -243,6 +304,11 @@ class IndependentVerificationResult:
             "version": self.version,
             "verifier_id": self.verifier_id,
             "verifier_role": self.verifier_role,
+            "principal_assertion": _deep_thaw(self.principal_assertion),
+            "principal_assertion_hash": self.principal_assertion_hash,
+            "principal_assertion_issuer": self.principal_assertion_issuer,
+            "principal_assertion_key_id": self.principal_assertion_key_id,
+            "principal_assertion_subject": self.principal_assertion_subject,
             "verified_at": self.verified_at,
             "experiment_id": self.experiment_id,
             "research_version": self.research_version,
@@ -287,6 +353,11 @@ class IndependentVerificationResult:
             "version",
             "verifier_id",
             "verifier_role",
+            "principal_assertion",
+            "principal_assertion_hash",
+            "principal_assertion_issuer",
+            "principal_assertion_key_id",
+            "principal_assertion_subject",
             "verified_at",
             "experiment_id",
             "research_version",
@@ -319,11 +390,13 @@ class IndependentVerificationResult:
             )
         deltas = payload.get("comparison_deltas")
         issues = payload.get("unresolved_issues")
+        principal_assertion = payload.get("principal_assertion")
         if (
             not isinstance(deltas, list)
             or not all(isinstance(item, Mapping) for item in deltas)
             or not isinstance(issues, list)
             or not all(isinstance(item, str) for item in issues)
+            or not isinstance(principal_assertion, Mapping)
         ):
             raise IndependentVerificationError(
                 "independent_verification_collections_invalid"
@@ -333,6 +406,23 @@ class IndependentVerificationResult:
             version=_payload_string(payload, "version"),
             verifier_id=_payload_string(payload, "verifier_id"),
             verifier_role=_payload_string(payload, "verifier_role"),
+            principal_assertion=dict(principal_assertion),
+            principal_assertion_hash=_payload_string(
+                payload,
+                "principal_assertion_hash",
+            ),
+            principal_assertion_issuer=_payload_string(
+                payload,
+                "principal_assertion_issuer",
+            ),
+            principal_assertion_key_id=_payload_string(
+                payload,
+                "principal_assertion_key_id",
+            ),
+            principal_assertion_subject=_payload_string(
+                payload,
+                "principal_assertion_subject",
+            ),
             verified_at=_payload_string(payload, "verified_at"),
             experiment_id=_payload_string(payload, "experiment_id"),
             research_version=_payload_string(payload, "research_version"),
@@ -684,34 +774,146 @@ def publish_independent_verification(
     manager: ResearchPathManager,
     result: IndependentVerificationResult,
 ) -> dict[str, Any]:
-    """Create-or-verify the result and append its identity exactly once."""
+    """Authenticate, create-or-verify, and append one result exactly once."""
 
     ref = result.ref()
+    existing = find_independent_verification(
+        manager=manager,
+        verification_id=result.verification_id,
+        version=result.version,
+    )
+    if existing is not None and existing.as_dict() != result.as_dict():
+        raise IndependentVerificationError("independent_verification_identity_conflict")
+    if existing is None:
+        try:
+            assertion = PrincipalAssertion.from_dict(result.principal_assertion)
+            verify_principal_assertion(
+                assertion=assertion,
+                expected_scope=_principal_assertion_scope(result),
+                trust_store_path=(
+                    manager.settings.independent_verifier_trust_store_path
+                ),
+                manager=manager,
+            )
+        except PrincipalAssertionError as exc:
+            raise IndependentVerificationError(
+                f"independent_verification_principal_assertion_untrusted:{exc}"
+            ) from exc
     _validate_reproduction_evidence(manager=manager, result=result)
     artifact = {**result.as_dict(), "content_hash": ref.content_hash}
     path = independent_verification_result_path(manager, ref)
-    try:
-        write_json_atomic_create_or_verify(path, artifact)
-        return append_hash_chained_jsonl_idempotent(
-            store=ArtifactStore(root=manager.artifact_root),
-            path=independent_verification_registry_path(manager),
-            payload={
-                "event_id": (
-                    f"independent-verification:{ref.verification_id}:{ref.version}"
-                ),
-                "record_type": "INDEPENDENT_VERIFICATION_RESULT",
-                "logical_id": ref.verification_id,
-                "version": ref.version,
-                "record_hash": ref.content_hash,
-                "artifact_path": str(path.resolve()),
-                "payload": result.as_dict(),
-            },
-            label=INDEPENDENT_VERIFICATION_HASH_LABEL,
+    registry_payload = {
+        "event_id": (f"independent-verification:{ref.verification_id}:{ref.version}"),
+        "record_type": "INDEPENDENT_VERIFICATION_RESULT",
+        "logical_id": ref.verification_id,
+        "version": ref.version,
+        "record_hash": ref.content_hash,
+        "artifact_path": str(path.resolve()),
+        "payload": result.as_dict(),
+    }
+
+    def mutation(
+        snapshot: HashChainSnapshot,
+        stage: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        matches = [
+            row
+            for row in snapshot.rows
+            if row.get("event_id") == registry_payload["event_id"]
+        ]
+        if len(matches) > 1:
+            raise IndependentVerificationError(
+                "independent_verification_identity_not_unique"
+            )
+        if matches:
+            existing_row = matches[0]
+            existing_payload = {
+                key: value
+                for key, value in existing_row.items()
+                if key not in {"sequence", "prior_hash", "row_hash"}
+            }
+            if canonical_json_bytes(existing_payload) != canonical_json_bytes(
+                registry_payload
+            ):
+                raise IndependentVerificationError(
+                    "independent_verification_identity_conflict"
+                )
+            write_json_atomic_create_or_verify(path, artifact)
+            return dict(existing_row)
+
+        _ensure_principal_assertion_nonce_available(
+            rows=snapshot.rows,
+            result=result,
         )
+        # The replay decision and artifact publication share the registry lock.
+        # A rejected concurrent claimant therefore cannot leave an orphaned
+        # result artifact. The artifact is durable before its referencing row
+        # is staged and committed.
+        write_json_atomic_create_or_verify(path, artifact)
+        return stage(registry_payload)
+
+    try:
+        return mutate_hash_chained_jsonl_atomic(
+            path=independent_verification_registry_path(manager),
+            label=INDEPENDENT_VERIFICATION_HASH_LABEL,
+            mutation=mutation,
+        ).value
+    except IndependentVerificationError:
+        raise
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise IndependentVerificationError(
             f"independent_verification_publication_failed:{exc}"
         ) from exc
+
+
+def _principal_assertion_scope(
+    result: IndependentVerificationResult,
+) -> IndependentVerificationAssertionScope:
+    return IndependentVerificationAssertionScope(
+        verification_id=result.verification_id,
+        verification_version=result.version,
+        experiment_id=result.experiment_id,
+        research_version=result.research_version,
+        source_report_hash=result.source_report_hash,
+        baseline_receipt_hash=result.baseline_receipt_hash,
+    )
+
+
+def _ensure_principal_assertion_nonce_available(
+    *,
+    rows: tuple[dict[str, Any], ...],
+    result: IndependentVerificationResult,
+) -> None:
+    assertion = PrincipalAssertion.from_dict(result.principal_assertion)
+    for row in rows:
+        payload = row.get("payload")
+        if not isinstance(payload, Mapping):
+            raise IndependentVerificationError(
+                "independent_verification_registry_invalid"
+            )
+        prior_value = payload.get("principal_assertion")
+        if not isinstance(prior_value, Mapping):
+            raise IndependentVerificationError(
+                "independent_verification_registry_invalid"
+            )
+        try:
+            prior = PrincipalAssertion.from_dict(prior_value)
+        except PrincipalAssertionError as exc:
+            raise IndependentVerificationError(
+                "independent_verification_registry_invalid"
+            ) from exc
+        same_identity = (
+            row.get("logical_id") == result.verification_id
+            and row.get("version") == result.version
+        )
+        if (
+            prior.issuer == assertion.issuer
+            and prior.nonce == assertion.nonce
+            and not same_identity
+        ):
+            raise IndependentVerificationError(
+                "independent_verification_principal_assertion_replayed"
+            )
 
 
 def load_independent_verification(

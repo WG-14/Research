@@ -617,6 +617,11 @@ class ResearchJob(models.Model):
             ("record_research_review", "Can record a research review"),
             ("approve_research_candidate", "Can approve a research candidate"),
             ("manage_research_web", "Can administer the research web portal"),
+            ("create_research_project", "Can create a research project"),
+            ("view_research_project", "Can view a research project"),
+            ("manage_research_project", "Can manage a research project"),
+            ("write_research_project", "Can write research project evidence"),
+            ("compute_research_project", "Can use research project compute"),
         ]
 
     def __str__(self) -> str:

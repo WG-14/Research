@@ -29,7 +29,7 @@ def _complete_stress_suite_payload() -> dict[str, object]:
         },
         "trade_order_monte_carlo": {
             "iterations": 100,
-            "seed_policy": "derived_from_manifest_candidate_scenario_split_hash",
+            "seed_policy": "derived_from_bounded_closed_trade_stream_contract_hash",
             "min_survival_probability": 0.8,
             "ruin_max_drawdown_pct": 50.0,
             "min_closed_trades": 10,
@@ -50,7 +50,7 @@ def _complete_stress_suite_payload() -> dict[str, object]:
         },
         "signal_omission": {
             "omission_rates_pct": [100.0],
-            "seed_policy": "derived_from_manifest_candidate_scenario_split_contract_hash",
+            "seed_policy": "derived_from_causal_decision_id_candidate_scenario_split_contract_hash",
             "min_return_retention_pct": 0.0,
             "min_omitted_entry_signals": 1,
         },
@@ -132,7 +132,7 @@ def test_signal_omission_evidence_is_gated_by_layer_count_and_return_retention()
     result = analyze_signal_omission(
         contract={
             "omission_rates_pct": [25.0],
-            "seed_policy": "derived_from_manifest_candidate_scenario_split_contract_hash",
+            "seed_policy": "derived_from_causal_decision_id_candidate_scenario_split_contract_hash",
             "min_return_retention_pct": 70.0,
             "min_omitted_entry_signals": 1,
         },
@@ -178,6 +178,88 @@ def test_analyzer_defensively_fails_a_required_contract_missing_components() -> 
         "stress_suite_required_component_missing:trade_order_monte_carlo",
         "stress_suite_required_component_missing:trade_removal",
     ]
+
+
+def test_stress_suite_rng_uses_bounded_trade_stream_not_manifest_identity() -> None:
+    contract = _parse_stress_suite(
+        _complete_stress_suite_payload(),
+        research_classification="validated_candidate",
+    )
+    assert contract is not None
+    trades = tuple(
+        ClosedTradeRecord(exit_ts=index, net_pnl=value)
+        for index, value in enumerate([100.0, -50.0, 80.0, 20.0, 40.0] * 2)
+    )
+    context = {
+        "experiment_id": "experiment",
+        "candidate_id": "candidate",
+        "scenario_id": "scenario",
+        "split_name": "validation",
+        "parameter_values": {"window": 10},
+        "portfolio_policy_hash": "sha256:" + "d" * 64,
+        "simulation_policy_hash": "sha256:" + "a" * 64,
+        "causal_execution_seed_scope_hash": "sha256:" + "c" * 64,
+    }
+    first = analyze_stress_suite(
+        contract=contract,
+        context=StressSuiteContext(
+            manifest_hash="sha256:" + "a" * 64,
+            **context,
+        ),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=None,
+        closed_trades=trades,
+        starting_cash=10_000.0,
+    )
+    changed = analyze_stress_suite(
+        contract=contract,
+        context=StressSuiteContext(
+            manifest_hash="sha256:" + "b" * 64,
+            **context,
+        ),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=None,
+        closed_trades=trades,
+        starting_cash=10_000.0,
+    )
+
+    assert first == changed
+    assert first["context"]["causal_execution_seed_scope_hash"] == (
+        "sha256:" + "c" * 64
+    )
+    identity_and_broad_policy_changed = analyze_stress_suite(
+        contract=contract,
+        context=StressSuiteContext(
+            manifest_hash="sha256:" + "f" * 64,
+            experiment_id="unrelated-experiment-identity",
+            candidate_id="renumbered-candidate",
+            scenario_id="scenario_999_same_behavior",
+            split_name="renamed-validation-split",
+            parameter_values=context["parameter_values"],
+            portfolio_policy_hash=context["portfolio_policy_hash"],
+            simulation_policy_hash="sha256:" + "e" * 64,
+            causal_execution_seed_scope_hash=context[
+                "causal_execution_seed_scope_hash"
+            ],
+        ),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=None,
+        closed_trades=trades,
+        starting_cash=10_000.0,
+    )
+
+    assert (
+        first["seed_material_hash"]
+        == identity_and_broad_policy_changed["seed_material_hash"]
+    )
+    assert (
+        first["trade_order_monte_carlo"]
+        == identity_and_broad_policy_changed["trade_order_monte_carlo"]
+    )
+    assert (
+        first["trade_bootstrap_uncertainty"]
+        == identity_and_broad_policy_changed["trade_bootstrap_uncertainty"]
+    )
 
 
 def test_validation_candidate_rejects_execution_model_without_standard_stress_dimensions() -> (

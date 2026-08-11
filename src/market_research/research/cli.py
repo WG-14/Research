@@ -38,7 +38,6 @@ from .experiment_registry import (
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .independent_verification import (
-    INDEPENDENT_VERIFIER_ROLE,
     IndependentVerificationError,
     IndependentVerificationResult,
     bind_reproduction_result_snapshot,
@@ -46,6 +45,14 @@ from .independent_verification import (
     independent_code_binding_hash,
     independent_reproduction_evidence,
     publish_independent_verification,
+)
+from .principal_assertion import (
+    INDEPENDENT_VERIFIER_ROLE,
+    IndependentVerificationAssertionScope,
+    PrincipalAssertion,
+    PrincipalAssertionError,
+    load_principal_assertion,
+    verify_principal_assertion,
 )
 from .final_selection import (
     validate_confirmation_artifact,
@@ -850,6 +857,7 @@ def cmd_research_reproduce_run(
     verification_version: str | None = None,
     verifier_id: str | None = None,
     verifier_role: str = INDEPENDENT_VERIFIER_ROLE,
+    verifier_assertion_path: str | None = None,
     verified_at: str | None = None,
     unresolved_issues: tuple[str, ...] = (),
 ) -> int:
@@ -862,15 +870,41 @@ def cmd_research_reproduce_run(
     terminal_confirmation: dict[str, Any] | None = None
     manifest = None
     receipt: dict[str, object]
-    verification_values = (verification_id, verification_version, verifier_id)
-    publish_verification = all(value is not None for value in verification_values)
-    if (
-        any(value is not None for value in verification_values)
-        and not publish_verification
+    assertion: PrincipalAssertion | None = None
+    identity_values = (verification_id, verification_version)
+    verification_identity_complete = all(value is not None for value in identity_values)
+    if any(value is not None for value in identity_values) and not (
+        verification_identity_complete
     ):
         context.printer(
-            "[RESEARCH-REPRODUCE-RUN] error=verification id, version, and verifier "
+            "[RESEARCH-REPRODUCE-RUN] error=verification id and version "
             "must be provided together"
+        )
+        return 2
+    if (
+        verifier_id is not None or verifier_assertion_path is not None
+    ) and not verification_identity_complete:
+        context.printer(
+            "[RESEARCH-REPRODUCE-RUN] error=verifier identity requires "
+            "verification id and version"
+        )
+        return 2
+    publish_verification = (
+        verification_identity_complete and verifier_assertion_path is not None
+    )
+    legacy_research_only_verification = (
+        verification_identity_complete
+        and verifier_assertion_path is None
+        and verifier_id is not None
+    )
+    if (
+        verification_identity_complete
+        and not publish_verification
+        and not legacy_research_only_verification
+    ):
+        context.printer(
+            "[RESEARCH-REPRODUCE-RUN] error=authoritative verification requires "
+            "a verifier assertion"
         )
         return 2
     manifest_display_path = str(Path(manifest_path).expanduser())
@@ -896,9 +930,30 @@ def cmd_research_reproduce_run(
                 manager=context.paths,
                 baseline_receipt_path=receipt_path,
             )
+            if publish_verification:
+                assertion = load_principal_assertion(
+                    str(verifier_assertion_path),
+                    manager=context.paths,
+                )
+                verify_principal_assertion(
+                    assertion=assertion,
+                    expected_scope=IndependentVerificationAssertionScope(
+                        verification_id=str(verification_id),
+                        verification_version=str(verification_version),
+                        experiment_id=str(receipt["experiment_id"]),
+                        research_version=str(receipt["manifest_hash"]),
+                        source_report_hash=str(receipt["source_report_hash"]),
+                        baseline_receipt_hash=str(receipt["receipt_content_hash"]),
+                    ),
+                    trust_store_path=(
+                        context.settings.independent_verifier_trust_store_path
+                    ),
+                    manager=context.paths,
+                )
         except (
             IndependentVerificationError,
             ManifestValidationError,
+            PrincipalAssertionError,
             ReproductionContractError,
             OSError,
             ValueError,
@@ -1027,8 +1082,12 @@ def cmd_research_reproduce_run(
                         baseline_receipt_path=receipt_path,
                         verification_id=str(verification_id),
                         verification_version=str(verification_version),
-                        verifier_id=str(verifier_id),
+                        verifier_id=str(
+                            verifier_id
+                            or _required_principal_assertion(assertion).subject
+                        ),
                         verifier_role=verifier_role,
+                        principal_assertion=_required_principal_assertion(assertion),
                         verified_at=verified_at,
                         unresolved_issues=unresolved_issues,
                     )
@@ -1038,6 +1097,14 @@ def cmd_research_reproduce_run(
                         "[RESEARCH-REPRODUCE-RUN] verification_error="
                         f"{verification_exc}"
                     )
+            elif legacy_research_only_verification:
+                _attach_research_only_verification(
+                    payload=payload,
+                    verification_id=str(verification_id),
+                    verification_version=str(verification_version),
+                    verifier_alias=str(verifier_id),
+                    verifier_role=verifier_role,
+                )
             result_path = _write_reproduction_result(
                 context=context,
                 out_path=out_path,
@@ -1075,8 +1142,12 @@ def cmd_research_reproduce_run(
                         baseline_receipt_path=receipt_path,
                         verification_id=str(verification_id),
                         verification_version=str(verification_version),
-                        verifier_id=str(verifier_id),
+                        verifier_id=str(
+                            verifier_id
+                            or _required_principal_assertion(assertion).subject
+                        ),
                         verifier_role=verifier_role,
+                        principal_assertion=_required_principal_assertion(assertion),
                         verified_at=verified_at,
                         unresolved_issues=unresolved_issues,
                     )
@@ -1086,6 +1157,14 @@ def cmd_research_reproduce_run(
                         "[RESEARCH-REPRODUCE-RUN] verification_error="
                         f"{verification_exc}"
                     )
+            elif legacy_research_only_verification:
+                _attach_research_only_verification(
+                    payload=payload,
+                    verification_id=str(verification_id),
+                    verification_version=str(verification_version),
+                    verifier_alias=str(verifier_id),
+                    verifier_role=verifier_role,
+                )
             result_path = _write_reproduction_result(
                 context=context,
                 out_path=out_path,
@@ -1166,8 +1245,11 @@ def cmd_research_reproduce_run(
                     baseline_receipt_path=receipt_path,
                     verification_id=str(verification_id),
                     verification_version=str(verification_version),
-                    verifier_id=str(verifier_id),
+                    verifier_id=str(
+                        verifier_id or _required_principal_assertion(assertion).subject
+                    ),
                     verifier_role=verifier_role,
+                    principal_assertion=_required_principal_assertion(assertion),
                     verified_at=verified_at,
                     unresolved_issues=unresolved_issues,
                 )
@@ -1183,6 +1265,14 @@ def cmd_research_reproduce_run(
                     experiment_id=manifest.experiment_id,
                 )
                 context.printer(f"[RESEARCH-REPRODUCE-RUN] error={exc}")
+        elif legacy_research_only_verification:
+            _attach_research_only_verification(
+                payload=payload,
+                verification_id=str(verification_id),
+                verification_version=str(verification_version),
+                verifier_alias=str(verifier_id),
+                verifier_role=verifier_role,
+            )
         result_path = _write_reproduction_result(
             context=context,
             out_path=out_path,
@@ -1358,6 +1448,7 @@ def _attach_independent_verification_result(
     verification_version: str,
     verifier_id: str,
     verifier_role: str,
+    principal_assertion: PrincipalAssertion,
     verified_at: str | None,
     unresolved_issues: tuple[str, ...],
 ) -> None:
@@ -1443,6 +1534,11 @@ def _attach_independent_verification_result(
         version=verification_version,
         verifier_id=verifier_id,
         verifier_role=verifier_role,
+        principal_assertion=principal_assertion.as_dict(),
+        principal_assertion_hash=principal_assertion.content_hash,
+        principal_assertion_issuer=principal_assertion.issuer,
+        principal_assertion_key_id=principal_assertion.key_id,
+        principal_assertion_subject=principal_assertion.subject,
         verified_at=effective_verified_at,
         experiment_id=str(receipt["experiment_id"]),
         research_version=str(receipt["manifest_hash"]),
@@ -1488,6 +1584,38 @@ def _attach_independent_verification_result(
         "registry_row_hash": row["row_hash"],
     }
     context.run_result_hash = ref.content_hash
+
+
+def _required_principal_assertion(
+    assertion: PrincipalAssertion | None,
+) -> PrincipalAssertion:
+    if assertion is None:
+        raise IndependentVerificationError(
+            "independent_verification_principal_assertion_required"
+        )
+    return assertion
+
+
+def _attach_research_only_verification(
+    *,
+    payload: dict[str, object],
+    verification_id: str,
+    verification_version: str,
+    verifier_alias: str,
+    verifier_role: str,
+) -> None:
+    """Preserve legacy diagnostics without creating approval authority."""
+
+    payload["independent_verification"] = {
+        "authority": "RESEARCH_ONLY",
+        "authoritative": False,
+        "verification_id": verification_id,
+        "version": verification_version,
+        "verifier_alias": verifier_alias,
+        "verifier_role": verifier_role,
+        "status": str(payload.get("status") or ""),
+        "reason": "authenticated_principal_assertion_required",
+    }
 
 
 def _reproduction_error_payload(

@@ -3,7 +3,29 @@ set -eu
 
 django-admin migrate --noinput
 research-ops migrate
-django-admin collectstatic --noinput
+django-admin collectstatic --noinput --clear
+
+# Static assets are public adapter code, not research evidence.  They are
+# projected read-only into the dedicated Nginx namespace, whose worker is not
+# a member of the research filesystem group.  Normalize this one subtree to a
+# fail-closed public-read contract after collectstatic has completed.
+: "${INTERNAL_WEB_STATIC_ROOT:?static root required}"
+test -d "$INTERNAL_WEB_STATIC_ROOT" && test ! -L "$INTERNAL_WEB_STATIC_ROOT" \
+  || exit 65
+if find "$INTERNAL_WEB_STATIC_ROOT" -xdev -type l -print -quit | grep -q .; then
+  exit 65
+fi
+if find "$INTERNAL_WEB_STATIC_ROOT" -xdev \
+  ! -type d ! -type f -print -quit | grep -q .; then
+  exit 65
+fi
+if find "$INTERNAL_WEB_STATIC_ROOT" -xdev -type f -links +1 \
+  -print -quit | grep -q .; then
+  exit 65
+fi
+find "$INTERNAL_WEB_STATIC_ROOT" -xdev -type d -exec chmod 0755 {} +
+find "$INTERNAL_WEB_STATIC_ROOT" -xdev -type f -exec chmod 0644 {} +
+sync -f "$INTERNAL_WEB_STATIC_ROOT"
 
 psql --set=ON_ERROR_STOP=1 \
   --set=runtime_user="$POSTGRES_RUNTIME_USER" \

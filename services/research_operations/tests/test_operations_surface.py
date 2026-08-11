@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psycopg
 import pytest
 
 import research_operations.backup as backup_module
@@ -403,6 +404,8 @@ def test_expected_portal_migrations_come_from_installed_web_package() -> None:
         "0008_imported_decision_report",
         "0009_resourceaccessgrant",
         "0010_dataset_resource_access",
+        "0011_database_immutability_guards",
+        "0012_project_permissions_rbac",
     )
 
 
@@ -479,7 +482,9 @@ def test_workflow_readiness_fails_closed_when_database_is_down(monkeypatch):
     monkeypatch.setattr(
         health,
         "_database_snapshot",
-        lambda **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+        lambda **_kwargs: (_ for _ in ()).throw(
+            psycopg.errors.ConnectionFailure("connection lost")
+        ),
     )
     monkeypatch.setattr(
         health,
@@ -500,6 +505,108 @@ def test_workflow_readiness_fails_closed_when_database_is_down(monkeypatch):
     )
     assert not snapshot.ready
     assert "database_unavailable" in {check.reason_code for check in snapshot.checks}
+
+
+def test_workflow_readiness_does_not_mislabel_local_resource_failure_as_db_down(
+    monkeypatch,
+):
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        health,
+        "expected_migration_hashes",
+        lambda: (_ for _ in ()).throw(OSError("installed resource unreadable")),
+    )
+    monkeypatch.setattr(
+        health,
+        "release_configuration_check",
+        lambda *_args, **_kwargs: CheckResult(
+            "release_configuration", "PASS", "release_configuration_valid", now
+        ),
+    )
+    monkeypatch.setattr(
+        health,
+        "_filesystem_check",
+        lambda *_args, **_kwargs: CheckResult(
+            "filesystem_roots", "PASS", "filesystem_write_policy_qualified", now
+        ),
+    )
+
+    with pytest.raises(OSError, match="installed resource unreadable"):
+        health.collect_health_snapshot(
+            "workflow-mutation", environ={}, observed_at=now, use_cache=False
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        psycopg.errors.InvalidPassword("password authentication failed"),
+        psycopg.OperationalError("connection failed: TLS certificate rejected"),
+        psycopg.OperationalError("connection is bad: invalid connection option"),
+    ],
+)
+def test_workflow_readiness_fails_loud_for_database_configuration_errors(
+    monkeypatch,
+    error,
+):
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        health,
+        "_database_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        health,
+        "release_configuration_check",
+        lambda *_args, **_kwargs: CheckResult(
+            "release_configuration", "PASS", "release_configuration_valid", now
+        ),
+    )
+    monkeypatch.setattr(
+        health,
+        "_filesystem_check",
+        lambda *_args, **_kwargs: CheckResult(
+            "filesystem_roots", "PASS", "filesystem_write_policy_qualified", now
+        ),
+    )
+
+    with pytest.raises(type(error)):
+        health.collect_health_snapshot(
+            "workflow-mutation", environ={}, observed_at=now, use_cache=False
+        )
+
+
+def test_workflow_readiness_does_not_mislabel_programming_fault_as_db_down(
+    monkeypatch,
+):
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        health,
+        "_database_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("schema bug")),
+    )
+    monkeypatch.setattr(
+        health,
+        "release_configuration_check",
+        lambda *_args, **_kwargs: CheckResult(
+            "release_configuration", "PASS", "release_configuration_valid", now
+        ),
+    )
+    monkeypatch.setattr(
+        health,
+        "_filesystem_check",
+        lambda *_args, **_kwargs: CheckResult(
+            "filesystem_roots", "PASS", "filesystem_write_policy_qualified", now
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="schema bug"):
+        health.collect_health_snapshot(
+            "workflow-mutation",
+            environ={},
+            observed_at=now,
+            use_cache=False,
+        )
 
 
 def test_worker_freshness_uses_past_cutoff_not_observation_time(monkeypatch):

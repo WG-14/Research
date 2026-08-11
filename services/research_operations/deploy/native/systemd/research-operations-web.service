@@ -10,11 +10,17 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=research-web
-Group=research-ops
+Group=research-web-proxy
+SupplementaryGroups=research-ops
 WorkingDirectory=/opt/research-platform/current
 EnvironmentFile=/etc/research-ops/runtime.env
 Environment=RESEARCH_OPS_DATABASE_ROLE=runtime
+Environment=POSTGRES_RUNTIME_PASSWORD_FILE=%d/postgres-runtime-password
+Environment=DJANGO_SECRET_KEY_FILE=%d/django-secret-key
+Environment=MARKET_RESEARCH_ATOMIC_PUBLICATION_MODE=0640
 Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LoadCredential=postgres-runtime-password:/etc/research-ops/secrets/postgres-runtime-password
+LoadCredential=django-secret-key:/etc/research-ops/secrets/django-secret-key
 ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /opt/research-platform/current/.venv/bin/gunicorn --config /opt/research-platform/current/services/research_operations/deploy/native/gunicorn-web.conf.py research_operations.runtime:guarded_web_application
 Restart=on-failure
 RestartSec=3s
@@ -34,11 +40,13 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+InaccessiblePaths=/etc/research-ops/secrets
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
@@ -47,7 +55,12 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadOnlyPaths=/srv/research/data
 ReadWritePaths=/srv/research/data/_internal_web/manifests
-ReadWritePaths=/srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
+ReadWritePaths=/srv/research/artifacts/_internal_web
+ReadOnlyPaths=/srv/research/artifacts/_internal_web/static
+ReadWritePaths=/srv/research/artifacts/reports/research/_registry
+ReadWritePaths=/srv/research/artifacts/derived/research/projects
+ReadWritePaths=/srv/research/reports/_internal_web
+ReadWritePaths=/srv/research/cache/research/projects
 TasksMax=96
 LimitNOFILE=8192
 MemoryMax=1G

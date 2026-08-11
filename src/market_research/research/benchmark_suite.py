@@ -201,11 +201,14 @@ class BenchmarkSuiteRunner:
         execution_model = _execution_model(
             scenario,
             seed_material={
-                "simulation_seed_scope_hash": self.manifest.simulation_seed_scope_hash(),
+                "seed_policy": "causal_execution_request_scoped_v1",
+                "causal_execution_seed_scope_hash": (
+                    self.manifest.causal_execution_seed_scope_hash()
+                ),
+                "scenario_id": scenario_id,
                 "scenario_hash": sha256_prefixed(scenario.as_dict()),
                 "candidate_id": candidate_id,
                 "split_name": snapshot.split_name,
-                "base_seed": scenario.seed,
             },
         )
         return run_common_simulation_backtest(
@@ -242,7 +245,9 @@ class BenchmarkSuiteRunner:
             raise ValueError("benchmark_suite_contract_missing")
         contract = benchmark_suite.random_entry
         seed_material = {
-            "manifest_hash": self.manifest.manifest_hash(),
+            "seed_policy": contract.seed_policy,
+            "market": snapshot.market,
+            "interval": snapshot.interval,
             "split_name": snapshot.split_name,
             "benchmark_contract_hash": sha256_prefixed(contract.as_dict()),
         }

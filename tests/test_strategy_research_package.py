@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,12 @@ from market_research.research.strategy_package import (
 from market_research.research.validation_pipeline import (
     validate_validated_research_result,
 )
+from market_research.research.validation_experiment_bundle import (
+    ValidationExperimentOutputScope,
+    build_validation_experiment_bundle,
+    derive_validation_experiment_capability,
+)
+from market_research.research.validation_experiments import NestedCandidate
 from market_research.research.validation_protocol import _candidate_result_path
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.hashing import report_content_hash_payload
@@ -59,6 +66,7 @@ from tests.data_governance_fixture import (
 )
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 from tests.independent_verification_fixture import publish_pass_verification
+from tests.test_validation_experiment_bundle import _all_outputs
 
 
 def _result():
@@ -457,6 +465,144 @@ def _bind_selected_candidate_artifact(report, manager):
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
 
 
+def _bind_validation_experiment(report):
+    """Attach complete synthetic experiment evidence to the approval fixture."""
+
+    manifest_hash = str(report["manifest_hash"])
+    dataset_snapshot_hash = str(report["dataset_content_hash"])
+    selected_candidate_id = str(report["selected_candidate_id"])
+    selected_candidate_hash = str(
+        report["selected_candidate"]["candidate_payload_hash"]
+    )
+    temporal_plan_hash = sha256_prefixed(
+        {
+            "fixture": "strategy-package-validation-experiment",
+            "manifest_hash": manifest_hash,
+        },
+        label="validation_experiment_temporal_scope",
+    )
+    capability = derive_validation_experiment_capability(
+        manifest_hash=manifest_hash,
+        research_classification=report["research_classification"],
+    )
+
+    base_outputs = _all_outputs(passed=True, manifest_hash=manifest_hash)
+    base_nested = base_outputs.nested_selection
+    assert base_nested is not None
+    fixture_candidate = base_nested.candidates[0]
+    selected_candidate = NestedCandidate(
+        candidate_id=selected_candidate_id,
+        version=fixture_candidate.version,
+        definition_hash=selected_candidate_hash,
+    )
+
+    def bind_evaluation(evaluation):
+        if evaluation.candidate == fixture_candidate:
+            return replace(evaluation, candidate=selected_candidate)
+        return evaluation
+
+    bound_folds = tuple(
+        replace(
+            fold,
+            selected_candidate=(
+                selected_candidate
+                if fold.selected_candidate == fixture_candidate
+                else fold.selected_candidate
+            ),
+            inner_evaluations=tuple(
+                sorted(
+                    (bind_evaluation(item) for item in fold.inner_evaluations),
+                    key=lambda item: (
+                        item.candidate.candidate_id,
+                        item.candidate.version,
+                        item.split_id,
+                    ),
+                )
+            ),
+            outer_evaluation=bind_evaluation(fold.outer_evaluation),
+        )
+        for fold in base_nested.folds
+    )
+    bound_nested = replace(
+        base_nested,
+        plan_hash=temporal_plan_hash,
+        candidates=tuple(
+            sorted(
+                (
+                    selected_candidate
+                    if item == fixture_candidate
+                    else item
+                    for item in base_nested.candidates
+                ),
+                key=lambda item: (item.candidate_id, item.version),
+            )
+        ),
+        folds=bound_folds,
+    )
+
+    base_falsification = base_outputs.falsification
+    base_factor = base_outputs.factor_exposure
+    base_provider = base_outputs.provider_sensitivity
+    assert base_falsification is not None
+    assert base_factor is not None
+    assert base_provider is not None
+    bound_provider = replace(
+        base_provider,
+        provider_results=tuple(
+            replace(item, dataset_snapshot_hash=dataset_snapshot_hash)
+            if item.provider_id == base_provider.selected_provider_id
+            else item
+            for item in base_provider.provider_results
+        ),
+    )
+    scope = ValidationExperimentOutputScope(
+        manifest_hash=manifest_hash,
+        capability_hash=capability.content_hash,
+        dataset_snapshot_hash=dataset_snapshot_hash,
+        temporal_plan_hash=temporal_plan_hash,
+        selected_candidate_id=selected_candidate_id,
+        selected_candidate_hash=selected_candidate_hash,
+    )
+    outputs = replace(
+        base_outputs,
+        scope=scope,
+        nested_selection=bound_nested,
+        falsification=replace(
+            base_falsification,
+            dataset_snapshot_hash=dataset_snapshot_hash,
+        ),
+        factor_exposure=replace(
+            base_factor,
+            dataset_snapshot_hash=dataset_snapshot_hash,
+        ),
+        provider_sensitivity=bound_provider,
+    )
+    bundle = build_validation_experiment_bundle(
+        manifest_hash=manifest_hash,
+        dataset_snapshot_hash=dataset_snapshot_hash,
+        temporal_plan_hash=temporal_plan_hash,
+        selected_candidate_id=selected_candidate_id,
+        selected_candidate_hash=selected_candidate_hash,
+        capability=capability,
+        policy=capability.policy,
+        outputs=outputs,
+    ).as_dict()
+    report.update(
+        {
+            "validation_experiment_capability": capability.as_dict(),
+            "validation_experiment_capability_hash": capability.content_hash,
+            "validation_experiment_policy": capability.policy.as_dict(),
+            "validation_experiment_policy_hash": capability.policy.contract_hash(),
+            "validation_experiment_temporal_plan_hash": temporal_plan_hash,
+            "validation_experiment_bundle": bundle,
+            "validation_experiment_bundle_hash": bundle["content_hash"],
+            "validation_experiment_gate_result": bundle["gate_result"],
+            "validation_experiment_gate_reasons": bundle["gate_reasons"],
+        }
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+
 def _approval(report, tmp_path):
     manager = _context(tmp_path).paths
     _bind_validation_admission(report, manager)
@@ -518,6 +664,7 @@ def _approval(report, tmp_path):
         )
         report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
     _bind_selected_candidate_artifact(report, manager)
+    _bind_validation_experiment(report)
     report.update(
         {
             "reproduction_receipt_status": "AVAILABLE",

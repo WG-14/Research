@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import math
-from dataclasses import dataclass, replace
+import sqlite3
 from bisect import bisect_left, bisect_right
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,8 +43,28 @@ from .datasets.hashing_contract import (
     snapshot_fingerprint_hash as calculate_snapshot_fingerprint_hash,
     snapshot_query_hash as calculate_snapshot_query_hash,
 )
+from .corporate_action_contract import (
+    CorporateActionContractError,
+    CorporateActionOhlcv,
+    transform_raw_ohlcv,
+)
+from .corporate_action_portfolio import (
+    CASH_INCOME_EVENT_TYPES,
+    CorporateActionPortfolioError,
+    CorporateActionPortfolioPlan,
+    QUANTITY_ADJUSTMENT_EVENT_TYPES,
+    SUPPORTED_PORTFOLIO_EVENT_TYPES,
+    TERMINAL_PORTFOLIO_EVENT_TYPES,
+    build_corporate_action_portfolio_plan,
+    latest_causally_applicable_events,
+)
 
 
+_CORPORATE_ACTION_KNOWN_AT_OPTION = "corporate_action_known_at"
+_CORPORATE_ACTION_KNOWN_AT_AUTHORITY = (
+    "manifest.dataset.options.corporate_action_known_at"
+)
+_CORPORATE_ACTION_STRATEGY_PRICE_POLICY = "raw_only_static_snapshot"
 @dataclass(frozen=True)
 class Candle:
     ts: int
@@ -169,6 +191,7 @@ class DatasetSnapshot:
     orderbook_depth_source_content_hash: str | None = None
     orderbook_depth_source_schema_hash: str | None = None
     orderbook_depth_adapter_provenance: dict[str, Any] | None = None
+    corporate_action_transformation_evidence: dict[str, Any] | None = None
     point_in_time_decision_evidence: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -179,6 +202,7 @@ class DatasetSnapshot:
             "adapter_provenance",
             "top_of_book_adapter_provenance",
             "orderbook_depth_adapter_provenance",
+            "corporate_action_transformation_evidence",
             "point_in_time_decision_evidence",
         ):
             value = getattr(self, field_name)
@@ -202,6 +226,10 @@ class DatasetSnapshot:
         if self.point_in_time_decision_evidence is not None:
             payload["point_in_time_decision_evidence"] = (
                 self.point_in_time_decision_evidence
+            )
+        if self.corporate_action_transformation_evidence is not None:
+            payload["corporate_action_transformation_evidence"] = (
+                self.corporate_action_transformation_evidence
             )
         return payload
 
@@ -478,6 +506,17 @@ def load_dataset_range(
             date_range=date_range,
             context=context,
         )
+    if (
+        snapshot.verification is None
+        or snapshot.verification.overall_status is VerificationStatus.MISMATCH
+    ):
+        raise ValueError("dataset_verification_mismatch_before_strategy_execution")
+    snapshot = _materialize_manifest_corporate_actions(
+        manifest=manifest,
+        snapshot=snapshot,
+        top_of_book_requested=top_of_book_spec is not None,
+        depth_requested=depth_requested,
+    )
     execution_lookahead_ms = (
         int(manifest.execution_timing.decision_guard_ms)
         + int(
@@ -605,12 +644,10 @@ def load_dataset_range(
         if depth_spec is not None
         else None,
         orderbook_depth_adapter_provenance=depth_provenance,
+        corporate_action_transformation_evidence=(
+            snapshot.corporate_action_transformation_evidence
+        ),
     )
-    if (
-        snapshot.verification is None
-        or snapshot.verification.overall_status is VerificationStatus.MISMATCH
-    ):
-        raise ValueError("dataset_verification_mismatch_before_strategy_execution")
     point_in_time_evidence = build_point_in_time_decision_evidence(
         manifest=manifest, snapshot=snapshot
     )
@@ -619,6 +656,341 @@ def load_dataset_range(
             snapshot, point_in_time_decision_evidence=point_in_time_evidence
         )
     return snapshot
+
+
+def _materialize_manifest_corporate_actions(
+    *,
+    manifest: ExperimentManifest,
+    snapshot: DatasetSnapshot,
+    top_of_book_requested: bool,
+    depth_requested: bool,
+) -> DatasetSnapshot:
+    """Bind manifest actions to the raw, strategy-safe OHLCV snapshot.
+
+    Empty action sets deliberately retain the historical materialization path
+    byte-for-byte.  A non-empty set requires an explicit, manifest-hash-bound
+    knowledge cutoff.  Static backward-adjusted candles are not causal inputs
+    to the common engine and fail closed.  Supported lifecycle terms are bound
+    into a causal portfolio plan and applied by the common ledger; unexpressed
+    conversion, precedence, or fractional-entitlement terms fail closed.  The
+    standalone transformer remains available for non-strategy derived
+    artifacts while execution prices remain raw.
+    """
+
+    if (
+        manifest.instrument.source != "manifest"
+        or not manifest.corporate_action_set.events
+    ):
+        return snapshot
+    if not snapshot.candles:
+        raise CorporateActionContractError("corporate_action_rows_required")
+    manifest_known_at = _manifest_corporate_action_known_at(manifest)
+    if manifest.corporate_action_policy.price_series != "raw" and (
+        top_of_book_requested or depth_requested
+    ):
+        raise CorporateActionContractError(
+            "corporate_action_adjusted_candles_raw_execution_evidence_scale_mismatch"
+        )
+    if manifest.corporate_action_policy.price_series != "raw":
+        raise CorporateActionContractError(
+            "corporate_action_static_backward_adjustment_not_causal_for_strategy"
+        )
+    portfolio_event_plan = build_corporate_action_portfolio_plan(
+        action_set=manifest.corporate_action_set,
+        manifest_known_at=manifest_known_at,
+        trading_currency=manifest.instrument.trading_currency,
+        quantity_step=str(manifest.instrument.quantity_step),
+    )
+    _validate_corporate_action_portfolio_plan(
+        manifest=manifest,
+        snapshot=snapshot,
+        plan=portfolio_event_plan,
+    )
+    raw_rows = tuple(
+        CorporateActionOhlcv(
+            timestamp=_timestamp_ms_as_utc(candle.ts),
+            open=Decimal(str(candle.open)),
+            high=Decimal(str(candle.high)),
+            low=Decimal(str(candle.low)),
+            close=Decimal(str(candle.close)),
+            volume=Decimal(str(candle.volume)),
+        )
+        for candle in snapshot.candles
+    )
+    result = transform_raw_ohlcv(
+        raw_rows,
+        action_set=manifest.corporate_action_set,
+        policy=manifest.corporate_action_policy,
+        known_at=_strategy_corporate_action_known_at(
+            manifest_known_at=manifest_known_at,
+            snapshot=snapshot,
+        ),
+    )
+    selected_event_versions = [
+        {
+            "event_id": event.event_id,
+            "event_version_id": event.event_version_id,
+            "version": event.version,
+            "event_type": event.event_type,
+            "effective_at": event.effective_at,
+            "observed_at": event.observed_at,
+            "event_contract_hash": event.contract_hash(),
+        }
+        for event in manifest.corporate_action_set.latest_effective_and_known(
+            as_of=manifest_known_at
+        )
+    ]
+    causality_evidence = {
+        "strategy_snapshot_price_series_policy": (
+            _CORPORATE_ACTION_STRATEGY_PRICE_POLICY
+        ),
+        "manifest_known_at": manifest_known_at,
+        "strategy_known_at_policy": (
+            "minimum_of_manifest_known_at_and_split_last_candle_availability"
+        ),
+        "selected_event_versions": selected_event_versions,
+        "portfolio_event_plan": portfolio_event_plan.as_dict(),
+        "portfolio_event_plan_hash": portfolio_event_plan.plan_hash,
+    }
+    transformation_evidence = result.as_dict()
+    transformation_content_hash = str(transformation_evidence["content_hash"])
+    authority_material = {
+        "schema_version": 1,
+        "authority": _CORPORATE_ACTION_KNOWN_AT_AUTHORITY,
+        "manifest_known_at": manifest_known_at,
+        "dataset_options_hash": sha256_prefixed(dict(manifest.dataset.options)),
+        "snapshot_id": snapshot.snapshot_id,
+        "split_name": snapshot.split_name,
+        "requested_range": snapshot.date_range.as_dict(),
+        "transformation_content_hash": transformation_content_hash,
+        **causality_evidence,
+    }
+    evidence_material = {
+        **transformation_evidence,
+        "transformation_content_hash": transformation_content_hash,
+        "known_at_authority": _CORPORATE_ACTION_KNOWN_AT_AUTHORITY,
+        **causality_evidence,
+        "known_at_authority_binding_hash": sha256_prefixed(
+            authority_material,
+            label="corporate_action_known_at_authority",
+        ),
+    }
+    evidence = {
+        **evidence_material,
+        "materialization_evidence_hash": sha256_prefixed(
+            evidence_material,
+            label="corporate_action_materialization_evidence",
+        ),
+    }
+    transformed_candles = tuple(
+        Candle(
+            ts=source.ts,
+            open=float(transformed.open),
+            high=float(transformed.high),
+            low=float(transformed.low),
+            close=float(transformed.close),
+            volume=float(transformed.volume),
+        )
+        for source, transformed in zip(snapshot.candles, result.rows, strict=True)
+    )
+    return replace(
+        snapshot,
+        candles=transformed_candles,
+        corporate_action_transformation_evidence=evidence,
+    )
+
+
+def _validate_corporate_action_portfolio_plan(
+    *,
+    manifest: ExperimentManifest,
+    snapshot: DatasetSnapshot,
+    plan: CorporateActionPortfolioPlan,
+) -> None:
+    """Admit only events with explicit, locally supported accounting terms."""
+
+    last_market_boundary = datetime.fromisoformat(
+        _snapshot_last_candle_availability(snapshot)
+    )
+    period_end = _snapshot_split_end_exclusive(snapshot)
+    manifest_cutoff = datetime.fromisoformat(
+        plan.manifest_known_at.replace("Z", "+00:00")
+    )
+    if manifest_cutoff < period_end:
+        raise CorporateActionContractError(
+            "corporate_action_known_at_before_snapshot_end"
+        )
+    period_end_ms = int(period_end.timestamp() * 1000)
+    effective_times = sorted(
+        {
+            event.effective_ts_ms
+            for event in plan.events
+            if event.effective_ts_ms < period_end_ms
+        }
+    )
+    for effective_ts in effective_times:
+        simultaneous = tuple(
+            event
+            for event in latest_causally_applicable_events(
+                plan.events,
+                boundary_ms=effective_ts,
+            )
+            if event.effective_ts_ms == effective_ts
+        )
+        if len(simultaneous) > 1:
+            raise CorporateActionPortfolioError(
+                "corporate_action_same_timestamp_event_ordering_terms_required"
+            )
+    earliest_version_by_event: dict[str, int] = {}
+    for event in plan.events:
+        earliest_version_by_event[event.event_id] = min(
+            event.version,
+            earliest_version_by_event.get(event.event_id, event.version),
+        )
+    for event in plan.events:
+        effective_in_period = event.effective_ts_ms < period_end_ms
+        is_initial_version = (
+            event.version == earliest_version_by_event[event.event_id]
+        )
+        if (
+            effective_in_period
+            and is_initial_version
+            and event.observed_ts_ms > event.effective_ts_ms
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_event_aware_portfolio_accounting_required:"
+                "late_initial_observation_retroactive_unsupported"
+            )
+        # A correction learned only after the split is a future suffix: retain
+        # it in immutable evidence but do not let it change historical
+        # admissibility.  Corrections known inside the period are engine events.
+        if not effective_in_period or (
+            not is_initial_version and event.observed_ts_ms > period_end_ms
+        ):
+            continue
+        if event.event_type not in SUPPORTED_PORTFOLIO_EVENT_TYPES:
+            raise CorporateActionContractError(
+                "corporate_action_event_aware_portfolio_accounting_required"
+            )
+        if (
+            event.cash_currency is not None
+            and event.cash_currency != plan.trading_currency
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_portfolio_cash_currency_mismatch"
+            )
+        if event.event_type == "etf_merger" and (
+            event.cash_amount is None
+            or event.replacement_instrument_id is not None
+            or event.replacement_symbol is not None
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_stock_merger_conversion_unsupported"
+            )
+        if (
+            event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES
+            and event.replacement_instrument_id is not None
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_terminal_replacement_conversion_unsupported"
+            )
+        if event.event_type == "ticker_change":
+            if event.replacement_instrument_id not in {
+                None,
+                manifest.instrument.instrument_id,
+            }:
+                raise CorporateActionPortfolioError(
+                    "corporate_action_ticker_change_instrument_replacement_unsupported"
+                )
+            event_effective = datetime.fromisoformat(
+                event.effective_at.replace("Z", "+00:00")
+            )
+            if not any(
+                mapping.symbol == event.replacement_symbol
+                and datetime.fromisoformat(
+                    mapping.effective_from.replace("Z", "+00:00")
+                )
+                <= event_effective
+                and (
+                    mapping.effective_to is None
+                    or event_effective
+                    < datetime.fromisoformat(
+                        mapping.effective_to.replace("Z", "+00:00")
+                    )
+                )
+                for mapping in manifest.instrument.vendor_mappings
+            ):
+                raise CorporateActionPortfolioError(
+                    "corporate_action_ticker_change_mapping_missing"
+                )
+        if event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES and any(
+            candle.available_at_ms(interval=snapshot.interval)
+            > event.effective_ts_ms
+            for candle in snapshot.candles
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_post_delisting_observation"
+                if event.event_type == "delisting"
+                else "corporate_action_post_terminal_observation"
+            )
+        if (
+            event.effective_ts_ms > int(last_market_boundary.timestamp() * 1000)
+            and event.event_type
+            in QUANTITY_ADJUSTMENT_EVENT_TYPES | CASH_INCOME_EVENT_TYPES
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_economic_event_after_last_market_observation_unsupported"
+            )
+
+
+def _strategy_corporate_action_known_at(
+    *, manifest_known_at: str, snapshot: DatasetSnapshot
+) -> str:
+    manifest_cutoff = datetime.fromisoformat(manifest_known_at.replace("Z", "+00:00"))
+    split_cutoff = datetime.fromisoformat(_snapshot_last_candle_availability(snapshot))
+    return min(manifest_cutoff, split_cutoff).isoformat()
+
+
+def _snapshot_last_candle_availability(snapshot: DatasetSnapshot) -> str:
+    return _timestamp_ms_as_utc(
+        max(
+            candle.available_at_ms(interval=snapshot.interval)
+            for candle in snapshot.candles
+        )
+    )
+
+
+def _snapshot_split_end_exclusive(snapshot: DatasetSnapshot) -> datetime:
+    return datetime.fromisoformat(snapshot.date_range.end).replace(
+        tzinfo=timezone.utc
+    ) + timedelta(days=1)
+
+
+def _manifest_corporate_action_known_at(manifest: ExperimentManifest) -> str:
+    value = manifest.dataset.options.get(_CORPORATE_ACTION_KNOWN_AT_OPTION)
+    if not isinstance(value, str) or not value.strip():
+        raise CorporateActionContractError(
+            "dataset.options.corporate_action_known_at_required_for_nonempty_action_set"
+        )
+    known_at = value.strip()
+    try:
+        parsed = datetime.fromisoformat(known_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CorporateActionContractError(
+            "dataset.options.corporate_action_known_at_invalid_timestamp"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise CorporateActionContractError(
+            "dataset.options.corporate_action_known_at_timezone_required"
+        )
+    if parsed.microsecond % 1000 != 0:
+        raise CorporateActionContractError(
+            "dataset.options.corporate_action_known_at_millisecond_alignment_required"
+        )
+    return known_at
+
+
+def _timestamp_ms_as_utc(value: int) -> str:
+    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).isoformat()
 
 
 def _depth_requested(manifest: ExperimentManifest) -> bool:
@@ -684,6 +1056,34 @@ def _snapshot_materialization_contract(
     }
     domain_contracts: dict[str, object] = {}
     if manifest.instrument.source == "manifest":
+        corporate_action_contract: dict[str, object] = {
+            "action_set_id": manifest.corporate_action_set.action_set_id,
+            "action_set_hash": manifest.corporate_action_set.contract_hash(),
+            "adjustment_policy_id": manifest.corporate_action_policy.policy_id,
+            "adjustment_policy_hash": manifest.corporate_action_policy.contract_hash(),
+            "price_series": manifest.corporate_action_policy.price_series,
+            "event_version_count": len(manifest.corporate_action_set.events),
+            "event_selection_policy": (
+                "latest_version_effective_and_observed_at_as_of"
+            ),
+            "raw_to_adjusted_evidence_contract": (
+                "corporate_action_transformation_evidence/v1"
+            ),
+            "post_delisting_observation_policy": "reject",
+        }
+        if manifest.corporate_action_set.events:
+            corporate_action_contract.update(
+                {
+                    "known_at": _manifest_corporate_action_known_at(manifest),
+                    "known_at_authority": _CORPORATE_ACTION_KNOWN_AT_AUTHORITY,
+                    "execution_evidence_scale_policy": (
+                        "adjusted_candles_reject_raw_quote_or_depth_evidence"
+                    ),
+                    "strategy_snapshot_price_series_policy": (
+                        _CORPORATE_ACTION_STRATEGY_PRICE_POLICY
+                    ),
+                }
+            )
         domain_contracts.update(
             {
                 "instrument": {
@@ -695,21 +1095,7 @@ def _snapshot_materialization_contract(
                     "trading_unit": str(manifest.instrument.trading_unit),
                     "trading_currency": manifest.instrument.trading_currency,
                 },
-                "corporate_actions": {
-                    "action_set_id": manifest.corporate_action_set.action_set_id,
-                    "action_set_hash": manifest.corporate_action_set.contract_hash(),
-                    "adjustment_policy_id": manifest.corporate_action_policy.policy_id,
-                    "adjustment_policy_hash": manifest.corporate_action_policy.contract_hash(),
-                    "price_series": manifest.corporate_action_policy.price_series,
-                    "event_version_count": len(manifest.corporate_action_set.events),
-                    "event_selection_policy": (
-                        "latest_version_effective_and_observed_at_as_of"
-                    ),
-                    "raw_to_adjusted_evidence_contract": (
-                        "corporate_action_transformation_evidence/v1"
-                    ),
-                    "post_delisting_observation_policy": "reject",
-                },
+                "corporate_actions": corporate_action_contract,
             }
         )
     if manifest.universe is not None:
@@ -1105,6 +1491,35 @@ def _build_source_agnostic_dataset_quality_report(
                     snapshot.point_in_time_decision_evidence.get(
                         "excluded_candle_count"
                     )
+                ),
+            }
+        )
+    if snapshot.corporate_action_transformation_evidence is not None:
+        evidence = snapshot.corporate_action_transformation_evidence
+        payload.update(
+            {
+                "corporate_action_transformation_evidence_content_hash": (
+                    evidence.get("content_hash")
+                ),
+                "corporate_action_transformation_input_rows_hash": evidence.get(
+                    "input_rows_hash"
+                ),
+                "corporate_action_transformation_output_rows_hash": evidence.get(
+                    "output_rows_hash"
+                ),
+                "corporate_action_known_at": evidence.get("manifest_known_at"),
+                "corporate_action_strategy_known_at": evidence.get("known_at"),
+                "corporate_action_known_at_authority": evidence.get(
+                    "known_at_authority"
+                ),
+                "corporate_action_known_at_authority_binding_hash": evidence.get(
+                    "known_at_authority_binding_hash"
+                ),
+                "corporate_action_portfolio_event_plan_hash": evidence.get(
+                    "portfolio_event_plan_hash"
+                ),
+                "corporate_action_materialization_evidence_hash": evidence.get(
+                    "materialization_evidence_hash"
                 ),
             }
         )

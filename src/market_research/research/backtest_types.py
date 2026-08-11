@@ -480,7 +480,20 @@ class BacktestRun:
         fill_request_ids = [fill.request_id for fill in self.fills]
         if len(fill_request_ids) != len(set(fill_request_ids)):
             raise ValueError("multiple_fills_for_execution_request")
+        fill_ledger_entries = tuple(
+            entry for entry in self.ledger_entries if entry.entry_type == "fill"
+        )
         for entry in self.ledger_entries:
+            if entry.entry_type == "corporate_action":
+                if (
+                    not entry.fill_id.startswith("corporate_action:")
+                    or not isinstance(entry.corporate_action_event, dict)
+                    or entry.side != "CORPORATE_ACTION"
+                ):
+                    raise ValueError("corporate_action_ledger_lineage_invalid")
+                continue
+            if entry.entry_type != "fill" or entry.corporate_action_event is not None:
+                raise ValueError("ledger_entry_type_invalid")
             ledger_fill = fill_index.get(entry.fill_id)
             if ledger_fill is None:
                 raise ValueError("orphan_ledger_entry")
@@ -496,8 +509,8 @@ class BacktestRun:
                 or entry.effective_ts != ledger_fill.portfolio_effective_ts
             ):
                 raise ValueError("ledger_fill_value_mismatch")
-        if len({entry.fill_id for entry in self.ledger_entries}) != len(
-            self.ledger_entries
+        if len({entry.fill_id for entry in fill_ledger_entries}) != len(
+            fill_ledger_entries
         ):
             raise ValueError("multiple_mutating_ledger_entries_for_fill")
         if set(fill_request_ids) != set(request_index):
@@ -509,7 +522,7 @@ class BacktestRun:
             and float(fill.filled_qty) > 0
             and fill.portfolio_effective_ts is not None
         }
-        applied = {entry.fill_id for entry in self.ledger_entries}
+        applied = {entry.fill_id for entry in fill_ledger_entries}
         pending = {
             str(trade.get("fill_id"))
             for trade in self.trades

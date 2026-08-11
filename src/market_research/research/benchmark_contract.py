@@ -154,10 +154,10 @@ def _parse_random_entry(value: Any) -> RandomEntryBenchmarkContract:
     allowed = {"iterations", "seed_policy", "entry_index_policy"}
     _reject_unknown(value, allowed, "benchmark_suite.random_entry")
     seed_policy = str(value.get("seed_policy") or "").strip()
-    if seed_policy != "derived_from_manifest_split_benchmark_contract_hash":
+    if seed_policy != "derived_from_market_interval_split_benchmark_contract_hash":
         raise ValueError(
             "benchmark_suite.random_entry.seed_policy must be "
-            "derived_from_manifest_split_benchmark_contract_hash"
+            "derived_from_market_interval_split_benchmark_contract_hash"
         )
     entry_policy = str(value.get("entry_index_policy") or "").strip()
     if entry_policy != "uniform_causal_entry_holding_to_split_end":

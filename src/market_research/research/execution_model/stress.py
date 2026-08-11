@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from market_research.research.hashing import sha256_hex, sha256_prefixed
 
 from .base import ExecutionFill, ExecutionRequest, model_params_hash
+
+
+_CAUSAL_SEED_SCOPE_FIELDS = frozenset(
+    {
+        "seed_policy",
+        "causal_execution_seed_scope_hash",
+        "candidate_id",
+        "parameter_candidate_id",
+        "scenario_id",
+        "scenario_hash",
+        "split_name",
+    }
+)
 
 
 @dataclass
@@ -22,6 +36,47 @@ class StressExecutionModel:
 
     name: str = "stress"
     version: str = "research_stress_v1"
+
+    def __post_init__(self) -> None:
+        inputs = self.seed_derivation_inputs
+        if inputs is None:
+            return
+        if not isinstance(inputs, Mapping):
+            raise ValueError("stress_execution_seed_scope_mapping_required")
+        unknown = sorted(set(inputs) - _CAUSAL_SEED_SCOPE_FIELDS)
+        if unknown:
+            raise ValueError(
+                "stress_execution_noncausal_seed_scope_fields:" + ",".join(unknown)
+            )
+        required = {
+            "seed_policy",
+            "causal_execution_seed_scope_hash",
+            "scenario_id",
+            "scenario_hash",
+            "split_name",
+        }
+        missing = sorted(required - set(inputs))
+        if not any(
+            isinstance(inputs.get(field), str) and bool(inputs.get(field))
+            for field in ("candidate_id", "parameter_candidate_id")
+        ):
+            missing.append("candidate_id_or_parameter_candidate_id")
+        if missing:
+            raise ValueError(
+                "stress_execution_causal_seed_scope_fields_required:"
+                + ",".join(missing)
+            )
+        if inputs.get("seed_policy") != "causal_execution_request_scoped_v1":
+            raise ValueError("stress_execution_causal_seed_policy_required")
+        for field in (
+            "causal_execution_seed_scope_hash",
+            "scenario_hash",
+        ):
+            if not _is_sha256_hash(inputs.get(field)):
+                raise ValueError(f"stress_execution_{field}_invalid")
+        for field in ("scenario_id", "split_name"):
+            if not isinstance(inputs.get(field), str) or not inputs.get(field):
+                raise ValueError(f"stress_execution_{field}_required")
 
     def params_payload(self) -> dict[str, Any]:
         return {
@@ -64,17 +119,26 @@ class StressExecutionModel:
             avg_fill_price = request.reference_price * (1.0 - slip)
             requested_qty = float(request.requested_qty or 0.0)
 
+        stochastic_model_params = dict(self.params_payload())
+        stochastic_model_params.pop("seed_derivation_inputs", None)
         seed_inputs = {
+            "seed_policy": "causal_execution_request_scoped_v1",
             "base_seed": self.seed,
-            "model_params_hash": model_params_hash(self.params_payload()),
+            "stochastic_model_params_hash": model_params_hash(stochastic_model_params),
+            "causal_scope": dict(self.seed_derivation_inputs or {}),
             "request": {
                 "signal_ts": int(request.signal_ts),
                 "decision_ts": int(request.decision_ts),
+                "decision_id": request.decision_id,
+                "intent_id": request.intent_id,
                 "side": side,
                 "order_type": request.order_type,
                 "reference_price": float(request.reference_price),
+                "requested_qty": request.requested_qty,
+                "requested_notional": request.requested_notional,
+                "fill_reference_ts": request.fill_reference_ts,
+                "fill_reference_price": request.fill_reference_price,
             },
-            **(self.seed_derivation_inputs or {}),
         }
         derived_seed_hash = sha256_prefixed(seed_inputs)
         rng = _DeterministicUnitRng(derived_seed_hash)
@@ -186,3 +250,12 @@ class _DeterministicUnitRng:
     def unit_float(self, stream: str) -> float:
         digest = sha256_hex({"seed_hash": self._seed_hash, "stream": stream})
         return int(digest[:16], 16) / float(16**16)
+
+
+def _is_sha256_hash(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    digest = value.removeprefix("sha256:")
+    return len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
+    )

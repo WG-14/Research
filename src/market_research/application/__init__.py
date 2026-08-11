@@ -1,5 +1,18 @@
 """Shared application boundary for CLI and internal-web adapters."""
 
+from market_research.research.research_project import (
+    ResearchProject as ResearchProject,
+    ResearchProjectAuthorizationError as ResearchProjectAuthorizationError,
+    ResearchProjectConflictError as ResearchProjectConflictError,
+    ResearchProjectError as ResearchProjectError,
+    ResearchProjectIntegrityError as ResearchProjectIntegrityError,
+    ResearchProjectNotFoundError as ResearchProjectNotFoundError,
+    ResearchProjectObjectKind as ResearchProjectObjectKind,
+    ResearchProjectPermission as ResearchProjectPermission,
+    has_research_project_permission as has_research_project_permission,
+    project_permission_for_reference as project_permission_for_reference,
+)
+
 from .capabilities import (
     CAPABILITIES,
     CapabilityExecutionMode,
@@ -26,6 +39,21 @@ from .contracts import (
     ReportComparisonRequest,
     ReportComparisonResult,
     ReportComparisonSource,
+    ResearchProjectCreateRequest,
+    ResearchProjectImpactQueryRequest,
+    ResearchProjectMemberInput,
+    ResearchProjectMembersRequest,
+    ResearchProjectMutationResult,
+    ResearchProjectObjectRefInput,
+    ResearchProjectQueryRequest,
+    ResearchProjectQueryResult,
+    ResearchProjectReferenceRequest,
+    ResearchProjectRevisionRequest,
+    ResearchProjectSearchRequest,
+    ResearchProjectSearchResult,
+    ResearchProjectTransitionRequest,
+    ResearchProjectWorkspaceRequest,
+    ResearchProjectWorkspaceResult,
     ResearchPreflightRequest,
     ResearchPreflightResult,
     ResearchReadinessResult,
@@ -46,6 +74,7 @@ from .errors import (
 )
 from .service import ResearchApplicationService
 from .governance_service import ResearchGovernanceApplicationService
+from .project_service import ResearchProjectApplicationService
 from .release import ReleaseMetadata, ReleaseMetadataError
 from .cli_execution import (
     ADMITTED_CLI_EXECUTION_SCOPE,
@@ -91,6 +120,30 @@ __all__ = [
     "ReportComparisonSource",
     "ResearchPreflightRequest",
     "ResearchPreflightResult",
+    "ResearchProjectApplicationService",
+    "ResearchProject",
+    "ResearchProjectAuthorizationError",
+    "ResearchProjectConflictError",
+    "ResearchProjectCreateRequest",
+    "ResearchProjectError",
+    "ResearchProjectImpactQueryRequest",
+    "ResearchProjectIntegrityError",
+    "ResearchProjectMemberInput",
+    "ResearchProjectMembersRequest",
+    "ResearchProjectMutationResult",
+    "ResearchProjectNotFoundError",
+    "ResearchProjectObjectKind",
+    "ResearchProjectObjectRefInput",
+    "ResearchProjectPermission",
+    "ResearchProjectQueryRequest",
+    "ResearchProjectQueryResult",
+    "ResearchProjectReferenceRequest",
+    "ResearchProjectRevisionRequest",
+    "ResearchProjectSearchRequest",
+    "ResearchProjectSearchResult",
+    "ResearchProjectTransitionRequest",
+    "ResearchProjectWorkspaceRequest",
+    "ResearchProjectWorkspaceResult",
     "ResearchReadinessResult",
     "ResearchApplicationService",
     "ResearchGovernanceApplicationService",
@@ -109,8 +162,10 @@ __all__ = [
     "ValidationResult",
     "capability_registry",
     "get_capability",
+    "has_research_project_permission",
     "ensure_capability_authorized",
     "execute_admitted_research_cli",
     "is_operated_runtime",
+    "project_permission_for_reference",
     "require_operated_execution_capability",
 ]

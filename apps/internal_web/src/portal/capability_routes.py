@@ -28,4 +28,34 @@ WEB_CAPABILITY_WORKFLOWS: dict[str, tuple[str, str]] = {
     "reports.detail": ("job-detail", "portal.view_researchjob"),
     "reports.download": ("job-download", "portal.view_researchjob"),
     "research.explore": ("research-explorer", "portal.view_researchjob"),
+    "research-project-create": (
+        "project-create",
+        "portal.create_research_project",
+    ),
+    "research-project-manage-members": (
+        "project-members",
+        "portal.manage_research_project",
+    ),
+    "research-project-revise": (
+        "project-revise",
+        "portal.manage_research_project",
+    ),
+    "research-project-attach-reference": (
+        "project-reference",
+        "portal.write_research_project",
+    ),
+    "research-project-transition": (
+        "project-transition",
+        "portal.manage_research_project",
+    ),
+    "research-project-get": ("project-detail", "portal.view_research_project"),
+    "research-project-search": ("project-list", "portal.view_research_project"),
+    "research-project-impacted-objects": (
+        "project-impact",
+        "portal.view_research_project",
+    ),
+    "research-project-workspace": (
+        "project-workspace",
+        "portal.compute_research_project",
+    ),
 }

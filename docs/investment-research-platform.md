@@ -102,6 +102,33 @@ and reports bind the complete action-set and adjustment-policy hashes, including
 whether prices are raw or pre-adjusted and whether volume is inverse-split
 adjusted. No event is discovered or backfilled from a network source.
 
+That vocabulary is an evidence contract, not a claim that the classic strategy
+ledger economically supports every event. Official strategy materialization is
+raw-only: static backward-adjusted full-split candles are rejected because they
+can rewrite a decision prefix. A hash-bound portfolio-event plan is instead
+selected at each actual strategy boundary using both `observed_at` and
+`effective_at`, while execution continues to consume raw candles. The common
+ledger supports split, reverse-split, and stock-dividend quantity transitions;
+declared-currency cash dividends and ETF distributions; halt/resume state;
+stable-instrument ticker mappings; and explicit cash recovery for delisting,
+ETF liquidation, and cash-only ETF merger. These transitions bind quantity,
+cash, total cost basis, realized P&L, tradability, closed positions, replay
+invariants, and immutable application hashes into run evidence.
+
+Terms the manifest cannot express remain fail-closed. This includes stock or
+mixed merger conversion, capital reduction, tax and cash-in-lieu semantics,
+quantity-step-breaking fractional entitlements, late initial observations,
+corrections learned after an event was already applied, and distinct events at
+the same effective timestamp without a reviewed entitlement/precedence rule.
+Corporate timestamps must align exactly to the engine's millisecond clock;
+sub-millisecond values are rejected instead of being rounded into an earlier
+knowledge boundary.
+A cash terminal event after the final candle but inside the declared split is
+drained at a terminal event boundary; non-terminal economic events in that gap
+are rejected because no post-event raw price exists for a valid mark. The
+standalone backward-adjustment transformer remains a derived-artifact tool and
+is never a strategy execution price authority.
+
 Typed future and option extensions cover expiry, multiplier, margin,
 settlement, continuous-series/roll/basis/session/leverage policies and option
 type, strike, underlying, Greeks/IV/surface, multi-leg grouping, expiry payoff,
@@ -143,6 +170,12 @@ Manifest classification and automated gate results are evidence, not lifecycle
 state.  The authoritative state is reconstructed from the repository-external,
 append-only `governance.jsonl` hash chain. Hypotheses and strategy candidates
 have separate state machines:
+
+The versioned [research governance policy authority](research-governance-policy.md)
+defines the complete twelve-policy inventory, eight accountable roles, their
+separation rules, enforcement symbols, and required evidence. Newly written
+lifecycle and review rows bind its content hash so a policy revision cannot
+silently reinterpret an earlier decision.
 
 ```text
 IDEA -> HYPOTHESIS_DEFINED -> EXPLORING -> VALIDATING -> SUPPORTED
@@ -278,6 +311,122 @@ Profiling remains in validation orchestration. It wraps the same common-engine
 call for every strategy and does not enter strategy callbacks or authoritative
 stream hashing, so moving it into the engine would add no parity and would
 increase the deterministic execution surface.
+
+## Project workspaces and specialist-engine admission
+
+`ResearchProject` is the ownership and isolation aggregate above individual
+experiments. It has an immutable project ID, version, owner/membership map,
+status, and content hash. Its repository-external hash-chain registry records
+creation, membership replacement, revision, object attachment, and lifecycle
+transition with optimistic version checks. A project may link exactly typed
+hypothesis, dataset, code, experiment, result, verification, review, and
+package references. Reverse-impact queries traverse those immutable references
+without exposing projects to non-members.
+
+Project permission is checked after the caller's platform capability. Owner,
+researcher, data steward, validator, reviewer, publisher, and viewer duties are
+separate; one actor has one role per project. Cross-project references and
+non-member searches fail closed. `DRAFT`, `ACTIVE`, `CHALLENGED`,
+`SUPERSEDED`, `DEPRECATED`, `REJECTED`, and `ARCHIVED` transitions are
+explicit, and terminal projects cannot be rewritten. Every project's compute
+and cache namespace is derived through `ResearchPathManager` below external
+roots; a repository-local or another project's namespace is rejected.
+
+The platform does not claim that one backtest engine implements every economic
+model. `research.engine_admission` instead gives the classic single-asset and
+multi-asset study engines one versioned common contract for code, dataset,
+experiment, parameter, seed, and hash-bound artifact metadata. Each engine
+then declares a canonical specialist capability set and limitations. The
+classic compiler and multi-asset deterministic study core both require a
+hash-bound admission record before economic execution. A missing experiment
+schema, artifact schema, metadata field, or specialist capability rejects the
+workflow; unsupported derivatives cannot be silently routed through the
+classic engine.
+
+## Executable confirmatory validation and retention policy
+
+`research.validation_experiments` consumes immutable temporal plans and
+provides engine-neutral executable contracts for:
+
+- nested temporal selection in which every candidate is evaluated only on
+  inner folds before a deterministic winner is frozen and only that winner is
+  exposed to the outer-test callback;
+- deterministic label and signal shuffle, shifted-placebo, negative-control,
+  and confounder-adjusted falsification studies;
+- OLS factor exposure with Newey-West/Bartlett uncertainty; and
+- complete-result sensitivity across semantically identical data providers.
+
+Every input row carries observation/knowledge time and a source hash. Every
+policy, transformation, fold evaluation, failure, comparison, and result has a
+canonical content hash. Failed candidate evaluations remain evidence and
+cannot become eligible through missing samples. These contracts are callable
+extension boundaries; the legacy walk-forward command still reports its
+predeclared-but-not-executed inner-fold limitation until it is migrated to this
+executor, and must not claim fully nested selection in the meantime.
+
+`research.validation_experiment_bundle` is the admission envelope for those
+outputs. It reconstructs the four serialized result types, reruns their
+cross-field invariants, and requires every non-empty output set to carry a
+hash-derived output scope for the manifest, validation capability, frozen
+dataset, temporal plan, and selected candidate. Each component envelope binds
+that scope to its native result hash and explicitly exposes the result's native
+dataset, temporal-plan, observation, transformation, model, or provider source
+hashes. The
+`research-validate --validation-experiment-bundle`
+option accepts only a repository-external regular JSON file; duplicate keys,
+non-finite numbers, symlinks, wrong authority bindings, self-consistently
+rehashed semantic forgeries, missing required results, and failed components
+all fail the terminal gate. Failure payloads remain embedded in the terminal
+result.
+
+The official validation path derives a hash-bound capability from the manifest
+research classification instead of trusting a caller policy. A
+`validated_candidate` requires nested selection, falsification, factor
+exposure, and provider-sensitivity evidence; omitting the bundle or any result
+fails closed. New schema-3 results always carry the capability, policy, and gate
+field family, so removing the complete family is distinguishable from an
+explicit legacy schema capability. Legacy capability markers remain readable
+for migration but cannot be promoted. Research-only and exploratory manifests
+derive an empty experiment policy rather than acquiring confirmatory status.
+
+The repository's production-lifecycle acceptance E2E uses a bespoke,
+test-only external preparer: it freezes a pre-holdout selection, executes all
+four native contracts over synthetic immutable inputs, writes the bundle, and
+then enters the ordinary CLI/service gate. This proves the external-bundle
+boundary and downstream lifecycle without weakening admission, but it is not
+a product command that generates the experiments automatically. The operated
+web/sandbox job contract also does not yet transport a verified opaque bundle
+artifact reference; user-controlled paths are intentionally not opened as a
+shortcut.
+
+This remains an M3 boundary. The native calculations and their original input
+rows are still prepared outside this gate, their source hashes are unkeyed, and
+the validation pipeline reconstructs and checks the result contracts but does
+not replay every calculation from observations. The capability prevents
+component omission and removal of the authoritative component set; it is not
+proof of independently reproduced statistics. It also does not yet own each
+component's semantic policy: nested metric/sample rules, falsification
+baseline/control thresholds, factor model/lag authority, and provider metric
+tolerances remain inside caller-prepared results. A self-consistent caller can
+therefore choose permissive thresholds, and nested candidate membership does
+not by itself prove that the terminal candidate is the output of a declared
+global nested-selection rule. Those policies need manifest authority or an
+authenticated replaying producer before this boundary can claim M4.
+
+`research.retention_policy` distinguishes active approved research, official
+releases, audit evidence, dataset inputs, superseded studies, rejected
+research, failed runs, and exploratory work. Official/audit/input evidence is
+permanent under the standard policy. Other classes require an archived
+lifecycle and a class-specific minimum age. Any legal hold or active lineage
+reference takes priority and blocks deletion eligibility.
+
+Eligibility does not delete data. Operations must receive a short-lived,
+two-person authorization bound to the exact subject, policy, evaluation, and
+artifact hashes. The requester and reviewer identities are distinct and their
+authenticated assertion hashes are retained. Changed hashes, stale
+evaluations, expired tickets, excessive authorization windows, missing
+archive state, active references, and legal holds all fail before an
+Operations deleter may act.
 
 ## Process, permission, and failure isolation
 

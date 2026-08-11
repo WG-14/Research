@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 
-AUDIT_SURFACE_SCHEMA_VERSION = 2
+AUDIT_SURFACE_SCHEMA_VERSION = 3
 _EXCLUDED_PARTS = {
     ".git",
     ".hypothesis",
@@ -22,6 +22,7 @@ _EXCLUDED_PARTS = {
     "node_modules",
 }
 _EXCLUDED_FILES = {
+    "docs/investment-research-platform-audit-execution-receipt.json",
     "docs/investment-research-platform-audit.json",
     "docs/investment-research-platform-audit-report.md",
     "docs/investment-research-platform-audit-result.json",

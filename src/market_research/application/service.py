@@ -292,6 +292,9 @@ class ResearchApplicationService:
             "execution_calibration": request.execution_calibration_path,
             "candidate_id": request.candidate_id,
             "out": request.out_path,
+            "validation_experiment_bundle": (
+                request.validation_experiment_bundle_path
+            ),
             "mode": request.mode,
         }
         handle = start_run(
@@ -339,6 +342,9 @@ class ResearchApplicationService:
                 execution_calibration_path=request.execution_calibration_path,
                 candidate_id=request.candidate_id,
                 out_path=request.out_path,
+                validation_experiment_bundle_path=(
+                    request.validation_experiment_bundle_path
+                ),
                 progress_callback=progress,
                 strategy_registry=self.strategy_registry,
                 run_id=handle.run_id,

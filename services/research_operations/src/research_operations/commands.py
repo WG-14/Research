@@ -120,6 +120,30 @@ def dispatch(args: argparse.Namespace) -> int:
         _write(_alert_payload(service_alert))
         return 0
 
+    if args.command == "alert-worker":
+        from .alert_worker import ServiceAlertWorker, ServiceAlertWorkerSettings
+        from .alerting import LoopbackOrHttpsAlertTransport, ServiceAlertStore
+
+        settings = ServiceAlertWorkerSettings.from_environ(os.environ)
+        alert_worker = ServiceAlertWorker(
+            store=ServiceAlertStore(),
+            transport=LoopbackOrHttpsAlertTransport(
+                _required_secret_file("RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE"),
+                timeout_seconds=settings.transport_timeout_seconds,
+            ),
+            settings=settings,
+        )
+        if args.once:
+            result = alert_worker.run_once()
+            _write(result.as_dict())
+            # A retryable durable delivery remains queued and is successful
+            # supervision work.  A terminal durable or DB-independent
+            # emergency delivery failure must make a one-shot exercise fail.
+            return 3 if result.deliveries_failed else 0
+        else:
+            alert_worker.run_forever()
+        return 0
+
     if args.command == "audit-validate":
         from .health import record_audit_validation
 

@@ -72,37 +72,52 @@ scripts/platform research --help
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
-`verify-multi-asset-audit` is bound to the current July 2026 spot, futures,
-options, and integrated-portfolio research rubric by source and instruction
-SHA-256. It validates exactly 140 A--N criteria, eight critical-failure gates,
-and five mandatory end-to-end scenarios in the
-[current audit matrix](docs/multi-asset-investment-research-audit-matrix.json).
-For this platform-completeness review, that matrix is the single evaluation
-authority. Its conservative baseline does not grant completion credit merely
-because a type, document, or isolated test exists.
+`verify-complete` is bound to the current July 2026 investment-research
+platform rubric supplied for this review by source and instruction SHA-256. It
+validates exactly 184 A--J criteria and 12 fatal gates in the
+[canonical audit matrix](docs/investment-research-platform-audit.json). For
+this platform-completeness review, that A--J matrix is the single evaluation
+authority. A file, type, document, command string, or unexecuted test never
+earns `VERIFIED` or fatal-gate `PASS`.
 
 The normalized, reviewable copies of the exact current
-[audit rubric](docs/multi-asset-investment-research-audit-rubric.md) and
-[execution instructions](docs/multi-asset-investment-research-audit-instructions.md)
-are hash-checked by the validator. Run the machine-readable check with:
+[audit rubric](docs/investment-research-platform-audit-rubric.md) and
+[execution instructions](docs/investment-research-platform-audit-instructions.md)
+are hash-checked by the validator. The evaluated identity is a deterministic
+source-surface hash. The recorded Git SHA is generation provenance only, which
+avoids an impossible self-reference between a commit and a checked-in report
+that contains that commit.
+
+Generate the conservative matrix, run its exact hash-bound evidence suite,
+then regenerate and validate the reports with:
 
 ```sh
-scripts/platform verify-multi-asset-audit --json
+uv run --frozen --no-sync --package market-research python tools/update_reference_audit.py
+uv run --frozen --no-sync --package market-research python tools/reference_audit_receipt.py
+uv run --frozen --no-sync --package market-research python tools/update_reference_audit.py
+uv run --frozen --no-sync --package market-research python tools/render_reference_audit_report.py
+scripts/platform verify-complete --json
 ```
 
-The previous 184-row A--J audit remains available through `verify-complete`,
-and the 431-row derivative/product expansion through `verify-product-scope`.
-Their matrices and reports are retained unchanged as historical evidence; they
-are not the completion authority for the current A--N review.
+The receipt command executes every exact pytest file referenced by the matrix,
+requires zero failures, errors, and skips, and rejects source changes during
+the run. Without a current receipt the generated matrix remains structurally
+valid but caps implementation claims at M3, marks otherwise passing fatal
+gates `UNVERIFIED`, and cannot be COMPLETE.
+
+The 140-row multi-asset expansion (`verify-multi-asset-audit`) and 431-row
+derivative/product expansion (`verify-product-scope`) remain historical or
+product-specific evidence. They are not the completion authority for this
+A--J review.
 
 The implemented common contracts and their fail-closed data flow are described
 in [multi-asset research contracts](docs/multi-asset-research.md).
-The conservative post-improvement assessment is available as the
-[140-criterion audit report](docs/multi-asset-investment-research-audit-report.md)
+The conservative current assessment is available as the
+[184-criterion audit report](docs/investment-research-platform-audit-report.md)
 and the corresponding
-[machine-readable result](docs/multi-asset-investment-research-audit-result.json).
+[machine-readable result](docs/investment-research-platform-audit-result.json).
 Both are generated deterministically and checked in CI with
-`verify-multi-asset-audit-result`.
+`verify-complete --validate-structure`.
 
 ## Research CLI
 
@@ -156,7 +171,7 @@ they are never admitted to the spot-candle engine. Their immutable chain,
 simulation and evidence-bundle workflow is documented in
 [`docs/derivative-research.md`](docs/derivative-research.md).
 
-Replay an authoritative receipt with the same deterministic launcher:
+Replay a receipt with the same deterministic launcher:
 
 ```sh
 scripts/platform research research-reproduce-run \
@@ -169,6 +184,39 @@ The command exits zero only for `status=PASS`; drift and invalid baselines exit
 nonzero. The comparison document is written to `--out` (or beneath the
 configured external report root when omitted), and records the isolated
 reproduced report and receipt paths plus exact drift rows.
+
+Publishing an authoritative independent-verification result additionally
+requires a cryptographically authenticated, time-bounded principal assertion:
+
+```sh
+export RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH=/abs/identity/trust-store.json
+scripts/platform research research-reproduce-run \
+  --manifest /abs/experiment.json \
+  --receipt /abs/reports/experiment-id/reproduction-receipt.json \
+  --verification-id independent-check-2026-07-29 \
+  --verification-version 1 \
+  --verifier-assertion /abs/identity/assertions/independent-check-2026-07-29.json \
+  --out /abs/reports/reproduction-result.json
+```
+
+The external issuer signs the assertion with a repository-external key. Its
+issuer, key ID, authenticated subject, roles, authentication/expiry times,
+nonce, audience, and exact verification scope are hash-bound. The scope
+includes the verification identity, experiment and research versions, source
+report hash, and baseline receipt hash. The trust-store JSON identifies the
+issuer/key ID and an absolute external key path; key bytes and key paths are
+never copied into research artifacts. A caller-supplied `--verifier` value is
+only a display alias. Supplying an alias without `--verifier-assertion` retains
+legacy diagnostics as explicitly non-authoritative `RESEARCH_ONLY` output and
+cannot satisfy an approval gate.
+
+On POSIX hosts, verifier key files must have no group or other permission bits
+(for example mode `0600` or `0400`); overly broad modes fail closed. Non-POSIX
+hosts are rejected until their identity adapter provides an equivalent ACL
+verifier. The identity authority must also exclusively control the trust-store,
+key, and their parent directories: pathname checks cannot protect a file that
+an untrusted local principal is permitted to replace between validation and
+read.
 
 Validation-bound studies advance through immutable, evidence-backed states:
 `IDEA → STRUCTURED → EXPLORATORY → PREREGISTERED → VALIDATING`, followed by

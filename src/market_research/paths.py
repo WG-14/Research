@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 from .settings import ResearchSettings
@@ -101,6 +102,18 @@ class ResearchPathManager:
         """Canonical derived-artifact namespace for one research experiment."""
         return self.artifact_path("derived", "research", experiment_id, *parts)
 
+    def research_project_compute_path(self, project_id: str, *parts: str) -> Path:
+        """Canonical external compute namespace for one research project."""
+
+        return self.artifact_path(
+            "derived",
+            "research",
+            "projects",
+            project_id,
+            "compute",
+            *parts,
+        )
+
     def report_path(self, *parts: str) -> Path:
         return self.report_root.joinpath(*_safe_parts(*parts))
 
@@ -155,5 +168,37 @@ class ResearchPathManager:
             )
         return resolved
 
+    def external_input_path(self, value: str | Path, *, label: str) -> Path:
+        """Resolve one regular-file input without accepting repository paths or links."""
+
+        raw = Path(value).expanduser()
+        if not raw.is_absolute():
+            raise ResearchPathError(f"{label} must be an absolute path")
+        lexical = Path(os.path.abspath(os.fspath(raw)))
+        if self.is_within(lexical, self.project_root):
+            raise ResearchPathError(
+                f"{label} must be outside the repository: {lexical}"
+            )
+        cursor = lexical
+        while True:
+            if cursor.is_symlink():
+                raise ResearchPathError(f"{label} must not use symbolic links")
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+        resolved = lexical.resolve()
+        if self.is_within(resolved, self.project_root):
+            raise ResearchPathError(
+                f"{label} must be outside the repository: {resolved}"
+            )
+        if not resolved.is_file():
+            raise ResearchPathError(f"{label} must be an existing regular file")
+        return resolved
+
     def cache_path(self, *parts: str) -> Path:
         return self.cache_root.joinpath(*_safe_parts(*parts))
+
+    def research_project_cache_path(self, project_id: str, *parts: str) -> Path:
+        """Canonical external cache namespace isolated to one research project."""
+
+        return self.cache_path("research", "projects", project_id, *parts)

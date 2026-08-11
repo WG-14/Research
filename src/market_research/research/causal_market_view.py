@@ -86,6 +86,8 @@ class CausalMarketView:
             orderbook_depth_source_content_hash=None,
             orderbook_depth_source_schema_hash=None,
             orderbook_depth_adapter_provenance=None,
+            corporate_action_transformation_evidence=None,
+            point_in_time_decision_evidence=None,
         )
         object.__setattr__(self, "_causal_snapshot", bounded)
         object.__setattr__(self, "current_index", len(candles) - 1)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import random
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +11,7 @@ import zipfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import fmean, pstdev
 from typing import Any
 
 import pytest
@@ -19,9 +22,13 @@ from market_research.research.corporate_action_contract import (
     parse_corporate_action_set,
 )
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
-from market_research.research.dataset_snapshot import _db_table_schema_fingerprint
+from market_research.research.dataset_snapshot import (
+    _db_table_schema_fingerprint,
+    load_dataset_range,
+)
 from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
 from market_research.research.experiment_manifest import (
+    DateRange,
     ExecutionTimingPolicy,
     PortfolioPolicy,
     legacy_research_portfolio_policy,
@@ -47,6 +54,7 @@ from market_research.research.hashing import (
     report_content_hash_payload,
     sha256_prefixed,
 )
+from market_research.research.report_writer import candidate_evidence_hash_inputs
 from market_research.research.prospective_application import (
     ProspectiveValidationApplicationService,
 )
@@ -59,6 +67,9 @@ from market_research.research.prospective_validation import (
     ProspectiveValidationSpec,
     SimulatedFillEvidence,
     validate_prospective_registry,
+)
+from market_research.research.principal_assertion import (
+    IndependentVerificationAssertionScope,
 )
 from market_research.research.research_decision_report import (
     validate_research_decision_report,
@@ -88,11 +99,39 @@ from market_research.research.strategy_spec import (
 from tests.independent_verification_fixture import (
     fixture_terminal_source_report,
     publish_pass_verification,
+    provision_test_principal_assertion,
 )
 from market_research.research.validation_pipeline import (
     resolve_bound_selected_candidate,
     validate_validated_research_result,
 )
+from market_research.research.temporal_validation import (
+    build_manifest_nested_temporal_validation_plan,
+)
+from market_research.research.validation_experiment_bundle import (
+    ValidationExperimentOutputScope,
+    ValidationExperimentOutputs,
+    build_validation_experiment_bundle,
+    derive_validation_experiment_capability,
+)
+from market_research.research.validation_experiments import (
+    EvaluationStatus,
+    FactorObservation,
+    FalsificationObservation,
+    FalsificationPolicy,
+    FoldEvaluationPhase,
+    MetricDirection,
+    MetricObservation,
+    NestedCandidate,
+    NestedSelectionPolicy,
+    ProviderMetricTolerance,
+    ProviderResearchResult,
+    compare_provider_research_results,
+    estimate_factor_exposures,
+    execute_nested_temporal_selection,
+    run_falsification_suite,
+)
+from market_research.research.validation_protocol import run_research_walk_forward
 from market_research.research.validation_decision import (
     query_validation_decisions,
     validate_validation_decision_registry,
@@ -1022,6 +1061,7 @@ def _write_validated_extension_manifest(
         (datetime(2025, 12, 28, tzinfo=timezone.utc), 6),
     )
     candle_timestamps: list[int] = []
+    secondary_provider_validation_rows: list[dict[str, float | int]] = []
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             "CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, "
@@ -1035,11 +1075,31 @@ def _write_validated_extension_manifest(
         )
         for segment_start, day_count in segment_specs:
             price = 100.0
+            momentum = 0.0
+            innovation_source = random.Random(43)
+            secondary_measurement_source = random.Random(1043)
             for index in range(day_count * 6):
                 candle_ts = int(
                     (segment_start + timedelta(hours=4 * index)).timestamp() * 1000
                 )
                 candle_timestamps.append(candle_ts)
+                if segment_start == datetime(2024, 12, 28, tzinfo=timezone.utc):
+                    # A separately frozen provider fixture observes the same market
+                    # with its own deterministic measurement stream.  It is not a
+                    # renamed copy of the official SQLite rows and contains no
+                    # final-holdout timestamps.
+                    secondary_provider_validation_rows.append(
+                        {
+                            "ts": candle_ts,
+                            "close": price
+                            * (
+                                1.0
+                                + secondary_measurement_source.uniform(
+                                    -0.000002, 0.000002
+                                )
+                            ),
+                        }
+                    )
                 connection.execute(
                     "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -1067,7 +1127,10 @@ def _write_validated_extension_manifest(
                             quote_ts / 1000.0,
                         ),
                     )
-                price *= 1.02
+                momentum = (
+                    0.8 * momentum + innovation_source.uniform(-0.0008, 0.0008)
+                )
+                price *= 1.012 + momentum
             close_boundary = int(
                 (segment_start + timedelta(days=day_count)).timestamp() * 1000
             )
@@ -1085,6 +1148,26 @@ def _write_validated_extension_manifest(
                         quote_ts / 1000.0,
                     ),
                 )
+    secondary_provider_material = {
+        "schema_version": 1,
+        "artifact_type": "external_provider_dataset_snapshot",
+        "provider_id": "fixture-provider-b",
+        "market": "KRW-BTC",
+        "interval": "240m",
+        "period": {"start": "2024-12-28", "end": "2025-01-06"},
+        "rows": secondary_provider_validation_rows,
+    }
+    secondary_provider_snapshot = {
+        **secondary_provider_material,
+        "content_hash": sha256_prefixed(
+            secondary_provider_material,
+            label="external_provider_dataset_snapshot",
+        ),
+    }
+    (study_root / "immutable-secondary-provider-validation-snapshot.json").write_text(
+        json.dumps(secondary_provider_snapshot, sort_keys=True),
+        encoding="utf-8",
+    )
     frozen = freeze_sqlite_candles_dataset(
         source_provenance=TEST_SOURCE_PROVENANCE,
         source_db=db_path,
@@ -1291,17 +1374,28 @@ def _write_validated_extension_manifest(
             "max_single_trade_dependency_score": 0.8,
         },
         "walk_forward": {
-            "train_window_days": 1,
+            "train_window_days": 7,
             "test_window_days": 1,
-            "step_days": 5,
+            "step_days": 2,
             "min_windows": 2,
+            "temporal_validation": {
+                "schema_version": 1,
+                "label_horizon_days": 1,
+                "purge_days": 1,
+                "embargo_days": 1,
+                "inner_fold_count": 2,
+                "inner_test_window_days": 1,
+                "min_inner_train_window_days": 1,
+            },
         },
         "benchmark_suite": {
             "schema_version": 1,
             "required_for_validation": True,
             "random_entry": {
                 "iterations": 8,
-                "seed_policy": ("derived_from_manifest_split_benchmark_contract_hash"),
+                "seed_policy": (
+                    "derived_from_market_interval_split_benchmark_contract_hash"
+                ),
                 "entry_index_policy": ("uniform_causal_entry_holding_to_split_end"),
             },
             "same_holding_period": {
@@ -1352,7 +1446,9 @@ def _write_validated_extension_manifest(
             },
             "trade_order_monte_carlo": {
                 "iterations": 100,
-                "seed_policy": ("derived_from_manifest_candidate_scenario_split_hash"),
+                "seed_policy": (
+                    "derived_from_bounded_closed_trade_stream_contract_hash"
+                ),
                 "min_survival_probability": 0.8,
                 "ruin_max_drawdown_pct": 50.0,
                 "min_closed_trades": 5,
@@ -1380,7 +1476,7 @@ def _write_validated_extension_manifest(
                 # Omit every entry so the required evidence count is invariant.
                 "omission_rates_pct": [100.0],
                 "seed_policy": (
-                    "derived_from_manifest_candidate_scenario_split_contract_hash"
+                    "derived_from_causal_decision_id_candidate_scenario_split_contract_hash"
                 ),
                 "min_return_retention_pct": 0.0,
                 "min_omitted_entry_signals": 1,
@@ -2263,6 +2359,448 @@ def _representative_prospective_observation(
     )
 
 
+def _prepare_external_validation_experiment_bundle(
+    *,
+    tmp_path: Path,
+    context: ResearchAppContext,
+    manifest_path: Path,
+    strategy_registry: StrategyRegistry,
+) -> Path:
+    """Run a bespoke external M3 study without exposing final-holdout data."""
+
+    manifest = parse_builtin_manifest(
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+    )
+    preparer_root = tmp_path / "external-validation-experiment-preparer"
+    preparer_settings = ResearchSettings(
+        data_root=preparer_root / "datasets",
+        artifact_root=preparer_root / "artifacts",
+        report_root=preparer_root / "reports",
+        cache_root=preparer_root / "cache",
+        db_path=context.settings.db_path,
+        max_workers=1,
+        random_seed=0,
+    )
+    preparer_manager = ResearchPathManager.from_settings(
+        preparer_settings,
+        project_root=Path.cwd(),
+    )
+    full_candidates: list[dict[str, Any]] = []
+    selection_report = run_research_walk_forward(
+        manifest=manifest,
+        db_path=context.settings.db_path,
+        manager=preparer_manager,
+        manifest_path=str(manifest_path),
+        strategy_registry=strategy_registry,
+        governance_authority_manager=context.paths,
+        full_candidates_sink=full_candidates,
+    )
+    selection_artifact = selection_report.get("selection_artifact")
+    assert isinstance(selection_artifact, dict)
+    selected_candidate_id = str(selection_artifact["selected_candidate_id"])
+    selected_candidate = next(
+        item
+        for item in full_candidates
+        if item.get("parameter_candidate_id") == selected_candidate_id
+    )
+    selected_candidate_hash = sha256_prefixed(
+        candidate_evidence_hash_inputs(selected_candidate),
+        label="candidate_evidence_hash",
+    )
+    dataset_snapshot_hash = str(selection_report["dataset_content_hash"])
+    manifest_hash = manifest.manifest_hash()
+    capability = derive_validation_experiment_capability(
+        manifest_hash=manifest_hash,
+        research_classification=manifest.research_classification,
+    )
+
+    plan = build_manifest_nested_temporal_validation_plan(manifest)
+    assert plan is not None
+    assert selection_report["nested_temporal_validation"]["plan_hash"] == (
+        plan.contract_hash()
+    )
+    candidate_by_id = {
+        str(item["parameter_candidate_id"]): item for item in full_candidates
+    }
+    nested_candidates = tuple(
+        NestedCandidate(
+            candidate_id=candidate_id,
+            version=str(manifest.strategy_version or "1"),
+            definition_hash=sha256_prefixed(
+                candidate_evidence_hash_inputs(candidate),
+                label="candidate_evidence_hash",
+            ),
+        )
+        for candidate_id, candidate in sorted(candidate_by_id.items())
+    )
+    split_cache: dict[str, Any] = {}
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    parameter_values = sorted(
+        float(value)
+        for value in manifest_payload["parameter_space"][
+            "MOMENTUM_MIN_RETURN_RATIO"
+        ]
+    )
+    relative_perturbations = tuple(
+        float(value)
+        for value in manifest_payload["stress_suite"]["parameter_perturbation"][
+            "relative_pct"
+        ]
+    )
+    stability_contract = {
+        "parameter": "MOMENTUM_MIN_RETURN_RATIO",
+        "parameter_values": parameter_values,
+        "relative_pct": relative_perturbations,
+        "source": "manifest.stress_suite.parameter_perturbation",
+    }
+    assert len(candidate_by_id) == len(parameter_values) == 3
+    assert sorted(
+        float(candidate["parameter_values"]["MOMENTUM_MIN_RETURN_RATIO"])
+        for candidate in candidate_by_id.values()
+    ) == parameter_values
+
+    def evaluate_nested_candidate(
+        candidate: NestedCandidate,
+        split: Any,
+        phase: FoldEvaluationPhase,
+    ) -> MetricObservation:
+        snapshot = split_cache.get(split.split_hash())
+        if snapshot is None:
+            snapshot = load_dataset_range(
+                db_path=context.settings.db_path,
+                manifest=manifest,
+                split_name=f"external_{split.split_id}",
+                date_range=DateRange(
+                    start=split.test.start,
+                    end=split.test.end,
+                ),
+            )
+            split_cache[split.split_hash()] = snapshot
+        candidate_payload = candidate_by_id[candidate.candidate_id]
+        parameter_values = candidate_payload.get("parameter_values")
+        assert isinstance(parameter_values, dict)
+        threshold = float(parameter_values["MOMENTUM_MIN_RETURN_RATIO"])
+        realized_returns = [
+            float(current.close) / float(previous.close) - 1.0
+            for previous, current in zip(
+                snapshot.candles,
+                snapshot.candles[1:],
+            )
+        ]
+        eligible_returns = [
+            value for value in realized_returns if value >= threshold
+        ]
+        evidence = {
+            "metric_id": "manifest-stability-conditioned-one-bar-return",
+            "candidate_definition_hash": candidate.definition_hash,
+            "split_hash": split.split_hash(),
+            "phase": phase.value,
+            "snapshot_hash": snapshot.snapshot_fingerprint_hash(),
+            "threshold": threshold,
+            "realized_returns": realized_returns,
+            "stability_contract": stability_contract,
+        }
+        has_required_neighbors = all(
+            any(
+                math.isclose(
+                    value,
+                    threshold * (1.0 + relative_pct / 100.0),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                for value in stability_contract["parameter_values"]
+            )
+            for relative_pct in stability_contract["relative_pct"]
+        )
+        if not has_required_neighbors:
+            return MetricObservation(
+                status=EvaluationStatus.FAIL,
+                score=None,
+                sample_count=0,
+                evidence_hash=sha256_prefixed(
+                    evidence, label="external_nested_metric_observation"
+                ),
+                failure_code="MANIFEST_PARAMETER_STABILITY_NEIGHBOR_MISSING",
+            )
+        if not eligible_returns:
+            return MetricObservation(
+                status=EvaluationStatus.FAIL,
+                score=None,
+                sample_count=0,
+                evidence_hash=sha256_prefixed(
+                    evidence, label="external_nested_metric_observation"
+                ),
+                failure_code="NO_ELIGIBLE_RETURN",
+            )
+        return MetricObservation(
+            status=EvaluationStatus.PASS,
+            score=fmean(eligible_returns),
+            sample_count=len(eligible_returns),
+            evidence_hash=sha256_prefixed(
+                evidence, label="external_nested_metric_observation"
+            ),
+            failure_code=None,
+        )
+
+    nested = execute_nested_temporal_selection(
+        plan=plan,
+        candidates=nested_candidates,
+        policy=NestedSelectionPolicy(
+            metric_id="manifest-stability-conditioned-one-bar-return",
+            direction=MetricDirection.MAXIMIZE,
+            minimum_inner_sample_count=1,
+            minimum_outer_sample_count=1,
+        ),
+        evaluator=evaluate_nested_candidate,
+    )
+    selected_nested_candidate = next(
+        item for item in nested.candidates if item.candidate_id == selected_candidate_id
+    )
+    assert selected_nested_candidate.definition_hash == selected_candidate_hash
+    assert {
+        fold.selected_candidate.candidate_id for fold in nested.folds
+    } == {selected_candidate_id}
+
+    observation_snapshot = load_dataset_range(
+        db_path=context.settings.db_path,
+        manifest=manifest,
+        split_name="external_validation_observations",
+        date_range=DateRange(
+            start=manifest.dataset.split.validation.start,
+            end=manifest.dataset.split.validation.end,
+        ),
+    )
+    candle_returns = [
+        float(current.close) / float(previous.close) - 1.0
+        for previous, current in zip(
+            observation_snapshot.candles,
+            observation_snapshot.candles[1:],
+        )
+    ]
+    assert len(candle_returns) >= 20
+    selected_parameters = selected_candidate.get("parameter_values")
+    assert isinstance(selected_parameters, dict)
+    selected_threshold = float(
+        selected_parameters["MOMENTUM_MIN_RETURN_RATIO"]
+    )
+    falsification_observations: list[FalsificationObservation] = []
+    factor_observations: list[FactorObservation] = []
+    for index, (previous, current) in enumerate(
+        zip(observation_snapshot.candles[1:-1], observation_snapshot.candles[2:]),
+        start=1,
+    ):
+        signal = candle_returns[index - 1]
+        outcome = candle_returns[index]
+        observed_at = datetime.fromtimestamp(
+            current.ts / 1000.0,
+            tz=timezone.utc,
+        ).isoformat()
+        known_at = datetime.fromtimestamp(
+            current.available_at_ms(interval=manifest.interval) / 1000.0,
+            tz=timezone.utc,
+        ).isoformat()
+        source_hash = sha256_prefixed(
+            {
+                "previous": previous.as_tuple(),
+                "current": current.as_tuple(),
+                "snapshot_hash": observation_snapshot.snapshot_fingerprint_hash(),
+            },
+            label="external_validation_observation_source",
+        )
+        falsification_observations.append(
+            FalsificationObservation(
+                sample_id=f"falsification-{index:03d}",
+                observed_at=observed_at,
+                known_at=known_at,
+                signal=signal,
+                outcome=outcome,
+                negative_control=math.sin(index * 1.7),
+                confounders=(("calendar_parity", float(index % 2)),),
+                source_hash=source_hash,
+            )
+        )
+        factor_observations.append(
+            FactorObservation(
+                sample_id=f"factor-{index:03d}",
+                observed_at=observed_at,
+                known_at=known_at,
+                strategy_return=(outcome if signal >= selected_threshold else 0.0),
+                factor_returns=(("market-return", outcome),),
+                source_hash=source_hash,
+            )
+        )
+    falsification = run_falsification_suite(
+        observations=tuple(falsification_observations),
+        dataset_snapshot_hash=dataset_snapshot_hash,
+        policy=FalsificationPolicy(
+            policy_id="external-fixture-falsification",
+            version="1",
+            seed=19,
+            placebo_shift=7,
+            minimum_sample_count=20,
+            minimum_baseline_abs_effect=0.45,
+            maximum_control_abs_effect=0.4,
+            minimum_confounder_adjusted_retention=0.5,
+        ),
+    )
+    assert falsification.passed
+    factor = estimate_factor_exposures(
+        observations=tuple(factor_observations),
+        dataset_snapshot_hash=dataset_snapshot_hash,
+        model_id="external-fixture-market-factor",
+        model_version="1",
+        hac_lags=1,
+    )
+
+    provider_root = tmp_path / "external-validation-provider-inputs"
+    provider_root.mkdir()
+    provider_a_rows = [
+        {"sample_id": index, "return": value}
+        for index, value in enumerate(candle_returns, start=1)
+    ]
+    provider_a_path = provider_root / "provider-a.json"
+    provider_b_path = (
+        manifest_path.parent
+        / "immutable-secondary-provider-validation-snapshot.json"
+    ).resolve()
+    provider_a_material = {
+        "schema_version": 1,
+        "artifact_type": "external_provider_observation_snapshot",
+        "provider_id": "fixture-provider-a",
+        "source_dataset_snapshot_hash": dataset_snapshot_hash,
+        "rows": provider_a_rows,
+    }
+    provider_a_snapshot = {
+        **provider_a_material,
+        "content_hash": sha256_prefixed(
+            provider_a_material,
+            label="external_provider_observation_snapshot",
+        ),
+    }
+    provider_a_path.write_text(
+        json.dumps(provider_a_snapshot, sort_keys=True), encoding="utf-8"
+    )
+    provider_a_hash = str(provider_a_snapshot["content_hash"])
+    provider_b_snapshot = json.loads(provider_b_path.read_text(encoding="utf-8"))
+    provider_b_material = {
+        key: value
+        for key, value in provider_b_snapshot.items()
+        if key != "content_hash"
+    }
+    provider_b_hash = sha256_prefixed(
+        provider_b_material,
+        label="external_provider_dataset_snapshot",
+    )
+    assert provider_b_snapshot["content_hash"] == provider_b_hash
+    provider_b_prices = [
+        float(item["close"]) for item in provider_b_snapshot["rows"]
+    ]
+    provider_b_rows = [
+        {
+            "sample_id": index,
+            "return": current / previous - 1.0,
+        }
+        for index, (previous, current) in enumerate(
+            zip(provider_b_prices, provider_b_prices[1:]),
+            start=1,
+        )
+    ]
+    assert len(provider_b_rows) == len(provider_a_rows)
+    assert provider_a_hash != provider_b_hash
+    semantic_definition_hash = sha256_prefixed(
+        {
+            "metrics": ["mean-return", "return-volatility"],
+            "sample_alignment": "sample_id_exact",
+        },
+        label="external_provider_semantic_definition",
+    )
+
+    def provider_metrics(rows: list[dict[str, float]]) -> tuple[tuple[str, float], ...]:
+        values = [float(item["return"]) for item in rows]
+        return (
+            ("mean-return", fmean(values)),
+            ("return-volatility", pstdev(values)),
+        )
+
+    provider_a_metrics = provider_metrics(provider_a_rows)
+    provider_b_metrics = provider_metrics(provider_b_rows)
+    provider = compare_provider_research_results(
+        results=(
+            ProviderResearchResult(
+                provider_id="fixture-provider-a",
+                dataset_snapshot_hash=dataset_snapshot_hash,
+                semantic_definition_hash=semantic_definition_hash,
+                report_hash=sha256_prefixed(
+                    {
+                        "input_ref": str(provider_a_path.resolve()),
+                        "input_content_hash": provider_a_hash,
+                        "metrics": provider_a_metrics,
+                    },
+                    label="external_provider_research_report",
+                ),
+                metrics=provider_a_metrics,
+            ),
+            ProviderResearchResult(
+                provider_id="fixture-provider-b",
+                dataset_snapshot_hash=provider_b_hash,
+                semantic_definition_hash=semantic_definition_hash,
+                report_hash=sha256_prefixed(
+                    {
+                        "input_ref": str(provider_b_path.resolve()),
+                        "input_content_hash": provider_b_hash,
+                        "metrics": provider_b_metrics,
+                    },
+                    label="external_provider_research_report",
+                ),
+                metrics=provider_b_metrics,
+            ),
+        ),
+        selected_provider_id="fixture-provider-a",
+        tolerances=(
+            ProviderMetricTolerance(
+                metric_id="mean-return",
+                absolute_tolerance=0.0001,
+                relative_tolerance=0.01,
+            ),
+            ProviderMetricTolerance(
+                metric_id="return-volatility",
+                absolute_tolerance=0.0001,
+                relative_tolerance=0.1,
+            ),
+        ),
+    )
+    assert provider.passed
+
+    scope = ValidationExperimentOutputScope(
+        manifest_hash=manifest_hash,
+        capability_hash=capability.content_hash,
+        dataset_snapshot_hash=dataset_snapshot_hash,
+        temporal_plan_hash=plan.contract_hash(),
+        selected_candidate_id=selected_candidate_id,
+        selected_candidate_hash=selected_candidate_hash,
+    )
+    bundle = build_validation_experiment_bundle(
+        manifest_hash=manifest_hash,
+        dataset_snapshot_hash=dataset_snapshot_hash,
+        temporal_plan_hash=plan.contract_hash(),
+        selected_candidate_id=selected_candidate_id,
+        selected_candidate_hash=selected_candidate_hash,
+        capability=capability,
+        policy=capability.policy,
+        outputs=ValidationExperimentOutputs(
+            scope=scope,
+            nested_selection=nested,
+            falsification=falsification,
+            factor_exposure=factor,
+            provider_sensitivity=provider,
+        ),
+    )
+    assert bundle.gate_result.value == "PASS"
+    bundle_path = tmp_path / "external-validation-experiment-bundle.json"
+    bundle_path.write_text(json.dumps(bundle.as_dict()), encoding="utf-8")
+    return bundle_path.resolve()
+
+
 @pytest.mark.research_e2e
 def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
     tmp_path: Path,
@@ -2329,6 +2867,14 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 json.loads(manifest_path.read_text(encoding="utf-8"))
             ),
         )
+        validation_experiment_bundle_path = (
+            _prepare_external_validation_experiment_bundle(
+                tmp_path=tmp_path,
+                context=context,
+                manifest_path=manifest_path,
+                strategy_registry=expanded_registry,
+            )
+        )
 
         validation_output: list[str] = []
         context.printer = validation_output.append
@@ -2337,6 +2883,8 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "research-validate",
                 "--manifest",
                 str(manifest_path),
+                "--validation-experiment-bundle",
+                str(validation_experiment_bundle_path),
                 "--out",
                 str(validation_path),
             ],
@@ -2482,6 +3030,33 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             _VALIDATED_EXPERIMENT_ID,
             "reproduction_receipt.json",
         )
+        selection_receipt = load_reproduction_receipt(selection_receipt_path)
+        trusted_paths, selection_assertion = provision_test_principal_assertion(
+            manager=context.paths,
+            scope=IndependentVerificationAssertionScope(
+                verification_id="validated-selection-verification",
+                verification_version="1",
+                experiment_id=str(selection_receipt["experiment_id"]),
+                research_version=str(selection_receipt["manifest_hash"]),
+                source_report_hash=str(selection_receipt["source_report_hash"]),
+                baseline_receipt_hash=str(selection_receipt["receipt_content_hash"]),
+            ),
+            subject="validated-extension-independent-verifier",
+        )
+        context.settings = trusted_paths.settings
+        context.paths = trusted_paths
+        selection_assertion_path = (
+            tmp_path / "validated-selection-verifier-assertion.json"
+        ).resolve()
+        selection_assertion_path.write_text(
+            json.dumps(
+                selection_assertion.as_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         selection_reproduction_rc = research_cli_main(
             [
                 "research-reproduce-run",
@@ -2495,6 +3070,8 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "1",
                 "--verifier",
                 "validated-extension-independent-verifier",
+                "--verifier-assertion",
+                str(selection_assertion_path),
                 "--out",
                 str(selection_reproduction_path),
             ],
@@ -2552,6 +3129,32 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             ]
             == validation["final_holdout_confirmation_hash"]
         )
+        trusted_paths, terminal_assertion = provision_test_principal_assertion(
+            manager=context.paths,
+            scope=IndependentVerificationAssertionScope(
+                verification_id="validated-extension-verification",
+                verification_version="1",
+                experiment_id=str(terminal_receipt["experiment_id"]),
+                research_version=str(terminal_receipt["manifest_hash"]),
+                source_report_hash=str(terminal_receipt["source_report_hash"]),
+                baseline_receipt_hash=str(terminal_receipt["receipt_content_hash"]),
+            ),
+            subject="validated-extension-independent-verifier",
+        )
+        context.settings = trusted_paths.settings
+        context.paths = trusted_paths
+        terminal_assertion_path = (
+            tmp_path / "validated-terminal-verifier-assertion.json"
+        ).resolve()
+        terminal_assertion_path.write_text(
+            json.dumps(
+                terminal_assertion.as_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         reproduction_rc = research_cli_main(
             [
                 "research-reproduce-run",
@@ -2565,6 +3168,8 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "1",
                 "--verifier",
                 "validated-extension-independent-verifier",
+                "--verifier-assertion",
+                str(terminal_assertion_path),
                 "--out",
                 str(reproduction_path),
             ],
@@ -2738,6 +3343,20 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             version=str(validation["hypothesis_version"]),
             content_hash=str(validation["hypothesis_contract_hash"]),
         )
+        validation_generated_at = datetime.fromisoformat(
+            str(validation["generated_at"]).replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        prospective_start_at = validation_generated_at + timedelta(days=1)
+        prospective_end_at = prospective_start_at + timedelta(days=4)
+
+        def prospective_timestamp(
+            *, days: int = 0, hours: int = 0, seconds: int = 0
+        ) -> str:
+            return (
+                prospective_start_at
+                + timedelta(days=days, hours=hours, seconds=seconds)
+            ).isoformat()
+
         prospective_spec = ProspectiveValidationSpec(
             schema_version=PROSPECTIVE_VALIDATION_SCHEMA_VERSION,
             validation_id="validated-extension-prospective-001",
@@ -2753,9 +3372,9 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 historical_distribution_content_hash(package)
             ),
             metric_guards=_representative_prospective_guards(),
-            frozen_at=str(validation["generated_at"]),
-            start_at="2026-08-01T00:00:00+00:00",
-            end_at="2026-08-05T00:00:00+00:00",
+            frozen_at=validation_generated_at.isoformat(),
+            start_at=prospective_start_at.isoformat(),
+            end_at=prospective_end_at.isoformat(),
             minimum_observations=2,
             minimum_elapsed_seconds=86_400,
             maximum_missing_rate=0.0,
@@ -2770,15 +3389,15 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             spec=prospective_spec,
             actor_id="validated-extension-prospective-researcher",
             reason="Begin the frozen offline prospective validation.",
-            recorded_at=str(validation["generated_at"]),
+            recorded_at=validation_generated_at.isoformat(),
         )
         assert prospective_start["lifecycle_state"] == "PROSPECTIVE_VALIDATION"
         first_observation = _representative_prospective_observation(
             index=1,
-            source_event_at="2026-08-01T04:00:00+00:00",
-            received_at="2026-08-01T04:00:05+00:00",
-            signal_generated_at="2026-08-01T04:00:06+00:00",
-            fill_occurred_at="2026-08-01T08:00:00+00:00",
+            source_event_at=prospective_timestamp(hours=4),
+            received_at=prospective_timestamp(hours=4, seconds=5),
+            signal_generated_at=prospective_timestamp(hours=4, seconds=6),
+            fill_occurred_at=prospective_timestamp(hours=8),
             realized_return=0.02,
             fill_assumption_hash=prospective_spec.fill_assumption_hash,
             cost_assumption_hash=prospective_spec.cost_assumption_hash,
@@ -2798,10 +3417,18 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             spec=prospective_spec,
             observation=_representative_prospective_observation(
                 index=2,
-                source_event_at="2026-08-02T04:00:00+00:00",
-                received_at="2026-08-02T04:00:04+00:00",
-                signal_generated_at="2026-08-02T04:00:05+00:00",
-                fill_occurred_at="2026-08-02T08:00:00+00:00",
+                source_event_at=prospective_timestamp(days=1, hours=4),
+                received_at=prospective_timestamp(
+                    days=1,
+                    hours=4,
+                    seconds=4,
+                ),
+                signal_generated_at=prospective_timestamp(
+                    days=1,
+                    hours=4,
+                    seconds=5,
+                ),
+                fill_occurred_at=prospective_timestamp(days=1, hours=8),
                 realized_return=0.01,
                 fill_assumption_hash=prospective_spec.fill_assumption_hash,
                 cost_assumption_hash=prospective_spec.cost_assumption_hash,
@@ -2809,7 +3436,7 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         )
         prospective_result = prospective_service.evaluate_and_conclude(
             spec=prospective_spec,
-            evaluated_at="2026-08-03T00:00:00+00:00",
+            evaluated_at=prospective_timestamp(days=2),
             conclusion_id="validated-extension-research-conclusion-001",
             conclusion_version="1",
             rationale=(
@@ -2820,7 +3447,7 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "Synthetic acceptance observations do not constitute investment evidence.",
             ),
             decided_by="validated-extension-prospective-reviewer",
-            decided_at="2026-08-03T01:00:00+00:00",
+            decided_at=prospective_timestamp(days=2, hours=1),
             transition_reason="Record the frozen prospective conclusion.",
         )
         evaluation = prospective_result["evaluation"]

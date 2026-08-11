@@ -1135,6 +1135,21 @@ class ExperimentManifest:
     def simulation_seed_scope_hash(self) -> str:
         return sha256_prefixed(self.simulation_seed_scope_payload())
 
+    def causal_execution_seed_scope_payload(self) -> dict[str, Any]:
+        """Return the versioned, suffix-invariant behavior RNG authority."""
+
+        return {
+            "schema_version": 1,
+            "seed_policy": "causal_execution_request_scoped_v1",
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "market": self.market,
+            "interval": self.interval,
+        }
+
+    def causal_execution_seed_scope_hash(self) -> str:
+        return sha256_prefixed(self.causal_execution_seed_scope_payload())
+
     def portfolio_policy_hash(self) -> str:
         return self.portfolio_policy.policy_hash()
 
@@ -1598,6 +1613,14 @@ def _parse_instrument_and_event_contracts(
     action_set = parse_corporate_action_set(
         action_set_value, expected_instrument_id=instrument.instrument_id
     )
+    if any(
+        event.cash_currency is not None
+        and event.cash_currency != instrument.trading_currency
+        for event in action_set.events
+    ):
+        raise ManifestValidationError(
+            "corporate_action_cash_currency_must_match_instrument_trading_currency"
+        )
     policy = parse_adjustment_policy(policy_value, action_set=action_set)
     return instrument, action_set, policy
 
@@ -3538,9 +3561,10 @@ def _parse_stress_trade_order_monte_carlo(
             f"stress_suite.trade_order_monte_carlo unsupported fields: {','.join(unknown)}"
         )
     seed_policy = str(value.get("seed_policy") or "").strip()
-    if seed_policy != "derived_from_manifest_candidate_scenario_split_hash":
+    if seed_policy != "derived_from_bounded_closed_trade_stream_contract_hash":
         raise ManifestValidationError(
-            "stress_suite.trade_order_monte_carlo.seed_policy must be derived_from_manifest_candidate_scenario_split_hash"
+            "stress_suite.trade_order_monte_carlo.seed_policy must be "
+            "derived_from_bounded_closed_trade_stream_contract_hash"
         )
     return StressTradeOrderMonteCarloContract(
         iterations=_positive_int(
@@ -3789,7 +3813,10 @@ def _parse_stress_signal_omission(value: Any) -> StressSignalOmissionContract | 
             "stress_suite.signal_omission.omission_rates_pct values must be unique and in (0, 100]"
         )
     seed_policy = str(value.get("seed_policy") or "")
-    if seed_policy != "derived_from_manifest_candidate_scenario_split_contract_hash":
+    if (
+        seed_policy
+        != "derived_from_causal_decision_id_candidate_scenario_split_contract_hash"
+    ):
         raise ManifestValidationError(
             "stress_suite.signal_omission.seed_policy unsupported"
         )

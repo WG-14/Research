@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Mapping
@@ -39,6 +40,7 @@ from market_research.research.hashing import (
 from market_research.research.independent_verification import (
     IndependentVerificationResult,
     bind_reproduction_result_snapshot,
+    find_independent_verification,
     independent_code_binding_hash,
     independent_reproduction_evidence,
     publish_independent_verification,
@@ -49,10 +51,16 @@ from market_research.research.reproduction import (
     compare_reproduction_fingerprints,
     load_reproduction_receipt,
 )
+from market_research.research.principal_assertion import (
+    IndependentVerificationAssertionScope,
+    PrincipalAssertion,
+    issue_principal_assertion,
+)
 from market_research.storage_io import write_json_atomic_create_or_verify
 
 
 _FIXTURE_CONFIRMATION_PUBLISH_LOCK = Lock()
+_FIXTURE_VERIFICATION_PUBLISH_LOCK = Lock()
 
 
 def seed_reproduction_receipts(
@@ -229,7 +237,7 @@ def seed_reproduction_receipts(
     return baseline, baseline_path, reproduced_path
 
 
-def publish_pass_verification(
+def _publish_pass_verification(
     *,
     manager: ResearchPathManager,
     verification_id: str,
@@ -237,11 +245,29 @@ def publish_pass_verification(
     source_report_hash: str,
     manifest_hash: str,
     verifier_id: str = "independent-verifier-a",
+    principal_subject: str | None = None,
+    principal_nonce: str | None = None,
     version: str = "1",
     verified_at: str | None = None,
     publish: bool = True,
     source_report: Mapping[str, Any] | None = None,
 ) -> IndependentVerificationResult:
+    if publish:
+        existing = find_independent_verification(
+            manager=manager,
+            verification_id=verification_id,
+            version=version,
+        )
+        if existing is not None:
+            expected_subject = principal_subject or verifier_id
+            if (
+                existing.verifier_id != verifier_id
+                or existing.principal_assertion_subject != expected_subject
+                or existing.experiment_id != experiment_id
+                or existing.manifest_hash != manifest_hash
+            ):
+                raise AssertionError("test_verification_identity_conflict")
+            return existing
     baseline, baseline_path, reproduced_path = seed_reproduction_receipts(
         manager=manager,
         experiment_id=experiment_id,
@@ -276,9 +302,23 @@ def publish_pass_verification(
     )
     payload.update(evidence)
     effective_verified_at = verified_at or max(
-        str(evidence["source_report_generated_at"]),
+        datetime.now(timezone.utc).isoformat(),
         str(evidence["reproduction_completed_at"]),
         key=datetime.fromisoformat,
+    )
+    trusted_manager, assertion = provision_test_principal_assertion(
+        manager=manager,
+        scope=IndependentVerificationAssertionScope(
+            verification_id=verification_id,
+            verification_version=version,
+            experiment_id=experiment_id,
+            research_version=manifest_hash,
+            source_report_hash=str(baseline["source_report_hash"]),
+            baseline_receipt_hash=str(baseline["receipt_content_hash"]),
+        ),
+        subject=principal_subject or verifier_id,
+        verified_at=effective_verified_at,
+        nonce=principal_nonce,
     )
     snapshot_path, snapshot_hash = bind_reproduction_result_snapshot(
         manager=manager,
@@ -289,6 +329,11 @@ def publish_pass_verification(
         version=version,
         verifier_id=verifier_id,
         verifier_role="independent_verifier",
+        principal_assertion=assertion.as_dict(),
+        principal_assertion_hash=assertion.content_hash,
+        principal_assertion_issuer=assertion.issuer,
+        principal_assertion_key_id=assertion.key_id,
+        principal_assertion_subject=assertion.subject,
         verified_at=effective_verified_at,
         experiment_id=experiment_id,
         research_version=manifest_hash,
@@ -308,8 +353,50 @@ def publish_pass_verification(
         status="PASS",
     )
     if publish:
-        publish_independent_verification(manager=manager, result=result)
+        publish_independent_verification(manager=trusted_manager, result=result)
     return result
+
+
+def publish_pass_verification(
+    *,
+    manager: ResearchPathManager,
+    verification_id: str,
+    experiment_id: str,
+    source_report_hash: str,
+    manifest_hash: str,
+    verifier_id: str = "independent-verifier-a",
+    principal_subject: str | None = None,
+    principal_nonce: str | None = None,
+    version: str = "1",
+    verified_at: str | None = None,
+    publish: bool = True,
+    source_report: Mapping[str, Any] | None = None,
+) -> IndependentVerificationResult:
+    """Publish one canonical fixture result under concurrent test callers."""
+
+    def execute() -> IndependentVerificationResult:
+        return _publish_pass_verification(
+            manager=manager,
+            verification_id=verification_id,
+            experiment_id=experiment_id,
+            source_report_hash=source_report_hash,
+            manifest_hash=manifest_hash,
+            verifier_id=verifier_id,
+            principal_subject=principal_subject,
+            principal_nonce=principal_nonce,
+            version=version,
+            verified_at=verified_at,
+            publish=publish,
+            source_report=source_report,
+        )
+
+    if not publish:
+        return execute()
+    # Issuing assertions is intentionally non-deterministic. Serialize the
+    # test-only factory so concurrent callers first publish once, then load the
+    # same immutable canonical result instead of racing with distinct nonces.
+    with _FIXTURE_VERIFICATION_PUBLISH_LOCK:
+        return execute()
 
 
 def publish_failed_verification(
@@ -320,6 +407,7 @@ def publish_failed_verification(
     source_report_hash: str,
     manifest_hash: str,
     verifier_id: str = "independent-verifier-a",
+    principal_subject: str | None = None,
     version: str = "1",
     failure_code: str = "deterministic_fixture_failure",
     verified_at: str | None = None,
@@ -351,7 +439,20 @@ def publish_failed_verification(
         baseline_receipt_path=baseline_path,
     )
     payload.update(evidence)
-    effective_verified_at = verified_at or str(evidence["source_report_generated_at"])
+    effective_verified_at = verified_at or datetime.now(timezone.utc).isoformat()
+    trusted_manager, assertion = provision_test_principal_assertion(
+        manager=manager,
+        scope=IndependentVerificationAssertionScope(
+            verification_id=verification_id,
+            verification_version=version,
+            experiment_id=experiment_id,
+            research_version=manifest_hash,
+            source_report_hash=str(baseline["source_report_hash"]),
+            baseline_receipt_hash=str(baseline["receipt_content_hash"]),
+        ),
+        subject=principal_subject or verifier_id,
+        verified_at=effective_verified_at,
+    )
     snapshot_path, snapshot_hash = bind_reproduction_result_snapshot(
         manager=manager,
         payload=payload,
@@ -369,6 +470,11 @@ def publish_failed_verification(
         version=version,
         verifier_id=verifier_id,
         verifier_role="independent_verifier",
+        principal_assertion=assertion.as_dict(),
+        principal_assertion_hash=assertion.content_hash,
+        principal_assertion_issuer=assertion.issuer,
+        principal_assertion_key_id=assertion.key_id,
+        principal_assertion_subject=assertion.subject,
         verified_at=effective_verified_at,
         experiment_id=experiment_id,
         research_version=manifest_hash,
@@ -390,8 +496,99 @@ def publish_failed_verification(
         failure_code=failure_code,
         failure_evidence_hash=failure_hash,
     )
-    publish_independent_verification(manager=manager, result=result)
+    publish_independent_verification(manager=trusted_manager, result=result)
     return result
+
+
+def provision_test_principal_assertion(
+    *,
+    manager: ResearchPathManager,
+    scope: IndependentVerificationAssertionScope,
+    subject: str,
+    verified_at: str | None = None,
+    issuer: str = "test-identity-issuer",
+    key_id: str = "test-key-1",
+    roles: tuple[str, ...] = ("independent_verifier",),
+    nonce: str | None = None,
+) -> tuple[ResearchPathManager, PrincipalAssertion]:
+    """Provision runtime-only test trust outside every research state root."""
+
+    trusted_manager, key = _test_trust_manager(
+        manager=manager,
+        issuer=issuer,
+        key_id=key_id,
+    )
+    verified = (
+        datetime.fromisoformat(verified_at)
+        if verified_at is not None
+        else datetime.now(timezone.utc)
+    )
+    authenticated = verified - timedelta(seconds=1)
+    expires = max(
+        verified + timedelta(hours=1),
+        datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    assertion = issue_principal_assertion(
+        issuer=issuer,
+        key_id=key_id,
+        subject=subject,
+        roles=roles,
+        authenticated_at=authenticated.isoformat(),
+        expires_at=expires.isoformat(),
+        nonce=nonce or f"test-{secrets.token_hex(16)}",
+        scope=scope,
+        key=key,
+    )
+    return trusted_manager, assertion
+
+
+def _test_trust_manager(
+    *,
+    manager: ResearchPathManager,
+    issuer: str,
+    key_id: str,
+) -> tuple[ResearchPathManager, bytes]:
+    configured = manager.settings.independent_verifier_trust_store_path
+    trust_root = (
+        configured.parent
+        if configured is not None
+        else manager.artifact_root.parent / "_independent_verifier_test_trust"
+    )
+    trust_root.mkdir(parents=True, exist_ok=True)
+    key_path = trust_root / "principal-assertion.key"
+    trust_path = configured or trust_root / "trust-store.json"
+    if key_path.exists():
+        key = key_path.read_bytes()
+    else:
+        key = secrets.token_bytes(32)
+        key_path.write_bytes(key)
+        key_path.chmod(0o600)
+    trust_payload = {
+        "schema_version": 1,
+        "keys": [
+            {
+                "issuer": issuer,
+                "key_id": key_id,
+                "algorithm": "hmac-sha256",
+                "key_path": str(key_path.resolve()),
+            }
+        ],
+    }
+    trust_path.write_text(
+        json.dumps(trust_payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    settings = replace(
+        manager.settings,
+        independent_verifier_trust_store_path=trust_path.resolve(),
+    )
+    return (
+        ResearchPathManager.from_settings(
+            settings,
+            project_root=manager.project_root,
+        ),
+        key,
+    )
 
 
 def _fixture_selection_artifact(*, manifest_hash: str) -> dict[str, Any]:
@@ -719,7 +916,7 @@ def _fingerprint(
     manifest_hash: str,
     selection_artifact: Mapping[str, Any],
 ) -> dict[str, object]:
-    runtime_environment = {
+    runtime_environment: dict[str, str | None] = {
         name: None for name in RESULT_AFFECTING_ENVIRONMENT_VARIABLES
     }
     runtime_environment["PYTHONHASHSEED"] = "0"

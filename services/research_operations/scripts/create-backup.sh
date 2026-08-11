@@ -1,13 +1,18 @@
 #!/bin/sh
 set -eu
-umask 077
+umask 027
 
 : "${BACKUP_ROOT:?absolute backup root required}"
 : "${BACKUP_OPERATOR_ID:?operator id required}"
 : "${POSTGRES_MAJOR:?PostgreSQL major required}"
-: "${RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY:=/run/research-operations}"
+: "${RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY:=/run/research-operations-backup}"
+: "${BACKUP_DEFER_FINALIZATION:=false}"
 case "$BACKUP_ROOT" in /*) ;; *) exit 64 ;; esac
+case "$BACKUP_DEFER_FINALIZATION" in true|false) ;; *) exit 64 ;; esac
 test -d "$BACKUP_ROOT" || exit 66
+test ! -L "$BACKUP_ROOT" || exit 65
+backup_root=$(realpath -e -- "$BACKUP_ROOT")
+test "$backup_root" = "$BACKUP_ROOT" || exit 65
 case "$RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY" in /*) ;; *) exit 64 ;; esac
 test -d "$RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY" \
   && test ! -L "$RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY" || exit 65
@@ -28,8 +33,43 @@ staging="$BACKUP_ROOT/.staging-$backup_id"
 final="$BACKUP_ROOT/$backup_id"
 receipt="$runtime_directory/backup-fence-$backup_id.json"
 sealed=0
+
+finalize_local_backup() {
+  test -d "$staging" && test ! -L "$staging" || exit 65
+  test ! -e "$final" && test ! -L "$final" || exit 73
+  # GNU mv -T prevents directory nesting and -n prevents replacement.  Verify
+  # the postcondition because -n deliberately reports success on collision.
+  mv -n -T -- "$staging" "$final"
+  test ! -e "$staging" && test ! -L "$staging" || exit 73
+  test -d "$final" && test ! -L "$final" || exit 65
+  sync -f "$BACKUP_ROOT"
+}
+
 if test -n "$resume_id"; then
-  test -d "$staging" && test ! -e "$final" && test -f "$receipt" || exit 66
+  if test -e "$final" || test -L "$final"; then
+    test -d "$final" && test ! -L "$final" && test ! -e "$staging" \
+      && test ! -L "$staging" || exit 65
+    research-ops backup-verify --backup-directory "$final" \
+      --postgresql-major "$POSTGRES_MAJOR" >/dev/null
+    printf '%s\n' "$final"
+    exit 0
+  fi
+  test -d "$staging" && test ! -L "$staging" \
+    && test -f "$receipt" && test ! -L "$receipt" || exit 66
+  phase=$(research-ops backup-fence status | jq -er '.phase')
+  if test "$phase" = OPEN; then
+    # The coherent local set was already registered and admission reopened;
+    # verify it rather than trying to replay the now-consumed fence token.
+    research-ops backup-verify --backup-directory "$staging" \
+      --postgresql-major "$POSTGRES_MAJOR" >/dev/null
+    if test "$BACKUP_DEFER_FINALIZATION" = true; then
+      printf '%s\n' "$staging"
+    else
+      finalize_local_backup
+      printf '%s\n' "$final"
+    fi
+    exit 0
+  fi
   research-ops backup-fence reconcile --receipt "$receipt" >/dev/null
   phase=$(research-ops backup-fence status | jq -er '.phase')
   case "$phase" in
@@ -39,7 +79,7 @@ if test -n "$resume_id"; then
   esac
 else
   test ! -e "$staging" && test ! -e "$final" && test ! -e "$receipt" || exit 73
-  mkdir -m 0700 "$staging"
+  mkdir -m 0750 "$staging"
   research-ops backup-fence begin --operator-id "$BACKUP_OPERATOR_ID" \
     --reason scheduled_coherent_backup --receipt "$receipt"
 fi
@@ -95,8 +135,13 @@ research-ops backup-manifest-create \
   --file artifact=artifact.tar --file report=report.tar \
   --file identity_registry=identity_registry.tar > "$staging/verification.json"
 manifest_hash=$(jq -er '.manifest_hash' "$staging/verification.json")
-mv "$staging" "$final"
-sync -f "$BACKUP_ROOT"
 research-ops backup-fence reopen --receipt "$receipt" \
   --manifest-hash "$manifest_hash" --operator-id "$BACKUP_OPERATOR_ID"
-printf '%s\n' "$final"
+if test "$BACKUP_DEFER_FINALIZATION" = true; then
+  # The native wrapper publishes this directory only after the independently
+  # signed off-site receipt has also been verified and durably published.
+  printf '%s\n' "$staging"
+else
+  finalize_local_backup
+  printf '%s\n' "$final"
+fi

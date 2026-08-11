@@ -1677,6 +1677,15 @@ def _lineage_publication(
 
 def _manifest_component_hashes(manifest: Any) -> dict[str, str]:
     canonical = manifest.canonical_payload()
+    seed_policy_material = {
+        "research_run": canonical.get("research_run"),
+        "statistical_validation": canonical.get("statistical_validation"),
+        "stress_suite": canonical.get("stress_suite"),
+        "simulation_seed_scope_hash": manifest.simulation_seed_scope_hash(),
+    }
+    causal_seed_scope = getattr(manifest, "causal_execution_seed_scope_hash", None)
+    if callable(causal_seed_scope):
+        seed_policy_material["causal_execution_seed_scope_hash"] = causal_seed_scope()
     component_material = {
         "manifest": canonical,
         "dataset": canonical.get("dataset"),
@@ -1704,12 +1713,7 @@ def _manifest_component_hashes(manifest: Any) -> dict[str, str]:
             "portfolio_policy": canonical.get("portfolio_policy"),
             "risk_policy": canonical.get("risk_policy"),
         },
-        "seed_policy": {
-            "research_run": canonical.get("research_run"),
-            "statistical_validation": canonical.get("statistical_validation"),
-            "stress_suite": canonical.get("stress_suite"),
-            "simulation_seed_scope_hash": manifest.simulation_seed_scope_hash(),
-        },
+        "seed_policy": seed_policy_material,
     }
     if canonical.get("instrument") is not None:
         component_material["instrument_and_events"] = {

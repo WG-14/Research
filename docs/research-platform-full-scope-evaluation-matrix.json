@@ -95573,19 +95573,19 @@
           },
           {
             "path": "src/market_research/application/capabilities.py",
-            "sha256": "e75fbf0dfbcdba26c699e044ab82d84eff78a546ea94e8190088bb0ee9f4be58"
+            "sha256": "f98da669cea27b07bf550c2ec57b7a4e91adf133ab6b30c326dde71e2d05474c"
           },
           {
             "path": "src/market_research/application/platform_contracts.py",
-            "sha256": "c5a7fd18207bc55266f4c587e867eae6acd296773b3b707c74ae0ecff0490027"
+            "sha256": "683943e18960b6ad2868edf0d7f297e8998ca09d4e46ab025b0c7a1b823077d0"
           },
           {
             "path": "tests/test_internal_web_architecture_contract.py",
-            "sha256": "6922de8c189ad1d4e52960b683ddb9c3cbd46321a5089ecd41c78a9b99e9bf20"
+            "sha256": "b7fe7664fddb09b8efdf09b435634014d8f7a3f4f2ecd2cbe18a1a721d0136d0"
           },
           {
             "path": "tests/test_research_cli_boundary.py",
-            "sha256": "f880b1047344314f32d914e6c5ceac32defe13a307d7afdaa6d0e3d0c3f65b1c"
+            "sha256": "454dc5ae3c0f3542a2d2750c2dd927752fe8995a990439cfddf3e1c3fbcc904f"
           },
           {
             "path": "tests/test_research_only_capability_guard.py",

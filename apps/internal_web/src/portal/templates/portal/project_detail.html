@@ -1,0 +1,69 @@
+{% extends "portal/base.html" %}
+{% block title %}{{ project.title }} · Research Console{% endblock %}
+{% block breadcrumbs %}연구 프로젝트 / {{ project.project_id }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">PROJECT {{ project.status }} · VERSION {{ project.version }}</p>
+    <h1>{{ project.title }}</h1>
+    <p>{{ project.research_question }}</p>
+  </div>
+</section>
+
+<section class="panel">
+  <dl>
+    <dt>Project ID</dt><dd>{{ project.project_id }}</dd>
+    <dt>Content hash</dt><dd>{{ project.content_hash }}</dd>
+    <dt>자산군</dt><dd>{{ project.asset_classes|join:", " }}</dd>
+    <dt>시장</dt><dd>{{ project.markets|join:", " }}</dd>
+    <dt>구성원</dt>
+    <dd>
+      <ul>{% for member in project.members %}<li>{{ member.actor_id }} · {{ member.role }}</li>{% endfor %}</ul>
+    </dd>
+    <dt>연결된 객체</dt>
+    <dd>
+      {% if project.object_refs %}
+      <p>아래 값은 artifact resolver 결과가 아니라, 종류·ID·버전·SHA-256에 고정된 typed reference입니다.</p>
+      <ul>
+        {% for reference in project.object_refs %}
+        <li>
+          <strong>{{ reference.kind }}</strong>
+          <code>{{ reference.object_id }}</code>
+          <span>v{{ reference.version }}</span>
+          <code>{{ reference.content_hash }}</code>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      0개
+      {% endif %}
+    </dd>
+  </dl>
+</section>
+
+{% if can_revise_project or can_manage_project_members or can_attach_project_reference or can_transition_project or can_use_project_compute %}
+<section class="panel">
+  <h2>권한 있는 변경</h2>
+  <div class="button-row">
+    {% if can_revise_project %}
+    <a class="button" href="{% url 'portal:project-revise' project.project_id %}">설명·범위 개정</a>
+    {% endif %}
+    {% if can_manage_project_members %}
+    <a class="button" href="{% url 'portal:project-members' project.project_id %}">구성원 관리</a>
+    {% endif %}
+    {% if can_attach_project_reference %}
+    <a class="button" href="{% url 'portal:project-reference' project.project_id %}">객체 참조 연결</a>
+    {% endif %}
+    {% if can_transition_project %}
+    <a class="button" href="{% url 'portal:project-transition' project.project_id %}">Lifecycle 변경</a>
+    {% endif %}
+    {% if can_use_project_compute %}
+    <form method="post" action="{% url 'portal:project-workspace' project.project_id %}">
+      {% csrf_token %}
+      <button class="button button-primary" type="submit">격리 작업공간 준비</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

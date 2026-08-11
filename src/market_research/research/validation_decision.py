@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import write_json_atomic_create_or_verify
+from market_research.storage_io import (
+    open_lock_file,
+    write_json_atomic_create_or_verify,
+)
 
 from .artifact_store import ArtifactStore
 from .hash_chain import (
@@ -912,7 +915,7 @@ def _decision_publication_lock(manager: ResearchPathManager) -> Iterator[None]:
         ".jsonl.publication.lock"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(path)
     lock_module: Any | None = None
     try:
         try:

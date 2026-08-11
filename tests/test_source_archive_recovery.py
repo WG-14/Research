@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import stat
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from market_research.research_composition.builtin_registry import (
     builtin_strategy_registry,
 )
 from market_research.settings import ResearchSettings
+from market_research.storage_io import ATOMIC_PUBLICATION_MODE_ENV
 
 
 def _manager(tmp_path: Path) -> ResearchPathManager:
@@ -125,6 +127,48 @@ def test_archive_is_content_addressed_and_restores_executable_strategy(
         current.decision_stream_hash,
         current.metrics_hash,
     ]
+
+
+def test_source_archive_is_group_readable_in_native_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+
+    evidence = publish_source_archive(
+        manager=_manager(tmp_path),
+        strategy_name="noop_baseline",
+        strategy_registry=builtin_strategy_registry(),
+    )
+
+    assert stat.S_IMODE(Path(str(evidence["path"])).stat().st_mode) == 0o640
+
+
+def test_source_archive_rejects_existing_symlink_even_with_identical_bytes(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    registry = builtin_strategy_registry()
+    evidence = publish_source_archive(
+        manager=manager,
+        strategy_name="noop_baseline",
+        strategy_registry=registry,
+    )
+    target = Path(str(evidence["path"]))
+    decoy = tmp_path / "decoy.zip"
+    decoy.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(decoy)
+
+    with pytest.raises(
+        SourceArchiveError,
+        match="source_archive_content_address_conflict",
+    ):
+        publish_source_archive(
+            manager=manager,
+            strategy_name="noop_baseline",
+            strategy_registry=registry,
+        )
 
 
 def test_restore_rejects_tampered_archive(tmp_path: Path) -> None:

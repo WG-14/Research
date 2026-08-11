@@ -61,11 +61,15 @@ def _verification_kwargs(
     *,
     source_report_hash: str | None = None,
     verifier_id: str = "independent-verifier-a",
+    principal_subject: str | None = None,
 ) -> dict[str, object]:
     result = publish_pass_verification(
         manager=manager,
-        verification_id=f"candidate-a-verification-{verifier_id}",
+        verification_id=(
+            f"candidate-a-verification-{verifier_id}-{principal_subject or verifier_id}"
+        ),
         verifier_id=verifier_id,
+        principal_subject=principal_subject,
         experiment_id="governance-fixture",
         source_report_hash=source_report_hash or _hash("5"),
         manifest_hash=_hash("e"),
@@ -783,6 +787,7 @@ def _approval_kwargs(
     rationale: str = "independent approval",
     approval_request_id: str | None = None,
     verifier_id: str = "independent-verifier-a",
+    principal_subject: str | None = None,
 ) -> dict[str, object]:
     return {
         "manager": manager,
@@ -798,7 +803,11 @@ def _approval_kwargs(
         "reviewer_id": reviewer_id,
         "rationale": rationale,
         "approval_request_id": approval_request_id,
-        **_verification_kwargs(manager, verifier_id=verifier_id),
+        **_verification_kwargs(
+            manager,
+            verifier_id=verifier_id,
+            principal_subject=principal_subject,
+        ),
     }
 
 
@@ -831,6 +840,20 @@ def test_approval_requires_pass_from_a_distinct_independent_verifier(
         without_originator = _approval_kwargs(manager, subject, hypothesis)
         without_originator["originator_actor_ids"] = frozenset()
         approve_strategy_candidate(**without_originator)
+
+    with pytest.raises(
+        GovernanceError,
+        match="independent_verifier_separation_violation",
+    ):
+        approve_strategy_candidate(
+            **_approval_kwargs(
+                manager,
+                subject,
+                hypothesis,
+                verifier_id="apparently-independent-alias",
+                principal_subject="researcher-a",
+            )
+        )
 
     with pytest.raises(
         GovernanceError,

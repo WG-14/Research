@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping
 
 from market_research.paths import ResearchPathManager
+from market_research.storage_io import open_lock_file
 
 from .artifact_store import ArtifactStore
 from .hash_chain import (
@@ -1623,7 +1624,7 @@ def _locked_prospective_study(
         f"{spec.version}.study.lock",
     )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(lock_path)
     lock_module: Any | None = None
     try:
         try:

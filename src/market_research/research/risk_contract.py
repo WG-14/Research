@@ -191,6 +191,14 @@ class ResearchRiskRuntimeState:
         if realized_pnl is not None and float(realized_pnl) < 0.0:
             self.last_realized_loss_ts = int(effective_ts)
 
+    def record_portfolio_adjustment(
+        self, *, effective_ts: int, realized_pnl: float | None
+    ) -> None:
+        """Record non-trade realized P&L without inflating fill trade counts."""
+
+        if realized_pnl is not None and float(realized_pnl) < 0.0:
+            self.last_realized_loss_ts = int(effective_ts)
+
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": 1,

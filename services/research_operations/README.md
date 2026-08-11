@@ -79,6 +79,18 @@ sends no paths, credentials, free-text exception bodies, or topology labels.
 Receiver URLs are read only from the owner-controlled private file named by
 `RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE`; they are not accepted in argv, stored
 in PostgreSQL, emitted in command output, or included in alert evidence.
+The supervised `alert-worker` evaluates the bounded workflow-readiness
+snapshot without cache, converges each active failure on a release-scoped
+service-condition episode, opens the next durable generation if an explicitly
+resolved condition recurs, escalates expired acknowledgement deadlines, and
+drains fenced delivery claims with bounded exponential retry. SIGTERM completes
+only the current store or receiver operation and prevents another claim.
+If the uncached snapshot reports `database_unavailable` and PostgreSQL rejects
+the episode write with a connectivity error, the worker bypasses the failed
+store and sends a deterministic UTC-bucketed emergency envelope directly to
+the receiver. Receiver-side idempotency is authoritative in this degraded
+mode; local acknowledgement, escalation, and durable history are unavailable
+until PostgreSQL recovers and must not be inferred from that delivery.
 
 `ExperimentAdmissionStore` serializes `(authority, experiment_id)` across web
 and admitted CLI adapters. Exact requests converge, different active requests

@@ -979,6 +979,15 @@ def build_strategy_research_package(
     if (
         not all(isinstance(value, str) and value for value in verification_ref.values())
         or verification_binding.get("status") != "PASS"
+        or not all(
+            isinstance(verification_binding.get(key), str)
+            and verification_binding.get(key)
+            for key in (
+                "principal_assertion_hash",
+                "principal_assertion_issuer",
+                "principal_assertion_subject",
+            )
+        )
     ):
         raise StrategyPackageError(
             "strategy_package_independent_verification_binding_invalid"
@@ -991,6 +1000,15 @@ def build_strategy_research_package(
                 "registry_path"
             ),
             "independent_verifier_id": verification_binding.get("verifier_id"),
+            "independent_verifier_subject": verification_binding.get(
+                "principal_assertion_subject"
+            ),
+            "independent_verifier_assertion_hash": verification_binding.get(
+                "principal_assertion_hash"
+            ),
+            "independent_verifier_assertion_issuer": verification_binding.get(
+                "principal_assertion_issuer"
+            ),
             "independent_verification_verified_at": verification_binding.get(
                 "verified_at"
             ),

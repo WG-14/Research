@@ -15,6 +15,9 @@ from market_research.research.independent_verification import (
     IndependentVerificationRef,
     load_independent_verification,
 )
+from market_research.research.principal_assertion import (
+    IndependentVerificationAssertionScope,
+)
 from market_research.research.validation_protocol import run_research_walk_forward
 from market_research.research_cli.context import ResearchAppContext
 from market_research.research_composition import builtin_strategy_registry
@@ -24,6 +27,7 @@ from tests.test_frozen_dataset_multi_split_integration import (
     frozen_manifest_and_manager,
 )
 from tests.clean_provenance_fixture import install_committed_checkout_provenance
+from tests.independent_verification_fixture import provision_test_principal_assertion
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +63,26 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
     receipt = context.paths.report_path(
         "research", "sma_success_import_boundary", "reproduction_receipt.json"
     )
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
+    trusted_paths, assertion = provision_test_principal_assertion(
+        manager=context.paths,
+        scope=IndependentVerificationAssertionScope(
+            verification_id="sma-success-independent-check",
+            verification_version="1",
+            experiment_id=str(receipt_payload["experiment_id"]),
+            research_version=str(receipt_payload["manifest_hash"]),
+            source_report_hash=str(receipt_payload["source_report_hash"]),
+            baseline_receipt_hash=str(receipt_payload["receipt_content_hash"]),
+        ),
+        subject="verifier-a",
+    )
+    assertion_path = tmp_path / "verifier-assertion.json"
+    assertion_path.write_text(
+        json.dumps(assertion.as_dict(), sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    context.settings = trusted_paths.settings
+    context.paths = trusted_paths
     out = tmp_path / "reproduction_report.json"
 
     rc = cmd_research_reproduce_run(
@@ -69,6 +93,7 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
         verification_id="sma-success-independent-check",
         verification_version="1",
         verifier_id="verifier-a",
+        verifier_assertion_path=str(assertion_path),
     )
 
     payload = json.loads(out.read_text(encoding="utf-8"))

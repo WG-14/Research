@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -484,7 +485,9 @@ def test_validated_standard_state_remains_compatible_with_research_approval(
         final_holdout_confirmation_hash=_hash("3"),
         reviewer_id="approver-a",
         rationale="independent review accepted the frozen research evidence",
-        decided_at="2026-01-04T00:00:00+00:00",
+        decided_at=(
+            datetime.fromisoformat(verification.verified_at) + timedelta(seconds=1)
+        ).isoformat(),
         independent_verification_ref=verification.ref(),
         experiment_id=verification.experiment_id,
         research_version=verification.research_version,

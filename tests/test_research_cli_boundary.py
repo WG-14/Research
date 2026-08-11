@@ -118,6 +118,7 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
         "RESEARCH_DB_PATH",
         "RESEARCH_MAX_WORKERS",
         "RESEARCH_RANDOM_SEED",

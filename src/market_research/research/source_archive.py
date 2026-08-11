@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from market_research.paths import ResearchPathManager
+from market_research.storage_io import ensure_directory, finalize_file_publication
 
 from .hashing import sha256_prefixed
 
@@ -42,22 +44,31 @@ def publish_source_archive(
         raise SourceArchiveError("source_archive_has_no_executable_files")
 
     archive_dir = manager.artifact_path("_source_archives")
-    archive_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(manager.artifact_root)
+    ensure_directory(archive_dir, trusted_root=manager.artifact_root)
     fd, staging_name = tempfile.mkstemp(
         prefix=".source-archive-", suffix=".zip", dir=str(archive_dir)
     )
-    os.close(fd)
     staging = Path(staging_name)
     try:
-        with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_STORED) as archive:
-            for logical_path, source_path in rows:
-                info = zipfile.ZipInfo(logical_path, date_time=_FIXED_ZIP_DATE)
-                info.compress_type = zipfile.ZIP_STORED
-                info.external_attr = 0o100644 << 16
-                info.create_system = 3
-                archive.writestr(info, source_path.read_bytes())
-        with staging.open("rb") as handle:
+        with os.fdopen(fd, "w+b") as handle:
+            with zipfile.ZipFile(
+                handle,
+                "w",
+                compression=zipfile.ZIP_STORED,
+            ) as archive:
+                for logical_path, source_path in rows:
+                    info = zipfile.ZipInfo(
+                        logical_path,
+                        date_time=_FIXED_ZIP_DATE,
+                    )
+                    info.compress_type = zipfile.ZIP_STORED
+                    info.external_attr = 0o100644 << 16
+                    info.create_system = 3
+                    archive.writestr(info, source_path.read_bytes())
+            handle.flush()
             os.fsync(handle.fileno())
+            finalize_file_publication(handle.fileno())
         archive_hash = _file_hash(staging)
         digest_hex = archive_hash.removeprefix("sha256:")
         target = archive_dir / f"{digest_hex}.zip"
@@ -65,7 +76,13 @@ def publish_source_archive(
             os.link(staging, target)
             _fsync_directory(archive_dir)
         except FileExistsError:
-            if _file_hash(target) != archive_hash:
+            try:
+                existing_hash = _file_hash(target)
+            except OSError as exc:
+                raise SourceArchiveError(
+                    "source_archive_content_address_conflict"
+                ) from exc
+            if existing_hash != archive_hash:
                 raise SourceArchiveError("source_archive_content_address_conflict")
 
         plugin = strategy_registry.resolve(strategy_name)
@@ -165,7 +182,12 @@ def _source_rows(project_root: Path) -> list[tuple[str, Path]]:
 
 def _file_hash(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError("source archive is not a regular file")
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"

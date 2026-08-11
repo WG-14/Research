@@ -40,6 +40,11 @@ _APPLICATION_PERMISSION_MAP = {
     "portal.view_all_research_datasets": {"research.view"},
     "portal.record_research_review": {"research.review.record", "research.view"},
     "portal.approve_research_candidate": {"research.approve", "research.view"},
+    "portal.create_research_project": {"research.project.manage"},
+    "portal.view_research_project": {"research.project.view"},
+    "portal.manage_research_project": {"research.project.manage"},
+    "portal.write_research_project": {"research.project.write"},
+    "portal.compute_research_project": {"research.project.compute"},
     "portal.manage_research_web": {
         "research.audit.verify",
         "research.governance.transition",

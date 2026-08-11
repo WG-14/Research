@@ -1,0 +1,57 @@
+{% extends "portal/base.html" %}
+{% block title %}연구 프로젝트 · Research Console{% endblock %}
+{% block breadcrumbs %}연구 프로젝트{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">PROJECT AUTHORITY</p>
+    <h1>{% if impact_mode %}영향받는 프로젝트{% else %}연구 프로젝트{% endif %}</h1>
+    <p>프로젝트 구성원에게 허용된 immutable authority만 표시합니다.</p>
+  </div>
+  {% if can_create_projects %}
+  <a class="button button-primary" href="{% url 'portal:project-create' %}">프로젝트 만들기</a>
+  {% endif %}
+</section>
+
+{% if impact_mode %}
+<form method="get" class="panel form-grid">
+  <label>객체 종류
+    <select name="kind" required>
+      {% for kind in reference_kinds %}<option value="{{ kind }}">{{ kind }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>객체 ID <input name="object_id" required maxlength="255"></label>
+  <label>Version <input name="version" maxlength="255"></label>
+  <label>Content hash <input name="content_hash" maxlength="71"></label>
+  <button class="button button-primary" type="submit">영향 조회</button>
+</form>
+{% else %}
+<form method="get" class="panel form-grid">
+  <label>검색 <input name="q" value="{{ query }}" maxlength="500"></label>
+  <button class="button button-primary" type="submit">검색</button>
+  <a class="button" href="{% url 'portal:project-impact' %}">객체 영향 조회</a>
+</form>
+{% endif %}
+
+<section class="panel">
+  {% if projects %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Project ID</th><th>제목</th><th>상태</th><th>Version</th></tr></thead>
+      <tbody>
+      {% for project in projects %}
+        <tr>
+          <td><a href="{% url 'portal:project-detail' project.project_id %}">{{ project.project_id }}</a></td>
+          <td>{{ project.title }}</td>
+          <td>{{ project.status }}</td>
+          <td>{{ project.version }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p>현재 권한으로 조회할 수 있는 프로젝트가 없습니다.</p>
+  {% endif %}
+</section>
+{% endblock %}

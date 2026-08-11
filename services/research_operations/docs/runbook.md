@@ -28,11 +28,12 @@ files, build digest, and release-bundle digest. Promote the clean checkout to
 `/opt/research-platform/releases/<git-sha>`, install the frozen workspace, copy
 the reviewed `release.json` into that immutable release, and expose it through
 the root-owned `current` symlink. Neither checkout nor manifest may be writable
-by `research-ops`.
+by any service-tier identity.
 
 Copy `deploy/native/runtime.env.example` to
-`/etc/research-ops/runtime.env`, replace every placeholder, and set mode `0640`
-with `root:research-ops`. Bind all release values exactly, including:
+`/etc/research-ops/runtime.env`, replace every placeholder, and set mode `0600`
+with `root:root`. systemd reads this non-secret configuration before changing
+unit identity. Bind all release values exactly, including:
 
 - `RESEARCH_OPS_GIT_SHA`;
 - `RESEARCH_OPS_RELEASE_ID`;
@@ -46,9 +47,32 @@ The service profile must set `RESEARCH_RUNTIME_PROFILE=operated`. Verify that
 direct `market-research` invocation exits fail-closed. Only the Operations
 admission worker may use the explicit admitted Research adapter.
 
-Do not put secret values in the environment file. Passwords, database URLs,
-Django secret, htpasswd, signing keys, certificates, and private keys are
-external files with the documented identities and modes.
+Do not put secret values in the environment file. Database passwords, the
+Django secret, htpasswd, backup signing key, control database URL, and alert
+endpoint URL are exact `0600 root:root` source files. systemd
+`LoadCredential` projects only the allowlisted source for each unit, and every
+non-root application unit hides `/etc/research-ops/secrets` from its mount
+namespace. Certificates and server private keys retain their separately
+documented identities and modes.
+
+Install `deploy/native/sysusers.d/research-operations.conf` and run
+`systemd-sysusers` before preflight. Migration, Web, outbox, job, alert,
+validator, backup, diagnostics, and retention use distinct UIDs. This is a
+security boundary: the runtime entrypoint exposes a projected credential to
+its child environment, and Linux permits the same UID to inspect that
+environment through `/proc`. `ProtectProc=invisible` plus distinct UIDs blocks
+cross-tier inspection; never collapse the declared accounts into one UID.
+Do not add these accounts to host supplementary groups. Preflight requires
+private primary GIDs, rejects root/PostgreSQL/Nginx numeric aliases, and rejects
+all persistent supplementary membership. systemd assigns the exact effective
+groups. In particular, Web and diagnostics sockets use separate proxy groups;
+Nginx receives those groups but not the shared research-filesystem group.
+
+Before promotion, inspect `systemctl cat` for every unit and compare the exact
+credential assignment with the native deployment README. Web is allowed only
+the runtime database password and Django secret; it must not receive or read
+the owner, validator, or backup password, backup signing key, alert endpoint,
+control database URL, operations htpasswd, or execution capability.
 
 ## 2. Organization and host prerequisites
 
@@ -154,18 +178,41 @@ usernames, request bodies, cookies, DSNs, environment values, or payload labels.
 Daily preflight failure and approaching certificate expiry are incidents.
 
 The built-in service-health alert workflow is restricted to the allowlist in
-`research_operations.alerting`; it is not a market or trading monitor. Configure
-each supervised delivery unit with a mode-0600
-`RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE`, then exercise the release-specific
-receiver before promotion. Raise with a stable incident idempotency key, run
-`alert-deliver-once` for the bound endpoint, record acknowledgement with a
-different actor and a stable reason code, and run `alert-escalate-once` from a
-timer. An acknowledged incident must not escalate. Retain the alert ID and
-terminal event hash with the receiver's independently retained idempotency key.
-Test both the acknowledgement path and an intentionally unacknowledged deadline
-that reaches the secondary receiver. A repository loopback receiver proves the
-transport and PostgreSQL workflow but does not establish the organization's
-actual on-call ownership or external receiver availability.
+`research_operations.alerting`; it is not a market monitor. Configure the
+root-owned endpoint URL source at
+`/etc/research-ops/secrets/service-alert-endpoint-url`; the systemd unit exposes
+only its private `LoadCredential` copy as
+`RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE`. Configure stable primary and escalation
+endpoint identities, separate evaluator and escalation actor identities, and
+bounded lease, retry, poll, acknowledgement, escalation, and per-cycle limits.
+Exercise the release-specific receiver before promotion with
+`alert-worker --once`; treat its nonzero exit as a failed receiver exercise.
+The persistent `research-operations-alert-worker.service` then evaluates the
+uncached workflow-readiness snapshot, raises release-scoped idempotent
+service-condition episodes, escalates due unacknowledged incidents, and drains
+fenced deliveries. Active observations converge on one episode; after an
+operator explicitly acknowledges and resolves it, a recurring failed
+observation opens a new generation and delivery. Record acknowledgement with a
+different actor and stable reason code. An acknowledged incident must not
+escalate. Retain the alert ID and terminal event hash with the receiver's
+independently retained idempotency key. Test both the acknowledgement path and
+an intentionally unacknowledged deadline that reaches the secondary receiver.
+A `database_unavailable` observation is evaluated before the per-cycle cap. If
+its durable episode write fails specifically with a PostgreSQL connectivity
+error, the worker sends a deterministic, release/endpoint/time-bucket-bound
+emergency envelope directly to the receiver and returns before any other DB
+operation. Multiple workers and restarts therefore converge at the receiver.
+This degraded path has no local durable acknowledgement, escalation, or audit
+history; the receiver must retain its idempotency record, and recovery
+reconciliation remains an explicit operator task. Programming, permission, and
+schema errors never take this fallback. Authentication, authorization,
+TLS/certificate, DSN/configuration, and local migration-resource failures also
+fail loud instead of being relabeled as database unavailability. The alert
+worker starts after preflight independently of the migration gate so a database
+outage during cold start can still reach the DB-independent emergency receiver.
+A repository loopback receiver proves the transport and PostgreSQL workflow but
+does not establish the organization's actual on-call ownership or external
+receiver availability.
 
 ## 5. Stop, restart, and host reboot
 
@@ -200,8 +247,12 @@ the two-phase fenced backup and mandatory off-site export:
 5. create and detached-sign a canonical manifest bound to release, build,
    migrations, fence, audit terminal state, sizes, and hashes;
 6. independently verify and register that exact manifest;
-7. invoke encrypted off-site export and verify its bound immutable receipt;
-8. emit a non-destructive retention/legal-hold inventory.
+7. keep the locally verified set under `.staging-<backup-id>` while encrypted
+   off-site export writes a unique staged receipt;
+8. verify the off-site signature and bindings, publish that receipt with a
+   same-filesystem no-replace link, then rename the local set to its UUID final
+   name and fsync both roots;
+9. emit a non-destructive retention/legal-hold inventory.
 
 Both manifest and recovery receipt signing happen against unique temporary
 payload/signature files and are verified before final-name publication. A
@@ -223,13 +274,18 @@ Any failure leaves evidence for investigation and may leave admission closed.
 Never delete the private fence receipt or automatically force the fence open.
 Resume only the exact backup ID using the documented `BACKUP_RESUME_ID`
 contract after diagnosing the failure. Fence intent is created durably at
-`/run/research-operations/backup-fence-<backup-id>.json` before the database
+`/run/research-operations-backup/backup-fence-<backup-id>.json` before the database
 commit. Resume first reconciles that owner-only, mode-0600 intent with the exact
 database fence token/generation; a missing, symlinked, misowned, permissive, or
 mismatched receipt fails closed. The runtime directory itself must be the
 owner-only mode-0700 systemd directory and is never under `/tmp`. A local signed
 set without a verified encrypted off-site receipt is not a successful
-production backup.
+production backup. Upload or receipt failure leaves the local set under its
+dot-prefixed staging name, so retention never mistakes active work for a
+finalized copy. A unique failed receipt attempt is also preserved under a
+dot-prefixed staging name for diagnosis. An exact resume creates a new attempt;
+if a verified final receipt was already published before interruption, resume
+re-verifies it and completes only the pending local no-replace rename.
 
 The off-site hook signs the canonical receipt-without-`receipt_signature` using
 the separately controlled RSA/SHA-256 or Ed25519 key and encodes the signature
@@ -237,9 +293,11 @@ as `base64:<strict-base64>`. The installed trusted public key is configured by
 `RESEARCH_OPS_OFFSITE_RECEIPT_VERIFICATION_KEY_FILE`. Retention automation is
 dry-run only and counts a copy as complete only after re-verifying the backup
 manifest signature, every bound size/hash, the verification marker, and that
-policy-bound off-site signature. Deletion requires a separate authorized,
-reviewed action that honors legal hold and preserves the configured minimum
-cryptographically complete copies.
+policy-bound off-site signature. A legal hold is only a deletion prohibition:
+the held set still undergoes every signature, hash, marker, and off-site
+binding check, and a held but invalid UUID final makes the audit exit nonzero.
+Deletion requires a separate authorized, reviewed action that honors legal
+hold and preserves the configured minimum cryptographically complete copies.
 
 ## 7. Isolated signed restore rehearsal
 

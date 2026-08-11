@@ -81,6 +81,7 @@ class ResearchSettings:
     max_workers: int
     random_seed: int
     experiment_identity_registry_path: Path | None = None
+    independent_verifier_trust_store_path: Path | None = None
 
     @classmethod
     def from_env(cls) -> "ResearchSettings":
@@ -115,5 +116,9 @@ class ResearchSettings:
             experiment_identity_registry_path=_optional_external_absolute_path(
                 "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
                 os.getenv("RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH"),
+            ),
+            independent_verifier_trust_store_path=_optional_external_absolute_path(
+                "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
+                os.getenv("RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH"),
             ),
         )

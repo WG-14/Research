@@ -38,6 +38,13 @@ def _backtest(parser: argparse.ArgumentParser) -> None:
 def _validate(parser: argparse.ArgumentParser) -> None:
     _manifest_calibration(parser)
     parser.add_argument("--candidate-id")
+    parser.add_argument(
+        "--validation-experiment-bundle",
+        help=(
+            "absolute repository-external path to a precomputed, hash-bound "
+            "validation experiment bundle"
+        ),
+    )
     parser.add_argument("--out")
     parser.add_argument("--mode", default="strict", choices=("strict",))
 
@@ -82,6 +89,13 @@ def _reproduce_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--verification-id")
     parser.add_argument("--verification-version")
     parser.add_argument("--verifier")
+    parser.add_argument(
+        "--verifier-assertion",
+        help=(
+            "repository-external signed principal assertion required for "
+            "authoritative independent-verification publication"
+        ),
+    )
     parser.add_argument(
         "--verifier-role",
         choices=("independent_verifier",),

@@ -20,6 +20,12 @@ from pathlib import Path
 from typing import Mapping, Protocol, Sequence, TypeVar
 
 from market_research.paths import ResearchPathManager
+from market_research.research.engine_admission import (
+    MULTI_ASSET_ENGINE_PROFILE,
+    EngineAdmissionError,
+    multi_asset_study_requirement,
+    require_engine_admission,
+)
 from market_research.research.multi_asset.accounting import (
     ReportLedgerReconciliation,
 )
@@ -1251,6 +1257,17 @@ def execute_deterministic_study_core(
     captured runtime authority before running the source-owned scenario graph.
     """
 
+    try:
+        require_engine_admission(
+            profile=MULTI_ASSET_ENGINE_PROFILE,
+            requirement=multi_asset_study_requirement(
+                experiment_hash=spec.content_hash,
+            ),
+        )
+    except EngineAdmissionError as exc:
+        raise MultiAssetExperimentError(
+            f"experiment.engine_admission_failed:{exc}"
+        ) from exc
     first_identities = tuple(
         (
             item.reference.role.value,

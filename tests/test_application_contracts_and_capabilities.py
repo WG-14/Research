@@ -161,6 +161,7 @@ def test_cli_and_mapping_validation_adapters_build_equal_requests() -> None:
         manifest="/external/manifest.json",
         execution_calibration=None,
         candidate_id="candidate-1",
+        validation_experiment_bundle="/external/validation-bundle.json",
         out="/external/result.json",
         mode="strict",
     )
@@ -170,6 +171,9 @@ def test_cli_and_mapping_validation_adapters_build_equal_requests() -> None:
             "manifest_path": "/external/manifest.json",
             "execution_calibration_path": None,
             "candidate_id": "candidate-1",
+            "validation_experiment_bundle_path": (
+                "/external/validation-bundle.json"
+            ),
             "out_path": "/external/result.json",
             "mode": "strict",
             "actor": actor.model_dump(mode="python"),
@@ -177,6 +181,26 @@ def test_cli_and_mapping_validation_adapters_build_equal_requests() -> None:
     )
     assert from_cli == from_mapping
     assert isinstance(from_cli, ResearchValidationRequest)
+
+
+def test_research_validate_cli_exposes_external_bundle_input() -> None:
+    parser = argparse.ArgumentParser()
+    command_registry()["research-validate"].build(parser)
+    args = parser.parse_args(
+        [
+            "--manifest",
+            "/external/manifest.json",
+            "--validation-experiment-bundle",
+            "/external/validation-bundle.json",
+        ]
+    )
+
+    request = validation_request_from_namespace(args)
+
+    assert (
+        request.validation_experiment_bundle_path
+        == "/external/validation-bundle.json"
+    )
 
 
 def test_composite_preflight_reuses_readiness_and_workload_services(
@@ -230,12 +254,21 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
     tmp_path: Path,
 ) -> None:
     service = ResearchApplicationService(_paths(tmp_path), strategy_registry=object())
-    request = ResearchValidationRequest(
-        manifest_path="manifest.json",
-        actor=cli_actor_context(),
+    parser = argparse.ArgumentParser()
+    command_registry()["research-validate"].build(parser)
+    request = validation_request_from_namespace(
+        parser.parse_args(
+            [
+                "--manifest",
+                "/external/manifest.json",
+                "--validation-experiment-bundle",
+                "/external/validation-bundle.json",
+            ]
+        )
     )
     finishes: list[dict[str, object]] = []
     call_order: list[str] = []
+    engine_kwargs: dict[str, object] = {}
 
     class Handle:
         run_id = "RUN-test"
@@ -272,16 +305,18 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
         "market_research.application.service._required_runtime_db_path",
         lambda *_args, **_kwargs: None,
     )
+    def run_validation(**kwargs):
+        engine_kwargs.update(kwargs)
+        call_order.append("engine")
+        return {
+            "end_to_end_validation_result": "FAIL",
+            "content_hash": "sha256:" + "a" * 64,
+            "validation_run_path": "/external/validation.json",
+        }
+
     monkeypatch.setattr(
         "market_research.application.service.run_research_validation",
-        lambda **_: (
-            call_order.append("engine")
-            or {
-                "end_to_end_validation_result": "FAIL",
-                "content_hash": "sha256:" + "a" * 64,
-                "validation_run_path": "/external/validation.json",
-            }
-        ),
+        run_validation,
     )
 
     completed = service.validate(request)
@@ -291,6 +326,9 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
     assert completed.exit_code == 1
     assert completed.errors == ()
     assert call_order == ["bind", "engine"]
+    assert engine_kwargs["validation_experiment_bundle_path"] == (
+        "/external/validation-bundle.json"
+    )
     assert finishes == [
         {
             "status": "FAILED",

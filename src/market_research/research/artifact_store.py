@@ -10,6 +10,7 @@ from typing import Any
 from market_research.paths import ResearchPathManager
 from market_research.storage_io import (
     append_jsonl,
+    finalize_file_publication,
     write_json_atomic,
     write_json_atomic_create_or_verify,
 )
@@ -364,6 +365,7 @@ class ResearchArtifactContext:
                 raise ResearchArtifactCollisionError(resolved)
             os.write(fd, (relative + "\n").encode("utf-8"))
             os.fsync(fd)
+            finalize_file_publication(fd)
         finally:
             os.close(fd)
         self._claimed_paths.add(resolved)

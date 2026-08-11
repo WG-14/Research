@@ -2,9 +2,9 @@
 """Fail-closed evaluator for the user-supplied A--J research-platform rubric.
 
 The repository also retains older product-scope matrices as historical evidence.
-This evaluator is intentionally bound to the July 2026 completeness rubric named
-in ``REFERENCE_RUBRIC_SHA256``.  It never promotes documentation, a declared
-score, or a missing external attestation into implementation evidence.
+This evaluator is intentionally bound to the exact user-supplied attachment bytes
+identified by ``REFERENCE_RUBRIC_SHA256``.  It never promotes documentation, a
+declared score, or a missing external attestation into implementation evidence.
 """
 
 from __future__ import annotations
@@ -22,23 +22,36 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from tools.reference_audit_receipt import (
+        DEFAULT_RECEIPT,
+        ReceiptValidation,
+        validate_receipt,
+    )
     from tools.reference_audit_surface import (
         AUDIT_SURFACE_SCHEMA_VERSION,
         audit_surface,
     )
-    from tools.update_reference_audit import build_matrix
+    from tools.update_reference_audit import REPOSITORY_COMMIT_ROLE, build_matrix
 except ModuleNotFoundError:  # direct ``python tools/...`` execution
+    from reference_audit_receipt import (  # type: ignore[import-not-found,no-redef]
+        DEFAULT_RECEIPT,
+        ReceiptValidation,
+        validate_receipt,
+    )
     from reference_audit_surface import (  # type: ignore[import-not-found,no-redef]
         AUDIT_SURFACE_SCHEMA_VERSION,
         audit_surface,
     )
-    from update_reference_audit import build_matrix  # type: ignore[import-not-found,no-redef]
+    from update_reference_audit import (  # type: ignore[import-not-found,no-redef]
+        REPOSITORY_COMMIT_ROLE,
+        build_matrix,
+    )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = PROJECT_ROOT / "docs" / "investment-research-platform-audit.json"
 REFERENCE_RUBRIC_SHA256 = (
-    "f7ec62425039c335c22ce39ff94de0b3c113ec162620b8ff10bef9902f3c14ae"
+    "ce507e16b37a8915ba34f12907aac3145dd512859951d391781e5a390fb675a5"
 )
 REFERENCE_INSTRUCTION_SHA256 = (
     "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
@@ -72,6 +85,7 @@ MATURITY_MULTIPLIERS = {
 }
 ALLOWED_STATUSES = {
     "VERIFIED",
+    "VERIFIED_LOCAL_SELF_ATTESTED",
     "IMPLEMENTED_NOT_VERIFIED",
     "PARTIAL",
     "DOCUMENTATION_ONLY",
@@ -112,14 +126,17 @@ _EXPECTED_MATRIX_FIELDS = {
 }
 _EXPECTED_ASSESSMENT_FIELDS = {
     "iteration",
+    "history_semantics",
     "assessed_at",
     "repository_commit",
+    "repository_commit_role",
     "repository_branch",
     "worktree_was_clean",
     "diagnosis",
     "score_cap",
     "score_cap_reason",
     "assessment_surface",
+    "execution_receipt",
 }
 _REQUIRED_HISTORY_FIELDS = {
     "iteration",
@@ -130,7 +147,12 @@ _REQUIRED_HISTORY_FIELDS = {
     "status",
     "diagnosis",
 }
-_ALLOWED_HISTORY_FIELDS = _REQUIRED_HISTORY_FIELDS | {"worktree_patch"}
+_ALLOWED_HISTORY_FIELDS = _REQUIRED_HISTORY_FIELDS | {
+    "evidence_scope",
+    "history_kind",
+    "retained_snapshot_sha256",
+    "worktree_patch",
+}
 _REQUIRED_FATAL_GATE_FIELDS = {
     "id",
     "title",
@@ -143,6 +165,12 @@ _REQUIRED_FATAL_GATE_FIELDS = {
 }
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RETAINED_HISTORY_SCOPE = re.compile(
+    r"^retained_snapshot:"
+    r"(?P<path>docs/investment-research-platform-audit-history/"
+    r"iteration-(?P<iteration>[0-9]{3})-(?P<surface>[0-9a-f]{64})\.json);"
+    r"assessment_surface:(?P=surface)$"
+)
 _EVIDENCE_COMMAND_PREFIX = (
     "PYTHONHASHSEED=0",
     "OMP_NUM_THREADS=1",
@@ -177,6 +205,13 @@ class AuditEvaluation:
     critical_count: int
     maturity_counts: dict[str, int]
     status_counts: dict[str, int]
+    execution_receipt_status: str
+    execution_receipt_clean_local_run: bool
+    execution_receipt_trusted: bool
+    execution_receipt_trust_level: str
+    execution_receipt_findings: tuple[str, ...]
+    execution_receipt_content_sha256: str | None
+    execution_receipt_tests_passed: int | None
     findings: tuple[str, ...]
     complete: bool
     verdict: str
@@ -204,6 +239,94 @@ def load_matrix(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("audit_matrix_root_must_be_object")
     return value
+
+
+def _retained_history_snapshot_findings(
+    *,
+    matrix_root: Path,
+    criterion_id: str,
+    entry: dict[str, Any],
+    cache: dict[Path, tuple[str, dict[str, Any]]],
+) -> list[str]:
+    """Verify that a retained history row is backed by the named full matrix."""
+
+    prefix = f"{criterion_id}:assessment_history_{entry.get('iteration')}"
+    scope = entry.get("evidence_scope")
+    match = _RETAINED_HISTORY_SCOPE.fullmatch(str(scope))
+    declared_hash = entry.get("retained_snapshot_sha256")
+    if match is None or _SHA256.fullmatch(str(declared_hash)) is None:
+        return [f"{prefix}_retained_snapshot_identity_invalid"]
+    iteration = entry.get("iteration")
+    if (
+        not isinstance(iteration, int)
+        or isinstance(iteration, bool)
+        or int(match.group("iteration")) != iteration
+    ):
+        return [f"{prefix}_retained_snapshot_iteration_mismatch"]
+    relative = Path(match.group("path"))
+    candidate = matrix_root / relative
+    resolved_root = matrix_root.resolve()
+    resolved_candidate = candidate.resolve()
+    if (
+        relative.is_absolute()
+        or not resolved_candidate.is_relative_to(resolved_root)
+        or candidate.is_symlink()
+        or not candidate.is_file()
+    ):
+        return [f"{prefix}_retained_snapshot_path_invalid"]
+    try:
+        if candidate not in cache:
+            content_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            cache[candidate] = (content_sha256, load_matrix(candidate))
+        content_sha256, snapshot = cache[candidate]
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return [f"{prefix}_retained_snapshot_unreadable"]
+    if content_sha256 != declared_hash:
+        return [f"{prefix}_retained_snapshot_hash_mismatch"]
+    assessment = snapshot.get("assessment")
+    criteria = snapshot.get("criteria")
+    if not isinstance(assessment, dict) or not isinstance(criteria, list):
+        return [f"{prefix}_retained_snapshot_shape_invalid"]
+    surface = assessment.get("assessment_surface")
+    if (
+        assessment.get("iteration") != iteration
+        or not isinstance(surface, dict)
+        or surface.get("sha256") != match.group("surface")
+    ):
+        return [f"{prefix}_retained_snapshot_authority_mismatch"]
+    matching_rows = [
+        row
+        for row in criteria
+        if isinstance(row, dict) and row.get("id") == criterion_id
+    ]
+    if len(matching_rows) != 1:
+        return [f"{prefix}_retained_snapshot_criterion_missing"]
+    snapshot_history = matching_rows[0].get("assessment_history")
+    if not isinstance(snapshot_history, list) or not snapshot_history:
+        return [f"{prefix}_retained_snapshot_history_missing"]
+    source_entry = snapshot_history[-1]
+    if not isinstance(source_entry, dict):
+        return [f"{prefix}_retained_snapshot_history_invalid"]
+    compared_fields = _REQUIRED_HISTORY_FIELDS | {"worktree_patch"}
+    if any(source_entry.get(field) != entry.get(field) for field in compared_fields):
+        return [f"{prefix}_retained_snapshot_history_mismatch"]
+    if (
+        source_entry.get("history_kind") != "current_surface_reassessment"
+        or source_entry.get("evidence_scope")
+        != f"assessment_surface:{match.group('surface')}"
+    ):
+        return [f"{prefix}_retained_snapshot_source_kind_invalid"]
+    snapshot_receipt = assessment.get("execution_receipt")
+    if not isinstance(snapshot_receipt, dict):
+        return [f"{prefix}_retained_snapshot_receipt_missing"]
+    if entry.get("status") == "VERIFIED" and not snapshot_receipt.get("trusted"):
+        return [f"{prefix}_verified_without_snapshot_trusted_receipt"]
+    if (
+        entry.get("status") == "VERIFIED_LOCAL_SELF_ATTESTED"
+        and not snapshot_receipt.get("clean_local_run")
+    ):
+        return [f"{prefix}_local_verified_without_snapshot_clean_receipt"]
+    return []
 
 
 def _nonempty_text(value: object) -> bool:
@@ -288,7 +411,9 @@ def _maturity_rank(value: str) -> int:
 def _status_matches_maturity(*, status: str, maturity: str) -> bool:
     rank = _maturity_rank(maturity)
     if status == "VERIFIED":
-        return rank >= 4
+        return rank >= 5
+    if status == "VERIFIED_LOCAL_SELF_ATTESTED":
+        return rank == 4
     if status == "IMPLEMENTED_NOT_VERIFIED":
         return rank == 3
     if status == "PARTIAL":
@@ -303,7 +428,7 @@ def _status_matches_maturity(*, status: str, maturity: str) -> bool:
 
 
 def _git_provenance(root: Path) -> tuple[Path, str, str, bool]:
-    """Return the exact Git identity and worktree state used by the audit."""
+    """Return current Git context without treating HEAD as the audit identity."""
 
     def run(*args: str) -> str:
         return subprocess.run(
@@ -320,6 +445,73 @@ def _git_provenance(root: Path) -> tuple[Path, str, str, bool]:
     branch = run("branch", "--show-current")
     dirty = bool(run("status", "--porcelain=v1", "--untracked-files=all"))
     return top_level, head, branch, dirty
+
+
+def _git_commit_is_ancestor(root: Path, commit: str, head: str) -> bool:
+    completed = subprocess.run(
+        ("git", "merge-base", "--is-ancestor", commit, head),
+        cwd=root,
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
+    return completed.returncode == 0
+
+
+def _declared_required_tests(
+    matrix: dict[str, Any], *, matrix_root: Path
+) -> dict[str, str]:
+    targets: set[str] = set()
+    criteria = matrix.get("criteria")
+    if not isinstance(criteria, list):
+        return {}
+    for criterion in criteria:
+        if not isinstance(criterion, dict):
+            continue
+        evidence = criterion.get("objective_evidence")
+        if not isinstance(evidence, list):
+            continue
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            target = item.get("test")
+            if isinstance(target, str):
+                targets.add(target)
+    gates = matrix.get("fatal_gates")
+    if isinstance(gates, list):
+        for gate in gates:
+            if not isinstance(gate, dict):
+                continue
+            target = _pytest_target(gate.get("verification_method"))
+            if target is None:
+                continue
+            targets.add(target)
+    required: dict[str, str] = {}
+    for target in sorted(targets):
+        path = _owned_path(matrix_root, target)
+        if path is not None and path.is_file():
+            required[target] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return required
+
+
+def _validate_execution_receipt(
+    *,
+    matrix: dict[str, Any],
+    matrix_root: Path,
+    source_surface: dict[str, object],
+) -> tuple[ReceiptValidation, dict[str, object] | None]:
+    assessment = matrix.get("assessment")
+    summary = (
+        assessment.get("execution_receipt") if isinstance(assessment, dict) else None
+    )
+    expected_relative = DEFAULT_RECEIPT.relative_to(PROJECT_ROOT).as_posix()
+    receipt_path = matrix_root / expected_relative
+    validation = validate_receipt(
+        receipt_path,
+        source_surface=source_surface,
+        required_tests=_declared_required_tests(matrix, matrix_root=matrix_root),
+    )
+    return validation, summary if isinstance(summary, dict) else None
 
 
 def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
@@ -350,9 +542,14 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
         "domain_count": len(DOMAIN_POINTS),
         "repository_copy": {
             "rubric_path": "docs/investment-research-platform-audit-rubric.md",
-            "rubric_normalized_sha256": RUBRIC_COPY_SHA256,
+            "rubric_repository_inventory_sha256": RUBRIC_COPY_SHA256,
             "instruction_path": "docs/investment-research-platform-audit-instructions.md",
-            "instruction_normalized_sha256": INSTRUCTION_COPY_SHA256,
+            "instruction_repository_copy_sha256": INSTRUCTION_COPY_SHA256,
+            "copy_role": (
+                "reviewed semantic inventory used to parse all 184 headings; "
+                "not claimed to be a byte-normalization of the canonical "
+                "attachment authorities above"
+            ),
         },
     }
     if set(source) != set(expected_source):
@@ -365,7 +562,12 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
         "maturity_multipliers": MATURITY_MULTIPLIERS,
         "importance_weights": IMPORTANCE_WEIGHTS,
         "domain_points": DOMAIN_POINTS,
-        "completion_policy": "score>=95, no failed/unverified fatal gate, all Critical M4+, every criterion VERIFIED; evidence is never inferred from narrative score",
+        "completion_policy": (
+            "score>=95, current hash-bound clean-PASS execution receipt, no "
+            "failed/unverified fatal gate, all Critical M4+, every criterion "
+            "authenticated VERIFIED (local self-attested M4 is insufficient); "
+            "evidence is never inferred from narrative score"
+        ),
     }
     scoring = matrix.get("scoring")
     if not isinstance(scoring, dict):
@@ -425,12 +627,16 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
         or _SHA1.fullmatch(str(assessment.get("repository_commit"))) is None
     ):
         findings.append("assessment_repository_commit_invalid")
+    if assessment.get("repository_commit_role") != REPOSITORY_COMMIT_ROLE:
+        findings.append("assessment_repository_commit_role_invalid")
     if not _nonempty_text(assessment.get("repository_branch")):
         findings.append("assessment_repository_branch_invalid")
     if not isinstance(assessment.get("worktree_was_clean"), bool):
         findings.append("assessment_worktree_state_invalid")
     if not _nonempty_text(assessment.get("diagnosis")):
         findings.append("assessment_diagnosis_invalid")
+    if not _nonempty_text(assessment.get("history_semantics")):
+        findings.append("assessment_history_semantics_invalid")
     score_cap = assessment.get("score_cap")
     if not isinstance(score_cap, (int, float)) or isinstance(score_cap, bool):
         findings.append("assessment_score_cap_invalid")
@@ -468,22 +674,31 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
     expected_surface = audit_surface(matrix_root)
     if declared_surface != expected_surface:
         findings.append("assessment_surface_hash_mismatch")
+    receipt, declared_receipt_summary = _validate_execution_receipt(
+        matrix=matrix,
+        matrix_root=matrix_root,
+        source_surface=expected_surface,
+    )
+    expected_receipt_summary = receipt.summary(
+        relative_path=DEFAULT_RECEIPT.relative_to(PROJECT_ROOT).as_posix()
+    )
+    if declared_receipt_summary != expected_receipt_summary:
+        findings.append("assessment_execution_receipt_mismatch")
     if path.resolve() == DEFAULT_MATRIX.resolve():
         try:
-            git_root, head, branch, dirty = _git_provenance(matrix_root)
+            git_root, head, _branch, _dirty = _git_provenance(matrix_root)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             findings.append("assessment_git_provenance_unavailable")
         else:
             if git_root != matrix_root.resolve():
                 findings.append("assessment_git_root_mismatch")
-            if assessment.get("repository_commit") != head:
-                findings.append("assessment_repository_commit_mismatch")
-            if not branch:
-                findings.append("assessment_repository_detached_head")
-            if assessment.get("repository_branch") != branch:
-                findings.append("assessment_repository_branch_mismatch")
-            if assessment.get("worktree_was_clean") != (not dirty):
-                findings.append("assessment_worktree_state_mismatch")
+            generation_commit = assessment.get("repository_commit")
+            if (
+                isinstance(generation_commit, str)
+                and _SHA1.fullmatch(generation_commit)
+                and not _git_commit_is_ancestor(matrix_root, generation_commit, head)
+            ):
+                findings.append("assessment_generation_commit_not_ancestor")
 
     criterion_ids = [item.get("id") for item in criteria if isinstance(item, dict)]
     if len(criteria) != EXPECTED_CRITERIA:
@@ -516,6 +731,7 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
     critical_count = 0
     critical_m4_or_higher = 0
     history_phase_sequence: tuple[str, ...] | None = None
+    retained_snapshot_cache: dict[Path, tuple[str, dict[str, Any]]] = {}
     for index, raw in enumerate(criteria):
         if not isinstance(raw, dict):
             findings.append(f"criterion_{index}_not_object")
@@ -543,6 +759,12 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
             findings.append(f"{criterion_id}:status_invalid")
         elif not _status_matches_maturity(status=str(status), maturity=str(maturity)):
             findings.append(f"{criterion_id}:status_maturity_incoherent")
+        if status == "VERIFIED" and not receipt.trusted:
+            findings.append(f"{criterion_id}:verified_without_valid_execution_receipt")
+        if status == "VERIFIED_LOCAL_SELF_ATTESTED" and not receipt.clean_local_run:
+            findings.append(
+                f"{criterion_id}:local_verified_without_clean_local_execution_receipt"
+            )
         if not all(
             _nonempty_text(raw.get(field))
             for field in (
@@ -643,15 +865,67 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
                     findings.append(
                         f"{criterion_id}:assessment_history_{history_index}_status_maturity_incoherent"
                     )
+                history_kind = entry.get("history_kind")
+                if (
+                    history_kind == "current_surface_reassessment"
+                    and history_status == "VERIFIED"
+                    and not receipt.trusted
+                ):
+                    findings.append(
+                        f"{criterion_id}:assessment_history_{history_index}_"
+                        "verified_without_valid_execution_receipt"
+                    )
+                if (
+                    history_kind == "current_surface_reassessment"
+                    and history_status == "VERIFIED_LOCAL_SELF_ATTESTED"
+                    and not receipt.clean_local_run
+                ):
+                    findings.append(
+                        f"{criterion_id}:assessment_history_{history_index}_"
+                        "local_verified_without_clean_local_execution_receipt"
+                    )
                 if not _nonempty_text(entry.get("diagnosis")):
                     findings.append(
                         f"{criterion_id}:assessment_history_{history_index}_diagnosis_invalid"
                     )
+                for field in ("history_kind", "evidence_scope"):
+                    if not _nonempty_text(entry.get(field)):
+                        findings.append(
+                            f"{criterion_id}:assessment_history_{history_index}_"
+                            f"{field}_invalid"
+                        )
                 if "worktree_patch" in entry and not _nonempty_text(
                     entry.get("worktree_patch")
                 ):
                     findings.append(
                         f"{criterion_id}:assessment_history_{history_index}_worktree_patch_invalid"
+                    )
+                if history_kind == "retained_assessment_snapshot":
+                    findings.extend(
+                        _retained_history_snapshot_findings(
+                            matrix_root=matrix_root,
+                            criterion_id=criterion_id,
+                            entry=entry,
+                            cache=retained_snapshot_cache,
+                        )
+                    )
+                elif "retained_snapshot_sha256" in entry:
+                    findings.append(
+                        f"{criterion_id}:assessment_history_{history_index}_"
+                        "unexpected_retained_snapshot_hash"
+                    )
+                if (
+                    history_kind == "logical_phase_without_retained_snapshot"
+                    and (
+                        history_maturity != "M0"
+                        or history_status != "MISSING"
+                        or entry.get("evidence_scope")
+                        != "not_retained_for_this_logical_phase"
+                    )
+                ):
+                    findings.append(
+                        f"{criterion_id}:assessment_history_{history_index}_"
+                        "unretained_phase_overclaim"
                     )
             if observed_iterations != list(range(1, assessment_iteration + 1)):
                 findings.append(
@@ -670,6 +944,10 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
                 )
             if history and isinstance(history[-1], dict):
                 final_history = history[-1]
+                if final_history.get("history_kind") != "current_surface_reassessment":
+                    findings.append(
+                        f"{criterion_id}:assessment_history_final_kind_invalid"
+                    )
                 expected_final = {
                     "iteration": assessment_iteration,
                     "assessed_at": assessment.get("assessed_at"),
@@ -769,6 +1047,9 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
             fatal_failures.append(gate_id)
         elif raw.get("status") == "UNVERIFIED":
             fatal_unverified.append(gate_id)
+        elif raw.get("status") == "PASS" and not receipt.clean_local_run:
+            findings.append(f"{gate_id}:pass_without_valid_execution_receipt")
+            fatal_unverified.append(gate_id)
     if len(gates) != EXPECTED_FATAL_GATES or len(set(gate_ids)) != len(gate_ids):
         findings.append("fatal_gate_count_or_uniqueness_invalid")
     if set(gate_ids) != {f"FG-{number:02d}" for number in range(1, 13)}:
@@ -797,6 +1078,7 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
     complete = (
         canonical_generator_match
         and not findings
+        and receipt.trusted
         and score >= 95.0
         and not fatal_failures
         and not fatal_unverified
@@ -823,6 +1105,13 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
         critical_count=critical_count,
         maturity_counts={key: value for key, value in maturity_counts.items() if value},
         status_counts={key: value for key, value in status_counts.items() if value},
+        execution_receipt_status=receipt.status,
+        execution_receipt_clean_local_run=receipt.clean_local_run,
+        execution_receipt_trusted=receipt.trusted,
+        execution_receipt_trust_level=receipt.trust_level,
+        execution_receipt_findings=receipt.findings,
+        execution_receipt_content_sha256=receipt.content_sha256,
+        execution_receipt_tests_passed=receipt.tests_passed,
         findings=tuple(sorted(set(findings))),
         complete=complete,
         verdict=verdict,
@@ -895,6 +1184,15 @@ def _payload(evaluation: AuditEvaluation) -> dict[str, Any]:
         "critical_count": evaluation.critical_count,
         "maturity_counts": evaluation.maturity_counts,
         "status_counts": evaluation.status_counts,
+        "execution_receipt": {
+            "status": evaluation.execution_receipt_status,
+            "clean_local_run": evaluation.execution_receipt_clean_local_run,
+            "trusted": evaluation.execution_receipt_trusted,
+            "trust_level": evaluation.execution_receipt_trust_level,
+            "content_sha256": evaluation.execution_receipt_content_sha256,
+            "tests_passed": evaluation.execution_receipt_tests_passed,
+            "findings": list(evaluation.execution_receipt_findings),
+        },
         "findings": list(evaluation.findings),
     }
 
@@ -926,6 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
             f"critical_m4+={evaluation.critical_m4_or_higher}/"
             f"{evaluation.critical_count}; fatal_failures="
             f"{','.join(evaluation.fatal_failures) or 'none'}; "
+            f"execution_receipt={evaluation.execution_receipt_status}; "
             f"findings={len(evaluation.findings)}"
         )
         for finding in evaluation.findings:

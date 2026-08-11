@@ -469,7 +469,7 @@ def test_schema_two_example_manifest_hash_is_reviewed() -> None:
     )
 
     assert load_manifest(manifest_path).manifest_hash() == (
-        "sha256:f9ef8de600fe6a8bd50ddb3f02f6090db537a441101baa2dbab7dd5b9bc3852c"
+        "sha256:d3763478cfc95f81bd2086db41200f64e620c0265cec16151f44b70960020dc6"
     )
 
 

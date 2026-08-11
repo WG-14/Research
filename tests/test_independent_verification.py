@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import base64
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -35,16 +38,20 @@ from market_research.research.reproduction import (
     compare_reproduction_fingerprints,
     load_reproduction_receipt,
 )
+from market_research.research.principal_assertion import (
+    IndependentVerificationAssertionScope,
+)
 from market_research.settings import ResearchSettings
 from market_research.research_cli.context import ResearchAppContext
 from tests.independent_verification_fixture import (
     publish_pass_verification,
+    provision_test_principal_assertion,
     seed_reproduction_receipts,
 )
 
 
 def _manager(tmp_path: Path) -> ResearchPathManager:
-    return ResearchPathManager.from_settings(
+    manager = ResearchPathManager.from_settings(
         ResearchSettings(
             data_root=tmp_path / "data",
             artifact_root=tmp_path / "artifacts",
@@ -56,6 +63,19 @@ def _manager(tmp_path: Path) -> ResearchPathManager:
         ),
         project_root=Path.cwd(),
     )
+    trusted, _ = provision_test_principal_assertion(
+        manager=manager,
+        scope=IndependentVerificationAssertionScope(
+            verification_id="manager-bootstrap",
+            verification_version="1",
+            experiment_id="manager-bootstrap",
+            research_version=_hash("0"),
+            source_report_hash=_hash("0"),
+            baseline_receipt_hash=_hash("0"),
+        ),
+        subject="manager-bootstrap",
+    )
+    return trusted
 
 
 def _hash(char: str) -> str:
@@ -81,10 +101,11 @@ def _pass_result(
     manager: ResearchPathManager,
     *,
     verifier_id: str = "verifier-a",
+    verification_id: str = "verify-candidate-1",
 ) -> IndependentVerificationResult:
     return publish_pass_verification(
         manager=manager,
-        verification_id="verify-candidate-1",
+        verification_id=verification_id,
         verifier_id=verifier_id,
         experiment_id="experiment-1",
         source_report_hash=_hash("1"),
@@ -123,7 +144,7 @@ def test_same_identity_cannot_be_overwritten(tmp_path: Path) -> None:
 
     with pytest.raises(
         IndependentVerificationError,
-        match="publication_failed",
+        match="identity_conflict",
     ):
         publish_independent_verification(
             manager=manager,
@@ -131,12 +152,122 @@ def test_same_identity_cannot_be_overwritten(tmp_path: Path) -> None:
         )
 
 
+def test_principal_assertion_nonce_cannot_authorize_a_second_scope(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    first = publish_pass_verification(
+        manager=manager,
+        verification_id="nonce-scope-a",
+        verifier_id="verifier-a",
+        experiment_id="experiment-1",
+        source_report_hash=_hash("1"),
+        manifest_hash=_hash("2"),
+        principal_nonce="reused-nonce",
+    )
+    second = publish_pass_verification(
+        manager=manager,
+        verification_id="nonce-scope-b",
+        verifier_id="verifier-a",
+        experiment_id="experiment-1",
+        source_report_hash=_hash("1"),
+        manifest_hash=_hash("2"),
+        principal_nonce="reused-nonce",
+        publish=False,
+    )
+
+    assert first.principal_assertion_subject == "verifier-a"
+    with pytest.raises(IndependentVerificationError, match="assertion_replayed"):
+        publish_independent_verification(manager=manager, result=second)
+
+
+def test_concurrent_nonce_replay_publishes_only_one_identity_and_artifact(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    results = tuple(
+        publish_pass_verification(
+            manager=manager,
+            verification_id=f"concurrent-nonce-scope-{suffix}",
+            verifier_id="verifier-a",
+            experiment_id="experiment-1",
+            source_report_hash=_hash("1"),
+            manifest_hash=_hash("2"),
+            principal_nonce="concurrently-reused-nonce",
+            publish=False,
+        )
+        for suffix in ("a", "b")
+    )
+    barrier = Barrier(2)
+
+    def publish(
+        result: IndependentVerificationResult,
+    ) -> tuple[str, IndependentVerificationResult | BaseException]:
+        barrier.wait()
+        try:
+            publish_independent_verification(manager=manager, result=result)
+        except IndependentVerificationError as exc:
+            return "error", exc
+        return "published", result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(publish, results))
+
+    published = [value for status, value in outcomes if status == "published"]
+    rejected = [value for status, value in outcomes if status == "error"]
+    assert len(published) == len(rejected) == 1
+    assert isinstance(published[0], IndependentVerificationResult)
+    assert isinstance(rejected[0], IndependentVerificationError)
+    assert "assertion_replayed" in str(rejected[0])
+    winner = published[0]
+    assert independent_verification_registry_path(manager).read_text().count("\n") == 1
+    for result in results:
+        artifact_path = independent_verification_result_path(manager, result.ref())
+        assert artifact_path.exists() is (result == winner)
+
+
+def test_result_binds_principal_without_leaking_external_key(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    result = publish_pass_verification(
+        manager=manager,
+        verification_id="principal-binding",
+        verifier_id="display-alias",
+        principal_subject="authenticated-subject",
+        experiment_id="experiment-1",
+        source_report_hash=_hash("1"),
+        manifest_hash=_hash("2"),
+    )
+    trust_path = manager.settings.independent_verifier_trust_store_path
+    assert trust_path is not None
+    trust = json.loads(trust_path.read_text(encoding="utf-8"))
+    key_path = Path(trust["keys"][0]["key_path"])
+    key = key_path.read_bytes()
+    artifact = independent_verification_result_path(manager, result.ref()).read_text(
+        encoding="utf-8"
+    )
+    registry = independent_verification_registry_path(manager).read_text(
+        encoding="utf-8"
+    )
+    serialized = artifact + registry
+
+    assert result.principal_assertion_subject == "authenticated-subject"
+    assert result.verifier_id == "display-alias"
+    assert result.principal_assertion_hash in serialized
+    assert result.principal_assertion_issuer in serialized
+    assert "authenticated-subject" in serialized
+    assert key.hex() not in serialized
+    assert base64.b64encode(key).decode("ascii") not in serialized
+    assert str(key_path) not in serialized
+
+
 def test_registry_rejects_hash_valid_row_payload_identity_mismatch(
     tmp_path: Path,
 ) -> None:
     manager = _manager(tmp_path)
-    payload_result = replace(
-        _pass_result(manager),
+    payload_result = _pass_result(
+        manager,
         verification_id="payload-verification",
     )
     publish_independent_verification(manager=manager, result=payload_result)
@@ -212,15 +343,16 @@ def test_pass_requires_clean_equal_comparison_and_independent_role(
     tmp_path: Path,
 ) -> None:
     manager = _manager(tmp_path)
+    result = _pass_result(manager)
     with pytest.raises(IndependentVerificationError, match="verifier_role_invalid"):
-        replace(_pass_result(manager), verifier_role="research_approver")
+        replace(result, verifier_role="research_approver")
 
     ref = IndependentVerificationRef(
         verification_id="verify-candidate-1",
         version="1",
-        content_hash=_pass_result(manager).content_hash(),
+        content_hash=result.content_hash(),
     )
-    assert ref == _pass_result(manager).ref()
+    assert ref == result.ref()
 
     drift = replace(
         _pass_result(manager),
@@ -311,6 +443,18 @@ def test_reproduction_publication_preserves_pass_and_failure_results(
                 "reproduced_receipt_hash": reproduced_receipt["receipt_content_hash"],
             }
         )
+    _, assertion = provision_test_principal_assertion(
+        manager=manager,
+        scope=IndependentVerificationAssertionScope(
+            verification_id=f"reproduction-{expected_status.lower()}",
+            verification_version="1",
+            experiment_id="experiment-1",
+            research_version=_hash("2"),
+            source_report_hash=str(receipt["source_report_hash"]),
+            baseline_receipt_hash=str(receipt["receipt_content_hash"]),
+        ),
+        subject="verifier-a",
+    )
 
     _attach_independent_verification_result(
         context=context,
@@ -321,7 +465,8 @@ def test_reproduction_publication_preserves_pass_and_failure_results(
         verification_version="1",
         verifier_id="verifier-a",
         verifier_role="independent_verifier",
-        verified_at="2026-07-22T03:00:00+00:00",
+        principal_assertion=assertion,
+        verified_at=None,
         unresolved_issues=(),
     )
 
@@ -434,7 +579,7 @@ def test_pass_rejects_missing_reproduced_report_and_backdated_verification(
     result = _pass_result(chronology_manager)
     with pytest.raises(
         IndependentVerificationError,
-        match="verified_before_source_completion",
+        match="verified_at_outside_assertion",
     ):
         publish_independent_verification(
             manager=chronology_manager,
@@ -622,16 +767,30 @@ def test_terminal_only_drift_with_equal_selection_fingerprint_is_published(
         manager=manager,
         payload=payload,
     )
-    verified_at = max(
-        str(evidence["source_report_generated_at"]),
-        str(evidence["reproduction_completed_at"]),
-        key=datetime.fromisoformat,
+    verified_at = datetime.now().astimezone().isoformat()
+    _, assertion = provision_test_principal_assertion(
+        manager=manager,
+        scope=IndependentVerificationAssertionScope(
+            verification_id="verify-terminal-drift",
+            verification_version="1",
+            experiment_id="terminal-drift",
+            research_version=manifest_hash,
+            source_report_hash=str(baseline["source_report_hash"]),
+            baseline_receipt_hash=str(baseline["receipt_content_hash"]),
+        ),
+        subject="independent-verifier-a",
+        verified_at=verified_at,
     )
     result = IndependentVerificationResult(
         verification_id="verify-terminal-drift",
         version="1",
         verifier_id="independent-verifier-a",
         verifier_role="independent_verifier",
+        principal_assertion=assertion.as_dict(),
+        principal_assertion_hash=assertion.content_hash,
+        principal_assertion_issuer=assertion.issuer,
+        principal_assertion_key_id=assertion.key_id,
+        principal_assertion_subject=assertion.subject,
         verified_at=verified_at,
         experiment_id="terminal-drift",
         research_version=manifest_hash,
@@ -719,6 +878,18 @@ def test_cli_publication_retry_reuses_existing_default_verified_at(
     stable = receipt["stable_fingerprint"]
     assert isinstance(stable, dict)
     reproduced_receipt = load_reproduction_receipt(reproduced_path)
+    _, assertion = provision_test_principal_assertion(
+        manager=manager,
+        scope=IndependentVerificationAssertionScope(
+            verification_id="retry-verification",
+            verification_version="1",
+            experiment_id="experiment-1",
+            research_version=_hash("2"),
+            source_report_hash=str(receipt["source_report_hash"]),
+            baseline_receipt_hash=str(receipt["receipt_content_hash"]),
+        ),
+        subject="verifier-a",
+    )
 
     def payload() -> dict[str, object]:
         return {
@@ -744,6 +915,7 @@ def test_cli_publication_retry_reuses_existing_default_verified_at(
         verification_version="1",
         verifier_id="verifier-a",
         verifier_role="independent_verifier",
+        principal_assertion=assertion,
         verified_at=None,
         unresolved_issues=(),
     )
@@ -757,6 +929,7 @@ def test_cli_publication_retry_reuses_existing_default_verified_at(
         verification_version="1",
         verifier_id="verifier-a",
         verifier_role="independent_verifier",
+        principal_assertion=assertion,
         verified_at=None,
         unresolved_issues=(),
     )

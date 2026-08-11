@@ -54,6 +54,24 @@ _PREFLIGHT_RECEIPT = Path("/run/research-operations-preflight/observation.json")
 _OPERATIONS_PROJECT_ROOT = Path("services/research_operations")
 _DEPLOYMENT_MARKER = Path("deploy/OFFICIAL_DEPLOYMENT")
 _DEPLOYMENT_TREES = (Path("deploy/native"), Path("scripts"))
+_SERVICE_IDENTITY_CONTRACT = {
+    "RESEARCH_OPS_MIGRATION_USER": "research-migrate",
+    "RESEARCH_OPS_WEB_USER": "research-web",
+    "RESEARCH_OPS_OUTBOX_USER": "research-outbox",
+    "RESEARCH_OPS_JOB_USER": "research-job",
+    "RESEARCH_OPS_ALERT_USER": "research-alert",
+    "RESEARCH_OPS_VALIDATOR_USER": "research-validator",
+    "RESEARCH_OPS_BACKUP_USER": "research-backup",
+    "RESEARCH_OPS_DIAGNOSTICS_USER": "research-diagnostics",
+    "RESEARCH_OPS_RETENTION_USER": "research-retention",
+    "RESEARCH_OPS_PROXY_USER": "research-proxy",
+}
+_SERVICE_GROUP_CONTRACT = {
+    "RESEARCH_OPS_SERVICE_GROUP": "research-ops",
+    "RESEARCH_OPS_BACKUP_GROUP": "research-backup",
+    "RESEARCH_OPS_WEB_PROXY_GROUP": "research-web-proxy",
+    "RESEARCH_OPS_DIAGNOSTICS_PROXY_GROUP": "research-ops-proxy",
+}
 
 
 class PreflightError(RuntimeError):
@@ -134,13 +152,17 @@ def _secret_for_identity(
         raise PreflightError(f"secret_unreadable_by_service:{code}")
 
 
-def _root_configuration_for_group(path: Path, code: str, group_gid: int) -> None:
+def _root_only_file(path: Path, code: str, *, mode: int = 0o600) -> None:
     status = _regular_file(path, code)
-    mode = stat.S_IMODE(status.st_mode)
-    if status.st_uid != 0 or mode not in {0o600, 0o640}:
-        raise PreflightError(f"configuration_permissions_invalid:{code}")
-    if mode == 0o640 and status.st_gid != group_gid:
-        raise PreflightError(f"configuration_group_invalid:{code}")
+    if status.st_uid != 0 or status.st_gid != 0 or stat.S_IMODE(status.st_mode) != mode:
+        raise PreflightError(f"root_only_file_invalid:{code}")
+
+
+def _root_public_file(path: Path, code: str) -> os.stat_result:
+    status = _public_file(path, code, {0})
+    if status.st_gid != 0 or stat.S_IMODE(status.st_mode) != 0o644:
+        raise PreflightError(f"root_public_file_invalid:{code}")
+    return status
 
 
 def _safe_directory(
@@ -172,6 +194,36 @@ def _safe_directory(
     if stat.S_IMODE(status.st_mode) & 0o022:
         raise PreflightError(f"directory_writable_by_untrusted:{code}")
     return resolved
+
+
+def _exact_directory(
+    path: Path,
+    code: str,
+    *,
+    owner_uid: int,
+    group_gid: int,
+    mode: int,
+) -> None:
+    try:
+        current = path
+        while True:
+            component_status = current.lstat()
+            if stat.S_ISLNK(component_status.st_mode):
+                raise PreflightError(f"directory_contract_invalid:{code}")
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        status = path.stat()
+    except OSError as error:
+        raise PreflightError(f"directory_unavailable:{code}") from error
+    if (
+        not stat.S_ISDIR(status.st_mode)
+        or status.st_uid != owner_uid
+        or status.st_gid != group_gid
+        or stat.S_IMODE(status.st_mode) != mode
+    ):
+        raise PreflightError(f"directory_contract_invalid:{code}")
 
 
 def _load_json(path: Path, code: str) -> dict[str, object]:
@@ -529,6 +581,11 @@ def _validate_native_path_contracts(env: Mapping[str, str]) -> None:
         "RESEARCH_OPS_NGINX_CONFIG_FILE": (
             "/etc/nginx/conf.d/research-operations.conf"
         ),
+        "RESEARCH_OPS_NGINX_MAIN_CONFIG_FILE": "/etc/nginx/nginx.conf",
+        "RESEARCH_OPS_NGINX_SYSTEMD_DROP_IN": (
+            "/etc/systemd/system/nginx.service.d/research-operations.conf"
+        ),
+        "RESEARCH_OPS_SYSTEMD_UNIT_ROOT": "/etc/systemd/system",
         "INTERNAL_WEB_DATABASE_SSLROOTCERT": ("/etc/research-ops/pki/database-ca.crt"),
         "RESEARCH_OPS_POSTGRESQL_DROP_IN": (
             "/etc/postgresql/16/main/conf.d/90-research-operations.conf"
@@ -541,7 +598,11 @@ def _validate_native_path_contracts(env: Mapping[str, str]) -> None:
             "/etc/research-ops/secrets/operated-execution.key"
         ),
         "BACKUP_ROOT": "/srv/research-backups",
-        "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY": "/run/research-operations",
+        "BACKUP_VERIFICATION_KEY_FILE": "/etc/research-ops/backup-signing.pub",
+        "RESEARCH_OPS_BACKUP_VERIFICATION_KEY_FILE": (
+            "/etc/research-ops/backup-signing.pub"
+        ),
+        "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY": ("/run/research-operations-backup"),
         "RESEARCH_OPS_OFFSITE_RECEIPT_ROOT": "/srv/research-offsite-receipts",
         "RESEARCH_OPS_OFFSITE_RECEIPT_VERIFICATION_KEY_FILE": (
             "/etc/research-ops/offsite-receipt-signing.pub"
@@ -582,21 +643,97 @@ def _validate_backup_policy(
     _assigned(env, "BACKUP_OPERATOR_ID")
 
     for key in ("BACKUP_ROOT", "RESEARCH_OPS_OFFSITE_RECEIPT_ROOT"):
-        _safe_directory(
+        directory = _safe_directory(
             _absolute(env, key),
             key.lower(),
             allowed_uids={service_uid},
         )
+        status = directory.stat()
+        if status.st_gid != service_gid or stat.S_IMODE(status.st_mode) != 0o750:
+            raise PreflightError(f"backup_directory_access_invalid:{key}")
     hook = _absolute(env, "RESEARCH_OPS_OFFSITE_EXPORT_HOOK")
     status = _regular_file(hook, "offsite_export_hook")
     mode = stat.S_IMODE(status.st_mode)
-    if status.st_uid != 0 or not mode & 0o111:
+    if status.st_uid != 0 or status.st_gid != service_gid or mode != 0o750:
         raise PreflightError("offsite_export_hook_invalid")
-    executable = (status.st_gid == service_gid and bool(mode & 0o010)) or bool(
-        mode & 0o001
-    )
-    if not executable:
-        raise PreflightError("offsite_export_hook_unexecutable")
+
+
+def _validate_research_root_permissions(
+    env: Mapping[str, str],
+    *,
+    service_gid: int,
+    identities: Mapping[str, pwd.struct_passwd],
+) -> None:
+    data_root = _absolute(env, "RESEARCH_DATA_ROOT")
+    contracts = {
+        data_root: ("data_root", 0o2750),
+        data_root / "_internal_web/manifests": ("manifest_root", 0o2770),
+        _absolute(env, "RESEARCH_ARTIFACT_ROOT"): ("artifact_root", 0o2770),
+        _absolute(env, "RESEARCH_REPORT_ROOT"): ("report_root", 0o2770),
+        _absolute(env, "RESEARCH_CACHE_ROOT"): ("cache_root", 0o2770),
+        _absolute(env, "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH").parent: (
+            "identity_registry_root",
+            0o2770,
+        ),
+    }
+    for path, (code, mode) in contracts.items():
+        _exact_directory(
+            path,
+            code,
+            owner_uid=0,
+            group_gid=service_gid,
+            mode=mode,
+        )
+    writer_namespaces = {
+        data_root / "_internal_web/manifests": (
+            "manifest_root",
+            0,
+            0o2770,
+        ),
+        _absolute(env, "RESEARCH_ARTIFACT_ROOT") / "_internal_web": (
+            "internal_web_artifact_root",
+            0,
+            0o2770,
+        ),
+        _absolute(env, "INTERNAL_WEB_STATIC_ROOT"): (
+            "internal_web_static_root",
+            identities["research-migrate"].pw_uid,
+            0o755,
+        ),
+        _absolute(env, "RESEARCH_ARTIFACT_ROOT") / "reports/research/_registry": (
+            "research_project_registry_root",
+            identities["research-web"].pw_uid,
+            0o2770,
+        ),
+        _absolute(env, "RESEARCH_ARTIFACT_ROOT") / "derived/research/projects": (
+            "research_project_artifact_root",
+            identities["research-web"].pw_uid,
+            0o2770,
+        ),
+        _absolute(env, "RESEARCH_REPORT_ROOT") / "_internal_web": (
+            "internal_web_report_root",
+            identities["research-web"].pw_uid,
+            0o2770,
+        ),
+        _absolute(env, "RESEARCH_CACHE_ROOT") / "research/projects": (
+            "research_project_cache_root",
+            identities["research-web"].pw_uid,
+            0o2770,
+        ),
+        _absolute(env, "RESEARCH_ARTIFACT_ROOT") / "_operations_sandbox": (
+            "operations_sandbox_root",
+            identities["research-job"].pw_uid,
+            0o2770,
+        ),
+    }
+    for path, (code, owner_uid, mode) in writer_namespaces.items():
+        _exact_directory(
+            path,
+            code,
+            owner_uid=owner_uid,
+            group_gid=service_gid,
+            mode=mode,
+        )
 
 
 def _run_openssl(arguments: list[str], code: str) -> bytes:
@@ -758,9 +895,7 @@ def _validate_pki(
     )
 
 
-def _validate_secret_files(
-    env: Mapping[str, str], service_uid: int, service_gid: int
-) -> None:
+def _validate_secret_files(env: Mapping[str, str]) -> None:
     for key in (
         "POSTGRES_OWNER_PASSWORD_FILE",
         "POSTGRES_RUNTIME_PASSWORD_FILE",
@@ -771,21 +906,20 @@ def _validate_secret_files(
         "OPS_HTPASSWD_FILE",
         "BACKUP_SIGNING_KEY_FILE",
         "CONTROL_DATABASE_URL_FILE",
+        "RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE",
     ):
-        _secret_for_identity(_absolute(env, key), key.lower(), service_uid, service_gid)
-    _public_file(
+        _root_only_file(_absolute(env, key), key.lower())
+    _root_public_file(
         _absolute(env, "BACKUP_VERIFICATION_KEY_FILE"),
         "backup_verification_key",
-        {0, service_uid},
     )
     offsite_verification_key = _absolute(
         env,
         "RESEARCH_OPS_OFFSITE_RECEIPT_VERIFICATION_KEY_FILE",
     )
-    _public_file(
+    _root_public_file(
         offsite_verification_key,
         "offsite_receipt_verification_key",
-        {0},
     )
     offsite_key_description = _run_openssl(
         [
@@ -840,6 +974,34 @@ def _validate_runtime_files(env: Mapping[str, str]) -> None:
             raise PreflightError("postgresql_native_configuration_invalid") from error
         if not matches:
             raise PreflightError("postgresql_native_configuration_drift")
+    source_root = Path(_required(env, "RESEARCH_OPS_SOURCE_ROOT"))
+    installed_native = {
+        _absolute(env, "RESEARCH_OPS_NGINX_MAIN_CONFIG_FILE"): (
+            source_root / "services/research_operations/deploy/native/nginx/nginx.conf"
+        ),
+        _absolute(env, "RESEARCH_OPS_NGINX_SYSTEMD_DROP_IN"): (
+            source_root / "services/research_operations/deploy/native/nginx/"
+            "nginx.service.d/research-operations.conf"
+        ),
+    }
+    unit_root = _absolute(env, "RESEARCH_OPS_SYSTEMD_UNIT_ROOT")
+    source_units = source_root / "services/research_operations/deploy/native/systemd"
+    try:
+        unit_sources = tuple(sorted(source_units.iterdir()))
+    except OSError as error:
+        raise PreflightError("systemd_native_configuration_invalid") from error
+    for source in unit_sources:
+        if not source.is_file() or source.is_symlink():
+            raise PreflightError("systemd_native_configuration_invalid")
+        installed_native[unit_root / source.name] = source
+    for installed, source in installed_native.items():
+        _root_public_file(installed, "systemd_native_configuration")
+        try:
+            matches = hmac.compare_digest(installed.read_bytes(), source.read_bytes())
+        except OSError as error:
+            raise PreflightError("systemd_native_configuration_invalid") from error
+        if not matches:
+            raise PreflightError("systemd_native_configuration_drift")
     receipt = _absolute(env, "RESEARCH_OPS_FILESYSTEM_QUALIFICATION_RECEIPT")
     _public_file(receipt, "filesystem_qualification_receipt", {0})
     qualification = _load_json(receipt, "filesystem_qualification_receipt")
@@ -849,20 +1011,20 @@ def _validate_runtime_files(env: Mapping[str, str]) -> None:
         or qualification.get("scope") != "single-host"
     ):
         raise PreflightError("filesystem_qualification_invalid")
-    roles = {
-        item.get("role")
-        for item in qualification.get("roots", [])
-        if isinstance(item, dict)
-    }
+    roots = qualification.get("roots")
+    if not isinstance(roots, list):
+        raise PreflightError("filesystem_qualification_roles_invalid")
+    roles = {item.get("role") for item in roots if isinstance(item, dict)}
     if roles != {"data", "artifact", "report", "cache", "identity_registry"}:
         raise PreflightError("filesystem_qualification_roles_invalid")
     nginx_config = _absolute(env, "RESEARCH_OPS_NGINX_CONFIG_FILE")
+    nginx_main_config = _absolute(env, "RESEARCH_OPS_NGINX_MAIN_CONFIG_FILE")
     if str(nginx_config) != "/etc/nginx/conf.d/research-operations.conf":
         raise PreflightError("nginx_configuration_path_invalid")
     _public_file(nginx_config, "nginx_config", {0})
     try:
         completed = subprocess.run(
-            ["/usr/sbin/nginx", "-t", "-q"],
+            ["/usr/sbin/nginx", "-t", "-q", "-c", str(nginx_main_config)],
             check=False,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -899,6 +1061,77 @@ def _validate_native_tools() -> None:
             raise PreflightError("native_tool_invalid")
 
 
+def _validate_service_identities(
+    env: Mapping[str, str],
+    *,
+    protected_uids: set[int],
+    protected_gids: set[int],
+    protected_member_names: set[str],
+) -> tuple[dict[str, pwd.struct_passwd], dict[str, grp.struct_group]]:
+    for key, expected in _SERVICE_IDENTITY_CONTRACT.items():
+        if _required(env, key) != expected:
+            raise PreflightError(f"service_identity_invalid:{key}")
+    for key, expected in _SERVICE_GROUP_CONTRACT.items():
+        if _required(env, key) != expected:
+            raise PreflightError(f"service_group_invalid:{key}")
+
+    identities = {
+        name: pwd.getpwnam(name) for name in _SERVICE_IDENTITY_CONTRACT.values()
+    }
+    group_names = set(_SERVICE_GROUP_CONTRACT.values()) | set(identities)
+    groups = {name: grp.getgrnam(name) for name in group_names}
+    uids = {identity.pw_uid for identity in identities.values()}
+    if len(uids) != len(identities) or uids & ({0} | protected_uids):
+        raise PreflightError("service_identity_not_separated")
+    gids = {group.gr_gid for group in groups.values()}
+    if len(gids) != len(groups) or gids & ({0} | protected_gids):
+        raise PreflightError("service_group_not_separated")
+    if any(
+        identity.pw_shell not in {"/usr/sbin/nologin", "/bin/false"}
+        for identity in identities.values()
+    ):
+        raise PreflightError("service_identity_login_enabled")
+    if any(
+        identity.pw_gid != groups[name].gr_gid for name, identity in identities.items()
+    ):
+        raise PreflightError("service_primary_group_invalid")
+
+    uid_authority = {identity.pw_uid: name for name, identity in identities.items()}
+    gid_authority = {group.gr_gid: name for name, group in groups.items()}
+    accounts = tuple(pwd.getpwall())
+    for account in accounts:
+        expected_uid_name = uid_authority.get(account.pw_uid)
+        if expected_uid_name is not None and account.pw_name != expected_uid_name:
+            raise PreflightError("service_uid_alias_detected")
+        expected_gid_name = gid_authority.get(account.pw_gid)
+        if expected_gid_name is not None:
+            expected_identity = identities.get(expected_gid_name)
+            if (
+                expected_identity is None
+                or account.pw_name != expected_gid_name
+                or account.pw_uid != expected_identity.pw_uid
+            ):
+                raise PreflightError("service_primary_gid_member_forbidden")
+
+    expected_members = {
+        "research-web-proxy": {"research-proxy"},
+        "research-ops-proxy": {"research-proxy"},
+    }
+    service_names = set(identities)
+    for name, group in groups.items():
+        if protected_member_names.intersection(group.gr_mem):
+            raise PreflightError("protected_identity_group_forbidden")
+        if set(group.gr_mem) != expected_members.get(name, set()):
+            raise PreflightError("controlled_group_membership_invalid")
+    for group in grp.getgrall():
+        expected_gid_name = gid_authority.get(group.gr_gid)
+        if expected_gid_name is not None and group.gr_name != expected_gid_name:
+            raise PreflightError("service_gid_alias_detected")
+        if group.gr_name not in groups and service_names.intersection(group.gr_mem):
+            raise PreflightError("service_supplementary_group_forbidden")
+    return identities, groups
+
+
 def main() -> int:
     env = dict(os.environ)
     receipt_group: int | None = None
@@ -906,25 +1139,38 @@ def main() -> int:
     try:
         if os.geteuid() != 0:
             raise PreflightError("preflight_requires_root")
-        if _required(env, "RESEARCH_OPS_SERVICE_USER") != "research-ops":
-            raise PreflightError("service_identity_invalid")
-        if _required(env, "RESEARCH_OPS_SERVICE_GROUP") != "research-ops":
-            raise PreflightError("service_group_invalid")
-        if _required(env, "RESEARCH_OPS_WEB_USER") != "research-web":
-            raise PreflightError("web_identity_invalid")
         if _required(env, "RESEARCH_OPS_POSTGRES_USER") != "postgres":
             raise PreflightError("postgres_identity_invalid")
         if _required(env, "RESEARCH_OPS_POSTGRES_GROUP") != "postgres":
             raise PreflightError("postgres_group_invalid")
-        service = pwd.getpwnam("research-ops")
-        web = pwd.getpwnam("research-web")
-        service_group = grp.getgrnam("research-ops")
+        if _required(env, "RESEARCH_OPS_NGINX_USER") != "research-proxy":
+            raise PreflightError("nginx_identity_invalid")
+        if _required(env, "RESEARCH_OPS_NGINX_GROUP") != "research-proxy":
+            raise PreflightError("nginx_group_invalid")
         postgres = pwd.getpwnam("postgres")
         postgres_group = grp.getgrnam("postgres")
-        if service.pw_gid != service_group.gr_gid:
-            raise PreflightError("service_identity_group_mismatch")
-        if web.pw_uid == service.pw_uid:
-            raise PreflightError("web_worker_identity_not_separated")
+        if (
+            postgres.pw_uid == 0
+            or postgres_group.gr_gid == 0
+            or postgres.pw_gid != postgres_group.gr_gid
+        ):
+            raise PreflightError("privileged_identity_alias_detected")
+        identities, groups = _validate_service_identities(
+            env,
+            protected_uids={postgres.pw_uid},
+            protected_gids={postgres_group.gr_gid},
+            protected_member_names={"postgres"},
+        )
+        proxy = identities["research-proxy"]
+        if (
+            _required(env, "RESEARCH_OPS_NGINX_USER") != proxy.pw_name
+            or _required(env, "RESEARCH_OPS_NGINX_GROUP")
+            != groups["research-proxy"].gr_name
+        ):
+            raise PreflightError("nginx_identity_invalid")
+        backup = identities["research-backup"]
+        service_group = groups["research-ops"]
+        backup_group = groups["research-backup"]
         receipt_group = service_group.gr_gid
         _validate_receipt_contract(env, receipt_group)
         receipt_contract_valid = True
@@ -934,16 +1180,20 @@ def main() -> int:
             status="FAIL",
             failure_code="preflight_in_progress",
         )
-        _root_configuration_for_group(
+        _root_only_file(
             _absolute(env, "RESEARCH_OPS_ENV_FILE"),
             "runtime_environment",
-            service_group.gr_gid,
         )
         _validate_owner_assignments(env)
         _validate_native_path_contracts(env)
+        _validate_research_root_permissions(
+            env,
+            service_gid=service_group.gr_gid,
+            identities=identities,
+        )
         _validate_release_metadata(env)
-        _validate_backup_policy(env, service.pw_uid, service_group.gr_gid)
-        _validate_secret_files(env, service.pw_uid, service_group.gr_gid)
+        _validate_backup_policy(env, backup.pw_uid, backup_group.gr_gid)
+        _validate_secret_files(env)
         _validate_pki(
             env,
             postgres.pw_uid,

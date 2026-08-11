@@ -117,9 +117,12 @@ class ResearchPreflightRequest(ApplicationRequest):
 class ResearchValidationRequest(ResearchPreflightRequest):
     candidate_id: str | None = None
     out_path: str | None = None
+    validation_experiment_bundle_path: str | None = None
     mode: Literal["strict"] = "strict"
 
-    @field_validator("candidate_id", "out_path")
+    @field_validator(
+        "candidate_id", "out_path", "validation_experiment_bundle_path"
+    )
     @classmethod
     def _normalize_optional_values(cls, value: str | None) -> str | None:
         if value is None:
@@ -147,6 +150,230 @@ class ReadOnlyQueryRequest(ApplicationRequest):
     object_id: str | None = Field(default=None, max_length=255)
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
+
+
+ProjectId = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    ),
+]
+
+
+class ResearchProjectMemberInput(FrozenApplicationModel):
+    actor_id: ProjectId
+    role: Literal[
+        "OWNER",
+        "RESEARCHER",
+        "DATA_STEWARD",
+        "VALIDATOR",
+        "REVIEWER",
+        "PUBLISHER",
+        "VIEWER",
+    ]
+
+
+class ResearchProjectObjectRefInput(FrozenApplicationModel):
+    project_id: ProjectId
+    kind: Literal[
+        "HYPOTHESIS",
+        "DATASET",
+        "CODE",
+        "EXPERIMENT",
+        "RESULT",
+        "VERIFICATION",
+        "REVIEW",
+        "PACKAGE",
+    ]
+    object_id: ProjectId
+    version: ProjectId
+    content_hash: Sha256
+
+
+class ResearchProjectMutationRequest(ApplicationRequest):
+    project_id: ProjectId
+    event_id: ProjectId
+    recorded_at: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("recorded_at", "reason")
+    @classmethod
+    def _normalize_project_mutation_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("research_project_mutation_text_required")
+        return normalized
+
+
+class ResearchProjectCreateRequest(ResearchProjectMutationRequest):
+    title: str = Field(min_length=1, max_length=500)
+    research_question: str = Field(min_length=1, max_length=10_000)
+    owner_id: ProjectId
+    status: Literal["DRAFT"] = "DRAFT"
+    version: Literal[1] = 1
+    asset_classes: tuple[str, ...] = Field(min_length=1)
+    markets: tuple[str, ...] = Field(min_length=1)
+    members: tuple[ResearchProjectMemberInput, ...] = Field(min_length=1)
+
+    @field_validator("title", "research_question")
+    @classmethod
+    def _normalize_project_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("research_project_required_text_missing")
+        return normalized
+
+    @field_validator("asset_classes", "markets")
+    @classmethod
+    def _normalize_project_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(str(value).strip() for value in values)
+        if any(not value for value in normalized) or len(set(normalized)) != len(
+            normalized
+        ):
+            raise ValueError("research_project_scope_invalid")
+        return tuple(sorted(normalized))
+
+    @model_validator(mode="after")
+    def _validate_project_membership(self) -> "ResearchProjectCreateRequest":
+        actor_ids = [member.actor_id for member in self.members]
+        owners = [member.actor_id for member in self.members if member.role == "OWNER"]
+        if len(actor_ids) != len(set(actor_ids)) or owners != [self.owner_id]:
+            raise ValueError("research_project_owner_membership_invalid")
+        return self
+
+
+class ResearchProjectMembersRequest(ResearchProjectMutationRequest):
+    expected_version: int = Field(ge=1)
+    members: tuple[ResearchProjectMemberInput, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_member_actor_uniqueness(self) -> "ResearchProjectMembersRequest":
+        actor_ids = [member.actor_id for member in self.members]
+        if len(actor_ids) != len(set(actor_ids)):
+            raise ValueError("research_project_member_actor_duplicate")
+        return self
+
+
+class ResearchProjectRevisionRequest(ResearchProjectMutationRequest):
+    expected_version: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=500)
+    research_question: str = Field(min_length=1, max_length=10_000)
+    asset_classes: tuple[str, ...] = Field(min_length=1)
+    markets: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("title", "research_question")
+    @classmethod
+    def _normalize_revision_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("research_project_required_text_missing")
+        return normalized
+
+    @field_validator("asset_classes", "markets")
+    @classmethod
+    def _normalize_revision_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(str(value).strip() for value in values)
+        if any(not value for value in normalized) or len(set(normalized)) != len(
+            normalized
+        ):
+            raise ValueError("research_project_scope_invalid")
+        return tuple(sorted(normalized))
+
+
+class ResearchProjectReferenceRequest(ResearchProjectMutationRequest):
+    expected_version: int = Field(ge=1)
+    reference: ResearchProjectObjectRefInput
+
+    @model_validator(mode="after")
+    def _bind_reference_to_project(self) -> "ResearchProjectReferenceRequest":
+        if self.reference.project_id != self.project_id:
+            raise ValueError("research_project_cross_project_ref_forbidden")
+        return self
+
+
+class ResearchProjectTransitionRequest(ResearchProjectMutationRequest):
+    expected_version: int = Field(ge=1)
+    to_status: Literal[
+        "ACTIVE",
+        "CHALLENGED",
+        "SUPERSEDED",
+        "DEPRECATED",
+        "REJECTED",
+        "ARCHIVED",
+    ]
+    superseded_by_project_id: ProjectId | None = None
+
+    @model_validator(mode="after")
+    def _validate_superseded_target(
+        self,
+    ) -> "ResearchProjectTransitionRequest":
+        if self.to_status == "SUPERSEDED":
+            if self.superseded_by_project_id in {None, self.project_id}:
+                raise ValueError("research_project_superseded_target_required")
+        elif self.superseded_by_project_id is not None:
+            raise ValueError("research_project_superseded_target_not_allowed")
+        return self
+
+
+class ResearchProjectQueryRequest(ApplicationRequest):
+    project_id: ProjectId
+
+
+class ResearchProjectSearchRequest(ApplicationRequest):
+    query: str | None = Field(default=None, max_length=500)
+    statuses: frozenset[
+        Literal[
+            "DRAFT",
+            "ACTIVE",
+            "CHALLENGED",
+            "SUPERSEDED",
+            "DEPRECATED",
+            "REJECTED",
+            "ARCHIVED",
+        ]
+    ] = frozenset()
+    asset_classes: frozenset[str] = frozenset()
+    markets: frozenset[str] = frozenset()
+    include_archived: bool = False
+
+    @field_validator("query")
+    @classmethod
+    def _normalize_project_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("asset_classes", "markets")
+    @classmethod
+    def _normalize_search_scopes(cls, values: frozenset[str]) -> frozenset[str]:
+        normalized = frozenset(str(value).strip() for value in values)
+        if any(not value for value in normalized):
+            raise ValueError("research_project_search_scope_invalid")
+        return normalized
+
+
+class ResearchProjectImpactQueryRequest(ApplicationRequest):
+    kind: Literal[
+        "HYPOTHESIS",
+        "DATASET",
+        "CODE",
+        "EXPERIMENT",
+        "RESULT",
+        "VERIFICATION",
+        "REVIEW",
+        "PACKAGE",
+    ]
+    object_id: ProjectId
+    version: ProjectId | None = None
+    content_hash: Sha256 | None = None
+    include_archived: bool = True
+
+
+class ResearchProjectWorkspaceRequest(ApplicationRequest):
+    project_id: ProjectId
 
 
 class GovernanceSubjectRef(FrozenApplicationModel):
@@ -325,6 +552,31 @@ class ApplicationResult(FrozenApplicationModel):
 
 class GenericApplicationResult(ApplicationResult):
     payload: dict[str, Any] | None = None
+
+
+class ResearchProjectMutationResult(ApplicationResult):
+    project: dict[str, Any]
+    registry_path: str = Field(min_length=1)
+    registry_row_hash: Sha256
+    event_created: bool
+    compute_root: str | None = None
+    cache_root: str | None = None
+
+
+class ResearchProjectQueryResult(ApplicationResult):
+    project: dict[str, Any]
+
+
+class ResearchProjectSearchResult(ApplicationResult):
+    projects: tuple[dict[str, Any], ...] = ()
+    total: int = Field(ge=0)
+
+
+class ResearchProjectWorkspaceResult(ApplicationResult):
+    project_id: ProjectId
+    project_version: int = Field(ge=1)
+    compute_root: str = Field(min_length=1)
+    cache_root: str = Field(min_length=1)
 
 
 class ResearchReadinessResult(ApplicationResult):

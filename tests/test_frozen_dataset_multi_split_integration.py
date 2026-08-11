@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -313,6 +314,228 @@ def test_parallel_frozen_backtest_without_db(tmp_path) -> None:
         )["dataset_splits"]["train"]["verification_status"]
         == "VERIFIED"
     )
+
+
+def test_serial_and_process_parallel_stochastic_backtest_are_causally_equivalent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scheduling identity may change evidence, never bounded market behavior."""
+
+    install_committed_checkout_provenance(monkeypatch)
+    fixture_root = tmp_path / "fixture"
+    fixture_root.mkdir()
+    _, base_manifest, _ = frozen_manifest_and_manager(
+        fixture_root,
+        strategy_name="buy_and_hold_baseline",
+    )
+    base_payload = deepcopy(base_manifest.raw)
+    base_payload["execution_model"] = {
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "scenarios": [
+            {
+                "type": "fixed_bps",
+                "scenario_role": "base",
+                "label": "serial_parallel_base",
+                "fee_rate": 0.0,
+                "fee_source": "immutable_test_fixture",
+                "fee_authority_policy": "research_declared_reference",
+                "slippage_bps": 0.0,
+                "slippage_source": "immutable_test_fixture",
+                "validation_eligible_as_base": True,
+                "latency_ms": 0,
+                "partial_fill_rate": 0.0,
+                "order_failure_rate": 0.0,
+                "market_order_extra_cost_bps": 0.0,
+                "seed": 7,
+            },
+            {
+                "type": "stress",
+                "scenario_role": "stress",
+                "label": "serial_parallel_stochastic_stress",
+                "fee_rate": 0.0,
+                "fee_source": "immutable_test_fixture",
+                "fee_authority_policy": "research_declared_reference",
+                "slippage_bps": 5.0,
+                "slippage_source": "immutable_test_fixture",
+                "validation_eligible_as_base": False,
+                "latency_ms": 7,
+                "partial_fill_rate": 0.65,
+                "order_failure_rate": 0.2,
+                "market_order_extra_cost_bps": 3.0,
+                "seed": 11,
+            },
+        ],
+    }
+
+    reports: dict[str, Any] = {}
+    manifests = {}
+    managers: dict[str, ResearchPathManager] = {}
+    for mode, max_workers in (("serial", 1), ("parallel", 2)):
+        payload = deepcopy(base_payload)
+        payload["research_run"]["execution"] = {
+            "mode": mode,
+            "max_workers": max_workers,
+            "process_start_method": "auto_safe",
+            "work_unit": "candidate_scenario",
+        }
+        manifest = parse_manifest(payload)
+        settings = ResearchSettings(
+            data_root=tmp_path / mode / "data",
+            artifact_root=tmp_path / mode / "artifacts",
+            report_root=tmp_path / mode / "reports",
+            cache_root=tmp_path / mode / "cache",
+            db_path=None,
+            max_workers=max_workers,
+            random_seed=0,
+        )
+        manager = ResearchPathManager.from_settings(
+            settings,
+            project_root=Path.cwd(),
+        )
+        reports[mode] = run_research_backtest(
+            manifest=manifest,
+            db_path=None,
+            manager=manager,
+            strategy_registry=builtin_strategy_registry(),
+        )
+        manifests[mode] = manifest
+        managers[mode] = manager
+
+    candidates: dict[str, Any] = {
+        mode: resolve_candidate_result_artifact(
+            manager=managers[mode],
+            compact_candidate=report["candidates"][0],
+            expected_experiment_id=manifests[mode].experiment_id,
+            expected_manifest_hash=manifests[mode].manifest_hash(),
+            expected_dataset_snapshot_id=str(report["dataset_snapshot_id"]),
+            expected_dataset_content_hash=str(report["dataset_content_hash"]),
+        )
+        for mode, report in reports.items()
+    }
+    serial_candidate = candidates["serial"]
+    parallel_candidate = candidates["parallel"]
+
+    assert (
+        serial_candidate["candidate_behavior_profile_hash"]
+        == parallel_candidate["candidate_behavior_profile_hash"]
+    )
+    causal_scenario_fields = (
+        "behavior_hash",
+        "common_decision_behavior_hash",
+        "decision_behavior_hash",
+        "strategy_behavior_hash",
+        "composite_behavior_hash",
+        "trade_ledger_hash",
+        "train_behavior_hash",
+        "validation_behavior_hash",
+        "train_execution_metadata",
+        "validation_execution_metadata",
+        "train_execution_event_summary",
+        "validation_execution_event_summary",
+        "train_metrics",
+        "validation_metrics",
+        "train_metrics_v2",
+        "validation_metrics_v2",
+        "train_equity_curve",
+        "validation_equity_curve",
+    )
+    serial_scenarios = {
+        row["scenario_id"]: row for row in serial_candidate["scenario_results"]
+    }
+    parallel_scenarios = {
+        row["scenario_id"]: row for row in parallel_candidate["scenario_results"]
+    }
+    assert set(serial_scenarios) == set(parallel_scenarios)
+    assert any(row["scenario_type"] == "stress" for row in serial_scenarios.values())
+    for scenario_id in sorted(serial_scenarios):
+        serial_scenario = serial_scenarios[scenario_id]
+        parallel_scenario = parallel_scenarios[scenario_id]
+        assert {
+            field: serial_scenario.get(field) for field in causal_scenario_fields
+        } == {
+            field: parallel_scenario.get(field) for field in causal_scenario_fields
+        }
+
+    def derived_seeds(candidate: dict[str, Any]) -> list[tuple[object, ...]]:
+        rows: list[tuple[object, ...]] = []
+        for scenario in candidate["scenario_results"]:
+            for split_name in ("train", "validation"):
+                for fill in scenario[f"{split_name}_execution_metadata"]:
+                    if fill.get("derived_seed_hash") is not None:
+                        rows.append(
+                            (
+                                scenario["scenario_id"],
+                                split_name,
+                                fill.get("decision_id"),
+                                fill.get("intent_id"),
+                                fill.get("fill_status"),
+                                fill.get("base_seed"),
+                                fill.get("derived_seed_hash"),
+                                fill.get("seed_derivation_inputs"),
+                            )
+                        )
+        return rows
+
+    serial_seeds = derived_seeds(serial_candidate)
+    assert serial_seeds
+    assert derived_seeds(parallel_candidate) == serial_seeds
+
+    serial_report = reports["serial"]
+    parallel_report = reports["parallel"]
+    assert serial_report["manifest_hash"] != parallel_report["manifest_hash"]
+    assert serial_report["content_hash"] != parallel_report["content_hash"]
+    assert (
+        serial_report["candidates"][0]["candidate_result_artifact_hash"]
+        != parallel_report["candidates"][0]["candidate_result_artifact_hash"]
+    )
+    for mode, report in reports.items():
+        plan = report["execution_plan"]
+        execution = report["execution_observability"]
+        assert plan["manifest_hash"] == report["manifest_hash"]
+        assert plan["execution_mode"] == mode
+        assert execution["requested_execution_mode"] == mode
+
+    serial_execution = serial_report["execution_observability"]
+    parallel_execution = parallel_report["execution_observability"]
+    assert serial_execution["actual_execution_mode"] == "serial_validation_evaluator"
+    assert serial_execution["parallel_executor_used"] is False
+    assert serial_execution["worker_pid_set"] == []
+    assert parallel_execution["actual_execution_mode"] == "parallel_worker_initializer"
+    assert parallel_execution["parallel_executor_used"] is True
+    assert parallel_execution["effective_process_start_method"] in {
+        "forkserver",
+        "spawn",
+    }
+    assert parallel_execution["observed_worker_count"] == 2
+    parallel_worker_pids = set(parallel_execution["worker_pid_set"])
+    assert len(parallel_worker_pids) == 2
+    assert parallel_execution["parent_pid"] not in parallel_worker_pids
+
+    serial_work = {
+        row["work_unit"]["scenario_id"]: row
+        for row in serial_execution["work_units"]
+    }
+    parallel_work = {
+        row["work_unit"]["scenario_id"]: row
+        for row in parallel_execution["work_units"]
+    }
+    assert set(serial_work) == set(parallel_work)
+    for scenario_id in sorted(serial_work):
+        serial_row = serial_work[scenario_id]
+        parallel_row = parallel_work[scenario_id]
+        assert serial_row["work_unit"] == parallel_row["work_unit"]
+        assert serial_row["content_hash"] == parallel_row["content_hash"]
+        assert serial_row["worker_process_evidence"]["input_hash"] == (
+            parallel_row["worker_process_evidence"]["input_hash"]
+        )
+        assert serial_row["worker_process_evidence"]["output_hash"] == (
+            parallel_row["worker_process_evidence"]["output_hash"]
+        )
+        assert serial_row["worker_process_evidence"]["worker_pid"] is None
+        assert parallel_row["worker_process_evidence"]["worker_pid"] in (
+            parallel_worker_pids
+        )
 
 
 def test_final_holdout_confirmation_executes_only_receipt_candidate(

@@ -48,3 +48,6 @@ DJANGO_SETTINGS_MODULE = "market_research_web.settings_test"
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--strict-markers"
+markers = [
+    "postgresql: requires an explicitly configured live PostgreSQL database",
+]

@@ -215,7 +215,7 @@
     },
     "trade_order_monte_carlo": {
       "iterations": 250,
-      "seed_policy": "derived_from_manifest_candidate_scenario_split_hash",
+      "seed_policy": "derived_from_bounded_closed_trade_stream_contract_hash",
       "min_survival_probability": 0.9,
       "ruin_max_drawdown_pct": 45.0,
       "min_closed_trades": 10

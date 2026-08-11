@@ -212,106 +212,117 @@ class ServiceAlertStore:
             maximum=86_400,
         )
         observed_at = _aware_utc(now or utcnow())
-        binding = {
-            "acknowledgment_timeout_seconds": acknowledgment_timeout_seconds,
-            "condition_code": condition,
-            "endpoint_id": endpoint,
-            "idempotency_key": key,
-            "severity": normalized_severity,
-            "source_actor_id": source_actor,
-        }
-        binding_hash = _digest(binding)
         with connection(self._dsn) as conn:
             conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 761144))",
                 (key,),
             )
-            existing = conn.execute(
-                _ALERT_SELECT + " WHERE idempotency_key = %s FOR UPDATE",
-                (key,),
-            ).fetchone()
-            if existing is not None:
-                alert = _alert(existing)
-                if alert.binding_hash != binding_hash:
-                    raise AlertBindingConflict("service_alert_binding_conflict")
-                return alert
-
-            alert_id = uuid.uuid4()
-            event_id = uuid.uuid4()
-            details_hash = _digest(
-                {
-                    "acknowledgment_timeout_seconds": (acknowledgment_timeout_seconds),
-                    "endpoint_id": endpoint,
-                }
-            )
-            opened_event_hash = _event_hash(
-                event_id=event_id,
-                alert_id=alert_id,
-                sequence=1,
-                event_type="OPENED",
-                actor_id=source_actor,
-                reason_code=condition,
-                occurred_at=observed_at,
-                details_hash=details_hash,
-                prior_event_hash="",
-            )
-            deadline = observed_at + timedelta(seconds=acknowledgment_timeout_seconds)
-            conn.execute(
-                """
-                INSERT INTO research_ops.service_alert (
-                    alert_id, idempotency_key, binding_hash, condition_code,
-                    severity, source_actor_id, status, opened_at,
-                    acknowledgment_deadline_at, escalation_level,
-                    last_event_hash, updated_at
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, 0, %s, %s
-                )
-                """,
-                (
-                    alert_id,
-                    key,
-                    binding_hash,
-                    condition,
-                    normalized_severity,
-                    source_actor,
-                    observed_at,
-                    deadline,
-                    opened_event_hash,
-                    observed_at,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO research_ops.service_alert_event (
-                    event_id, alert_id, sequence, event_type, actor_id,
-                    reason_code, occurred_at, details_hash, prior_event_hash,
-                    event_hash
-                ) VALUES (%s, %s, 1, 'OPENED', %s, %s, %s, %s, '', %s)
-                """,
-                (
-                    event_id,
-                    alert_id,
-                    source_actor,
-                    condition,
-                    observed_at,
-                    details_hash,
-                    opened_event_hash,
-                ),
-            )
-            _insert_delivery(
+            return _raise_alert_in_connection(
                 conn,
-                alert_id=alert_id,
-                endpoint_id=endpoint,
-                escalation_level=0,
-                now=observed_at,
+                key=key,
+                condition=condition,
+                severity=normalized_severity,
+                source_actor=source_actor,
+                endpoint=endpoint,
+                acknowledgment_timeout_seconds=acknowledgment_timeout_seconds,
+                observed_at=observed_at,
             )
-            row = conn.execute(
-                _ALERT_SELECT + " WHERE alert_id = %s",
-                (alert_id,),
+
+    def raise_condition_episode(
+        self,
+        *,
+        condition_key: str,
+        condition_code: str,
+        severity: str,
+        source_actor_id: str,
+        endpoint_id: str,
+        acknowledgment_timeout_seconds: int,
+        now: datetime | None = None,
+    ) -> ServiceAlert:
+        """Converge an active condition and reopen it after explicit resolution."""
+
+        namespace = _identifier(
+            condition_key,
+            "alert_condition_key",
+            maximum=220,
+        )
+        condition = _condition(condition_code)
+        normalized_severity = _severity(severity)
+        source_actor = _identifier(source_actor_id, "source_actor_id", maximum=255)
+        endpoint = _identifier(endpoint_id, "endpoint_id", maximum=128)
+        _bounded_int(
+            acknowledgment_timeout_seconds,
+            "acknowledgment_timeout_seconds",
+            minimum=1,
+            maximum=86_400,
+        )
+        observed_at = _aware_utc(now or utcnow())
+        episode_prefix = f"{namespace}:episode:"
+        if len(episode_prefix) + 1 > 255:
+            raise ValueError("alert_condition_key_invalid")
+
+        with connection(self._dsn) as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 761145))",
+                (namespace,),
+            )
+            latest_row = conn.execute(
+                _ALERT_SELECT
+                + """
+                  WHERE left(idempotency_key, length(%s)) = %s
+                    AND substr(idempotency_key, length(%s) + 1)
+                        ~ '^[1-9][0-9]*$'
+                  ORDER BY
+                    length(substr(idempotency_key, length(%s) + 1)) DESC,
+                    substr(idempotency_key, length(%s) + 1) DESC
+                  LIMIT 1
+                  FOR UPDATE
+                """,
+                (
+                    episode_prefix,
+                    episode_prefix,
+                    episode_prefix,
+                    episode_prefix,
+                    episode_prefix,
+                ),
             ).fetchone()
-        if row is None:
-            raise RuntimeError("service_alert_insert_not_visible")
-        return _alert(row)
+            generation = 1
+            if latest_row is not None:
+                latest = _alert(latest_row)
+                generation = int(latest.idempotency_key[len(episode_prefix) :])
+                if latest.status != RESOLVED:
+                    expected_binding_hash = _alert_binding_hash(
+                        key=latest.idempotency_key,
+                        condition=condition,
+                        severity=normalized_severity,
+                        source_actor=source_actor,
+                        endpoint=endpoint,
+                        acknowledgment_timeout_seconds=(acknowledgment_timeout_seconds),
+                    )
+                    if latest.binding_hash != expected_binding_hash:
+                        raise AlertBindingConflict("service_alert_binding_conflict")
+                    return latest
+                generation += 1
+
+            episode_key = _identifier(
+                f"{episode_prefix}{generation}",
+                "alert_idempotency_key",
+                maximum=255,
+            )
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 761144))",
+                (episode_key,),
+            )
+            return _raise_alert_in_connection(
+                conn,
+                key=episode_key,
+                condition=condition,
+                severity=normalized_severity,
+                source_actor=source_actor,
+                endpoint=endpoint,
+                acknowledgment_timeout_seconds=acknowledgment_timeout_seconds,
+                observed_at=observed_at,
+            )
 
     def claim_delivery(
         self,
@@ -802,6 +813,134 @@ SELECT alert_id, idempotency_key, binding_hash, condition_code, severity,
        last_event_hash, updated_at
 FROM research_ops.service_alert
 """
+
+
+def _alert_binding_hash(
+    *,
+    key: str,
+    condition: str,
+    severity: str,
+    source_actor: str,
+    endpoint: str,
+    acknowledgment_timeout_seconds: int,
+) -> str:
+    return _digest(
+        {
+            "acknowledgment_timeout_seconds": acknowledgment_timeout_seconds,
+            "condition_code": condition,
+            "endpoint_id": endpoint,
+            "idempotency_key": key,
+            "severity": severity,
+            "source_actor_id": source_actor,
+        }
+    )
+
+
+def _raise_alert_in_connection(
+    conn: Connection[Any],
+    *,
+    key: str,
+    condition: str,
+    severity: str,
+    source_actor: str,
+    endpoint: str,
+    acknowledgment_timeout_seconds: int,
+    observed_at: datetime,
+) -> ServiceAlert:
+    binding_hash = _alert_binding_hash(
+        key=key,
+        condition=condition,
+        severity=severity,
+        source_actor=source_actor,
+        endpoint=endpoint,
+        acknowledgment_timeout_seconds=acknowledgment_timeout_seconds,
+    )
+    existing = conn.execute(
+        _ALERT_SELECT + " WHERE idempotency_key = %s FOR UPDATE",
+        (key,),
+    ).fetchone()
+    if existing is not None:
+        alert = _alert(existing)
+        if alert.binding_hash != binding_hash:
+            raise AlertBindingConflict("service_alert_binding_conflict")
+        return alert
+
+    alert_id = uuid.uuid4()
+    event_id = uuid.uuid4()
+    details_hash = _digest(
+        {
+            "acknowledgment_timeout_seconds": acknowledgment_timeout_seconds,
+            "endpoint_id": endpoint,
+        }
+    )
+    opened_event_hash = _event_hash(
+        event_id=event_id,
+        alert_id=alert_id,
+        sequence=1,
+        event_type="OPENED",
+        actor_id=source_actor,
+        reason_code=condition,
+        occurred_at=observed_at,
+        details_hash=details_hash,
+        prior_event_hash="",
+    )
+    deadline = observed_at + timedelta(seconds=acknowledgment_timeout_seconds)
+    conn.execute(
+        """
+        INSERT INTO research_ops.service_alert (
+            alert_id, idempotency_key, binding_hash, condition_code,
+            severity, source_actor_id, status, opened_at,
+            acknowledgment_deadline_at, escalation_level,
+            last_event_hash, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, 0, %s, %s
+        )
+        """,
+        (
+            alert_id,
+            key,
+            binding_hash,
+            condition,
+            severity,
+            source_actor,
+            observed_at,
+            deadline,
+            opened_event_hash,
+            observed_at,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO research_ops.service_alert_event (
+            event_id, alert_id, sequence, event_type, actor_id,
+            reason_code, occurred_at, details_hash, prior_event_hash,
+            event_hash
+        ) VALUES (%s, %s, 1, 'OPENED', %s, %s, %s, %s, '', %s)
+        """,
+        (
+            event_id,
+            alert_id,
+            source_actor,
+            condition,
+            observed_at,
+            details_hash,
+            opened_event_hash,
+        ),
+    )
+    _insert_delivery(
+        conn,
+        alert_id=alert_id,
+        endpoint_id=endpoint,
+        escalation_level=0,
+        now=observed_at,
+    )
+    row = conn.execute(
+        _ALERT_SELECT + " WHERE alert_id = %s",
+        (alert_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("service_alert_insert_not_visible")
+    return _alert(row)
 
 
 def _insert_delivery(

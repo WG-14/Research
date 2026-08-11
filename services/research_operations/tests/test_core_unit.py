@@ -472,6 +472,7 @@ def test_cli_contract_contains_core_commands() -> None:
         "alert-acknowledge",
         "alert-escalate-once",
         "alert-resolve",
+        "alert-worker",
     } <= set(action.choices)
     assert not {
         "admission-acquire",

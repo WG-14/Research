@@ -57,12 +57,16 @@ def main() -> int:
     parser.add_argument("--encryption", choices=("age", "kms-envelope"), required=True)
     parser.add_argument("--encryption-key-id", required=True)
     parser.add_argument("--verification-public-key", type=Path, required=True)
+    parser.add_argument("--allow-staging-directory", action="store_true")
     args = parser.parse_args()
     if not _UUID.fullmatch(args.backup_id):
         _fail("backup_id")
     if not args.receipt.is_absolute() or not args.backup_directory.is_absolute():
         _fail("absolute_path")
-    if args.backup_directory.name != args.backup_id:
+    expected_directory_name = (
+        f".staging-{args.backup_id}" if args.allow_staging_directory else args.backup_id
+    )
+    if args.backup_directory.name != expected_directory_name:
         _fail("backup_directory")
     try:
         link_status = args.backup_directory.lstat()

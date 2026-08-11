@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     alert_resolve.add_argument("--actor-id", required=True)
     alert_resolve.add_argument("--reason-code", required=True)
 
+    alert_worker = subparsers.add_parser(
+        "alert-worker",
+        help="run the persistent service-health evaluator and delivery worker",
+    )
+    alert_worker.add_argument("--once", action="store_true")
+
     fence = subparsers.add_parser(
         "backup-fence", help="control coherent backup fencing"
     )

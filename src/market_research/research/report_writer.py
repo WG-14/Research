@@ -1320,6 +1320,14 @@ def candidate_evidence_hash_inputs(candidate: dict[str, Any]) -> dict[str, Any]:
 _CANDIDATE_SELF_BINDING_FIELDS = frozenset(
     {
         "candidate_payload_hash",
+        # These aliases are computed from separately retained evidence artifacts.
+        # Their source bodies (metrics, behavior/execution evidence, statistical
+        # policy/result fields, and contracts) remain in the semantic projection.
+        # The aliases themselves can include repository-external paths or runtime
+        # profiling observations and therefore cannot define a reproducible
+        # candidate identity across an external preparation run and admission run.
+        "candidate_profile_hash",
+        "statistical_evidence_hash",
         "selection_binding",
         "reproduction_candidate_fingerprint",
         "candidate_result_artifact_detail_policy",

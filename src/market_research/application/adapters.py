@@ -46,6 +46,9 @@ def validation_request_from_namespace(
         execution_calibration_path=getattr(args, "execution_calibration", None),
         candidate_id=getattr(args, "candidate_id", None),
         out_path=getattr(args, "out", None),
+        validation_experiment_bundle_path=getattr(
+            args, "validation_experiment_bundle", None
+        ),
         mode=getattr(args, "mode", "strict"),
         actor=actor or cli_actor_context(),
     )

@@ -9,6 +9,7 @@ Requires=research-operations-outbox-worker@1.service
 Requires=research-operations-outbox-worker@2.service
 Requires=research-operations-job-worker.service
 Requires=research-operations-validator.service
+Requires=research-operations-alert-worker.service
 Wants=nginx.service
 Wants=research-operations-backup.timer
 Wants=research-operations-preflight.timer

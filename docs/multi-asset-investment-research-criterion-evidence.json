@@ -1,5 +1,5 @@
 {
-  "content_hash": "sha256:63cd753fb95a1cfa9518d7b0c2480bbfd37aeb4d6c0f5f8d583dc7c7ad50cb25",
+  "content_hash": "sha256:2286224ca6b5356f60edc58a11be008af63e4df6298d260fd4b543a9603398a2",
   "criteria": [
     {
       "authority_object": "docs/multi-asset-research.md::Responsibility map",
@@ -3833,8 +3833,8 @@
     }
   ],
   "criterion_count": 140,
-  "evaluated_commit": "cb8f58bdac235577aa7363e138a67fc98740125a",
-  "evaluated_source_snapshot_hash": "sha256:edeb1460f4916806933ce53adcec4c372341d7c555afd9f14b3864d9d06088ef",
+  "evaluated_commit": "8de57440fd3230aad12e72b5963093fa4f60a512",
+  "evaluated_source_snapshot_hash": "sha256:ea069d0276e27f9aa016d8a964894640643e009e2d4ca9653b9b57231eda5ce8",
   "manifest_id": "multi-asset-criterion-evidence-v1",
   "schema_version": 1
 }

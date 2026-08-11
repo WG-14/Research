@@ -1,0 +1,502 @@
+{
+  "payload": {
+    "schema_version": 1,
+    "created_at": "2026-08-11T07:32:15.365962Z",
+    "canonical_source": {
+      "rubric_sha256": "ce507e16b37a8915ba34f12907aac3145dd512859951d391781e5a390fb675a5",
+      "instruction_sha256": "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
+    },
+    "source_surface": {
+      "schema_version": 3,
+      "file_count": 801,
+      "sha256": "1436b17238c15dc6d976ef677ca7162decc4999b6b51f2a98cecfe707ae7e867",
+      "exclusions": [
+        "directory:.git",
+        "directory:.hypothesis",
+        "directory:.mypy_cache",
+        "directory:.pytest_cache",
+        "directory:.ruff_cache",
+        "directory:.tox",
+        "directory:.venv",
+        "directory:__pycache__",
+        "directory:build",
+        "directory:dist",
+        "directory:node_modules",
+        "directory_suffix:*.egg-info",
+        "file:docs/investment-research-platform-audit-execution-receipt.json",
+        "file:docs/investment-research-platform-audit-report.md",
+        "file:docs/investment-research-platform-audit-result.json",
+        "file:docs/investment-research-platform-audit.json",
+        "file:docs/multi-asset-investment-research-audit-report.md",
+        "file:docs/multi-asset-investment-research-audit-result.json",
+        "file:docs/multi-asset-investment-research-criterion-evidence.json",
+        "file_suffix:*.pyc",
+        "file_suffix:*.pyo"
+      ]
+    },
+    "pytest": {
+      "status": "PASSED",
+      "exit_code": 0,
+      "tests_passed": 952,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "duration_seconds": 1925.915771,
+      "output_sha256": "8d3ab64a4557b72f6f134d5173a51184ea27b1049942154fd707dee71a69fe70",
+      "command": [
+        "/home/vorac/work/Research/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "apps/internal_web/tests/test_audit_outbox.py",
+        "apps/internal_web/tests/test_data_explorer.py",
+        "apps/internal_web/tests/test_database_immutability_static.py",
+        "apps/internal_web/tests/test_governance_database_authority.py",
+        "apps/internal_web/tests/test_project_workflow.py",
+        "apps/internal_web/tests/test_research_explorer.py",
+        "apps/internal_web/tests/test_resource_authorization.py",
+        "apps/internal_web/tests/test_review_workflow.py",
+        "apps/internal_web/tests/test_security_storage.py",
+        "services/research_operations/tests/test_core_unit.py",
+        "services/research_operations/tests/test_native_deployment.py",
+        "services/research_operations/tests/test_operations_surface.py",
+        "services/research_operations/tests/test_service_alert_unit.py",
+        "services/research_operations/tests/test_service_alert_worker_unit.py",
+        "tests/test_application_contracts_and_capabilities.py",
+        "tests/test_application_report_comparison.py",
+        "tests/test_benchmark_suite.py",
+        "tests/test_code_provenance.py",
+        "tests/test_common_engine_audit_e2e.py",
+        "tests/test_common_engine_resource_guards.py",
+        "tests/test_common_simulation_engine.py",
+        "tests/test_compiled_strategy_contract.py",
+        "tests/test_corporate_action_dataset_materialization.py",
+        "tests/test_cross_section_validation.py",
+        "tests/test_data_governance_authority.py",
+        "tests/test_dataset_adapter_lifecycle.py",
+        "tests/test_dataset_evidence_binding.py",
+        "tests/test_dataset_freeze_publication.py",
+        "tests/test_dataset_manifest_migration.py",
+        "tests/test_dataset_schema_dictionary.py",
+        "tests/test_decision_stream_perturbation.py",
+        "tests/test_distribution_metadata.py",
+        "tests/test_documentation_contract.py",
+        "tests/test_engine_admission.py",
+        "tests/test_execution_invariant_authority.py",
+        "tests/test_execution_lineage_contract.py",
+        "tests/test_execution_observability_timing.py",
+        "tests/test_experiment_identity.py",
+        "tests/test_experiment_registry_dataset_evidence.py",
+        "tests/test_feature_definition_authority.py",
+        "tests/test_frozen_dataset_multi_split_integration.py",
+        "tests/test_frozen_dataset_walk_forward_integration.py",
+        "tests/test_full_scope_prospective.py",
+        "tests/test_future_suffix_invariance.py",
+        "tests/test_governance_policy.py",
+        "tests/test_hypothesis_contract.py",
+        "tests/test_independent_verification.py",
+        "tests/test_instrument_domain_contracts.py",
+        "tests/test_knowledge_registry.py",
+        "tests/test_monorepo_architecture.py",
+        "tests/test_multi_asset_builtin_public_package.py",
+        "tests/test_multi_asset_cost_capacity.py",
+        "tests/test_multi_asset_portfolio.py",
+        "tests/test_multi_asset_spot.py",
+        "tests/test_platform_completeness_runner.py",
+        "tests/test_point_in_time_candle_selection.py",
+        "tests/test_point_in_time_domain_contracts.py",
+        "tests/test_portfolio_accounting_properties.py",
+        "tests/test_principal_assertion.py",
+        "tests/test_repository_research_only_boundary.py",
+        "tests/test_research_cli_boundary.py",
+        "tests/test_research_decision_report.py",
+        "tests/test_research_governance.py",
+        "tests/test_research_lifecycle_contract.py",
+        "tests/test_research_only_capability_guard.py",
+        "tests/test_research_package_registry.py",
+        "tests/test_research_project.py",
+        "tests/test_research_reporting.py",
+        "tests/test_research_reproduction.py",
+        "tests/test_research_reproduction_cli.py",
+        "tests/test_research_semantics_v2_contract.py",
+        "tests/test_research_standard_authority_integration.py",
+        "tests/test_result_concentration.py",
+        "tests/test_retention_policy.py",
+        "tests/test_return_panel_benchmarks.py",
+        "tests/test_run_lifecycle.py",
+        "tests/test_simulation_seed_scope.py",
+        "tests/test_single_portfolio_authority.py",
+        "tests/test_strategy_extension_production_e2e.py",
+        "tests/test_strategy_partial_fill_feedback.py",
+        "tests/test_strategy_research_package.py",
+        "tests/test_structured_experiment_completeness.py",
+        "tests/test_study_lifecycle.py",
+        "tests/test_temporal_validation.py",
+        "tests/test_terminal_artifact_immutability.py",
+        "tests/test_validation_experiment_bundle.py",
+        "tests/test_validation_experiments.py",
+        "tests/test_validation_pipeline_gate.py",
+        "tests/test_validation_stress_suite_contract.py"
+      ],
+      "targets": [
+        {
+          "path": "apps/internal_web/tests/test_audit_outbox.py",
+          "sha256": "bae8e06438adc7faaf31ba538852146232d3d987506f17ccd2f4c309ec12a270"
+        },
+        {
+          "path": "apps/internal_web/tests/test_data_explorer.py",
+          "sha256": "e845539cfbaa12912d224563b47c55a871912700889836e28ec918bbada7fe95"
+        },
+        {
+          "path": "apps/internal_web/tests/test_database_immutability_static.py",
+          "sha256": "72c1ff17dfc47ce1be30e299c390fd2ea840026a4f6ddcaa8dc7b5a3062adde8"
+        },
+        {
+          "path": "apps/internal_web/tests/test_governance_database_authority.py",
+          "sha256": "21492f089d86a59b468670a15ae5057d3e44da4885ae4414dd5995936959ecda"
+        },
+        {
+          "path": "apps/internal_web/tests/test_project_workflow.py",
+          "sha256": "7191dbe0b3471dad6fa5ae79cf43f102b02110122b4830e17363de74dca170b8"
+        },
+        {
+          "path": "apps/internal_web/tests/test_research_explorer.py",
+          "sha256": "bc41d1446730f367d18f90876ab334adbdbd7b885b949ffb80b3e17a3ae8260c"
+        },
+        {
+          "path": "apps/internal_web/tests/test_resource_authorization.py",
+          "sha256": "9d251c70bc2f9663b327aa9144b183e400d7ba520dd4022d60f1914cf8509c07"
+        },
+        {
+          "path": "apps/internal_web/tests/test_review_workflow.py",
+          "sha256": "e07238584cd77f9a12db2119267b10c0aea5b31a22020aac54e7bb7bee9de51e"
+        },
+        {
+          "path": "apps/internal_web/tests/test_security_storage.py",
+          "sha256": "349f5f174a01d3fe30ba56dd46d50a84e46b24686722c7c7703114a86a79ef09"
+        },
+        {
+          "path": "services/research_operations/tests/test_core_unit.py",
+          "sha256": "5331b1980d30a36a1df868ade5562e2dae011f0aac541a136e59e7e4b166c2a8"
+        },
+        {
+          "path": "services/research_operations/tests/test_native_deployment.py",
+          "sha256": "ab49ea0a696c78efd8495236167afd2199aefb8de3b493126a8d9f14fb2bafd4"
+        },
+        {
+          "path": "services/research_operations/tests/test_operations_surface.py",
+          "sha256": "ce68713526cfad5674ba31873c8b9effeb84ef6a19ef0afa66fdfb7b5f552c70"
+        },
+        {
+          "path": "services/research_operations/tests/test_service_alert_unit.py",
+          "sha256": "3ad43975806086bc391ecde6a8e6bbd509e2cd81e9229a4ea81853e924465eff"
+        },
+        {
+          "path": "services/research_operations/tests/test_service_alert_worker_unit.py",
+          "sha256": "f2d2a597fabf0101e4d75f4fe784285998d912934a6d80b73bbd81b2d3a74675"
+        },
+        {
+          "path": "tests/test_application_contracts_and_capabilities.py",
+          "sha256": "cb8f62e0b2b8a3fe08055ef30cefbc0b651a00f02d0db23da15632d6e0b3be05"
+        },
+        {
+          "path": "tests/test_application_report_comparison.py",
+          "sha256": "ee279a63dfc9897fa5b84fb73173c375cea6db9ca9e5cb2ad71a6791d9492e3a"
+        },
+        {
+          "path": "tests/test_benchmark_suite.py",
+          "sha256": "815c3cf1cc7723c1c7f34dd42bcce23d3ce088d25391e3e5724e0ea07f5fe61c"
+        },
+        {
+          "path": "tests/test_code_provenance.py",
+          "sha256": "ca9209ba88b92e81608c6c3f7833ed5e8f83dbff941932e421de86da5531129c"
+        },
+        {
+          "path": "tests/test_common_engine_audit_e2e.py",
+          "sha256": "02dba5e1fc77531aaede3e94be7937c9b9dc5e2b2e1113dd3ef8c4338ff77c2d"
+        },
+        {
+          "path": "tests/test_common_engine_resource_guards.py",
+          "sha256": "d754968432941eceef8cef6c371584329c4d7d6f2a1e15703d60ce8757927756"
+        },
+        {
+          "path": "tests/test_common_simulation_engine.py",
+          "sha256": "54a27a3ce52007401494f9f401af2c88c3a24014c7f9c13882713f555941dd10"
+        },
+        {
+          "path": "tests/test_compiled_strategy_contract.py",
+          "sha256": "110d314cbd8dd767ac4ba35474440c91cd17b8e8a4d1bd270127eb0c16656a18"
+        },
+        {
+          "path": "tests/test_corporate_action_dataset_materialization.py",
+          "sha256": "fff632d0a80fa9e7f4860a416547357f0c48deb9681da9f349e694f8a9c66ce7"
+        },
+        {
+          "path": "tests/test_cross_section_validation.py",
+          "sha256": "5fd517313a86a66b15deefabe69879e24076576cd912b9e81c1456c855b4f27e"
+        },
+        {
+          "path": "tests/test_data_governance_authority.py",
+          "sha256": "8e77f391b8b31e6c774b47481c044961bcce06017515fe3d5ba0340a9ee9ee92"
+        },
+        {
+          "path": "tests/test_dataset_adapter_lifecycle.py",
+          "sha256": "d2cb45f6e18cec42288d8ebcc3069fa95692e30dba2fc081068001c0c4370f46"
+        },
+        {
+          "path": "tests/test_dataset_evidence_binding.py",
+          "sha256": "9f7a781c94a5799b0637a19f69c40258a98f95d0e1e66c26f2f7ba29a8d0bd27"
+        },
+        {
+          "path": "tests/test_dataset_freeze_publication.py",
+          "sha256": "9de5017c3573d4c908d0f2013d59af40b2327089a76371c584b94442086038e3"
+        },
+        {
+          "path": "tests/test_dataset_manifest_migration.py",
+          "sha256": "a5a60aca8d523b2b9464ffb94f4bfcd2c5ce5f685bfdb85169c95d1ee3bcc9e9"
+        },
+        {
+          "path": "tests/test_dataset_schema_dictionary.py",
+          "sha256": "22e79da31b51ef855b159444a223cc991a9a042f4ccfad8591938c974bc5c1f3"
+        },
+        {
+          "path": "tests/test_decision_stream_perturbation.py",
+          "sha256": "3e1673ce3b422dfddd008dac7ae5e1da0e65bba46e1208acc8956a5763cf9f4e"
+        },
+        {
+          "path": "tests/test_distribution_metadata.py",
+          "sha256": "df094fe887e47e6abf2ed4128aa54a42ae36eda29aca8a73b7b895b34ed6af8a"
+        },
+        {
+          "path": "tests/test_documentation_contract.py",
+          "sha256": "68a8faffdd86de1a5eaf2650cc99f0e43b200d5a90a00216678ac6542490b3d1"
+        },
+        {
+          "path": "tests/test_engine_admission.py",
+          "sha256": "ee6f964ea7e966f98daf1f8c74e28ec3b2ab52ecf447c88de2d5d274e223b3fd"
+        },
+        {
+          "path": "tests/test_execution_invariant_authority.py",
+          "sha256": "7641e1875bd04237c50da2b6210eaaa0345b6b44405938cfe9a50137ef14a27f"
+        },
+        {
+          "path": "tests/test_execution_lineage_contract.py",
+          "sha256": "c2f45b86291e876d26799d511c60c78fd1ab8c764fa3b1486e8b7c4d41451aa1"
+        },
+        {
+          "path": "tests/test_execution_observability_timing.py",
+          "sha256": "1171fde067c81c62799f078073fcaa759b29f2876192e426a98c5a05ced18331"
+        },
+        {
+          "path": "tests/test_experiment_identity.py",
+          "sha256": "d132905c9d304b33f8e5713dcf2c6ea2009a71880e3ad73a8b126df7240616e5"
+        },
+        {
+          "path": "tests/test_experiment_registry_dataset_evidence.py",
+          "sha256": "38161a2fe5d8a16e96bbcddfd0d9b5c9e2e0033f9c913a10665d9b59cb273096"
+        },
+        {
+          "path": "tests/test_feature_definition_authority.py",
+          "sha256": "2f877d84544c02d2a63cf86c5d7b55736fd5bddd251c5be776d80b53b5c10e21"
+        },
+        {
+          "path": "tests/test_frozen_dataset_multi_split_integration.py",
+          "sha256": "536dfe28410658ab64835410d69b174da18361194e51665b51ae311aa5bf4ed1"
+        },
+        {
+          "path": "tests/test_frozen_dataset_walk_forward_integration.py",
+          "sha256": "73497663643fe7ab1e4a442012a1ca8cfdfea0b6d4afc319b8ecae78b7a6ea74"
+        },
+        {
+          "path": "tests/test_full_scope_prospective.py",
+          "sha256": "ec09a95c32fb34a46853b75475a65dd464b13916c5b2dd29980a46b8e2ad1d3f"
+        },
+        {
+          "path": "tests/test_future_suffix_invariance.py",
+          "sha256": "35bc0351d1c1ae95f736119fafbedb45a8ddbf771842184e5abf04488fa57baa"
+        },
+        {
+          "path": "tests/test_governance_policy.py",
+          "sha256": "e213be85a72bcaf2ce4340c4a1f990dab18bd696eb97053446546d9ea376035e"
+        },
+        {
+          "path": "tests/test_hypothesis_contract.py",
+          "sha256": "c70da19eb6c4ccb8818b4b05e6fe18c08670134273ffcc0f93b586136a6437fe"
+        },
+        {
+          "path": "tests/test_independent_verification.py",
+          "sha256": "01bc015c852debafb63b25987f46f67cf4e0cb89fe9ba5ce364e370bb7d9bef9"
+        },
+        {
+          "path": "tests/test_instrument_domain_contracts.py",
+          "sha256": "1f9eaba6da90672109d047e6e9abaf46450a95d904f90badf33154a9e713c2fc"
+        },
+        {
+          "path": "tests/test_knowledge_registry.py",
+          "sha256": "76dddb6587312cbc36c3e402a4cd33bd2176d919065d7d84334126d1e36e82ee"
+        },
+        {
+          "path": "tests/test_monorepo_architecture.py",
+          "sha256": "9efc4e1573f00692c691060117b6043eb5e58c31f6b3bde3b622cb47a884b119"
+        },
+        {
+          "path": "tests/test_multi_asset_builtin_public_package.py",
+          "sha256": "41ad5edb5a095acdc3938503fae650b18886abe0160c51b3115657aae289f1eb"
+        },
+        {
+          "path": "tests/test_multi_asset_cost_capacity.py",
+          "sha256": "bf95b81575f1b232690b404e0f2cd5a099879ebce35fd0a02cfddc361d5f531a"
+        },
+        {
+          "path": "tests/test_multi_asset_portfolio.py",
+          "sha256": "7f8d0b1cb4c859ac894f11998de3f525a2b02d0311e8ad84f44c2af7e2bf1aca"
+        },
+        {
+          "path": "tests/test_multi_asset_spot.py",
+          "sha256": "8ac0272679a28e0d57e61d6b2630c54636c8482c4dbc6a1820d66495a17a69b2"
+        },
+        {
+          "path": "tests/test_platform_completeness_runner.py",
+          "sha256": "9b2386da16a3a380ea7306a76fc6e7a386b2db247de93864d950fd5b1b09474a"
+        },
+        {
+          "path": "tests/test_point_in_time_candle_selection.py",
+          "sha256": "05ae1de2e76939124b7e0e1121cba2e6ca89c3fe3508618b059d52f2b1e3576c"
+        },
+        {
+          "path": "tests/test_point_in_time_domain_contracts.py",
+          "sha256": "0cb4f6e2a9a70b5ff0f4757b1bf8807c34030ade5c557862731eee4163138347"
+        },
+        {
+          "path": "tests/test_portfolio_accounting_properties.py",
+          "sha256": "ef7ca8cb3da862b09e367708d684c874fa1a7c77638a8af6143d3ec562360d24"
+        },
+        {
+          "path": "tests/test_principal_assertion.py",
+          "sha256": "437643e905f7049b60145836064237d503e1a8e08be6ff7e79ee0b82d26bb6e3"
+        },
+        {
+          "path": "tests/test_repository_research_only_boundary.py",
+          "sha256": "e10bc26c05d5bb3cd621980e769a0813afab9337e0d6bddbdce17aafa87215f8"
+        },
+        {
+          "path": "tests/test_research_cli_boundary.py",
+          "sha256": "454dc5ae3c0f3542a2d2750c2dd927752fe8995a990439cfddf3e1c3fbcc904f"
+        },
+        {
+          "path": "tests/test_research_decision_report.py",
+          "sha256": "9d1adfcc03ea6d6712651b732e7de2aea4d7165c4c35fc6c681911f0e3acfdfc"
+        },
+        {
+          "path": "tests/test_research_governance.py",
+          "sha256": "c01ae8a2ad9b557e9297d753672977b3cb1dfffefed23517c42d5016bd1fcc26"
+        },
+        {
+          "path": "tests/test_research_lifecycle_contract.py",
+          "sha256": "dc7a87eb3bc2e769afdbb7febc2bc24a8f44d8fcc5cdb0a3ab96085e1390de1f"
+        },
+        {
+          "path": "tests/test_research_only_capability_guard.py",
+          "sha256": "e51d027378366808b1087e55df01c6327ccced65573efdacde9e3a4497c3b686"
+        },
+        {
+          "path": "tests/test_research_package_registry.py",
+          "sha256": "72d943cad509e30cfbfd5a6800de99694230ea6ddf9e809771fcd7e735c4fa37"
+        },
+        {
+          "path": "tests/test_research_project.py",
+          "sha256": "ba624ac9236a0479680e53f1db650ebec35bcfe1a938ce01a43a4b6a69c7bf67"
+        },
+        {
+          "path": "tests/test_research_reporting.py",
+          "sha256": "d10bf1c22283c9acc149a621df54e13ea4c98241aff5b7c9d6a25e1e48f31568"
+        },
+        {
+          "path": "tests/test_research_reproduction.py",
+          "sha256": "76b3a430192a0e9feee668b1c644263ad41aec2a869c55ef7c87fad2c0998ae4"
+        },
+        {
+          "path": "tests/test_research_reproduction_cli.py",
+          "sha256": "3e9a4ce041937556501ee23841de75f8718390e49eed6d2a64ff80163e1891f5"
+        },
+        {
+          "path": "tests/test_research_semantics_v2_contract.py",
+          "sha256": "b304e1a7a5f77d8e724f0888151795648418d7b8e486687b8a8d960b01c683ab"
+        },
+        {
+          "path": "tests/test_research_standard_authority_integration.py",
+          "sha256": "e85604968e0947931a54c384e1454981749b3d25e3e4ef02090798abfcb4d8cd"
+        },
+        {
+          "path": "tests/test_result_concentration.py",
+          "sha256": "112fa728f04a209d31531e26165df7ebc7ca2d536bef2d21759c55e7cb36ab07"
+        },
+        {
+          "path": "tests/test_retention_policy.py",
+          "sha256": "b7b18ca123c0d408ccc0fa82798295473d9ab71965c11d9d72a386347dbab3e5"
+        },
+        {
+          "path": "tests/test_return_panel_benchmarks.py",
+          "sha256": "99a551144cdf0756ceafb5f37c2307f214d71fb9531d008d5bb46cd8311a544f"
+        },
+        {
+          "path": "tests/test_run_lifecycle.py",
+          "sha256": "169df512ce5f98ed30eaadb13c1914ff0ed254911c009f3b364dc5f9b4f80932"
+        },
+        {
+          "path": "tests/test_simulation_seed_scope.py",
+          "sha256": "2fb98896c14e6eccf123ba2b5a58cd97fb879f462b35279ed8b887e8be5f59b9"
+        },
+        {
+          "path": "tests/test_single_portfolio_authority.py",
+          "sha256": "bffc0976d9ad81bf74c0fa0c4a432a9ea6ba3fa376c41a352196b1566b8a27da"
+        },
+        {
+          "path": "tests/test_strategy_extension_production_e2e.py",
+          "sha256": "8494d053ce43327233afcb4ecf1245ad9803eaf3dfa300d4c5221109a2c2ab5b"
+        },
+        {
+          "path": "tests/test_strategy_partial_fill_feedback.py",
+          "sha256": "1e746f4b6391892ce6567d5ee61186c346aec4f20068cde4d3381f632ad3b562"
+        },
+        {
+          "path": "tests/test_strategy_research_package.py",
+          "sha256": "c6dfd6ca924b27927bd13c46919c0aaadab95b21139a64243e0167b60f220569"
+        },
+        {
+          "path": "tests/test_structured_experiment_completeness.py",
+          "sha256": "44834cc940f16d4b306bf92e9e61dffd76ade78e563fc67ddd85559d6eada471"
+        },
+        {
+          "path": "tests/test_study_lifecycle.py",
+          "sha256": "35e5796586c17d54c0aa5168b117ee7ad46078e3211cce28b3f92e3914a36a3b"
+        },
+        {
+          "path": "tests/test_temporal_validation.py",
+          "sha256": "06dfb47d30dd5ae8abf31c6cba66c57c7bd127eee98b7f236e54ce317f3c4458"
+        },
+        {
+          "path": "tests/test_terminal_artifact_immutability.py",
+          "sha256": "a130694dc75b1e453d355f010d73ec76e5b3bfd04500dcaf3fbfb1556834c0a9"
+        },
+        {
+          "path": "tests/test_validation_experiment_bundle.py",
+          "sha256": "e576b8798d2e001afa3abe4bd8315b8ee8fdf8c93efcba8b30fbe74df4a44186"
+        },
+        {
+          "path": "tests/test_validation_experiments.py",
+          "sha256": "667a0ea2d9beaa1c3514ac5027f42a7a6876f894193ca356af9c0bc1283a29cb"
+        },
+        {
+          "path": "tests/test_validation_pipeline_gate.py",
+          "sha256": "0b1b1028f1b4e7389ff4ba25149407ba765a9e30a5823acd41450a762f4b5fa8"
+        },
+        {
+          "path": "tests/test_validation_stress_suite_contract.py",
+          "sha256": "ff74429372f12bf1149648892be87c41992c8c03ce18120ab2b1cd79022cb8b1"
+        }
+      ]
+    }
+  },
+  "content_sha256": "e165cc37af465b779b5c8be3eeff1364e6b2b715649d22181e670dcae89f8cbe"
+}

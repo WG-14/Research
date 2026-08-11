@@ -19,6 +19,13 @@ export NUMEXPR_NUM_THREADS BLIS_NUM_THREADS VECLIB_MAXIMUM_THREADS
 
 configure_test_tmpdir() {
   test_tmpdir=${RESEARCH_TEST_TMPDIR:-${TMPDIR:-/tmp}}
+  case "$test_tmpdir" in
+    /*) ;;
+    *)
+      echo "test temp directory must be absolute: $test_tmpdir" >&2
+      exit 78
+      ;;
+  esac
   if [ ! -d "$test_tmpdir" ]; then
     echo "test temp directory does not exist: $test_tmpdir" >&2
     exit 78
@@ -48,8 +55,66 @@ PY
   export TMPDIR TEMP TMP
 }
 
+cleanup_test_environment() {
+  if [ -n "${research_test_state_root:-}" ] && [ -d "$research_test_state_root" ]; then
+    rm -rf -- "$research_test_state_root"
+  fi
+}
+
+configure_test_environment() {
+  test_tmpdir=${RESEARCH_TEST_TMPDIR:-${TMPDIR:-/tmp}}
+  if [ -d "$test_tmpdir" ] && \
+    ! RESEARCH_TEST_ROOT_CHECK="$root" RESEARCH_TEST_TMP_CHECK="$test_tmpdir" \
+      python3 - <<'PY'
+import os
+from pathlib import Path
+
+repository = Path(os.environ["RESEARCH_TEST_ROOT_CHECK"]).resolve()
+temporary = Path(os.environ["RESEARCH_TEST_TMP_CHECK"]).resolve()
+try:
+    temporary.relative_to(repository)
+except ValueError:
+    pass
+else:
+    raise SystemExit(1)
+PY
+  then
+    echo "test temp directory must be outside the repository: $test_tmpdir" >&2
+    exit 78
+  fi
+  configure_test_tmpdir
+
+  research_test_state_root=$(mktemp -d \
+    "$test_tmpdir/market-research-tests.XXXXXX")
+  trap 'cleanup_test_environment' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  RESEARCH_DATA_ROOT="$research_test_state_root/datasets"
+  RESEARCH_ARTIFACT_ROOT="$research_test_state_root/artifacts"
+  RESEARCH_REPORT_ROOT="$research_test_state_root/reports"
+  RESEARCH_CACHE_ROOT="$research_test_state_root/cache"
+  RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH="${research_test_state_root}/identity/"\
+"experiment-identities.jsonl"
+  XDG_STATE_HOME="$research_test_state_root/xdg-state"
+  mkdir -p \
+    "$RESEARCH_DATA_ROOT" \
+    "$RESEARCH_ARTIFACT_ROOT" \
+    "$RESEARCH_REPORT_ROOT" \
+    "$RESEARCH_CACHE_ROOT" \
+    "$(dirname "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")" \
+    "$XDG_STATE_HOME"
+  export RESEARCH_DATA_ROOT RESEARCH_ARTIFACT_ROOT RESEARCH_REPORT_ROOT
+  export RESEARCH_CACHE_ROOT RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH
+  export XDG_STATE_HOME
+}
+
 case "${1:-}" in
-  test-core|test-web|test-operations|test-all|test-browser|test-integration|verify-deployment)
+  test-core|test-web|test-operations|test-all|test-browser|test-integration)
+    configure_test_environment
+    ;;
+  verify-deployment)
     configure_test_tmpdir
     ;;
 esac
@@ -59,21 +124,21 @@ case "${1:-}" in
     exec uv sync --all-packages --all-groups --frozen
     ;;
   test-core)
-    exec uv run --package market-research pytest tests
+    uv run --package market-research pytest tests
     ;;
   test-web)
-    exec uv run --package market-research-internal-web pytest apps/internal_web/tests
+    uv run --package market-research-internal-web pytest apps/internal_web/tests
     ;;
   test-operations)
-    exec uv run --package research-operations pytest services/research_operations/tests
+    uv run --package research-operations pytest services/research_operations/tests
     ;;
   test-all)
-    "$0" test-core
-    "$0" test-web
-    exec "$0" test-operations
+    uv run --package market-research pytest tests
+    uv run --package market-research-internal-web pytest apps/internal_web/tests
+    uv run --package research-operations pytest services/research_operations/tests
     ;;
   test-browser)
-    exec uv run --package market-research-internal-web pytest -q \
+    uv run --package market-research-internal-web pytest -q \
       apps/internal_web/tests/test_browser_e2e.py
     ;;
   test-integration)
@@ -85,7 +150,7 @@ case "${1:-}" in
     uv run --package market-research-internal-web pytest -q \
       apps/internal_web/tests/test_postgresql_integration_contract.py \
       apps/internal_web/tests/test_governance_postgresql_atomicity.py
-    exec uv run --package research-operations pytest -q \
+    uv run --package research-operations pytest -q \
       services/research_operations/tests/test_postgresql_core.py
     ;;
   lint)

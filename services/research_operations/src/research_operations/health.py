@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
+import psycopg
 from market_research.application import ReleaseMetadata
 
 from .database import connection
@@ -52,6 +54,69 @@ _ROOT_ROLES = {
     "cache": "RESEARCH_CACHE_ROOT",
     "identity_registry": "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
 }
+_DATABASE_CONNECTIVITY_ERRNOS = frozenset(
+    {
+        errno.ECONNABORTED,
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTDOWN,
+        errno.EHOSTUNREACH,
+        errno.ENETDOWN,
+        errno.ENETRESET,
+        errno.ENETUNREACH,
+        errno.EPIPE,
+        errno.ETIMEDOUT,
+    }
+)
+_DATABASE_CONNECTIVITY_SQLSTATES = frozenset(
+    {
+        "08000",  # connection exception
+        "08001",  # client unable to establish a connection
+        "08003",  # connection does not exist
+        "08006",  # connection failure
+        "57P01",  # administrator shutdown
+        "57P02",  # crash shutdown
+        "57P03",  # cannot connect now
+    }
+)
+_DATABASE_NON_CONNECTIVITY_MARKERS = (
+    "authentication",
+    "certificate",
+    "connection info",
+    "connection option",
+    "connection string",
+    "credential",
+    "invalid dsn",
+    "invalid sslmode",
+    "name or service not known",
+    "no pg_hba.conf entry",
+    "no password supplied",
+    "passfile",
+    "password",
+    "permission denied",
+    "pg_hba.conf rejects connection",
+    "private key",
+    "resolve host",
+    "root certificate",
+    "service file",
+    "ssl",
+    "tls",
+)
+_DATABASE_CONNECTIVITY_MARKERS = (
+    "connection refused",
+    "connection reset by peer",
+    "connection timed out",
+    "connection timeout expired",
+    "could not receive data from server",
+    "could not send data to server",
+    "host is down",
+    "network is down",
+    "network is unreachable",
+    "no route to host",
+    "server closed the connection unexpectedly",
+    "server terminated abnormally",
+    "timeout expired before any postgresql server is available",
+)
 
 
 def utcnow() -> datetime:
@@ -61,6 +126,43 @@ def utcnow() -> datetime:
 def iso_utc(value: datetime) -> str:
     normalized = value.astimezone(UTC)
     return normalized.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def is_database_connectivity_error(exc: BaseException) -> bool:
+    """Return true only for positively identified PostgreSQL reachability loss.
+
+    Authentication, authorization, TLS/certificate, DSN/configuration, and
+    schema/programming failures deliberately fail loud.  Generic psycopg
+    ``OperationalError`` and ``InterfaceError`` instances are not sufficient
+    evidence because libpq also uses them for those non-connectivity failures.
+    """
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).casefold()
+        if any(marker in message for marker in _DATABASE_NON_CONNECTIVITY_MARKERS):
+            return False
+
+        if isinstance(current, psycopg.Error):
+            sqlstate = current.sqlstate
+            if sqlstate is not None:
+                return sqlstate in _DATABASE_CONNECTIVITY_SQLSTATES
+            if isinstance(current, psycopg.OperationalError) and any(
+                marker in message for marker in _DATABASE_CONNECTIVITY_MARKERS
+            ):
+                return True
+
+        if isinstance(current, TimeoutError):
+            return True
+        if (
+            isinstance(current, OSError)
+            and current.errno in _DATABASE_CONNECTIVITY_ERRNOS
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,6 +698,11 @@ def _collect_health_snapshot(
             observed_at=observed_at,
         ),
     ]
+    # Installed migration metadata is local release-integrity evidence, not a
+    # database dependency.  Load it outside the connectivity exception scope
+    # so missing or unreadable package resources fail loud.
+    expected_migrations = expected_migration_hashes()
+    expected_portal_migration_names = expected_portal_migrations()
     try:
         database = _database_snapshot(
             dsn=dsn,
@@ -603,8 +710,12 @@ def _collect_health_snapshot(
             worker_heartbeat_max_age_seconds=(policy.worker_heartbeat_max_age_seconds),
             expected_release=expected_release,
             expected_release_bundle_digest=expected_release_bundle_digest,
+            expected_migrations=expected_migrations,
+            expected_portal_migration_names=expected_portal_migration_names,
         )
-    except Exception:
+    except (OSError, psycopg.Error) as exc:
+        if not is_database_connectivity_error(exc):
+            raise
         checks.extend(_database_unavailable_checks(kind, observed_at))
         return HealthSnapshot(observed_at, tuple(checks))
 
@@ -637,9 +748,19 @@ def _database_snapshot(
     worker_heartbeat_max_age_seconds: int,
     expected_release: ReleaseMetadata | None = None,
     expected_release_bundle_digest: str | None = None,
+    expected_migrations: Mapping[str, str] | None = None,
+    expected_portal_migration_names: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    expected = expected_migration_hashes()
-    expected_portal = expected_portal_migrations()
+    expected = (
+        dict(expected_migrations)
+        if expected_migrations is not None
+        else expected_migration_hashes()
+    )
+    expected_portal = (
+        expected_portal_migration_names
+        if expected_portal_migration_names is not None
+        else expected_portal_migrations()
+    )
     with connection(dsn, connect_timeout=3) as conn:
         # Prove the service role can execute a rollback-safe write without
         # touching durable application state. The temporary relation is scoped
@@ -1474,6 +1595,7 @@ __all__ = [
     "expected_portal_migrations",
     "filesystem_identity",
     "iso_utc",
+    "is_database_connectivity_error",
     "preflight_receipt_check",
     "record_audit_validation",
     "release_configuration_check",

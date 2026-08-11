@@ -181,6 +181,7 @@ def _dispatch_research_command(
                 verification_version=args.verification_version,
                 verifier_id=args.verifier,
                 verifier_role=args.verifier_role,
+                verifier_assertion_path=args.verifier_assertion,
                 verified_at=args.verified_at,
                 unresolved_issues=tuple(args.unresolved_issue),
             )
@@ -753,6 +754,9 @@ def _execute_validation_application(
             manifest=request.manifest_path,
             execution_calibration=request.execution_calibration_path,
             candidate_id=request.candidate_id,
+            validation_experiment_bundle=(
+                request.validation_experiment_bundle_path
+            ),
             out=request.out_path,
             mode=request.mode,
         )

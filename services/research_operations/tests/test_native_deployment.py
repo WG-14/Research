@@ -5,10 +5,12 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,19 @@ from research_operations.backup import create_signed_backup_manifest
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "deploy" / "native"
 SYSTEMD = NATIVE / "systemd"
+
+
+def _unit_credentials(name: str) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for line in (SYSTEMD / name).read_text().splitlines():
+        if not line.startswith("LoadCredential="):
+            continue
+        credential, separator, source = line.removeprefix("LoadCredential=").partition(
+            ":"
+        )
+        assert separator and credential and source
+        assignments[credential] = source
+    return assignments
 
 
 def _key_pair(
@@ -147,6 +162,7 @@ def test_native_unit_inventory_and_target_membership() -> None:
         "research-operations-ops-api.service",
         "research-operations-outbox-worker@.service",
         "research-operations-job-worker.service",
+        "research-operations-alert-worker.service",
         "research-operations-validator.service",
         "research-operations-backup.service",
         "research-operations-backup.timer",
@@ -161,6 +177,7 @@ def test_native_unit_inventory_and_target_membership() -> None:
         "research-operations-outbox-worker@1.service",
         "research-operations-outbox-worker@2.service",
         "research-operations-job-worker.service",
+        "research-operations-alert-worker.service",
         "research-operations-validator.service",
     ):
         assert f"Requires={name}" in target
@@ -179,6 +196,7 @@ def test_native_unit_inventory_and_target_membership() -> None:
         ("research-operations-ops-api.service", "20s"),
         ("research-operations-outbox-worker@.service", "45s"),
         ("research-operations-job-worker.service", "135s"),
+        ("research-operations-alert-worker.service", "45s"),
         ("research-operations-validator.service", "30s"),
     ],
 )
@@ -186,17 +204,23 @@ def test_long_running_units_are_supervised_and_hardened(
     name: str, timeout: str
 ) -> None:
     unit = (SYSTEMD / name).read_text()
-    expected_user = (
-        "User=research-web"
-        if name == "research-operations-web.service"
-        else "User=research-ops"
-    )
-    for contract in (
+    expected_user = {
+        "research-operations-web.service": "User=research-web",
+        "research-operations-ops-api.service": "User=research-diagnostics",
+        "research-operations-outbox-worker@.service": "User=research-outbox",
+        "research-operations-job-worker.service": "User=research-job",
+        "research-operations-alert-worker.service": "User=research-alert",
+        "research-operations-validator.service": "User=research-validator",
+    }[name]
+    expected_group = {
+        "research-operations-web.service": "Group=research-web-proxy",
+        "research-operations-ops-api.service": "Group=research-ops-proxy",
+    }.get(name, "Group=research-ops")
+    contracts = (
         expected_user,
-        "Group=research-ops",
+        expected_group,
         "EnvironmentFile=/etc/research-ops/runtime.env",
         "Requires=research-operations-preflight.service",
-        "research-operations-migrate.service",
         "Restart=on-failure",
         "KillSignal=SIGTERM",
         "KillMode=mixed",
@@ -206,6 +230,8 @@ def test_long_running_units_are_supervised_and_hardened(
         "PrivateTmp=true",
         "ProtectSystem=strict",
         "ProtectHome=true",
+        "ProtectProc=invisible",
+        "InaccessiblePaths=/etc/research-ops/secrets",
         "RestrictNamespaces=true",
         "MemoryDenyWriteExecute=true",
         "TasksMax=",
@@ -213,7 +239,10 @@ def test_long_running_units_are_supervised_and_hardened(
         "CPUQuota=",
         "StandardOutput=journal",
         "StandardError=journal",
-    ):
+    )
+    if name != "research-operations-alert-worker.service":
+        contracts += ("research-operations-migrate.service",)
+    for contract in contracts:
         assert contract in unit
     assert "/opt/research-platform/current/" in unit
 
@@ -230,10 +259,24 @@ def test_workers_and_validator_use_durable_process_contracts() -> None:
         "LoadCredential=operated-execution.key:"
         "/etc/research-ops/secrets/operated-execution.key"
     ) in job
+    alert_worker = (SYSTEMD / "research-operations-alert-worker.service").read_text()
+    assert "research-ops alert-worker" in alert_worker
+    assert "RESEARCH_OPS_DATABASE_ROLE=runtime" in alert_worker
+    assert (
+        "LoadCredential=service-alert-endpoint-url:"
+        "/etc/research-ops/secrets/service-alert-endpoint-url"
+    ) in alert_worker
+    assert (
+        "RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE=%d/service-alert-endpoint-url"
+    ) in alert_worker
+    assert "research-operations-migrate.service" not in alert_worker
+    assert "After=research-operations-preflight.service" in alert_worker
+    migrate = (SYSTEMD / "research-operations-migrate.service").read_text()
+    assert "research-operations-alert-worker.service" not in migrate
     web = (SYSTEMD / "research-operations-web.service").read_text()
     assert "User=research-web" in web
-    assert "Group=research-ops" in web
-    assert "LoadCredential=" not in web
+    assert "Group=research-web-proxy" in web
+    assert "SupplementaryGroups=research-ops" in web
     assert "RuntimeDirectory=research-operations-web" in web
     assert (
         'worker_tmp_dir = "/run/research-operations-web"'
@@ -242,6 +285,449 @@ def test_workers_and_validator_use_durable_process_contracts() -> None:
     validator = (SYSTEMD / "research-operations-validator.service").read_text()
     assert "scripts/audit-validator-loop.sh" in validator
     assert "RESEARCH_OPS_DATABASE_ROLE=validator" in validator
+
+
+def test_systemd_projects_an_exact_per_unit_secret_allowlist() -> None:
+    expected = {
+        "research-operations-migrate.service": {
+            "postgres-owner-password": (
+                "/etc/research-ops/secrets/postgres-owner-password"
+            ),
+            "django-secret-key": "/etc/research-ops/secrets/django-secret-key",
+        },
+        "research-operations-web.service": {
+            "postgres-runtime-password": (
+                "/etc/research-ops/secrets/postgres-runtime-password"
+            ),
+            "django-secret-key": "/etc/research-ops/secrets/django-secret-key",
+        },
+        "research-operations-outbox-worker@.service": {
+            "postgres-runtime-password": (
+                "/etc/research-ops/secrets/postgres-runtime-password"
+            ),
+            "django-secret-key": "/etc/research-ops/secrets/django-secret-key",
+        },
+        "research-operations-job-worker.service": {
+            "postgres-runtime-password": (
+                "/etc/research-ops/secrets/postgres-runtime-password"
+            ),
+            "django-secret-key": "/etc/research-ops/secrets/django-secret-key",
+            "operated-execution.key": (
+                "/etc/research-ops/secrets/operated-execution.key"
+            ),
+        },
+        "research-operations-alert-worker.service": {
+            "postgres-runtime-password": (
+                "/etc/research-ops/secrets/postgres-runtime-password"
+            ),
+            "service-alert-endpoint-url": (
+                "/etc/research-ops/secrets/service-alert-endpoint-url"
+            ),
+        },
+        "research-operations-validator.service": {
+            "postgres-validator-password": (
+                "/etc/research-ops/secrets/postgres-validator-password"
+            ),
+            "django-secret-key": "/etc/research-ops/secrets/django-secret-key",
+        },
+        "research-operations-backup.service": {
+            "postgres-backup-password": (
+                "/etc/research-ops/secrets/postgres-backup-password"
+            ),
+            "django-secret-key": "/etc/research-ops/secrets/django-secret-key",
+            "backup-signing.key": ("/etc/research-ops/secrets/backup-signing.key"),
+        },
+        "research-operations-ops-api.service": {
+            "postgres-diagnostics-password": (
+                "/etc/research-ops/secrets/postgres-diagnostics-password"
+            ),
+        },
+    }
+    for name, credentials in expected.items():
+        unit = (SYSTEMD / name).read_text()
+        assert _unit_credentials(name) == credentials
+        assert "InaccessiblePaths=/etc/research-ops/secrets" in unit
+        for credential in credentials:
+            if credential == "operated-execution.key":
+                continue
+            environment_name = {
+                "backup-signing.key": "RESEARCH_OPS_BACKUP_SIGNING_KEY_FILE",
+                "django-secret-key": "DJANGO_SECRET_KEY_FILE",
+                "service-alert-endpoint-url": ("RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE"),
+            }.get(credential)
+            if environment_name is None:
+                environment_name = (
+                    "POSTGRES_"
+                    + credential.removeprefix("postgres-")
+                    .removesuffix("-password")
+                    .upper()
+                    + "_PASSWORD_FILE"
+                )
+            assert f"Environment={environment_name}=%d/{credential}" in unit
+
+    expected_users = {
+        "research-operations-migrate.service": "research-migrate",
+        "research-operations-web.service": "research-web",
+        "research-operations-outbox-worker@.service": "research-outbox",
+        "research-operations-job-worker.service": "research-job",
+        "research-operations-alert-worker.service": "research-alert",
+        "research-operations-validator.service": "research-validator",
+        "research-operations-backup.service": "research-backup",
+        "research-operations-ops-api.service": "research-diagnostics",
+    }
+    assert len(set(expected_users.values())) == len(expected_users)
+    runtime_directories: set[str] = set()
+    for name, user in expected_users.items():
+        unit = (SYSTEMD / name).read_text()
+        assert f"User={user}" in unit
+        assert "ProtectProc=invisible" in unit
+        runtime_directory = next(
+            line for line in unit.splitlines() if line.startswith("RuntimeDirectory=")
+        )
+        runtime_directories.add(runtime_directory)
+    assert len(runtime_directories) == len(expected_users)
+    backup = (SYSTEMD / "research-operations-backup.service").read_text()
+    assert "Group=research-backup" in backup
+    assert "SupplementaryGroups=research-ops" in backup
+    retention = (SYSTEMD / "research-operations-retention-audit.service").read_text()
+    assert "User=research-retention" in retention
+    assert "Group=research-retention" in retention
+    assert "SupplementaryGroups=research-backup" in retention
+    assert "ProtectProc=invisible" in retention
+
+    web = (SYSTEMD / "research-operations-web.service").read_text()
+    assert set(_unit_credentials("research-operations-web.service")) == {
+        "postgres-runtime-password",
+        "django-secret-key",
+    }
+    for forbidden in (
+        "postgres-owner-password",
+        "postgres-validator-password",
+        "postgres-backup-password",
+        "postgres-diagnostics-password",
+        "backup-signing.key",
+        "service-alert-endpoint-url",
+        "operated-execution.key",
+        "control-database-url",
+        "ops.htpasswd",
+    ):
+        assert forbidden not in web
+
+
+def test_sysusers_declares_separate_non_login_trust_tiers() -> None:
+    declaration = NATIVE / "sysusers.d/research-operations.conf"
+    users = {
+        line.split()[1]
+        for line in declaration.read_text().splitlines()
+        if line.startswith("u ")
+    }
+    assert users == {
+        "research-migrate",
+        "research-web",
+        "research-outbox",
+        "research-job",
+        "research-alert",
+        "research-validator",
+        "research-backup",
+        "research-diagnostics",
+        "research-retention",
+        "research-proxy",
+    }
+    assert all(user != "research-ops" for user in users)
+    groups = {
+        line.split()[1]
+        for line in declaration.read_text().splitlines()
+        if line.startswith("g ")
+    }
+    assert groups == {
+        "research-ops",
+        "research-backup",
+        "research-web-proxy",
+        "research-ops-proxy",
+    }
+    memberships = {
+        tuple(line.split()[1:3])
+        for line in declaration.read_text().splitlines()
+        if line.startswith("m ")
+    }
+    assert memberships == {
+        ("research-proxy", "research-web-proxy"),
+        ("research-proxy", "research-ops-proxy"),
+    }
+    parsed = subprocess.run(
+        ["systemd-sysusers", "--dry-run", str(declaration)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert parsed.returncode == 0, parsed.stderr
+
+
+def test_native_artifact_writers_publish_group_readable_for_backup() -> None:
+    writers = {
+        "research-operations-migrate.service",
+        "research-operations-web.service",
+        "research-operations-job-worker.service",
+    }
+    setting = "Environment=MARKET_RESEARCH_ATOMIC_PUBLICATION_MODE=0640"
+    for unit_path in SYSTEMD.glob("*.service"):
+        unit = unit_path.read_text()
+        if unit_path.name in writers:
+            assert setting in unit
+        else:
+            assert setting not in unit
+
+
+def test_native_writer_mounts_separate_evidence_integrity_domains() -> None:
+    migrate = (SYSTEMD / "research-operations-migrate.service").read_text()
+    web = (SYSTEMD / "research-operations-web.service").read_text()
+    job = (SYSTEMD / "research-operations-job-worker.service").read_text()
+    outbox = (SYSTEMD / "research-operations-outbox-worker@.service").read_text()
+    validator = (SYSTEMD / "research-operations-validator.service").read_text()
+
+    assert "ReadWritePaths=/srv/research/artifacts/_internal_web/static" in migrate
+    assert "ReadWritePaths=/srv/research/artifacts " not in migrate
+    assert "ReadOnlyPaths=/srv/research/artifacts/_internal_web/static" in web
+    for protected in (
+        "/srv/research/artifacts/_internal_web",
+        "/srv/research/artifacts/reports/research/_registry",
+        "/srv/research/artifacts/derived/research/projects",
+        "/srv/research/reports/_internal_web",
+        "/srv/research/cache/research/projects",
+    ):
+        assert f"ReadOnlyPaths={protected}" in job
+    assert "ReadWritePaths=" not in outbox
+    assert "ReadWritePaths=" not in validator
+
+
+def test_static_projection_is_complete_public_and_read_only() -> None:
+    migration = (ROOT / "scripts/apply-migrations.sh").read_text()
+    drop_in = (NATIVE / "nginx/nginx.service.d/research-operations.conf").read_text()
+
+    assert "django-admin collectstatic --noinput --clear" in migration
+    assert "-type l -print -quit" in migration
+    assert "! -type d ! -type f -print -quit" in migration
+    assert "-type f -links +1" in migration
+    assert "-type d -exec chmod 0755" in migration
+    assert "-type f -exec chmod 0644" in migration
+    assert 'sync -f "$INTERNAL_WEB_STATIC_ROOT"' in migration
+    assert "BindReadOnlyPaths=/srv/research/artifacts/_internal_web/static:" in drop_in
+
+
+def test_preflight_rejects_numeric_aliases_and_host_supplementary_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    identity_contract = dict(module._SERVICE_IDENTITY_CONTRACT)
+    group_contract = dict(module._SERVICE_GROUP_CONTRACT)
+    group_ids = {
+        "research-ops": 3000,
+        "research-backup": 3001,
+        "research-web-proxy": 3002,
+        "research-ops-proxy": 3003,
+        **{
+            name: 4000 + index
+            for index, name in enumerate(identity_contract.values())
+            if name != "research-backup"
+        },
+    }
+    users = {
+        name: SimpleNamespace(
+            pw_name=name,
+            pw_uid=2000 + index,
+            pw_gid=group_ids[name],
+            pw_shell="/usr/sbin/nologin",
+        )
+        for index, name in enumerate(identity_contract.values())
+    }
+    groups = {
+        name: SimpleNamespace(
+            gr_name=name,
+            gr_gid=gid,
+            gr_mem=(
+                ["research-proxy"]
+                if name in {"research-web-proxy", "research-ops-proxy"}
+                else []
+            ),
+        )
+        for name, gid in group_ids.items()
+    }
+    monkeypatch.setattr(module.pwd, "getpwnam", users.__getitem__)
+    monkeypatch.setattr(module.pwd, "getpwall", lambda: list(users.values()))
+    monkeypatch.setattr(module.grp, "getgrnam", groups.__getitem__)
+    monkeypatch.setattr(module.grp, "getgrall", lambda: list(groups.values()))
+    env = {
+        **identity_contract,
+        **group_contract,
+    }
+    identities, validated_groups = module._validate_service_identities(
+        env,
+        protected_uids={900, 901},
+        protected_gids={900, 901},
+        protected_member_names=set(),
+    )
+    assert len(identities) == 10
+    assert (
+        validated_groups["research-ops"].gr_gid
+        != validated_groups["research-backup"].gr_gid
+    )
+
+    alert_uid = users["research-alert"].pw_uid
+    users["research-alert"].pw_uid = users["research-job"].pw_uid
+    with pytest.raises(module.PreflightError, match="service_identity_not_separated"):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    users["research-alert"].pw_uid = alert_uid
+
+    users["research-alert"].pw_uid = 900
+    with pytest.raises(module.PreflightError, match="service_identity_not_separated"):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    users["research-alert"].pw_uid = alert_uid
+
+    users["alias-account"] = SimpleNamespace(
+        pw_name="alias-account",
+        pw_uid=alert_uid,
+        pw_gid=9998,
+        pw_shell="/usr/sbin/nologin",
+    )
+    with pytest.raises(module.PreflightError, match="service_uid_alias_detected"):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    del users["alias-account"]
+
+    users["primary-gid-intruder"] = SimpleNamespace(
+        # A same-name account for a group-only authority must not be mistaken
+        # for a legitimate service identity.
+        pw_name="research-ops",
+        pw_uid=9997,
+        pw_gid=groups["research-ops"].gr_gid,
+        pw_shell="/usr/sbin/nologin",
+    )
+    with pytest.raises(
+        module.PreflightError,
+        match="service_primary_gid_member_forbidden",
+    ):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    del users["primary-gid-intruder"]
+
+    service_gid = groups["research-ops"].gr_gid
+    groups["research-ops"].gr_gid = 900
+    with pytest.raises(module.PreflightError, match="service_group_not_separated"):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    groups["research-ops"].gr_gid = service_gid
+
+    groups["research-ops-alias"] = SimpleNamespace(
+        gr_name="research-ops-alias",
+        gr_gid=groups["research-ops"].gr_gid,
+        gr_mem=[],
+    )
+    with pytest.raises(module.PreflightError, match="service_gid_alias_detected"):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    del groups["research-ops-alias"]
+
+    groups["unexpected"] = SimpleNamespace(
+        gr_name="unexpected",
+        gr_gid=9999,
+        gr_mem=["research-web"],
+    )
+    with pytest.raises(
+        module.PreflightError,
+        match="service_supplementary_group_forbidden",
+    ):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    del groups["unexpected"]
+
+    groups["research-web-proxy"].gr_mem = []
+    with pytest.raises(
+        module.PreflightError,
+        match="controlled_group_membership_invalid",
+    ):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    groups["research-web-proxy"].gr_mem = ["research-proxy"]
+
+    groups["research-web-proxy"].gr_mem = ["research-proxy", "rogue"]
+    with pytest.raises(
+        module.PreflightError,
+        match="controlled_group_membership_invalid",
+    ):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names=set(),
+        )
+    groups["research-web-proxy"].gr_mem = ["research-proxy"]
+
+    groups["research-ops"].gr_mem = ["www-data"]
+    with pytest.raises(
+        module.PreflightError,
+        match="protected_identity_group_forbidden",
+    ):
+        module._validate_service_identities(
+            env,
+            protected_uids={900, 901},
+            protected_gids={900, 901},
+            protected_member_names={"www-data"},
+        )
+
+
+def test_web_writes_only_declared_adapter_namespaces() -> None:
+    web = (SYSTEMD / "research-operations-web.service").read_text()
+    writable = {
+        line.removeprefix("ReadWritePaths=")
+        for line in web.splitlines()
+        if line.startswith("ReadWritePaths=")
+    }
+    assert writable == {
+        "/srv/research/data/_internal_web/manifests",
+        "/srv/research/artifacts/_internal_web",
+        "/srv/research/artifacts/reports/research/_registry",
+        "/srv/research/artifacts/derived/research/projects",
+        "/srv/research/reports/_internal_web",
+        "/srv/research/cache/research/projects",
+    }
+    assert "/srv/research/artifacts" not in writable
+    assert "/srv/research/reports" not in writable
+    assert "/srv/research/cache" not in writable
+    assert "/srv/research/registry" not in writable
 
 
 def test_backup_and_maintenance_are_persistent_timers() -> None:
@@ -267,6 +753,7 @@ def test_native_network_endpoints_use_separate_local_unix_sockets() -> None:
     web = (NATIVE / "gunicorn-web.conf.py").read_text()
     operations = (NATIVE / "gunicorn-ops.conf.py").read_text()
     proxy = (NATIVE / "nginx" / "research-operations.conf.template").read_text()
+    main = (NATIVE / "nginx" / "nginx.conf").read_text()
     assert 'bind = "unix:/run/research-operations-web/web.sock"' in web
     assert 'bind = "unix:/run/research-operations-ops-api/ops-api.sock"' in operations
     assert "server unix:/run/research-operations-web/web.sock" in proxy
@@ -274,13 +761,45 @@ def test_native_network_endpoints_use_separate_local_unix_sockets() -> None:
     assert "umask = 0o117" in web
     assert "umask = 0o117" in operations
     drop_in = (NATIVE / "nginx/nginx.service.d/research-operations.conf").read_text()
-    assert "SupplementaryGroups=research-ops" in drop_in
+    assert "Group=research-proxy" in drop_in
+    assert "SupplementaryGroups=" not in drop_in
+    assert "user research-proxy research-proxy;" in main
+    assert "include /etc/nginx/conf.d/research-operations.conf;" in main
+    assert "sites-enabled" not in main
+    assert "modules-enabled" not in main
+    assert "/etc/nginx/mime.types" not in main
+    assert "research-ops" not in main
+    assert (
+        "BindReadOnlyPaths=/srv/research/artifacts/_internal_web/static:"
+        "/run/research-operations-nginx-static" in drop_in
+    )
+    assert "alias /run/research-operations-nginx-static/;" in proxy
+    assert "alias /srv/research" not in proxy
+    assert (
+        "LoadCredential=ops.htpasswd:/etc/research-ops/secrets/ops.htpasswd" in drop_in
+    )
+    assert (
+        "ExecStartPre=/usr/bin/install -o root -g research-proxy -m 0640 "
+        "%d/ops.htpasswd "
+        "/run/research-operations-nginx-credentials/ops.htpasswd"
+    ) in drop_in
+    assert (
+        "auth_basic_user_file /run/research-operations-nginx-credentials/ops.htpasswd"
+    ) in proxy
     assert (
         "RuntimeDirectoryMode=0750"
         in (SYSTEMD / "research-operations-web.service").read_text()
     )
     assert (
+        "Group=research-web-proxy\nSupplementaryGroups=research-ops"
+        in (SYSTEMD / "research-operations-web.service").read_text()
+    )
+    assert (
         "RuntimeDirectoryMode=0750"
+        in (SYSTEMD / "research-operations-ops-api.service").read_text()
+    )
+    assert (
+        "Group=research-ops-proxy\nSupplementaryGroups=research-ops"
         in (SYSTEMD / "research-operations-ops-api.service").read_text()
     )
     assert "listen 127.0.0.1:9443 ssl http2" in proxy
@@ -298,6 +817,111 @@ def test_preflight_assignments_enforce_required_separation() -> None:
     env["RESEARCH_OPS_RECOVERY_APPROVER"] = env["RESEARCH_OPS_BACKUP_OWNER"]
     with pytest.raises(module.PreflightError, match="duties_not_separated"):
         module._validate_owner_assignments(env)
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid", "mode"),
+    [
+        (1, 0, 0o600),
+        (0, 1, 0o600),
+        (0, 0, 0o640),
+        (0, 0, 0o400),
+    ],
+)
+def test_preflight_rejects_noncanonical_secret_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    uid: int,
+    gid: int,
+    mode: int,
+) -> None:
+    module = _load_preflight()
+    monkeypatch.setattr(
+        module,
+        "_regular_file",
+        lambda _path, _code: SimpleNamespace(
+            st_uid=uid,
+            st_gid=gid,
+            st_mode=stat.S_IFREG | mode,
+        ),
+    )
+    with pytest.raises(module.PreflightError, match="root_only_file_invalid"):
+        module._root_only_file(Path("/root-only"), "test")
+
+
+def test_preflight_accepts_exact_root_only_secret_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    monkeypatch.setattr(
+        module,
+        "_regular_file",
+        lambda _path, _code: SimpleNamespace(
+            st_uid=0,
+            st_gid=0,
+            st_mode=stat.S_IFREG | 0o600,
+        ),
+    )
+    module._root_only_file(Path("/root-only"), "test")
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o664])
+def test_preflight_rejects_unreadable_or_writable_public_verification_key(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    module = _load_preflight()
+    monkeypatch.setattr(
+        module,
+        "_regular_file",
+        lambda _path, _code: SimpleNamespace(
+            st_uid=0,
+            st_gid=0,
+            st_mode=stat.S_IFREG | mode,
+        ),
+    )
+    with pytest.raises(module.PreflightError):
+        module._root_public_file(Path("/root-public"), "test")
+
+
+def test_preflight_accepts_exact_root_public_verification_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    monkeypatch.setattr(
+        module,
+        "_regular_file",
+        lambda _path, _code: SimpleNamespace(
+            st_uid=0,
+            st_gid=0,
+            st_mode=stat.S_IFREG | 0o644,
+        ),
+    )
+    module._root_public_file(Path("/root-public"), "test")
+
+
+def test_preflight_requires_setgid_shared_research_root(
+    tmp_path: Path,
+) -> None:
+    module = _load_preflight()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o2770)
+    module._exact_directory(
+        shared,
+        "shared",
+        owner_uid=os.getuid(),
+        group_gid=os.getgid(),
+        mode=0o2770,
+    )
+    shared.chmod(0o770)
+    with pytest.raises(module.PreflightError, match="directory_contract_invalid"):
+        module._exact_directory(
+            shared,
+            "shared",
+            owner_uid=os.getuid(),
+            group_gid=os.getgid(),
+            mode=0o2770,
+        )
 
 
 def test_preflight_requires_complete_canonical_release_shape() -> None:
@@ -383,6 +1007,7 @@ def test_preflight_exits_fail_closed_without_configuration() -> None:
 
 def test_runtime_example_requires_owners_release_pki_and_offsite_policy() -> None:
     example = (NATIVE / "runtime.env.example").read_text()
+    assert "chown root:root, chmod 0600" in example
     for key in (
         "RESEARCH_OPS_SERVICE_OWNER",
         "RESEARCH_OPS_SECURITY_OWNER",
@@ -400,7 +1025,21 @@ def test_runtime_example_requires_owners_release_pki_and_offsite_policy() -> Non
         "RESEARCH_OPS_PREFLIGHT_RECEIPT",
         "RESEARCH_OPS_PREFLIGHT_MAX_AGE_SECONDS",
         "RESEARCH_OPS_ENV_FILE",
+        "RESEARCH_OPS_MIGRATION_USER",
         "RESEARCH_OPS_WEB_USER",
+        "RESEARCH_OPS_WEB_PROXY_GROUP",
+        "RESEARCH_OPS_OUTBOX_USER",
+        "RESEARCH_OPS_JOB_USER",
+        "RESEARCH_OPS_ALERT_USER",
+        "RESEARCH_OPS_VALIDATOR_USER",
+        "RESEARCH_OPS_BACKUP_USER",
+        "RESEARCH_OPS_BACKUP_GROUP",
+        "RESEARCH_OPS_DIAGNOSTICS_PROXY_GROUP",
+        "RESEARCH_OPS_DIAGNOSTICS_USER",
+        "RESEARCH_OPS_RETENTION_USER",
+        "RESEARCH_OPS_PROXY_USER",
+        "RESEARCH_OPS_NGINX_USER",
+        "RESEARCH_OPS_NGINX_GROUP",
         "RESEARCH_OPS_EXECUTION_CAPABILITY_KEY_SOURCE_FILE",
         "RESEARCH_OPS_PKI_MINIMUM_VALIDITY_SECONDS",
         "RESEARCH_OPS_OFFSITE_EXPORT_HOOK",
@@ -410,13 +1049,44 @@ def test_runtime_example_requires_owners_release_pki_and_offsite_policy() -> Non
         "RESEARCH_OPS_RTO_SECONDS",
         "RESEARCH_OPS_POSTGRESQL_DROP_IN",
         "RESEARCH_OPS_POSTGRESQL_HBA_FILE",
+        "RESEARCH_OPS_NGINX_SYSTEMD_DROP_IN",
+        "RESEARCH_OPS_NGINX_MAIN_CONFIG_FILE",
+        "RESEARCH_OPS_SYSTEMD_UNIT_ROOT",
         "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY",
+        "BACKUP_VERIFICATION_KEY_FILE",
+        "RESEARCH_OPS_BACKUP_VERIFICATION_KEY_FILE",
+        "RESEARCH_OPS_ALERT_ENDPOINT_URL_FILE",
+        "RESEARCH_OPS_ALERT_WORKER_ID",
+        "RESEARCH_OPS_ALERT_PRIMARY_ENDPOINT_ID",
+        "RESEARCH_OPS_ALERT_ESCALATION_ENDPOINT_ID",
+        "RESEARCH_OPS_ALERT_SOURCE_ACTOR_ID",
+        "RESEARCH_OPS_ALERT_ESCALATION_ACTOR_ID",
+        "RESEARCH_OPS_ALERT_POLL_INTERVAL_SECONDS",
+        "RESEARCH_OPS_ALERT_TRANSPORT_TIMEOUT_SECONDS",
+        "RESEARCH_OPS_ALERT_LEASE_SECONDS",
+        "RESEARCH_OPS_ALERT_MAX_ATTEMPTS",
+        "RESEARCH_OPS_ALERT_RETRY_DELAY_SECONDS",
+        "RESEARCH_OPS_ALERT_ACKNOWLEDGMENT_TIMEOUT_SECONDS",
+        "RESEARCH_OPS_ALERT_ESCALATION_REPEAT_SECONDS",
+        "RESEARCH_OPS_ALERT_MAXIMUM_LEVEL",
+        "RESEARCH_OPS_ALERT_MAXIMUM_EVALUATED_PER_CYCLE",
+        "RESEARCH_OPS_ALERT_MAXIMUM_DELIVERIES_PER_CYCLE",
+        "RESEARCH_OPS_ALERT_MAXIMUM_ESCALATIONS_PER_CYCLE",
     ):
         assert f"{key}=" in example
     assert "RESEARCH_OPS_OFFSITE_REQUIRED=true" in example
     assert "RESEARCH_OPS_LEGAL_HOLD_ENFORCEMENT=true" in example
     assert "RESEARCH_RUNTIME_PROFILE=operated" in example
     assert "RESEARCH_OPS_WEB_USER=research-web" in example
+    assert "RESEARCH_OPS_PROXY_USER=research-proxy" in example
+    assert "RESEARCH_OPS_NGINX_USER=research-proxy" in example
+    assert "RESEARCH_OPS_NGINX_GROUP=research-proxy" in example
+    assert "www-data" not in example
+    assert "RESEARCH_OPS_SERVICE_USER=" not in example
+    assert (
+        "BACKUP_VERIFICATION_KEY_FILE=/etc/research-ops/backup-signing.pub" in example
+    )
+    assert "/etc/research-ops/secrets/backup-signing.pub" not in example
     assert (
         "RESEARCH_OPS_EXECUTION_CAPABILITY_KEY_SOURCE_FILE="
         "/etc/research-ops/secrets/operated-execution.key"
@@ -432,6 +1102,120 @@ def test_runtime_example_requires_owners_release_pki_and_offsite_policy() -> Non
     env["RESEARCH_DATA_ROOT"] = "/tmp/unqualified"
     with pytest.raises(module.PreflightError, match="native_path_contract_invalid"):
         module._validate_native_path_contracts(env)
+
+
+def test_preflight_byte_attests_dedicated_nginx_main_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    source_root = tmp_path / "release"
+    native = source_root / "services/research_operations/deploy/native"
+    source_postgresql = native / "postgresql"
+    source_nginx = native / "nginx"
+    source_drop_in = source_nginx / "nginx.service.d"
+    source_systemd = native / "systemd"
+    for directory in (
+        source_postgresql,
+        source_drop_in,
+        source_systemd,
+    ):
+        directory.mkdir(parents=True)
+    source_files = {
+        source_postgresql / "90-research-operations.conf": "postgresql\n",
+        source_postgresql / "pg_hba.conf": "hba\n",
+        source_nginx / "nginx.conf": "user research-proxy research-proxy;\n",
+        source_drop_in / "research-operations.conf": "[Service]\n",
+        source_systemd / "research-operations.target": "[Unit]\n",
+    }
+    for path, content in source_files.items():
+        path.write_text(content, encoding="utf-8")
+
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    installed_postgresql = installed / "postgresql.conf"
+    installed_hba = installed / "pg_hba.conf"
+    installed_main = installed / "nginx.conf"
+    installed_drop_in = installed / "nginx-drop-in.conf"
+    unit_root = installed / "systemd"
+    unit_root.mkdir()
+    installed_postgresql.write_text("postgresql\n", encoding="utf-8")
+    installed_hba.write_text("hba\n", encoding="utf-8")
+    installed_main.write_text(
+        "user research-proxy research-proxy;\n",
+        encoding="utf-8",
+    )
+    installed_drop_in.write_text("[Service]\n", encoding="utf-8")
+    (unit_root / "research-operations.target").write_text(
+        "[Unit]\n",
+        encoding="utf-8",
+    )
+    qualification = installed / "qualification.json"
+    qualification.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "PASS",
+                "scope": "single-host",
+                "roots": [
+                    {"role": role}
+                    for role in (
+                        "data",
+                        "artifact",
+                        "report",
+                        "cache",
+                        "identity_registry",
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {
+        "RESEARCH_OPS_SOURCE_ROOT": str(source_root),
+        "RESEARCH_OPS_POSTGRESQL_DROP_IN": str(installed_postgresql),
+        "RESEARCH_OPS_POSTGRESQL_HBA_FILE": str(installed_hba),
+        "RESEARCH_OPS_NGINX_MAIN_CONFIG_FILE": str(installed_main),
+        "RESEARCH_OPS_NGINX_SYSTEMD_DROP_IN": str(installed_drop_in),
+        "RESEARCH_OPS_SYSTEMD_UNIT_ROOT": str(unit_root),
+        "RESEARCH_OPS_FILESYSTEM_QUALIFICATION_RECEIPT": str(qualification),
+        "RESEARCH_OPS_NGINX_CONFIG_FILE": (
+            "/etc/nginx/conf.d/research-operations.conf"
+        ),
+    }
+    monkeypatch.setattr(
+        module,
+        "_public_file",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    observed_commands: list[list[str]] = []
+
+    def run(arguments, **_kwargs):
+        observed_commands.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    module._validate_runtime_files(env)
+    assert observed_commands[-1] == [
+        "/usr/sbin/nginx",
+        "-t",
+        "-q",
+        "-c",
+        str(installed_main),
+    ]
+
+    installed_main.write_text("user unreviewed;\n", encoding="utf-8")
+    with pytest.raises(
+        module.PreflightError,
+        match="systemd_native_configuration_drift",
+    ):
+        module._validate_runtime_files(env)
 
 
 def test_nginx_renderer_is_atomic_and_rejects_example_dns(tmp_path: Path) -> None:
@@ -525,6 +1309,21 @@ def test_offsite_receipt_binds_signed_remote_export_to_manifest(
     ]
     passed = subprocess.run(command, check=False, text=True, capture_output=True)
     assert passed.returncode == 0, passed.stderr
+    staging_backup = tmp_path / f".staging-{backup_id}"
+    staging_backup.mkdir()
+    (staging_backup / "manifest.json").write_bytes(manifest.read_bytes())
+    staging_command = list(command)
+    staging_command[staging_command.index("--backup-directory") + 1] = str(
+        staging_backup
+    )
+    staging_command.append("--allow-staging-directory")
+    staging_passed = subprocess.run(
+        staging_command,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert staging_passed.returncode == 0, staging_passed.stderr
     document = json.loads(receipt.read_text())
     document["remote_object_version"] = "attacker-replaced-version"
     receipt.write_text(json.dumps(document, sort_keys=True))
@@ -625,6 +1424,9 @@ def test_retention_is_dry_run_and_respects_minimum_and_legal_hold(
         )
         offsite_receipt.chmod(0o600)
     (backup_root / identifiers[0] / "LEGAL_HOLD").touch()
+    active_staging = backup_root / f".staging-{identifiers[0]}"
+    active_staging.mkdir()
+    (active_staging / "partial-upload").write_text("not-final")
     command = [
         sys.executable,
         str(NATIVE / "bin" / "backup-retention.py"),
@@ -657,9 +1459,11 @@ def test_retention_is_dry_run_and_respects_minimum_and_legal_hold(
     assert result.returncode == 0, result.stderr
     plan = json.loads(result.stdout)
     assert plan["mode"] == "dry-run"
+    assert plan["complete_count"] == len(identifiers)
     assert plan["eligible_backup_ids"] == [identifiers[1]]
     assert plan["legal_hold_backup_ids"] == [identifiers[0]]
     assert all((backup_root / identifier).exists() for identifier in identifiers)
+    assert active_staging.exists()
 
     (backup_root / identifiers[2] / "data.tar").write_text("tampered")
     rejected = subprocess.run(
@@ -668,10 +1472,26 @@ def test_retention_is_dry_run_and_respects_minimum_and_legal_hold(
         text=True,
         capture_output=True,
     )
-    assert rejected.returncode == 0, rejected.stderr
+    assert rejected.returncode == 2, rejected.stderr
     rejected_plan = json.loads(rejected.stdout)
     assert identifiers[2] in rejected_plan["incomplete_backup_ids"]
     assert identifiers[2] not in rejected_plan["eligible_backup_ids"]
+
+    (backup_root / identifiers[2] / "data.tar").write_bytes(
+        f"{identifiers[2]}:data.tar".encode()
+    )
+    (backup_root / identifiers[0] / "data.tar").write_text("tampered-held")
+    held_corrupt = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert held_corrupt.returncode == 2, held_corrupt.stderr
+    held_corrupt_plan = json.loads(held_corrupt.stdout)
+    assert identifiers[0] in held_corrupt_plan["legal_hold_backup_ids"]
+    assert identifiers[0] in held_corrupt_plan["incomplete_backup_ids"]
+    assert identifiers[0] not in held_corrupt_plan["eligible_backup_ids"]
 
 
 def test_systemd_units_and_shell_are_syntactically_valid() -> None:
@@ -732,16 +1552,41 @@ def test_native_backup_uses_one_owner_only_runtime_receipt_contract() -> None:
     create = (ROOT / "scripts/create-backup.sh").read_text()
     wrapper = (NATIVE / "bin/native-backup.sh").read_text()
     unit = (SYSTEMD / "research-operations-backup.service").read_text()
-    assert "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY:=/run/research-operations" in create
+    assert (
+        "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY:="
+        "/run/research-operations-backup" in create
+    )
     assert 'receipt="$runtime_directory/backup-fence-$backup_id.json"' in create
+    assert "umask 027" in create
+    assert 'mkdir -m 0750 "$staging"' in create
     assert "backup-fence reconcile --receipt" in create
     assert 'mktemp "$runtime_directory/backup-output.XXXXXX"' in wrapper
-    assert "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY=/run/research-operations" in unit
+    assert "umask 027" in wrapper
+    assert "stat -c '%a' -- \"$candidate\"" in wrapper
+    assert '" = 640 || exit 65' in wrapper
+    assert "BACKUP_DEFER_FINALIZATION=true" in wrapper
+    assert 'receipt_attempt="$receipt_root/.staging-' in wrapper
+    assert 'ln -- "$receipt_attempt" "$receipt"' in wrapper
+    assert 'mv -n -T -- "$backup" "$final"' in wrapper
+    assert (
+        wrapper.index('"$RESEARCH_OPS_OFFSITE_EXPORT_HOOK" export')
+        < wrapper.index('ln -- "$receipt_attempt" "$receipt"')
+        < wrapper.index('mv -n -T -- "$backup" "$final"')
+    )
+    assert ': "${BACKUP_DEFER_FINALIZATION:=false}"' in create
+    assert create.index("backup-fence reopen") < create.rindex(
+        'if test "$BACKUP_DEFER_FINALIZATION" = true'
+    )
+    assert (
+        "RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY=/run/research-operations-backup" in unit
+    )
     assert "RuntimeDirectoryMode=0700" in unit
+    assert "UMask=0027" in unit
     assert "--verification-public-key" in wrapper
     assert "--backup-verification-public-key" in wrapper
     retention = (SYSTEMD / "research-operations-retention-audit.service").read_text()
     assert "--offsite-receipt-verification-public-key" in retention
+    assert "SupplementaryGroups=research-backup" in retention
 
 
 def test_native_postgresql_bootstrap_is_tls_scram_and_idempotent() -> None:

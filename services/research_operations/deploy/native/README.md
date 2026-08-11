@@ -13,21 +13,87 @@ database, report, artifact, backup, or restore namespace.
 
 ## Host and release layout
 
-Create the fixed service identity and external roots before installation:
+Create the fixed, non-login trust-tier identities and external roots before
+installation:
 
 ```text
-research-ops:research-ops                 fixed, non-login worker identity
-research-web (Group=research-ops)         distinct, non-login Web identity
+research-ops                              shared research-filesystem group only
+research-web-proxy                        employee Web socket group only
+research-ops-proxy                        diagnostics socket group only
+research-migrate                          owner-schema credential tier
+research-web                              employee Web credential tier
+research-outbox                           runtime outbox credential tier
+research-job                              admitted-execution credential tier
+research-alert                            receiver credential tier
+research-validator                        independent validator credential tier
+research-backup                           backup/signing credential tier
+research-diagnostics                      read-only diagnostics credential tier
+research-retention                        secret-free retention audit tier
+research-proxy                            dedicated Nginx worker identity
 /opt/research-platform/releases/<git-sha> root-owned immutable clean checkout
 /opt/research-platform/current            root-owned symlink to one release
-/etc/research-ops/runtime.env              0640 root:research-ops
-/etc/research-ops/secrets/*                0600 service or 0640 root:service
+/etc/research-ops/runtime.env              0600 root:root
+/etc/research-ops/secrets/*                0600 root:root source secrets
 /etc/research-ops/secrets/operated-execution.key 0400 root:root, exactly 32 bytes
+/etc/research-ops/backup-signing.pub       0644 root:root public key
 /etc/research-ops/pki/*                    organization-managed, outside Git
-/srv/research/{data,artifacts,reports,cache,registry}
-/srv/research-backups                      0700 research-ops:research-ops
-/srv/research-offsite-receipts             0700 research-ops:research-ops
+/srv/research/data                         2750 root:research-ops (immutable input)
+/srv/research/data/_internal_web/manifests 2770 root:research-ops
+/srv/research/{artifacts,reports,cache,registry} 2770 root:research-ops
+/srv/research/artifacts/_internal_web     2770 root:research-ops
+/srv/research/artifacts/_internal_web/static 0755 research-migrate:research-ops
+/srv/research/artifacts/reports/research/_registry 2770 research-web:research-ops
+/srv/research/artifacts/derived/research/projects 2770 research-web:research-ops
+/srv/research/reports/_internal_web       2770 research-web:research-ops
+/srv/research/cache/research/projects     2770 research-web:research-ops
+/srv/research/artifacts/_operations_sandbox 2770 research-job:research-ops
+/srv/research-backups                      0750 research-backup:research-backup
+/srv/research-offsite-receipts             0750 research-backup:research-backup
 ```
+
+Install the reviewed identity declaration and create the accounts before
+starting preflight:
+
+```sh
+sudo install -D -o root -g root -m 0644 \
+  deploy/native/sysusers.d/research-operations.conf \
+  /etc/sysusers.d/research-operations.conf
+sudo systemd-sysusers /etc/sysusers.d/research-operations.conf
+sudo install -d -o root -g research-ops -m 2750 /srv/research/data
+sudo install -d -o root -g research-ops -m 2770 \
+  /srv/research/data/_internal_web/manifests \
+  /srv/research/artifacts /srv/research/reports \
+  /srv/research/cache /srv/research/registry \
+  /srv/research/artifacts/_internal_web
+sudo install -d -o research-migrate -g research-ops -m 0755 \
+  /srv/research/artifacts/_internal_web/static
+sudo install -d -o research-web -g research-ops -m 2770 \
+  /srv/research/artifacts/reports/research/_registry \
+  /srv/research/artifacts/derived/research/projects \
+  /srv/research/reports/_internal_web \
+  /srv/research/cache/research/projects
+sudo install -d -o research-job -g research-ops -m 2770 \
+  /srv/research/artifacts/_operations_sandbox
+sudo install -d -o research-backup -g research-backup -m 0750 \
+  /srv/research-backups /srv/research-offsite-receipts
+```
+
+Preflight rejects a missing, login-enabled, UID/GID-aliased, unexpected
+primary-GID member, host-supplementary-grouped, or incorrectly grouped tier.
+The only persistent controlled-group memberships are `research-proxy` in
+`research-web-proxy` and `research-ops-proxy`; Nginx's worker-side
+`initgroups(3)` therefore retains exactly the two socket permissions. Do not
+map two names to one numeric identity or add service accounts to host groups.
+The backup service uses mode `0750` backup directories and mode `0640` files;
+only the read-only, AF_UNIX-only retention auditor joins the `research-backup`
+group. Its unit has no projected secret and cannot modify the backup roots.
+Every supported native artifact writer sets the Core atomic-publication mode to
+`0640`; the private default outside this deployment remains `0600`. This lets
+the backup UID read complete atomically published research files through its
+explicit `research-ops` supplementary group. DAC alone is not the writer
+authorization boundary: the byte-attested systemd mount namespaces give Web,
+Job, and migration disjoint writable subtrees and make every other service
+read-only. No host account has a persistent `research-ops` membership.
 
 The release checkout and `release.json` must not be writable by the service.
 Preflight validates the canonical schema for all three component versions,
@@ -74,9 +140,12 @@ Never run a service from a developer checkout or editable installation.
 
 Run the filesystem qualifier for all five roles and install its path-redacted
 receipt at `/etc/research-ops/filesystem-qualification.json`. The native unit
-sandbox treats datasets as read-only, allows only the manifest subtree beneath
-them to be written, and grants the minimum artifact/report/cache/registry roots
-to each process.
+sandbox treats datasets as read-only, allows only Web to write the manifest
+subtree, protects Web/project evidence from the Job worker with nested
+read-only mounts, permits migration to write only public static assets, and
+makes outbox, validator, alert, diagnostics, retention, and backup views of
+research roots read-only. Preflight requires every mountpoint above to exist
+with the exact owner, group, and mode before a service starts.
 
 ## Production PKI gate
 
@@ -89,14 +158,20 @@ Required private-key permissions are:
 
 - proxy key: `0600 root:root`;
 - PostgreSQL key: `0600 postgres:postgres`, or `0640 root:postgres`;
-- application secrets and backup signing key: `0600 research-ops:research-ops`
-  or `0640 root:research-ops`;
+- database passwords, Django secret, htpasswd, backup signing key, control
+  database URL, and service-alert endpoint URL source: `0600 root:root`;
 - operated-execution capability key: exactly 32 random bytes, `0400 root:root`;
-- certificates and public verification keys: no group/other write permission.
+- backup/off-site public verification keys: `0644 root:root`;
+- certificates: no group/other write permission.
 
-Preflight verifies file type, no symlink, owner/readability, certificate age,
-chain, DNS/IP identity, and public-key match without logging certificate or key
-contents. Production defaults require at least 30 days of remaining validity.
+Preflight requires exact root-only source ownership before any non-root unit
+starts. systemd copies each required source into that unit's private credential
+mount; application processes cannot read `/etc/research-ops/secrets`.
+The Nginx drop-in similarly projects the htpasswd into its private runtime
+directory for the unprivileged worker. Preflight also verifies file type, no
+symlink, certificate age, chain, DNS/IP identity, and public-key match without
+logging certificate or key contents. Production defaults require at least 30
+days of remaining validity.
 
 ## PostgreSQL 16 bootstrap and TLS verification
 
@@ -111,11 +186,12 @@ five password files, load the reviewed runtime environment and run the
 idempotent bootstrap as root:
 
 ```sh
-set -a
-. /etc/research-ops/runtime.env
-set +a
-sudo --preserve-env \
-  /opt/research-platform/current/services/research_operations/deploy/native/bin/bootstrap-postgresql.sh
+sudo /bin/sh -c '
+  set -a
+  . /etc/research-ops/runtime.env
+  set +a
+  exec /opt/research-platform/current/services/research_operations/deploy/native/bin/bootstrap-postgresql.sh
+'
 ```
 
 The script installs the exact release-bound drop-in at
@@ -129,11 +205,22 @@ record and blocks preflight; preflight also byte-compares both installed policy
 files with the immutable release. Re-run after credential rotation. Never add a
 broader HBA rule before the shipped reject rules.
 
-Install the Nginx systemd drop-in (it grants the proxy only the supplemental
-`research-ops` group required for the two mode-0660 Unix sockets), render the
-Nginx template to the exact configured path, validate, then reload:
+Install the reviewed dedicated Nginx main configuration and systemd drop-in.
+The main configuration drops workers to `research-proxy`, includes only the
+Research virtual host, and never grants the proxy the shared `research-ops`
+filesystem group. The drop-in projects the public static tree read-only and
+projects the operations password file through `LoadCredential`. Render the
+virtual-host template to the exact configured path, validate, then restart:
+
+Migration rejects symlinks, hard-linked files, and special files in the static
+tree after `collectstatic`, then fixes directories to `0755` and regular files
+to `0644` before syncing the filesystem. These are public adapter assets, not
+research evidence; the Nginx projection remains read-only.
 
 ```sh
+sudo install -o root -g root -m 0644 \
+  /opt/research-platform/current/services/research_operations/deploy/native/nginx/nginx.conf \
+  /etc/nginx/nginx.conf
 sudo install -D -o root -g root -m 0644 \
   /opt/research-platform/current/services/research_operations/deploy/native/nginx/nginx.service.d/research-operations.conf \
   /etc/systemd/system/nginx.service.d/research-operations.conf
@@ -142,7 +229,7 @@ sudo /usr/bin/python3 \
   --template /opt/research-platform/current/services/research_operations/deploy/native/nginx/research-operations.conf.template \
   --output /etc/nginx/conf.d/research-operations.conf \
   --server-name research.internal.corp
-sudo nginx -t
+sudo nginx -t -c /etc/nginx/nginx.conf
 sudo systemctl daemon-reload
 sudo systemctl restart nginx
 ```
@@ -163,8 +250,9 @@ identities are mandatory: service owner, security owner, data owner, on-call,
 incident commander, backup owner, and recovery approver. Backup owner and
 recovery approver must differ; service and security owner must differ.
 
-Production requires a root-owned, non-writable executable at
-`RESEARCH_OPS_OFFSITE_EXPORT_HOOK`. The backup service invokes it as:
+Production requires a root-owned, mode-`0750`, group-`research-backup`
+executable at `RESEARCH_OPS_OFFSITE_EXPORT_HOOK`. The backup service invokes it
+as:
 
 ```text
 HOOK export --backup-directory ABS --target-id ID --encryption METHOD \
@@ -172,7 +260,8 @@ HOOK export --backup-directory ABS --target-id ID --encryption METHOD \
 ```
 
 The hook must encrypt before external transfer, verify the remote object, and
-atomically create a mode-0600 JSON receipt owned by `research-ops`. The receipt
+atomically create a mode-0640 JSON receipt owned by
+`research-backup:research-backup`. The receipt
 has exactly these fields:
 
 ```text
@@ -186,10 +275,20 @@ RSA/SHA-256 or Ed25519 signature. The signed bytes are the ASCII JSON object
 with `receipt_signature` removed, keys sorted, no insignificant whitespace,
 and one trailing newline. Install the matching root-owned, non-writable trusted
 public key at `RESEARCH_OPS_OFFSITE_RECEIPT_VERIFICATION_KEY_FILE`; the export
-hook's private key remains outside this service and repository. The wrapper verifies that
-signature and binds the receipt to the local signed manifest before success. A
-hook, key, signature, or receipt failure fails the systemd backup unit and must
-alert; it never claims off-site success.
+hook's private key remains outside this service and repository. The wrapper
+verifies that signature and binds the receipt to the local signed manifest
+before success. A hook, key, signature, or receipt failure fails the systemd
+backup unit and must alert; it never claims off-site success.
+
+The local signed set remains `.staging-<backup-id>` throughout upload. The hook
+writes a unique dot-prefixed staged receipt; the wrapper validates its exact
+owner, group, mode, signature, and manifest binding before a same-filesystem
+no-replace link publishes `<backup-id>.json`. Only then does it no-replace
+rename the local directory to `<backup-id>` and fsync both roots. Failed upload
+attempts therefore remain non-final and recoverable, and retention ignores
+their dot-prefixed names. `BACKUP_RESUME_ID=<backup-id>` reuses the exact local
+set, starts a new receipt attempt after an upload failure, or re-verifies an
+already published receipt before completing an interrupted directory rename.
 
 Manifest and recovery-receipt publishers create and verify payload/signature
 pairs under unique temporary names before publishing final names. A signing
@@ -203,6 +302,11 @@ after re-verifying the trusted manifest signature, every manifest-bound size
 and SHA-256, the verification marker, and the policy-bound off-site receipt
 signature. Age is taken from the signed manifest, not mutable file mtime. It
 reports old, incomplete, and `LEGAL_HOLD` protected backup IDs to journald.
+Any finalized UUID-named set that fails verification makes the retention unit
+exit nonzero after emitting its secret-free plan; an active `.staging-*` set is
+not treated as finalized. `LEGAL_HOLD` never bypasses verification: an invalid
+held final is reported in both held and incomplete inventories and still makes
+the audit fail.
 Deletion requires a separately reviewed operator action and must never remove
 the configured minimum cryptographically complete copies.
 
@@ -220,12 +324,39 @@ sudo systemctl enable --now research-operations-preflight.timer
 sudo systemctl enable --now research-operations-retention-audit.timer
 ```
 
-The target starts two outbox instances, one admitted job worker, persistent
-validator, web service, diagnostics API, and Nginx. Every long-running
-operational unit runs as `research-ops`; the employee Web unit runs as the
-distinct `research-web` UID with `Group=research-ops`. Only the admitted job
-worker receives `operated-execution.key` through systemd `LoadCredential`.
-The source key remains root-only and Web cannot mint an execution capability.
+The target starts two outbox instances, one admitted job worker, the persistent
+service-health alert worker, persistent validator, web service, diagnostics
+API, and Nginx. Each credential tier uses the dedicated UID listed above;
+`research-ops` is only a shared research-filesystem group. Web and diagnostics
+use different socket-primary groups. The dedicated `research-proxy` worker is
+the only member of both groups, and its reviewed main configuration is byte-
+attested by preflight; another credential tier therefore cannot connect
+directly and forge ingress-authentication headers. Credential assignment
+is an exact allowlist:
+
+```text
+migrate       owner DB password, Django secret
+web           runtime DB password, Django secret
+outbox        runtime DB password, Django secret
+job worker    runtime DB password, Django secret, execution capability
+alert worker  runtime DB password, alert endpoint URL
+validator     validator DB password, Django secret
+backup        backup DB password, Django secret, backup signing key
+ops API       diagnostics DB password
+nginx         operations htpasswd
+```
+
+No application unit receives the owner, validator, or backup password unless
+its declared role requires it. In particular, Web receives neither those
+credentials nor the backup key, alert endpoint, control database URL, htpasswd,
+or execution capability. Source paths remain root-only and are hidden from
+application mount namespaces. `ProtectProc=invisible` hides other UIDs'
+processes, while distinct UIDs prevent the credential values that the runtime
+entrypoint must place in a child process environment from being read through
+another tier's `/proc/<pid>/environ`. Multiple outbox instances deliberately
+share one UID because they receive the same credential set. A process in a
+given tier can still inspect that same tier, so a credential-bearing tier must
+not run unrelated code.
 All units restart on failure, send SIGTERM,
 allow a bounded drain interval, use a private Linux `/tmp`, write only to
 declared roots, drops all capabilities, applies task/memory/CPU/file limits,

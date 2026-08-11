@@ -52,7 +52,7 @@ server {
     location ^~ /_internal { return 404; }
 
     location /static/ {
-        alias /srv/research/artifacts/_internal_web/static/;
+        alias /run/research-operations-nginx-static/;
         try_files $uri =404;
         add_header Cache-Control "public, max-age=3600" always;
         add_header Strict-Transport-Security "max-age=31536000" always;
@@ -113,7 +113,7 @@ server {
 
     location ~ ^/__ops/(diagnostics|metrics)$ {
         auth_basic "research operations";
-        auth_basic_user_file /etc/research-ops/secrets/ops.htpasswd;
+        auth_basic_user_file /run/research-operations-nginx-credentials/ops.htpasswd;
         limit_except GET { deny all; }
         proxy_pass http://research_ops_native;
         proxy_set_header X-Research-Ops-Client-Verified $ssl_client_verify;

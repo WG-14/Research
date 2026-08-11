@@ -9,12 +9,16 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=research-ops
+User=research-outbox
 Group=research-ops
 WorkingDirectory=/opt/research-platform/current
 EnvironmentFile=/etc/research-ops/runtime.env
 Environment=RESEARCH_OPS_DATABASE_ROLE=runtime
+Environment=POSTGRES_RUNTIME_PASSWORD_FILE=%d/postgres-runtime-password
+Environment=DJANGO_SECRET_KEY_FILE=%d/django-secret-key
 Environment=PATH=/opt/research-platform/current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LoadCredential=postgres-runtime-password:/etc/research-ops/secrets/postgres-runtime-password
+LoadCredential=django-secret-key:/etc/research-ops/secrets/django-secret-key
 ExecStart=/usr/bin/env /opt/research-platform/current/services/research_operations/scripts/runtime-entrypoint.py /opt/research-platform/current/.venv/bin/research-ops outbox-worker --worker-id outbox:systemd-%i --poll-interval 1 --batch-size 100 --lease-seconds 30 --max-attempts 8
 Restart=on-failure
 RestartSec=3s
@@ -24,7 +28,7 @@ TimeoutStopSec=45s
 TimeoutStopFailureMode=kill
 OOMPolicy=stop
 UMask=0027
-RuntimeDirectory=research-operations
+RuntimeDirectory=research-operations-outbox
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 NoNewPrivileges=true
@@ -34,11 +38,13 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+InaccessiblePaths=/etc/research-ops/secrets
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
@@ -46,8 +52,7 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadOnlyPaths=/srv/research/data
-ReadWritePaths=/srv/research/data/_internal_web/manifests
-ReadWritePaths=/srv/research/artifacts /srv/research/cache /srv/research/registry
+ReadOnlyPaths=/srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
 TasksMax=64
 LimitNOFILE=4096
 MemoryMax=1G

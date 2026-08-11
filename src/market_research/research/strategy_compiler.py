@@ -7,6 +7,12 @@ from collections.abc import Mapping
 from typing import Any, NoReturn
 
 from .backtest_types import BacktestRunContext
+from .engine_admission import (
+    CLASSIC_ENGINE_PROFILE,
+    EngineAdmissionError,
+    classic_strategy_requirement,
+    require_engine_admission,
+)
 from .hashing import sha256_prefixed
 from .strategy_contract import (
     CompiledStrategyContract,
@@ -48,6 +54,18 @@ class StrategyCompiler:
         context: BacktestRunContext | None = None,
     ) -> CompiledStrategyContract:
         plugin = self.registry.resolve(strategy_name)
+        try:
+            require_engine_admission(
+                profile=CLASSIC_ENGINE_PROFILE,
+                requirement=classic_strategy_requirement(
+                    strategy_definition_hash=plugin.contract_hash(),
+                ),
+            )
+        except EngineAdmissionError as exc:
+            raise StrategyCompilationError(
+                "research_engine_admission_failed",
+                str(exc),
+            ) from exc
         required = plugin.required_capabilities
         mismatches = list(ENGINE_CAPABILITY_SUPPORT.unsupported_fields(required))
         if mismatches:

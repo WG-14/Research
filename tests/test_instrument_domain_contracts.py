@@ -100,6 +100,9 @@ def _events() -> dict[str, object]:
 
 def _manifest_with_domain_contracts() -> dict[str, object]:
     payload = copy.deepcopy(_manifest_payload())
+    dataset = payload["dataset"]
+    assert isinstance(dataset, dict)
+    dataset["options"] = {"corporate_action_known_at": "2026-01-05T00:00:00+00:00"}
     payload["instrument"] = _instrument()
     payload["corporate_action_set"] = _events()
     action_set = parse_corporate_action_set(

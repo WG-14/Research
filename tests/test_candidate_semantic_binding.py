@@ -95,6 +95,30 @@ def test_candidate_hash_ignores_only_physical_binding_and_stage_trace_projection
     assert _candidate_hash(published) == baseline
 
 
+def test_candidate_hash_ignores_derived_artifact_aliases_but_not_evidence_bodies() -> (
+    None
+):
+    candidate = _candidate()
+    candidate.update(
+        {
+            "candidate_profile_hash": "sha256:" + "4" * 64,
+            "statistical_evidence_hash": "sha256:" + "5" * 64,
+            "statistical_gate_result": "PASS",
+            "white_reality_check_p_value": 0.02,
+        }
+    )
+    baseline = _candidate_hash(candidate)
+
+    relocated = deepcopy(candidate)
+    relocated["candidate_profile_hash"] = "sha256:" + "6" * 64
+    relocated["statistical_evidence_hash"] = "sha256:" + "7" * 64
+    assert _candidate_hash(relocated) == baseline
+
+    body_tamper = deepcopy(candidate)
+    body_tamper["white_reality_check_p_value"] = 0.99
+    assert _candidate_hash(body_tamper) != baseline
+
+
 def test_cached_selection_binding_cannot_mask_authoritative_metric_tamper() -> None:
     candidate = _candidate()
     binding = selection_candidate_binding_summary(candidate)

@@ -590,7 +590,7 @@ def _run_isolated_dispatcher_child(
     log_path = control_root / "sandbox.log"
     with research_job_execution_context(decision):
         request = dispatcher.build_sandbox_request(job, sandbox_root=sandbox_root)
-    write_json_atomic(request_path, request)
+    write_json_atomic(request_path, request, mode=0o640)
     settings_value = request["settings"]
     if not isinstance(settings_value, dict):
         raise IsolatedJobProcessError("isolated_research_job_settings_invalid")
@@ -630,6 +630,10 @@ def _run_isolated_dispatcher_child(
         "LC_ALL": "C.UTF-8",
         "TZ": "UTC",
         "PYTHONHASHSEED": "0",
+        # The operated worker's artifact roots are owned by the shared
+        # research-ops group and must remain readable by the distinct backup
+        # principal.  The core library otherwise defaults to private 0600.
+        "MARKET_RESEARCH_ATOMIC_PUBLICATION_MODE": "0640",
         "OMP_NUM_THREADS": "1",
         "OPENBLAS_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1",

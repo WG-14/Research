@@ -10,10 +10,13 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, NoReturn
 
 from market_research.paths import ResearchPathManager
-from market_research.storage_io import write_json_atomic_create_or_verify
+from market_research.storage_io import (
+    open_lock_file,
+    write_json_atomic_create_or_verify,
+)
 
 from .data_governance import (
     DATA_GOVERNANCE_BINDING_SCHEMA_VERSION,
@@ -68,6 +71,20 @@ from .research_standard import (
     research_standard_version_matches,
 )
 from .study_lifecycle import StudyLifecycleError, admit_study_validation
+from .validation_experiment_bundle import (
+    ValidationExperimentBundle,
+    ValidationExperimentBundleError,
+    ValidationExperimentCapability,
+    ValidationExperimentCapabilityMode,
+    ValidationExperimentGateStatus,
+    ValidationExperimentOutputs,
+    ValidationExperimentPolicy,
+    build_validation_experiment_bundle,
+    derive_validation_experiment_capability,
+    parse_validation_experiment_capability,
+    parse_validation_experiment_policy,
+    validate_validation_experiment_bundle,
+)
 
 
 class ValidationRunError(ValueError):
@@ -75,12 +92,63 @@ class ValidationRunError(ValueError):
 
 
 _MAX_TERMINAL_JSON_BYTES = 16 * 1024 * 1024
+_MAX_VALIDATION_EXPERIMENT_BUNDLE_BYTES = 16 * 1024 * 1024
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_object_key")
+        result[key] = value
+    return result
+
+
+def _reject_non_finite_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non_finite_json_constant:{value}")
 
 
 def _lexical_absolute(path: str | Path) -> Path:
     """Return an absolute normalized path without following symlinks."""
 
     return Path(os.path.abspath(os.fspath(path)))
+
+
+def _load_precomputed_validation_experiment_bundle(
+    *, manager: ResearchPathManager, path: str | Path
+) -> tuple[dict[str, Any], ValidationExperimentPolicy]:
+    """Load one external bundle while leaving terminal binding checks to the gate."""
+
+    try:
+        resolved = manager.external_input_path(
+            path, label="validation experiment bundle input"
+        )
+        raw = resolved.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise ValidationRunError(
+            f"validation_experiment_bundle_input_invalid:{exc}"
+        ) from exc
+    if not raw or len(raw) > _MAX_VALIDATION_EXPERIMENT_BUNDLE_BYTES:
+        raise ValidationRunError("validation_experiment_bundle_input_size_invalid")
+    try:
+        payload = json.loads(
+            raw,
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValidationRunError(
+            "validation_experiment_bundle_input_json_invalid"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValidationRunError("validation_experiment_bundle_input_must_be_object")
+    try:
+        policy = parse_validation_experiment_policy(payload.get("policy"))
+    except ValidationExperimentBundleError as exc:
+        raise ValidationRunError(
+            f"validation_experiment_bundle_policy_invalid:{exc}"
+        ) from exc
+    return payload, policy
 
 
 def _require_selected_artifact_path(
@@ -254,7 +322,7 @@ def _preflight_terminal_target(path: Path, expected: bytes) -> None:
 def _terminal_publication_lock(candidate_target: Path) -> Iterator[None]:
     lock_path = candidate_target.parent / ".terminal-validation-publication.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(lock_path)
     lock_module: Any | None = None
     try:
         try:
@@ -409,6 +477,7 @@ def validate_validated_research_result(
                     )
     reasons.extend(_validated_hypothesis_lineage_reasons(report))
     reasons.extend(_validated_research_standard_binding_reasons(report))
+    reasons.extend(_validated_validation_experiment_reasons(report))
     # A terminal schema-3 result always requires schema-2 hypothesis lineage,
     # so its pre-validation admission is part of the same non-optional
     # authority contract.  Treating an absent marker as legacy would permit a
@@ -678,12 +747,215 @@ def _validated_research_standard_binding_reasons(
     return reasons
 
 
+def _validated_validation_experiment_reasons(
+    report: dict[str, Any],
+) -> list[str]:
+    fields = {
+        "validation_experiment_capability",
+        "validation_experiment_capability_hash",
+        "validation_experiment_policy",
+        "validation_experiment_policy_hash",
+        "validation_experiment_temporal_plan_hash",
+        "validation_experiment_bundle",
+        "validation_experiment_bundle_hash",
+        "validation_experiment_gate_result",
+        "validation_experiment_gate_reasons",
+    }
+    present = fields.intersection(report)
+    if not present:
+        return [
+            "validated_research_result_validation_experiment_capability_missing"
+        ]
+    if present != fields:
+        return ["validated_research_result_validation_experiment_binding_incomplete"]
+    reasons: list[str] = []
+    capability: ValidationExperimentCapability | None = None
+    try:
+        capability = parse_validation_experiment_capability(
+            report.get("validation_experiment_capability")
+        )
+    except ValidationExperimentBundleError:
+        reasons.append(
+            "validated_research_result_validation_experiment_capability_invalid"
+        )
+    if capability is not None:
+        if report.get(
+            "validation_experiment_capability_hash"
+        ) != capability.content_hash:
+            reasons.append(
+                "validated_research_result_validation_experiment_capability_hash_mismatch"
+            )
+        if (
+            capability.mode
+            is ValidationExperimentCapabilityMode.LEGACY_SCHEMA_3_READ_ONLY
+        ):
+            reasons.append(
+                "validated_research_result_validation_experiment_legacy_capability_not_promotable"
+            )
+        try:
+            expected_capability = derive_validation_experiment_capability(
+                manifest_hash=str(report.get("manifest_hash") or ""),
+                research_classification=report.get("research_classification"),
+            )
+        except (ValueError, ValidationExperimentBundleError):
+            reasons.append(
+                "validated_research_result_validation_experiment_capability_authority_invalid"
+            )
+        else:
+            if capability != expected_capability:
+                reasons.append(
+                    "validated_research_result_validation_experiment_capability_mismatch"
+                )
+    policy: ValidationExperimentPolicy | None = None
+    try:
+        policy = parse_validation_experiment_policy(
+            report.get("validation_experiment_policy")
+        )
+    except ValidationExperimentBundleError:
+        reasons.append(
+            "validated_research_result_validation_experiment_policy_invalid"
+        )
+    if policy is not None and report.get(
+        "validation_experiment_policy_hash"
+    ) != policy.contract_hash():
+        reasons.append(
+            "validated_research_result_validation_experiment_policy_hash_mismatch"
+        )
+    if capability is not None and policy is not None and policy != capability.policy:
+        reasons.append(
+            "validated_research_result_validation_experiment_policy_not_authoritative"
+        )
+    bundle = report.get("validation_experiment_bundle")
+    if not isinstance(bundle, dict):
+        required = policy.required_components if policy is not None else ()
+        missing_reasons = sorted(
+            "validation_experiment_required_component_missing:" + item.value
+            for item in required
+        )
+        if required:
+            reasons.append(
+                "validated_research_result_validation_experiment_bundle_missing"
+            )
+        if report.get("validation_experiment_bundle_hash") is not None:
+            reasons.append(
+                "validated_research_result_validation_experiment_bundle_hash_mismatch"
+            )
+        expected_gate_result = "FAIL" if required else "PASS"
+        if report.get("validation_experiment_gate_result") != expected_gate_result:
+            reasons.append(
+                "validated_research_result_validation_experiment_gate_result_mismatch"
+            )
+        if report.get("validation_experiment_gate_reasons") != missing_reasons:
+            reasons.append(
+                "validated_research_result_validation_experiment_gate_reasons_mismatch"
+            )
+        if required:
+            reasons.append(
+                "validated_research_result_validation_experiment_gate_not_passed"
+            )
+        return sorted(set(reasons))
+    selected = report.get("selected_candidate")
+    selected_hash = (
+        selected.get("candidate_payload_hash")
+        if isinstance(selected, dict)
+        else None
+    )
+    reasons.extend(
+        "validated_research_result_" + item
+        for item in validate_validation_experiment_bundle(
+            bundle,
+            expected_policy=policy,
+            expected_manifest_hash=str(report.get("manifest_hash") or ""),
+            expected_capability_hash=(
+                capability.content_hash if capability is not None else ""
+            ),
+            expected_dataset_snapshot_hash=str(
+                report.get("dataset_content_hash") or ""
+            ),
+            expected_temporal_plan_hash=str(
+                report.get("validation_experiment_temporal_plan_hash") or ""
+            ),
+            expected_selected_candidate_id=str(
+                report.get("selected_candidate_id") or ""
+            ),
+            expected_selected_candidate_hash=str(selected_hash or ""),
+        )
+    )
+    if report.get("validation_experiment_bundle_hash") != bundle.get(
+        "content_hash"
+    ):
+        reasons.append(
+            "validated_research_result_validation_experiment_bundle_hash_mismatch"
+        )
+    if report.get("validation_experiment_gate_result") != bundle.get("gate_result"):
+        reasons.append(
+            "validated_research_result_validation_experiment_gate_result_mismatch"
+        )
+    if report.get("validation_experiment_gate_reasons") != bundle.get(
+        "gate_reasons"
+    ):
+        reasons.append(
+            "validated_research_result_validation_experiment_gate_reasons_mismatch"
+        )
+    if (
+        policy is not None
+        and policy.required_components
+        and bundle.get("gate_result") != "PASS"
+    ):
+        reasons.append(
+            "validated_research_result_validation_experiment_gate_not_passed"
+        )
+    return sorted(set(reasons))
+
+
 def validation_next_action_payload(reasons: Any) -> dict[str, str]:
     del reasons
     return {
         "next_required_action": "inspect_research_validation_summary",
         "recommended_command": "research-validate",
     }
+
+
+def _manifest_hash_for_validation(
+    manifest: Any,
+    selection_report: dict[str, Any],
+) -> str:
+    manifest_hash = getattr(manifest, "manifest_hash", None)
+    if callable(manifest_hash):
+        return str(manifest_hash())
+    return str(selection_report.get("manifest_hash") or "")
+
+
+def _validation_experiment_temporal_plan_hash(
+    *,
+    manifest: Any,
+    selection_report: dict[str, Any],
+) -> str:
+    nested = selection_report.get("nested_temporal_validation")
+    if isinstance(nested, dict):
+        plan_hash = nested.get("plan_hash")
+        if isinstance(plan_hash, str) and plan_hash.startswith("sha256:"):
+            return plan_hash
+    split = getattr(getattr(manifest, "dataset", None), "split", None)
+    split_as_dict = getattr(split, "as_dict", None)
+    split_payload = (
+        split_as_dict()
+        if callable(split_as_dict)
+        else {
+            "train": repr(getattr(split, "train", None)),
+            "validation": repr(getattr(split, "validation", None)),
+            "final_holdout": repr(getattr(split, "final_holdout", None)),
+        }
+    )
+    return sha256_prefixed(
+        {
+            "manifest_hash": _manifest_hash_for_validation(
+                manifest, selection_report
+            ),
+            "dataset_split": split_payload,
+        },
+        label="validation_experiment_temporal_scope",
+    )
 
 
 def aggregate_validation_gates(
@@ -694,8 +966,17 @@ def aggregate_validation_gates(
     selected_candidate: dict[str, Any] | None,
     final_holdout_confirmation: dict[str, Any] | None,
     manager: ResearchPathManager | None = None,
+    validation_experiment_policy: ValidationExperimentPolicy | None = None,
+    validation_experiment_bundle: ValidationExperimentBundle
+    | dict[str, Any]
+    | None = None,
 ) -> tuple[str, dict[str, str], list[str]]:
     """Derive the terminal result from the authoritative stage evidence."""
+    validation_experiment_capability = derive_validation_experiment_capability(
+        manifest_hash=_manifest_hash_for_validation(manifest, selection_report),
+        research_classification=manifest.research_classification,
+    )
+    authoritative_experiment_policy = validation_experiment_capability.policy
     walk_forward_required = bool(manifest.acceptance_gate.walk_forward_required)
     stress_required = bool(
         manifest.stress_suite and manifest.stress_suite.required_for_validation
@@ -764,6 +1045,77 @@ def aggregate_validation_gates(
         reasons.append("final_selection_gate_not_passed")
     if selected_candidate is None:
         reasons.append("selected_candidate_missing")
+
+    validation_experiment_failed = False
+    if (
+        validation_experiment_policy is not None
+        and validation_experiment_policy != authoritative_experiment_policy
+    ):
+        reasons.append("validation_experiment_policy_not_authoritative")
+        validation_experiment_failed = True
+    validation_experiment_policy = authoritative_experiment_policy
+    if validation_experiment_policy is not None:
+        if validation_experiment_bundle is None:
+            if validation_experiment_policy.required_components:
+                validation_experiment_failed = True
+                reasons.extend(
+                    "validation_experiment_required_component_missing:" + item.value
+                    for item in validation_experiment_policy.required_components
+                )
+                reasons.append("validation_experiment_gate_not_passed")
+        else:
+            bundle_payload = (
+                validation_experiment_bundle.as_dict()
+                if isinstance(validation_experiment_bundle, ValidationExperimentBundle)
+                else validation_experiment_bundle
+            )
+            expected_candidate_id = (
+                _candidate_identity(selected_candidate)
+                if isinstance(selected_candidate, dict)
+                else None
+            )
+            expected_candidate_hash = (
+                sha256_prefixed(
+                    candidate_evidence_hash_inputs(selected_candidate),
+                    label="candidate_evidence_hash",
+                )
+                if isinstance(selected_candidate, dict)
+                else None
+            )
+            experiment_reasons = validate_validation_experiment_bundle(
+                bundle_payload,
+                expected_policy=validation_experiment_policy,
+                expected_manifest_hash=_manifest_hash_for_validation(
+                    manifest, selection_report
+                ),
+                expected_capability_hash=(
+                    validation_experiment_capability.content_hash
+                ),
+                expected_dataset_snapshot_hash=str(
+                    selection_report.get("dataset_content_hash") or ""
+                ),
+                expected_temporal_plan_hash=(
+                    _validation_experiment_temporal_plan_hash(
+                        manifest=manifest,
+                        selection_report=selection_report,
+                    )
+                ),
+                expected_selected_candidate_id=expected_candidate_id,
+                expected_selected_candidate_hash=expected_candidate_hash,
+            )
+            if experiment_reasons:
+                validation_experiment_failed = True
+                reasons.extend(experiment_reasons)
+            if (
+                bundle_payload.get("gate_result")
+                != ValidationExperimentGateStatus.PASS.value
+            ):
+                validation_experiment_failed = True
+                bundle_gate_reasons = bundle_payload.get("gate_reasons")
+                if isinstance(bundle_gate_reasons, list):
+                    reasons.extend(str(item) for item in bundle_gate_reasons)
+            if validation_experiment_failed:
+                reasons.append("validation_experiment_gate_not_passed")
 
     if final_holdout_required:
         if manifest.dataset.split.final_holdout is None:
@@ -853,6 +1205,7 @@ def aggregate_validation_gates(
         any(status == "FAIL" for status in required_statuses)
         or eligibility == "FAIL"
         or artifact_reasons
+        or validation_experiment_failed
     ):
         result = "FAIL"
     elif any(status != "PASS" for status in required_statuses) or eligibility != "PASS":
@@ -878,9 +1231,51 @@ def run_research_validation(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     strategy_registry: StrategyRegistry,
     run_id: str | None = None,
+    validation_experiment_policy: ValidationExperimentPolicy | None = None,
+    validation_experiment_outputs: ValidationExperimentOutputs | None = None,
+    validation_experiment_bundle_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if mode != "strict":
         raise ValidationRunError("validation_run_mode_unsupported")
+    validation_experiment_capability = derive_validation_experiment_capability(
+        manifest_hash=manifest.manifest_hash(),
+        research_classification=manifest.research_classification,
+    )
+    authoritative_validation_experiment_policy = (
+        validation_experiment_capability.policy
+    )
+    if (
+        validation_experiment_policy is not None
+        and validation_experiment_policy
+        != authoritative_validation_experiment_policy
+    ):
+        raise ValidationRunError(
+            "validation_experiment_policy_not_authoritative"
+        )
+    precomputed_validation_experiment_bundle: dict[str, Any] | None = None
+    if validation_experiment_bundle_path is not None:
+        if (
+            validation_experiment_policy is not None
+            or validation_experiment_outputs is not None
+        ):
+            raise ValidationRunError(
+                "validation_experiment_bundle_input_conflicts_with_inline_outputs"
+            )
+        (
+            precomputed_validation_experiment_bundle,
+            declared_validation_experiment_policy,
+        ) = _load_precomputed_validation_experiment_bundle(
+            manager=manager,
+            path=validation_experiment_bundle_path,
+        )
+        if (
+            declared_validation_experiment_policy
+            != authoritative_validation_experiment_policy
+        ):
+            raise ValidationRunError(
+                "validation_experiment_bundle_policy_not_authoritative"
+            )
+    validation_experiment_policy = authoritative_validation_experiment_policy
     validation_admission: dict[str, Any] | None = None
     if (
         manifest.hypothesis_spec is not None
@@ -995,6 +1390,50 @@ def run_research_validation(
     )
     if selected is not None and compact_selected is None:
         raise ValidationRunError("terminal_selected_candidate_projection_missing")
+    if validation_experiment_outputs is not None and validation_experiment_policy is None:
+        raise ValidationRunError("validation_experiment_policy_required")
+    validation_experiment_bundle: ValidationExperimentBundle | dict[str, Any] | None = (
+        precomputed_validation_experiment_bundle
+    )
+    validation_experiment_temporal_plan_hash: str | None = None
+    if validation_experiment_policy is not None:
+        validation_experiment_temporal_plan_hash = (
+            _validation_experiment_temporal_plan_hash(
+                manifest=manifest,
+                selection_report=selection_report,
+            )
+        )
+        if (
+            precomputed_validation_experiment_bundle is None
+            and selected is not None
+            and compact_selected is not None
+            and (
+                bool(validation_experiment_policy.required_components)
+                or validation_experiment_outputs is not None
+            )
+        ):
+            try:
+                validation_experiment_bundle = build_validation_experiment_bundle(
+                    manifest_hash=manifest.manifest_hash(),
+                    dataset_snapshot_hash=str(
+                        selection_report.get("dataset_content_hash") or ""
+                    ),
+                    temporal_plan_hash=validation_experiment_temporal_plan_hash,
+                    selected_candidate_id=selected_id,
+                    selected_candidate_hash=str(
+                        compact_selected.get("candidate_payload_hash") or ""
+                    ),
+                    capability=validation_experiment_capability,
+                    policy=validation_experiment_policy,
+                    outputs=(
+                        validation_experiment_outputs
+                        or ValidationExperimentOutputs()
+                    ),
+                )
+            except ValidationExperimentBundleError as exc:
+                raise ValidationRunError(
+                    f"validation_experiment_bundle_invalid:{exc}"
+                ) from exc
     selection_evidence_report = dict(selection_report)
     selection_evidence_report["candidates"] = candidates
     confirmation = (
@@ -1017,6 +1456,8 @@ def run_research_validation(
         selected_candidate=selected,
         final_holdout_confirmation=confirmation,
         manager=manager,
+        validation_experiment_policy=validation_experiment_policy,
+        validation_experiment_bundle=validation_experiment_bundle,
     )
     stages = [
         {"name": name, "status": stage_status.get(name, "INSUFFICIENT_EVIDENCE")}
@@ -1142,6 +1583,60 @@ def run_research_validation(
         "validation_blocking_reasons": blocking_reasons,
         "end_to_end_validation_result": status,
     }
+    if validation_experiment_policy is not None:
+        bundle_payload = (
+            validation_experiment_bundle.as_dict()
+            if isinstance(validation_experiment_bundle, ValidationExperimentBundle)
+            else validation_experiment_bundle
+            if isinstance(validation_experiment_bundle, dict)
+            else None
+        )
+        experiment_reasons = sorted(
+            {
+                item
+                for item in blocking_reasons
+                if str(item).startswith("validation_experiment_")
+            }
+        )
+        summary.update(
+            {
+                "validation_experiment_capability": (
+                    validation_experiment_capability.as_dict()
+                ),
+                "validation_experiment_capability_hash": (
+                    validation_experiment_capability.content_hash
+                ),
+                "validation_experiment_policy": (
+                    validation_experiment_policy.as_dict()
+                ),
+                "validation_experiment_policy_hash": (
+                    validation_experiment_policy.contract_hash()
+                ),
+                "validation_experiment_temporal_plan_hash": (
+                    validation_experiment_temporal_plan_hash
+                ),
+                "validation_experiment_bundle": bundle_payload,
+                "validation_experiment_bundle_hash": (
+                    bundle_payload.get("content_hash")
+                    if bundle_payload is not None
+                    else None
+                ),
+                "validation_experiment_gate_result": (
+                    bundle_payload.get("gate_result")
+                    if bundle_payload is not None
+                    else (
+                        "FAIL"
+                        if validation_experiment_policy.required_components
+                        else "PASS"
+                    )
+                ),
+                "validation_experiment_gate_reasons": (
+                    bundle_payload.get("gate_reasons")
+                    if bundle_payload is not None
+                    else experiment_reasons
+                ),
+            }
+        )
     if validation_admission is not None:
         summary.update(
             {

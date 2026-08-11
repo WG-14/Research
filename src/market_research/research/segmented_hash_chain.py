@@ -20,6 +20,7 @@ from typing import Any, Iterator
 
 from market_research.storage_io import (
     append_jsonl,
+    open_lock_file,
     write_json_atomic,
     write_json_atomic_create_or_verify,
 )
@@ -814,7 +815,7 @@ def _failed_snapshot(*, scope: str, reason: str) -> SegmentedHashChainSnapshot:
 @contextmanager
 def _locked(layout: _Layout) -> Iterator[None]:
     layout.root.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(layout.lock, os.O_CREAT | os.O_RDWR, 0o600)
+    fd = open_lock_file(layout.lock)
     lock_module: Any | None = None
     try:
         try:
