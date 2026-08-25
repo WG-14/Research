@@ -1125,6 +1125,9 @@ def verify_restored_application_state(
             validate_governance_registry,
             validate_research_decision_report,
         )
+        from market_research.application import (
+            validate_operated_final_holdout_authority,
+        )
         from market_research_web.operations_contract import (
             GovernanceDecision,
             ImportedDecisionReport,
@@ -1351,6 +1354,29 @@ def verify_restored_application_state(
             if identity_ok
             else "experiment_identity_registry_verification_failed",
             identity_reason_count,
+        )
+    )
+
+    try:
+        holdout_authority = validate_operated_final_holdout_authority(
+            paths=settings.RESEARCH_PATHS,
+            require_terminal=True,
+        )
+        holdout_authority_ok = holdout_authority.get("status") == "PASS"
+        holdout_authority_reason_count = len(
+            holdout_authority.get("reasons") or ()
+        )
+    except Exception:
+        holdout_authority_ok = False
+        holdout_authority_reason_count = 1
+    checks.append(
+        _recovery_check(
+            "final_holdout_authority",
+            holdout_authority_ok,
+            "final_holdout_authority_verified"
+            if holdout_authority_ok
+            else "final_holdout_authority_verification_failed",
+            holdout_authority_reason_count,
         )
     )
 

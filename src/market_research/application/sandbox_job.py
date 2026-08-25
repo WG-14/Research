@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,13 @@ from market_research.research_composition import builtin_strategy_registry
 from market_research.settings import ResearchSettings
 from market_research.storage_io import write_json_atomic
 
-from .contracts import ActorContext, ResearchPreflightRequest, ResearchValidationRequest
+from .contracts import (
+    ActorContext,
+    FinalHoldoutReservation,
+    ResearchPreflightRequest,
+    ResearchValidationRequest,
+)
+from .holdout_authority import abort_operated_final_holdout
 from .service import ResearchApplicationService
 
 
@@ -27,6 +34,7 @@ _REQUEST_FIELDS = frozenset(
         "manifest_path",
         "runtime_project_root",
         "sandbox_root",
+        "final_holdout_reservation",
         "settings",
         "actor",
     }
@@ -41,6 +49,7 @@ _SETTINGS_FIELDS = frozenset(
         "max_workers",
         "random_seed",
         "experiment_identity_registry_path",
+        "final_holdout_registry_path",
     }
 )
 
@@ -67,6 +76,9 @@ def execute_sandbox_job(request: object) -> dict[str, object]:
         random_seed=int(settings_value["random_seed"]),
         experiment_identity_registry_path=Path(
             str(settings_value["experiment_identity_registry_path"])
+        ).resolve(),
+        final_holdout_registry_path=Path(
+            str(settings_value["final_holdout_registry_path"])
         ).resolve(),
     )
     paths = ResearchPathManager.from_settings(
@@ -108,6 +120,7 @@ def execute_sandbox_job(request: object) -> dict[str, object]:
         }
     if capability == "research-validate":
         result_path = paths.report_path("validation_result.json").resolve()
+        reservation = value.get("final_holdout_reservation")
         validation_result = service.validate(
             ResearchValidationRequest(
                 request_id=str(value["job_id"]),
@@ -116,9 +129,25 @@ def execute_sandbox_job(request: object) -> dict[str, object]:
                 manifest_path=str(value["manifest_path"]),
                 execution_calibration_path=None,
                 out_path=str(result_path),
+                final_holdout_reservation=(
+                    FinalHoldoutReservation.model_validate(reservation)
+                    if isinstance(reservation, dict)
+                    else None
+                ),
                 mode="strict",
             )
         )
+        report = validation_result.report
+        if isinstance(reservation, dict) and (
+            not isinstance(report, dict)
+            or not isinstance(report.get("final_holdout_confirmation"), dict)
+        ):
+            with suppress(OSError, ValueError):
+                abort_operated_final_holdout(
+                    paths=paths,
+                    reservation=dict(reservation),
+                    reason="pre_holdout_validation_not_passed",
+                )
         return {
             "schema_version": 1,
             "job_id": str(value["job_id"]),
@@ -172,6 +201,34 @@ def _validated_request(request: object) -> dict[str, Any]:
             raise SandboxJobContractError(
                 f"sandbox_job_{field}_outside_job_root"
             ) from exc
+    raw_final_holdout_registry = Path(
+        str(settings["final_holdout_registry_path"])
+    ).expanduser()
+    if not raw_final_holdout_registry.is_absolute():
+        raise SandboxJobContractError(
+            "sandbox_job_final_holdout_registry_path_invalid"
+        )
+    final_holdout_registry = raw_final_holdout_registry.resolve()
+    try:
+        final_holdout_registry.relative_to(sandbox_root)
+    except ValueError:
+        pass
+    else:
+        raise SandboxJobContractError(
+            "sandbox_job_final_holdout_registry_must_be_shared"
+        )
+    reservation = request.get("final_holdout_reservation")
+    if reservation is not None:
+        if not isinstance(reservation, dict):
+            raise SandboxJobContractError(
+                "sandbox_job_final_holdout_reservation_invalid"
+            )
+        if Path(str(reservation.get("registry_path") or "")).resolve() != (
+            final_holdout_registry
+        ):
+            raise SandboxJobContractError(
+                "sandbox_job_final_holdout_reservation_registry_mismatch"
+            )
     if (
         not isinstance(settings.get("max_workers"), int)
         or int(settings["max_workers"]) <= 0

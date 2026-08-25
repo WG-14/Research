@@ -21,7 +21,6 @@ from market_research.paths import ResearchPathManager
 from market_research.research.corporate_action_contract import (
     parse_corporate_action_set,
 )
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.dataset_snapshot import (
     _db_table_schema_fingerprint,
     load_dataset_range,
@@ -29,6 +28,7 @@ from market_research.research.dataset_snapshot import (
 from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
 from market_research.research.experiment_manifest import (
     DateRange,
+    ExperimentManifest,
     ExecutionTimingPolicy,
     PortfolioPolicy,
     legacy_research_portfolio_policy,
@@ -55,18 +55,11 @@ from market_research.research.hashing import (
     sha256_prefixed,
 )
 from market_research.research.report_writer import candidate_evidence_hash_inputs
-from market_research.research.prospective_application import (
-    ProspectiveValidationApplicationService,
-)
 from market_research.research.prospective_validation import (
     PROSPECTIVE_VALIDATION_SCHEMA_VERSION,
-    ImmutableEvidenceRef,
     MetricGuard,
     ProspectiveObservation,
-    ProspectiveStatus,
-    ProspectiveValidationSpec,
     SimulatedFillEvidence,
-    validate_prospective_registry,
 )
 from market_research.research.principal_assertion import (
     IndependentVerificationAssertionScope,
@@ -74,17 +67,17 @@ from market_research.research.principal_assertion import (
 from market_research.research.research_decision_report import (
     validate_research_decision_report,
 )
-from market_research.research.research_package_registry import (
-    ResearchPackageRegistry,
-    cost_assumption_content_hash,
-    feature_definition_content_hash,
-    fill_assumption_content_hash,
-    historical_distribution_content_hash,
-    validate_research_package_registry,
-    validated_rule_set_content_hash,
+from market_research.research.research_standard import (
+    PreregisteredResearchDesign,
+    ResearchPhase,
+    ResearchPhaseWindow,
 )
 from market_research.research.reproduction import load_reproduction_receipt
 from market_research.research.simulation_engine import run_common_simulation_backtest
+from market_research.research.study_lifecycle import (
+    preregister_study,
+    record_study_stage,
+)
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_contract import ResearchStrategyPlugin
 from market_research.research.strategy_registry import StrategyRegistry
@@ -145,7 +138,10 @@ from market_research.research_cli.context import ResearchAppContext
 from market_research.research_cli.main import main as research_cli_main
 from market_research.settings import ResearchSettings
 from market_research.strategy_sdk.runtime import make_event_builder_runtime_factory
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    build_bound_test_source_provenance,
+    freeze_with_test_transformation_authority,
+)
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 from tests.clean_provenance_fixture import install_committed_checkout_provenance
 from tests.data_governance_fixture import seed_confirmatory_data_governance
@@ -163,6 +159,13 @@ _VALIDATED_EXPERIMENT_ID = "validated_strategy_extension_production_acceptance"
 _VALIDATED_BRIDGE_MODULE_BASENAME = "validated_extension_acceptance_probe"
 _VALIDATED_BRIDGE_MODULE_NAME = (
     f"market_research.builtin_strategies.{_VALIDATED_BRIDGE_MODULE_BASENAME}"
+)
+_VALIDATED_REGISTRATION_EVIDENCE_HASH = sha256_prefixed(
+    {
+        "artifact_type": "external_preregistration_evidence",
+        "registration_id": _VALIDATED_EXPERIMENT_ID,
+        "version": 1,
+    }
 )
 _BUILTIN_STRATEGY_PARAMETERS: dict[str, dict[str, object]] = {
     "buy_and_hold_baseline": {"BUY_HOLD_BUY_INDEX": 1},
@@ -897,11 +900,104 @@ def _build_context(tmp_path: Path, db_path: Path) -> ResearchAppContext:
         db_path=db_path,
         max_workers=1,
         random_seed=0,
+        final_holdout_registry_path=(
+            tmp_path / "runtime" / "authority" / "final-holdout.jsonl"
+        ),
     )
     return ResearchAppContext(
         settings=settings,
         paths=ResearchPathManager.from_settings(settings, project_root=Path.cwd()),
         printer=lambda _message: None,
+    )
+
+
+def _record_validated_preregistration(
+    *,
+    context: ResearchAppContext,
+    manifest: ExperimentManifest,
+) -> None:
+    for state, recorded_at, exploration_hash in (
+        ("IDEA", "2025-12-05T00:00:00+00:00", None),
+        ("STRUCTURED", "2025-12-06T00:00:00+00:00", None),
+        (
+            "EXPLORATORY",
+            "2025-12-07T00:00:00+00:00",
+            sha256_prefixed(
+                {
+                    "artifact_type": "exploratory_research_evidence",
+                    "experiment_id": manifest.experiment_id,
+                }
+            ),
+        ),
+    ):
+        record_study_stage(
+            manager=context.paths,
+            hypothesis=manifest.hypothesis_spec,
+            to_state=state,
+            actor_id="researcher-a",
+            recorded_at=recorded_at,
+            reason=f"Record independently completed {state} work.",
+            exploration_evidence_hash=exploration_hash,
+        )
+    artifact_ref = manifest.dataset.artifact_ref
+    assert artifact_ref is not None
+    preregister_study(
+        manager=context.paths,
+        hypothesis=manifest.hypothesis_spec,
+        design=PreregisteredResearchDesign(
+            registration_id=manifest.experiment_id,
+            version=1,
+            manifest_hash=manifest.manifest_hash(),
+            hypothesis_contract_hash=manifest.hypothesis_spec.contract_hash(),
+            registered_by="researcher-a",
+            registered_at="2025-12-20T00:00:00+00:00",
+            sample_starts_at="2024-12-27T00:00:00+00:00",
+            sample_ends_at="2026-01-03T00:00:00+00:00",
+            universe=(manifest.market,),
+            exclusion_criteria=(
+                "exclude timestamps without immutable candle and required quote",
+            ),
+            variable_definitions=(
+                "closed-candle momentum with a preregistered return threshold",
+            ),
+            target_variable="next executable quote net return after declared costs",
+            portfolio_construction="single-asset long-or-cash common engine portfolio",
+            rebalancing_policy="trade only on registered common-engine decisions",
+            primary_metrics=("net return", "profit factor", "maximum drawdown"),
+            cost_assumptions=(
+                "fee_rate=0.001",
+                "latency-adjusted top-of-book plus registered stress scenarios",
+            ),
+            phase_windows=(
+                ResearchPhaseWindow(
+                    ResearchPhase.EXPLORATION,
+                    "2024-12-27T00:00:00+00:00",
+                    "2024-12-28T00:00:00+00:00",
+                ),
+                ResearchPhaseWindow(
+                    ResearchPhase.DEVELOPMENT,
+                    "2024-12-28T00:00:00+00:00",
+                    "2025-01-06T00:00:00+00:00",
+                ),
+                ResearchPhaseWindow(
+                    ResearchPhase.VALIDATION,
+                    "2025-01-06T00:00:00+00:00",
+                    "2025-12-28T00:00:00+00:00",
+                ),
+                ResearchPhaseWindow(
+                    ResearchPhase.FINAL_HOLDOUT,
+                    "2025-12-28T00:00:00+00:00",
+                    "2026-01-03T00:00:00+00:00",
+                ),
+            ),
+            rejection_criteria=(
+                "reject when the registered terminal validation gate is not PASS",
+            ),
+            data_suitability_evidence_hash=artifact_ref.artifact_manifest_hash,
+            signal_definition_hash=manifest.simulation_policy_hash(),
+            external_registration_evidence_hash=(_VALIDATED_REGISTRATION_EVIDENCE_HASH),
+        ),
+        reason="Freeze the reviewed design before confirmatory access.",
     )
 
 
@@ -1127,9 +1223,7 @@ def _write_validated_extension_manifest(
                             quote_ts / 1000.0,
                         ),
                     )
-                momentum = (
-                    0.8 * momentum + innovation_source.uniform(-0.0008, 0.0008)
-                )
+                momentum = 0.8 * momentum + innovation_source.uniform(-0.0008, 0.0008)
                 price *= 1.012 + momentum
             close_boundary = int(
                 (segment_start + timedelta(days=day_count)).timestamp() * 1000
@@ -1148,28 +1242,45 @@ def _write_validated_extension_manifest(
                         quote_ts / 1000.0,
                     ),
                 )
-    secondary_provider_material = {
-        "schema_version": 1,
-        "artifact_type": "external_provider_dataset_snapshot",
-        "provider_id": "fixture-provider-b",
-        "market": "KRW-BTC",
-        "interval": "240m",
-        "period": {"start": "2024-12-28", "end": "2025-01-06"},
-        "rows": secondary_provider_validation_rows,
-    }
-    secondary_provider_snapshot = {
-        **secondary_provider_material,
-        "content_hash": sha256_prefixed(
-            secondary_provider_material,
-            label="external_provider_dataset_snapshot",
+    secondary_provider_db = study_root / "immutable-secondary-provider.sqlite"
+    with sqlite3.connect(secondary_provider_db) as connection:
+        connection.execute(
+            "CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, "
+            "open REAL, high REAL, low REAL, close REAL, volume REAL)"
+        )
+        connection.executemany(
+            "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "KRW-BTC",
+                    "240m",
+                    int(row["ts"]),
+                    float(row["close"]),
+                    float(row["close"]),
+                    float(row["close"]),
+                    float(row["close"]),
+                    1.0,
+                )
+                for row in secondary_provider_validation_rows
+            ],
+        )
+    secondary_frozen = freeze_with_test_transformation_authority(
+        source_provenance=build_bound_test_source_provenance(
+            secondary_provider_db,
+            namespace="validated-secondary-provider",
         ),
-    }
-    (study_root / "immutable-secondary-provider-validation-snapshot.json").write_text(
-        json.dumps(secondary_provider_snapshot, sort_keys=True),
-        encoding="utf-8",
+        source_db=secondary_provider_db,
+        market="KRW-BTC",
+        interval="240m",
+        start_ts=min(int(row["ts"]) for row in secondary_provider_validation_rows),
+        end_ts=max(int(row["ts"]) for row in secondary_provider_validation_rows),
+        out_dir=(study_root / "secondary-frozen").resolve(),
     )
-    frozen = freeze_sqlite_candles_dataset(
-        source_provenance=TEST_SOURCE_PROVENANCE,
+    frozen = freeze_with_test_transformation_authority(
+        source_provenance=build_bound_test_source_provenance(
+            db_path,
+            namespace="validated-primary-provider",
+        ),
         source_db=db_path,
         market="KRW-BTC",
         interval="240m",
@@ -1216,6 +1327,9 @@ def _write_validated_extension_manifest(
             experiment_family_id=_VALIDATED_EXPERIMENT_ID + "-family",
             market="KRW-BTC",
             interval="240m",
+            registration_status="pre_registered",
+            pre_registered_at="2025-12-20T00:00:00+00:00",
+            registration_evidence_hash=_VALIDATED_REGISTRATION_EVIDENCE_HASH,
             competing_hypotheses=[
                 {
                     "hypothesis_id": _VALIDATED_EXPERIMENT_ID,
@@ -1388,6 +1502,79 @@ def _write_validated_extension_manifest(
                 "min_inner_train_window_days": 1,
             },
         },
+        "validation_experiments": {
+            "schema_version": 1,
+            "nested_selection": {
+                "metric_id": "return_pct",
+                "direction": "MAXIMIZE",
+                "minimum_inner_sample_count": 2,
+                "minimum_outer_sample_count": 2,
+                "terminal_selection_rule": "outer_mean_then_candidate_id",
+            },
+            "falsification": {
+                "observation_builder_id": (
+                    "lagged_strategy_exposure_next_bar_return_v1"
+                ),
+                "policy_id": "validated-extension-native-controls",
+                "version": "1",
+                "seed": 19,
+                "placebo_shift": 7,
+                "minimum_sample_count": 20,
+                "minimum_baseline_abs_effect": 0.01,
+                "maximum_control_abs_effect": 0.8,
+                "minimum_confounder_adjusted_retention": 0.1,
+                "include_confounder_adjusted": True,
+            },
+            "factor_exposure": {
+                "observation_builder_id": ("strategy_period_return_market_factor_v1"),
+                "model_id": "ols_newey_west",
+                "model_version": "1",
+                "hac_lags": 1,
+                "confidence_z": 1.96,
+            },
+            "provider_sensitivity": {
+                "selected_provider_id": "fixture-provider-a",
+                "provider_datasets": [
+                    {
+                        "provider_id": "fixture-provider-a",
+                        "artifact_manifest_uri": frozen["artifact_manifest_uri"],
+                        "artifact_manifest_hash": frozen["artifact_manifest_hash"],
+                    },
+                    {
+                        "provider_id": "fixture-provider-b",
+                        "artifact_manifest_uri": secondary_frozen[
+                            "artifact_manifest_uri"
+                        ],
+                        "artifact_manifest_hash": secondary_frozen[
+                            "artifact_manifest_hash"
+                        ],
+                    },
+                ],
+                "semantic_definition_id": ("selected_candidate_required_metrics_v1"),
+                "metrics": [
+                    "max_drawdown_pct",
+                    "return_pct",
+                    "trade_count",
+                ],
+                "tolerances": [
+                    {
+                        "metric_id": "max_drawdown_pct",
+                        "absolute_tolerance": 0.5,
+                        "relative_tolerance": 0.5,
+                    },
+                    {
+                        "metric_id": "return_pct",
+                        "absolute_tolerance": 0.5,
+                        "relative_tolerance": 0.5,
+                    },
+                    {
+                        "metric_id": "trade_count",
+                        "absolute_tolerance": 1.0,
+                        "relative_tolerance": 0.5,
+                    },
+                ],
+            },
+        },
         "benchmark_suite": {
             "schema_version": 1,
             "required_for_validation": True,
@@ -1545,13 +1732,80 @@ def _write_validated_point_in_time_authorities(
     """Write the externally prepared local authorities used by the E2E study."""
 
     universe_source = study_root / "immutable-point-in-time-universe-source.json"
+    survivorship_source = (
+        study_root / "immutable-point-in-time-survivorship-evidence.json"
+    )
+    population_definition_hash = sha256_prefixed(
+        {
+            "population": "all reviewed KRW-BTC listing states",
+            "coverage": ["2017-01-01", "2030-12-31"],
+        }
+    )
     universe_source.write_text(
         json.dumps(
             {
                 "schema_version": 1,
-                "source": "externally_prepared_test_fixture",
+                "artifact_type": "point_in_time_universe_source_snapshot",
                 "universe_id": "univ_validated_extension_0001",
-                "members": ["inst_btc_validated_0001"],
+                "population_definition_hash": population_definition_hash,
+                "memberships": [
+                    {
+                        "instrument_id": "inst_btc_validated_0001",
+                        "issuer_id": "issuer_btc_validated_0001",
+                        "security_id": "security_btc_validated_0001",
+                        "listing_id": "listing_btc_validated_0001",
+                        "tradability_state": "tradable",
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    universe_source_hash = (
+        "sha256:" + hashlib.sha256(universe_source.read_bytes()).hexdigest()
+    )
+    survivorship_material = {
+        "schema_version": 1,
+        "evidence_type": "historical_population_completeness",
+        "universe_id": "univ_validated_extension_0001",
+        "coverage_start": "2017-01-01T00:00:00+00:00",
+        "coverage_end": "2031-01-01T00:00:00+00:00",
+        "population_definition_hash": population_definition_hash,
+        "source_snapshot_hash": universe_source_hash,
+        "population_record_count": 1,
+        "population_identity_count": 1,
+        "outcome_counts": {
+            "bankrupt": 0,
+            "delisted": 0,
+            "halted": 0,
+            "merged_out": 0,
+            "suspended": 0,
+            "tradable": 1,
+            "withdrawn": 0,
+        },
+        "identities": [
+            {
+                "instrument_id": "inst_btc_validated_0001",
+                "issuer_id": "issuer_btc_validated_0001",
+                "security_id": "security_btc_validated_0001",
+                "listing_id": "listing_btc_validated_0001",
+                "outcomes": ["tradable"],
+            }
+        ],
+        "population_assertion_scope": (
+            "typed_universe_self_consistency_and_governed_external_source_assertion"
+        ),
+        "external_population_omission_status": ("NOT_LOCALLY_OR_OMNISCIENTLY_PROVABLE"),
+    }
+    survivorship_source.write_text(
+        json.dumps(
+            {
+                **survivorship_material,
+                "content_hash": sha256_prefixed(
+                    survivorship_material,
+                    label="survivorship_evidence_manifest",
+                ),
             },
             sort_keys=True,
         ),
@@ -1572,8 +1826,8 @@ def _write_validated_point_in_time_authorities(
         ),
         encoding="utf-8",
     )
-    universe_source_hash = (
-        "sha256:" + hashlib.sha256(universe_source.read_bytes()).hexdigest()
+    survivorship_source_hash = (
+        "sha256:" + hashlib.sha256(survivorship_source.read_bytes()).hexdigest()
     )
     calendar_source_hash = (
         "sha256:" + hashlib.sha256(calendar_source.read_bytes()).hexdigest()
@@ -1635,7 +1889,7 @@ def _write_validated_point_in_time_authorities(
             "action_set_hash": parsed_action_set.contract_hash(),
         },
         "universe": {
-            "schema_version": 1,
+            "schema_version": 2,
             "universe_id": "univ_validated_extension_0001",
             "universe_version_id": "univv_validated_extension_0001_v1",
             "version": 1,
@@ -1643,23 +1897,46 @@ def _write_validated_point_in_time_authorities(
             "source_uri": str(universe_source.resolve()),
             "source_content_hash": universe_source_hash,
             "source_schema_hash": sha256_prefixed(
-                {"schema": "validated_extension_universe_source_v1"}
+                {"schema": "validated_extension_universe_source_v2"}
             ),
             "prepared_at": "2023-01-02T00:00:00+00:00",
             "observed_at": "2023-01-02T00:00:00+00:00",
+            "coverage_start": "2017-01-01T00:00:00+00:00",
+            "coverage_end": "2031-01-01T00:00:00+00:00",
+            "population_definition_hash": population_definition_hash,
+            "survivorship_evidence_uri": str(survivorship_source.resolve()),
+            "survivorship_evidence_hash": survivorship_source_hash,
+            "survivorship_policy": (
+                "complete_historical_population_including_delisted_bankrupt_"
+                "merged_withdrawn_and_halted_v1"
+            ),
             "memberships": [
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "membership_id": "um_btc_validated_0001",
                     "membership_version_id": "umv_btc_validated_0001_v1",
                     "version": 1,
                     "universe_id": "univ_validated_extension_0001",
                     "instrument_id": "inst_btc_validated_0001",
-                    "valid_from": "2017-01-01",
-                    "valid_to": None,
-                    "status": "active",
-                    "published_at": "2023-01-01T00:00:00+00:00",
-                    "observed_at": "2023-01-01T00:00:00+00:00",
+                    "effective_time": "2017-01-01T00:00:00+00:00",
+                    "effective_end_time": None,
+                    "publication_time": "2023-01-01T00:00:00+00:00",
+                    "vendor_arrival_time": "2023-01-01T00:00:00+00:00",
+                    "ingestion_time": "2023-01-01T00:00:00+00:00",
+                    "revision_time": "2023-01-01T00:00:00+00:00",
+                    "constituent_state": "included",
+                    "tradability_state": "tradable",
+                    "issuer_id": "issuer_btc_validated_0001",
+                    "security_id": "security_btc_validated_0001",
+                    "listing_id": "listing_btc_validated_0001",
+                    "exchange_mic": "XOFF",
+                    "provider_id": "test-provider",
+                    "vendor_symbol": "KRW-BTC",
+                    "security_kind": "primary",
+                    "parent_issuer_id": None,
+                    "country_code": "KR",
+                    "trading_currency": "KRW",
+                    "accounting_currency": "KRW",
                     "source_content_hash": universe_source_hash,
                     "attributes": [],
                     "supersedes_version_id": None,
@@ -1720,8 +1997,11 @@ def _write_extension_manifest(tmp_path: Path) -> tuple[Path, Path]:
                         1.0,
                     ),
                 )
-    frozen = freeze_sqlite_candles_dataset(
-        source_provenance=TEST_SOURCE_PROVENANCE,
+    frozen = freeze_with_test_transformation_authority(
+        source_provenance=build_bound_test_source_provenance(
+            db_path,
+            namespace="strategy-extension-primary-provider",
+        ),
         source_db=db_path,
         market="KRW-BTC",
         interval="60m",
@@ -2437,9 +2717,7 @@ def _prepare_external_validation_experiment_bundle(
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     parameter_values = sorted(
         float(value)
-        for value in manifest_payload["parameter_space"][
-            "MOMENTUM_MIN_RETURN_RATIO"
-        ]
+        for value in manifest_payload["parameter_space"]["MOMENTUM_MIN_RETURN_RATIO"]
     )
     relative_perturbations = tuple(
         float(value)
@@ -2454,10 +2732,13 @@ def _prepare_external_validation_experiment_bundle(
         "source": "manifest.stress_suite.parameter_perturbation",
     }
     assert len(candidate_by_id) == len(parameter_values) == 3
-    assert sorted(
-        float(candidate["parameter_values"]["MOMENTUM_MIN_RETURN_RATIO"])
-        for candidate in candidate_by_id.values()
-    ) == parameter_values
+    assert (
+        sorted(
+            float(candidate["parameter_values"]["MOMENTUM_MIN_RETURN_RATIO"])
+            for candidate in candidate_by_id.values()
+        )
+        == parameter_values
+    )
 
     def evaluate_nested_candidate(
         candidate: NestedCandidate,
@@ -2487,9 +2768,7 @@ def _prepare_external_validation_experiment_bundle(
                 snapshot.candles[1:],
             )
         ]
-        eligible_returns = [
-            value for value in realized_returns if value >= threshold
-        ]
+        eligible_returns = [value for value in realized_returns if value >= threshold]
         evidence = {
             "metric_id": "manifest-stability-conditioned-one-bar-return",
             "candidate_definition_hash": candidate.definition_hash,
@@ -2557,9 +2836,9 @@ def _prepare_external_validation_experiment_bundle(
         item for item in nested.candidates if item.candidate_id == selected_candidate_id
     )
     assert selected_nested_candidate.definition_hash == selected_candidate_hash
-    assert {
-        fold.selected_candidate.candidate_id for fold in nested.folds
-    } == {selected_candidate_id}
+    assert {fold.selected_candidate.candidate_id for fold in nested.folds} == {
+        selected_candidate_id
+    }
 
     observation_snapshot = load_dataset_range(
         db_path=context.settings.db_path,
@@ -2580,9 +2859,7 @@ def _prepare_external_validation_experiment_bundle(
     assert len(candle_returns) >= 20
     selected_parameters = selected_candidate.get("parameter_values")
     assert isinstance(selected_parameters, dict)
-    selected_threshold = float(
-        selected_parameters["MOMENTUM_MIN_RETURN_RATIO"]
-    )
+    selected_threshold = float(selected_parameters["MOMENTUM_MIN_RETURN_RATIO"])
     falsification_observations: list[FalsificationObservation] = []
     factor_observations: list[FactorObservation] = []
     for index, (previous, current) in enumerate(
@@ -2660,8 +2937,7 @@ def _prepare_external_validation_experiment_bundle(
     ]
     provider_a_path = provider_root / "provider-a.json"
     provider_b_path = (
-        manifest_path.parent
-        / "immutable-secondary-provider-validation-snapshot.json"
+        manifest_path.parent / "immutable-secondary-provider-validation-snapshot.json"
     ).resolve()
     provider_a_material = {
         "schema_version": 1,
@@ -2692,9 +2968,7 @@ def _prepare_external_validation_experiment_bundle(
         label="external_provider_dataset_snapshot",
     )
     assert provider_b_snapshot["content_hash"] == provider_b_hash
-    provider_b_prices = [
-        float(item["close"]) for item in provider_b_snapshot["rows"]
-    ]
+    provider_b_prices = [float(item["close"]) for item in provider_b_snapshot["rows"]]
     provider_b_rows = [
         {
             "sample_id": index,
@@ -2802,7 +3076,7 @@ def _prepare_external_validation_experiment_bundle(
 
 
 @pytest.mark.research_e2e
-def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
+def test_validated_new_strategy_reaches_terminal_reproduction_and_cli_governance_fails_closed(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2837,14 +3111,7 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
     )
     validation_path = (tmp_path / "validated-summary.json").resolve()
     approval_path = (tmp_path / "validated-approval.json").resolve()
-    package_path = (tmp_path / "validated-strategy-package.json").resolve()
     reproduction_path = (tmp_path / "validated-reproduction.json").resolve()
-    selection_reproduction_path = (
-        tmp_path / "validated-selection-reproduction.json"
-    ).resolve()
-    rejected_approval_path = (
-        tmp_path / "rejected-selection-verification-approval.json"
-    ).resolve()
     original_package_path = builtin_strategies.__path__
 
     try:
@@ -2861,21 +3128,17 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         extension = expanded_registry.resolve(_VALIDATED_STRATEGY_NAME)
         assert extension.execution_authority == "common_simulation_engine"
         assert not hasattr(extension, "runner")
+        validated_manifest = parse_builtin_manifest(
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+        )
+        _record_validated_preregistration(
+            context=context,
+            manifest=validated_manifest,
+        )
         seed_confirmatory_data_governance(
             manager=context.paths,
-            manifest=parse_builtin_manifest(
-                json.loads(manifest_path.read_text(encoding="utf-8"))
-            ),
+            manifest=validated_manifest,
         )
-        validation_experiment_bundle_path = (
-            _prepare_external_validation_experiment_bundle(
-                tmp_path=tmp_path,
-                context=context,
-                manifest_path=manifest_path,
-                strategy_registry=expanded_registry,
-            )
-        )
-
         validation_output: list[str] = []
         context.printer = validation_output.append
         validation_rc = research_cli_main(
@@ -2883,8 +3146,6 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
                 "research-validate",
                 "--manifest",
                 str(manifest_path),
-                "--validation-experiment-bundle",
-                str(validation_experiment_bundle_path),
                 "--out",
                 str(validation_path),
             ],
@@ -2898,12 +3159,43 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         assert validation["final_selection_gate_result"] == "PASS"
         assert validation["stress_suite_gate_result"] == "PASS"
         assert validation["statistical_gate_result"] == "PASS"
+        assert validation["validation_experiment_gate_result"] == "PASS"
+        assert validation["native_validation_execution_authority"] == (
+            "manifest_native_production_engine"
+        )
+        assert validation["pre_holdout_gate"]["gate_result"] == "PASS"
+        assert validation["pre_holdout_gate"]["gate_reasons"] == []
+        native_receipt = validation["native_validation_computation_receipt"]
+        assert native_receipt["holdout_accessed"] is False
+        assert (
+            native_receipt["validation_experiment_bundle_hash"]
+            == (validation["validation_experiment_bundle_hash"])
+        )
+        assert (
+            native_receipt["content_hash"]
+            == (validation["native_validation_computation_receipt_hash"])
+        )
+        assert all(
+            "holdout" not in access["split_name"]
+            for access in native_receipt["source_access_records"]
+        )
+        assert {
+            item["provider_id"]
+            for item in native_receipt["raw_immutable_input_artifact_refs"]
+        } == {"fixture-provider-a", "fixture-provider-b"}
         assert validation["white_reality_check_p_value"] <= 0.05
         assert validation["content_hash"] == sha256_prefixed(
             report_content_hash_payload(validation)
         )
         assert validation["run_id"] == context.run_id
         assert validate_validated_research_result(validation) == []
+        canonical_validation_path = context.paths.report_path(
+            "research", _VALIDATED_EXPERIMENT_ID, "validation_summary.json"
+        ).resolve()
+        assert Path(str(validation["validation_run_path"])) == (
+            canonical_validation_path
+        )
+        assert canonical_validation_path.read_bytes() == validation_path.read_bytes()
         assert validation["hypothesis_spec"]["schema_version"] == 2
         assert (
             validation["hypothesis_lineage_hash"]
@@ -2947,12 +3239,6 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         )
         assert validate_validation_decision_registry(context.paths)["status"] == (
             "PASS"
-        )
-        validation_decision_ref = ImmutableEvidenceRef(
-            authority="validation_decision_registry",
-            logical_id=str(validation_decision_row["logical_id"]),
-            version=str(validation_decision_row["version"]),
-            content_hash=str(validation_decision_row["record_hash"]),
         )
         assert validate_final_selection_report(validation) == []
         confirmation = validation["final_holdout_confirmation"]
@@ -3017,112 +3303,65 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         assert registry_validation["ok"] is True
         assert registry_validation["artifact_reasons"] == []
         assert registry_validation["artifact_binding_valid"] is True
+        assert registry_validation["report_kind"] == "validation_summary"
+        assert Path(registry_validation["report_path"]) == canonical_validation_path
         assert Path(registry_validation["registry_path"]) == (
             canonical_experiment_registry.resolve()
         )
 
-        _record_validated_candidate_approval_prerequisites(
-            context=context,
-            validation=validation,
+        selection_report_path = context.paths.report_path(
+            "research", _VALIDATED_EXPERIMENT_ID, "walk_forward_report.json"
         )
-        selection_receipt_path = context.paths.report_path(
-            "research",
-            _VALIDATED_EXPERIMENT_ID,
-            "reproduction_receipt.json",
+        selection_report_bytes = selection_report_path.read_bytes()
+        tampered_selection_report = json.loads(selection_report_bytes)
+        tampered_selection_report["registry_tamper_probe"] = True
+        tampered_selection_report["content_hash"] = sha256_prefixed(
+            report_content_hash_payload(tampered_selection_report)
         )
-        selection_receipt = load_reproduction_receipt(selection_receipt_path)
-        trusted_paths, selection_assertion = provision_test_principal_assertion(
-            manager=context.paths,
-            scope=IndependentVerificationAssertionScope(
-                verification_id="validated-selection-verification",
-                verification_version="1",
-                experiment_id=str(selection_receipt["experiment_id"]),
-                research_version=str(selection_receipt["manifest_hash"]),
-                source_report_hash=str(selection_receipt["source_report_hash"]),
-                baseline_receipt_hash=str(selection_receipt["receipt_content_hash"]),
-            ),
-            subject="validated-extension-independent-verifier",
+        selection_report_path.write_text(
+            json.dumps(tampered_selection_report, sort_keys=True), encoding="utf-8"
         )
-        context.settings = trusted_paths.settings
-        context.paths = trusted_paths
-        selection_assertion_path = (
-            tmp_path / "validated-selection-verifier-assertion.json"
-        ).resolve()
-        selection_assertion_path.write_text(
-            json.dumps(
-                selection_assertion.as_dict(),
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        selection_reproduction_rc = research_cli_main(
-            [
-                "research-reproduce-run",
-                "--manifest",
-                str(manifest_path),
-                "--receipt",
-                str(selection_receipt_path),
-                "--verification-id",
-                "validated-selection-verification",
-                "--verification-version",
-                "1",
-                "--verifier",
-                "validated-extension-independent-verifier",
-                "--verifier-assertion",
-                str(selection_assertion_path),
-                "--out",
-                str(selection_reproduction_path),
-            ],
-            context=context,
-        )
-        assert selection_reproduction_rc == 0
-        selection_reproduction = json.loads(
-            selection_reproduction_path.read_text(encoding="utf-8")
-        )
-        selection_verification = selection_reproduction["independent_verification"]
-        rejected_output: list[str] = []
-        saved_printer = context.printer
-        context.printer = rejected_output.append
+        tamper_registry_output: list[str] = []
+        context.printer = tamper_registry_output.append
         try:
-            rejected_approval_rc = research_cli_main(
+            tamper_registry_rc = research_cli_main(
                 [
-                    "research-approve-strategy-candidate",
-                    "--result",
-                    str(validation_path),
-                    "--subject-version",
-                    "1",
-                    "--reviewer",
-                    "validated-extension-approver",
-                    "--rationale",
-                    "selection-only reproduction cannot approve terminal validation",
-                    "--verification-id",
-                    str(selection_verification["verification_id"]),
-                    "--verification-version",
-                    str(selection_verification["version"]),
-                    "--verification-hash",
-                    str(selection_verification["content_hash"]),
-                    "--originator",
-                    "validated-extension-researcher",
-                    "--out",
-                    str(rejected_approval_path),
+                    "research-registry-validate",
+                    "--experiment-id",
+                    _VALIDATED_EXPERIMENT_ID,
                 ],
                 context=context,
             )
         finally:
-            context.printer = saved_printer
-        assert rejected_approval_rc == 1
-        assert not rejected_approval_path.exists()
-        assert any(
-            "independent_verification_report_mismatch" in message
-            for message in rejected_output
+            context.printer = original_printer
+            selection_report_path.write_bytes(selection_report_bytes)
+        tamper_registry_validation = json.loads(
+            next(
+                message
+                for message in tamper_registry_output
+                if '"validation_scope"' in message
+            )
         )
+        assert tamper_registry_rc == 1
+        assert tamper_registry_validation["ok"] is False
+        assert (
+            "terminal_selection_report_content_hash_mismatch"
+            in (tamper_registry_validation["artifact_reasons"])
+        )
+        assert selection_report_path.read_bytes() == selection_report_bytes
 
         terminal_receipt_path = Path(str(validation["reproduction_receipt_path"]))
         terminal_receipt = load_reproduction_receipt(terminal_receipt_path)
         assert terminal_receipt["source_report_hash"] == validation["content_hash"]
         assert terminal_receipt["evidence_scope"] == "validated_research_result"
+        assert (
+            Path(
+                terminal_receipt["source_evidence_binding"][
+                    "terminal_source_report_path"
+                ]
+            )
+            == canonical_validation_path
+        )
         assert (
             terminal_receipt["source_evidence_binding"][
                 "final_holdout_confirmation_hash"
@@ -3189,6 +3428,26 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
         reproduced_holdout = json.loads(
             reproduced_holdout_path.read_text(encoding="utf-8")
         )
+        reproduced_terminal_selection_path = Path(
+            reproduction["reproduced_terminal_selection_artifact_path"]
+        )
+        assert reproduced_terminal_selection_path == (
+            reproduced_holdout_path.with_name("terminal_selection_artifact.json")
+        )
+        assert reproduced_terminal_selection_path.is_relative_to(
+            context.paths.report_root / "reproductions" / _VALIDATED_EXPERIMENT_ID
+        )
+        reproduced_terminal_selection = json.loads(
+            reproduced_terminal_selection_path.read_text(encoding="utf-8")
+        )
+        assert (
+            reproduction["reproduced_terminal_selection_artifact_content_hash"]
+            == reproduced_terminal_selection["content_hash"]
+            == reproduced_holdout["selection_artifact_hash"]
+        )
+        assert reproduction["reproduced_terminal_selection_artifact_hash"].startswith(
+            "sha256:"
+        )
         assert (
             reproduction["reproduced_final_holdout_confirmation_hash"]
             == reproduced_holdout["content_hash"]
@@ -3199,369 +3458,51 @@ def test_validated_new_strategy_reaches_authoritative_package_and_reproduction(
             == terminal_receipt["source_evidence_binding"]["final_holdout_result_hash"]
         )
         verification = reproduction["independent_verification"]
-        approval_rc = research_cli_main(
-            [
-                "research-approve-strategy-candidate",
-                "--result",
-                str(validation_path),
-                "--subject-version",
-                "1",
-                "--reviewer",
-                "validated-extension-approver",
-                "--rationale",
-                "validated extension evidence reviewed",
-                "--verification-id",
-                str(verification["verification_id"]),
-                "--verification-version",
-                str(verification["version"]),
-                "--verification-hash",
-                str(verification["content_hash"]),
-                "--originator",
-                "validated-extension-researcher",
-                "--out",
-                str(approval_path),
-            ],
-            context=context,
-        )
-        assert approval_rc == 0
-        approval = json.loads(approval_path.read_text(encoding="utf-8"))
-        assert (
-            approval["hypothesis_contract_hash"]
-            == validation["hypothesis_contract_hash"]
-        )
-
-        # The representative E2E owns its retry proof: replaying the exact
-        # human-review stage must converge on the same approval without
-        # appending a second governance event.
         governance_path = governance_registry_path(context.paths)
-        governance_before_retry = governance_path.read_bytes()
-        approval_retry_rc = research_cli_main(
-            [
-                "research-approve-strategy-candidate",
-                "--result",
-                str(validation_path),
-                "--subject-version",
-                "1",
-                "--reviewer",
-                "validated-extension-approver",
-                "--rationale",
-                "validated extension evidence reviewed",
-                "--verification-id",
-                str(verification["verification_id"]),
-                "--verification-version",
-                str(verification["version"]),
-                "--verification-hash",
-                str(verification["content_hash"]),
-                "--originator",
-                "validated-extension-researcher",
-                "--out",
-                str(approval_path),
-            ],
-            context=context,
+        governance_before = (
+            governance_path.read_bytes() if governance_path.exists() else None
         )
-        assert approval_retry_rc == 0
-        assert governance_path.read_bytes() == governance_before_retry
-        assert json.loads(approval_path.read_text(encoding="utf-8")) == approval
-
-        package_rc = research_cli_main(
-            [
-                "research-export-strategy-package",
-                "--result",
-                str(validation_path),
-                "--approval",
-                str(approval_path),
-                "--out",
-                str(package_path),
-            ],
-            context=context,
-        )
-        assert package_rc == 0
-        package = json.loads(package_path.read_text(encoding="utf-8"))
-        assert package["schema_version"] == 5
-        assert package["authoritative"] is True
-        assert package["package_authority_status"] == ("CANONICAL_REGISTRIES_VERIFIED")
-        assert package["package_authority_result"] == "PASS"
-        assert package["validation_result"] == "PASS"
-        assert package["source_report_content_hash"] == validation["content_hash"]
-        assert package["independent_verification_ref"] == {
-            "verification_id": verification["verification_id"],
-            "version": verification["version"],
-            "content_hash": verification["content_hash"],
-        }
-        assert (
-            package["hypothesis_contract_hash"]
-            == validation["hypothesis_contract_hash"]
-        )
-        assert (
-            package["hypothesis_lineage_hash"] == validation["hypothesis_lineage_hash"]
-        )
-        assert (
-            package["research_question_ref"]
-            == validation["hypothesis_spec"]["research_question_ref"]
-        )
-        assert (
-            package["observation_refs"]
-            == validation["hypothesis_spec"]["observation_refs"]
-        )
-        assert (
-            package["approved_hypothesis_contract_hash"]
-            == approval["hypothesis_contract_hash"]
-        )
-        assert (
-            package["final_holdout_confirmation_hash"] == confirmation["content_hash"]
-        )
-        required_package_fields = {
-            "strategy_spec_hash",
-            "decision_contract_version",
-            "data_requirements",
-            "execution_timing_policy",
-            "execution_model",
-            "cost_assumption",
-            "partial_fill_assumptions",
-            "order_failure_assumptions",
-            "portfolio_policy",
-            "risk_policy",
-            "execution_limitations",
-            "suspension_or_invalidation_criteria",
-        }
-        assert all(package.get(field) is not None for field in required_package_fields)
-        assert package["content_hash"] == sha256_prefixed(
-            {key: value for key, value in package.items() if key != "content_hash"}
-        )
-
-        reproduction_receipt = load_reproduction_receipt(selection_receipt_path)
-
-        source_package_ref = ImmutableEvidenceRef(
-            authority="strategy_package_export",
-            logical_id=str(validation["selected_candidate_id"]),
-            version=str(package["schema_version"]),
-            content_hash=str(package["content_hash"]),
-        )
-        hypothesis_ref = ImmutableEvidenceRef(
-            authority="knowledge_registry",
-            logical_id=str(validation["hypothesis_id"]),
-            version=str(validation["hypothesis_version"]),
-            content_hash=str(validation["hypothesis_contract_hash"]),
-        )
-        validation_generated_at = datetime.fromisoformat(
-            str(validation["generated_at"]).replace("Z", "+00:00")
-        ).astimezone(timezone.utc)
-        prospective_start_at = validation_generated_at + timedelta(days=1)
-        prospective_end_at = prospective_start_at + timedelta(days=4)
-
-        def prospective_timestamp(
-            *, days: int = 0, hours: int = 0, seconds: int = 0
-        ) -> str:
-            return (
-                prospective_start_at
-                + timedelta(days=days, hours=hours, seconds=seconds)
-            ).isoformat()
-
-        prospective_spec = ProspectiveValidationSpec(
-            schema_version=PROSPECTIVE_VALIDATION_SCHEMA_VERSION,
-            validation_id="validated-extension-prospective-001",
-            version="1",
-            source_package_ref=source_package_ref,
-            hypothesis_ref=hypothesis_ref,
-            validation_decision_ref=validation_decision_ref,
-            validated_rule_set_hash=validated_rule_set_content_hash(package),
-            feature_definition_hash=feature_definition_content_hash(package),
-            cost_assumption_hash=cost_assumption_content_hash(package),
-            fill_assumption_hash=fill_assumption_content_hash(package),
-            historical_distribution_hash=(
-                historical_distribution_content_hash(package)
-            ),
-            metric_guards=_representative_prospective_guards(),
-            frozen_at=validation_generated_at.isoformat(),
-            start_at=prospective_start_at.isoformat(),
-            end_at=prospective_end_at.isoformat(),
-            minimum_observations=2,
-            minimum_elapsed_seconds=86_400,
-            maximum_missing_rate=0.0,
-            maximum_late_rate=0.0,
-            maximum_latency_seconds=30.0,
-            stopping_rules=("stop when a frozen invalidation boundary is crossed",),
-            review_rules=("review every degradation, missing row, and late arrival",),
-            frozen_by="validated-extension-prospective-researcher",
-        )
-        prospective_service = ProspectiveValidationApplicationService(context.paths)
-        prospective_start = prospective_service.start(
-            spec=prospective_spec,
-            actor_id="validated-extension-prospective-researcher",
-            reason="Begin the frozen offline prospective validation.",
-            recorded_at=validation_generated_at.isoformat(),
-        )
-        assert prospective_start["lifecycle_state"] == "PROSPECTIVE_VALIDATION"
-        first_observation = _representative_prospective_observation(
-            index=1,
-            source_event_at=prospective_timestamp(hours=4),
-            received_at=prospective_timestamp(hours=4, seconds=5),
-            signal_generated_at=prospective_timestamp(hours=4, seconds=6),
-            fill_occurred_at=prospective_timestamp(hours=8),
-            realized_return=0.02,
-            fill_assumption_hash=prospective_spec.fill_assumption_hash,
-            cost_assumption_hash=prospective_spec.cost_assumption_hash,
-        )
-        first_observation_receipt = prospective_service.record(
-            spec=prospective_spec,
-            observation=first_observation,
-        )
-        assert (
-            prospective_service.record(
-                spec=prospective_spec,
-                observation=first_observation,
+        approval_output: list[str] = []
+        saved_printer = context.printer
+        context.printer = approval_output.append
+        try:
+            approval_rc = research_cli_main(
+                [
+                    "research-approve-strategy-candidate",
+                    "--result",
+                    str(validation_path),
+                    "--subject-version",
+                    "1",
+                    "--reviewer",
+                    "validated-extension-approver",
+                    "--rationale",
+                    "validated extension evidence reviewed",
+                    "--verification-id",
+                    str(verification["verification_id"]),
+                    "--verification-version",
+                    str(verification["version"]),
+                    "--verification-hash",
+                    str(verification["content_hash"]),
+                    "--originator",
+                    "validated-extension-researcher",
+                    "--out",
+                    str(approval_path),
+                ],
+                context=context,
             )
-            == first_observation_receipt
-        )
-        prospective_service.record(
-            spec=prospective_spec,
-            observation=_representative_prospective_observation(
-                index=2,
-                source_event_at=prospective_timestamp(days=1, hours=4),
-                received_at=prospective_timestamp(
-                    days=1,
-                    hours=4,
-                    seconds=4,
-                ),
-                signal_generated_at=prospective_timestamp(
-                    days=1,
-                    hours=4,
-                    seconds=5,
-                ),
-                fill_occurred_at=prospective_timestamp(days=1, hours=8),
-                realized_return=0.01,
-                fill_assumption_hash=prospective_spec.fill_assumption_hash,
-                cost_assumption_hash=prospective_spec.cost_assumption_hash,
-            ),
-        )
-        prospective_result = prospective_service.evaluate_and_conclude(
-            spec=prospective_spec,
-            evaluated_at=prospective_timestamp(days=2),
-            conclusion_id="validated-extension-research-conclusion-001",
-            conclusion_version="1",
-            rationale=(
-                "The externally prepared prospective observations remained "
-                "inside every frozen comparison boundary."
-            ),
-            known_limitations=(
-                "Synthetic acceptance observations do not constitute investment evidence.",
-            ),
-            decided_by="validated-extension-prospective-reviewer",
-            decided_at=prospective_timestamp(days=2, hours=1),
-            transition_reason="Record the frozen prospective conclusion.",
-        )
-        evaluation = prospective_result["evaluation"]
-        conclusion = prospective_result["conclusion"]
-        assert evaluation.status == ProspectiveStatus.CONFIRMED
-        assert evaluation.observation_count == 2
-        assert evaluation.outcome_count == 2
-        assert prospective_result["lifecycle_state"] == "CONFIRMED"
-        hypothesis_subject = GovernanceSubject(
-            GovernanceSubjectType.HYPOTHESIS,
-            str(validation["hypothesis_id"]),
-            str(validation["hypothesis_version"]),
-        )
-        assert (
-            current_lifecycle_state(
-                manager=context.paths,
-                subject=hypothesis_subject,
-            )
-            == "CONFIRMED"
-        )
-        assert validate_prospective_registry(context.paths)["status"] == "PASS"
-
-        experiment_run_ref = ImmutableEvidenceRef(
-            authority="run_lifecycle_registry",
-            logical_id=str(validation["run_id"]),
-            version="1",
-            content_hash=str(validation["content_hash"]),
-        )
-        dataset_snapshot_ref = ImmutableEvidenceRef(
-            authority="dataset_snapshot",
-            logical_id=str(validation["dataset_snapshot_id"]),
-            version="1",
-            content_hash=str(validation["dataset_content_hash"]),
-        )
-        feature_definition_ref = ImmutableEvidenceRef(
-            authority="strategy_spec",
-            logical_id=f"{_VALIDATED_STRATEGY_VERSION}:features",
-            version="1",
-            content_hash=prospective_spec.feature_definition_hash,
-        )
-        experiment_spec_ref = ImmutableEvidenceRef(
-            authority="experiment_registry",
-            logical_id=str(validation["experiment_id"]),
-            version="1",
-            content_hash=str(validation["manifest_hash"]),
-        )
-        reproduction_receipt_ref = ImmutableEvidenceRef(
-            authority="reproduction_receipt_store",
-            logical_id=f"{_VALIDATED_EXPERIMENT_ID}:receipt",
-            version=str(reproduction_receipt["schema_version"]),
-            content_hash=str(reproduction_receipt["receipt_content_hash"]),
-        )
-        final_package, final_package_receipt = (
-            prospective_service.finalize_research_package(
-                package_id="validated-extension-final-research-package",
-                version="1",
-                base_package=package,
-                spec=prospective_spec,
-                evaluation=evaluation,
-                conclusion=conclusion,
-                experiment_run_ref=experiment_run_ref,
-                dataset_snapshot_ref=dataset_snapshot_ref,
-                feature_definition_ref=feature_definition_ref,
-                experiment_spec_ref=experiment_spec_ref,
-                validation_decision_ref=validation_decision_ref,
-                reproduction_receipt_ref=reproduction_receipt_ref,
-            )
-        )
-        assert final_package.refs.experiment_run == experiment_run_ref
-        assert final_package.refs.dataset_snapshot == dataset_snapshot_ref
-        assert final_package.refs.feature_definition == feature_definition_ref
-        assert final_package.refs.experiment_spec == experiment_spec_ref
-        assert final_package.refs.validation_decision == validation_decision_ref
-        assert final_package.refs.reproduction_receipt == reproduction_receipt_ref
-        assert final_package.refs.prospective_validation == prospective_spec.ref()
-        assert final_package.refs.prospective_evaluation.content_hash == (
-            evaluation.content_hash()
-        )
-        assert final_package.refs.research_conclusion.content_hash == (
-            conclusion.content_hash()
-        )
-        final_registry = ResearchPackageRegistry(context.paths)
-        assert final_registry.get(final_package.package_id, final_package.version) == (
-            final_package
-        )
-        assert final_registry.search(
-            market="KRW-BTC",
-            instrument="inst_btc_validated_0001",
-            status="PASS",
-            prospective_status="CONFIRMED",
-        ) == (final_package,)
-        registry_validation = validate_research_package_registry(context.paths)
-        assert registry_validation["status"] == "PASS"
-        registry_path = Path(str(registry_validation["path"]))
-        registry_bytes_before_replay = registry_path.read_bytes()
-        replayed_package, replayed_receipt = (
-            prospective_service.finalize_research_package(
-                package_id="validated-extension-final-research-package",
-                version="1",
-                base_package=package,
-                spec=prospective_spec,
-                evaluation=evaluation,
-                conclusion=conclusion,
-                experiment_run_ref=experiment_run_ref,
-                dataset_snapshot_ref=dataset_snapshot_ref,
-                feature_definition_ref=feature_definition_ref,
-                experiment_spec_ref=experiment_spec_ref,
-                validation_decision_ref=validation_decision_ref,
-                reproduction_receipt_ref=reproduction_receipt_ref,
-            )
-        )
-        assert replayed_package == final_package
-        assert replayed_receipt == final_package_receipt
-        assert registry_path.read_bytes() == registry_bytes_before_replay
+        finally:
+            context.printer = saved_printer
+        assert approval_rc == 1
+        assert not approval_path.exists()
+        assert approval_output == [
+            "[RESEARCH-GOVERNANCE-CLI-DISABLED] "
+            "command=research-approve-strategy-candidate "
+            "error=authenticated_internal_web_governance_required"
+        ]
+        if governance_before is None:
+            assert not governance_path.exists()
+        else:
+            assert governance_path.read_bytes() == governance_before
     finally:
         builtin_strategies.__path__ = original_package_path
         sys.modules.pop(_VALIDATED_BRIDGE_MODULE_NAME, None)

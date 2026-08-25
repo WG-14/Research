@@ -22,6 +22,8 @@ def _fake_uv(tmp_path: Path) -> Path:
         "printf 'RESEARCH_CACHE_ROOT=%s\\n' \"$RESEARCH_CACHE_ROOT\"\n"
         "printf 'RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH=%s\\n' "
         '"$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH"\n'
+        "printf 'RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH=%s\\n' "
+        '"$RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH"\n'
         "printf 'XDG_STATE_HOME=%s\\n' \"$XDG_STATE_HOME\"\n"
         "printf 'RESEARCH_OPS_TEST_DATABASE_URL=%s\\n' "
         '"${RESEARCH_OPS_TEST_DATABASE_URL:-}"\n'
@@ -138,6 +140,9 @@ def test_platform_test_launcher_replaces_user_state_with_fresh_external_roots(
             "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH": str(
                 caller_state / "identity.jsonl"
             ),
+            "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH": str(
+                caller_state / "final-holdout.jsonl"
+            ),
             "XDG_STATE_HOME": str(caller_state / "xdg-state"),
         }
     )
@@ -185,6 +190,9 @@ def test_platform_test_launcher_replaces_user_state_with_fresh_external_roots(
         )
         == first_root / "identity" / "experiment-identities.jsonl"
     )
+    assert Path(
+        _environment_value(first.stdout, "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH")
+    ) == first_root / "identity" / "final-holdout-authority.jsonl"
     assert Path(_environment_value(first.stdout, "XDG_STATE_HOME")) == (
         first_root / "xdg-state"
     )
@@ -230,6 +238,12 @@ def test_platform_integration_launcher_preserves_database_contract(
     database_url = "postgresql://tester:secret@localhost/research_contract"
     environment["RESEARCH_OPS_TEST_DATABASE_URL"] = database_url
     environment["INTERNAL_WEB_DATABASE_ENGINE"] = "postgresql"
+    environment["INTERNAL_WEB_DATABASE_NAME"] = "research_contract"
+    environment["INTERNAL_WEB_DATABASE_USER"] = "tester"
+    environment["INTERNAL_WEB_DATABASE_PASSWORD"] = "secret"
+    environment["INTERNAL_WEB_DATABASE_HOST"] = "localhost"
+    environment["INTERNAL_WEB_DATABASE_PORT"] = "5432"
+    environment["INTERNAL_WEB_DATABASE_SSLMODE"] = "prefer"
 
     completed = subprocess.run(
         [str(ROOT / "scripts" / "platform"), "test-integration"],
@@ -242,6 +256,45 @@ def test_platform_integration_launcher_preserves_database_contract(
 
     assert completed.returncode == 0, completed.stderr
     assert (
-        completed.stdout.count(f"RESEARCH_OPS_TEST_DATABASE_URL={database_url}\n") == 2
+        completed.stdout.count(f"RESEARCH_OPS_TEST_DATABASE_URL={database_url}\n") == 3
     )
-    assert completed.stdout.count("ARGV=") == 2
+    assert completed.stdout.count("ARGV=") == 3
+    assert (
+        "ARGV=run --package market-research-internal-web python "
+        "apps/internal_web/manage.py migrate --noinput "
+        "--settings=market_research_web.settings_test\n"
+        in completed.stdout
+    )
+
+
+def test_platform_integration_launcher_rejects_split_database_targets(
+    tmp_path: Path,
+) -> None:
+    environment = _launcher_environment(_fake_uv(tmp_path))
+    environment.update(
+        {
+            "RESEARCH_OPS_TEST_DATABASE_URL": (
+                "postgresql://tester:secret@localhost/operations_db"
+            ),
+            "INTERNAL_WEB_DATABASE_ENGINE": "postgresql",
+            "INTERNAL_WEB_DATABASE_NAME": "different_web_db",
+            "INTERNAL_WEB_DATABASE_USER": "tester",
+            "INTERNAL_WEB_DATABASE_PASSWORD": "secret",
+            "INTERNAL_WEB_DATABASE_HOST": "localhost",
+            "INTERNAL_WEB_DATABASE_PORT": "5432",
+            "INTERNAL_WEB_DATABASE_SSLMODE": "prefer",
+        }
+    )
+
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "platform"), "test-integration"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 78
+    assert "settings differ: database" in completed.stderr
+    assert "ARGV=" not in completed.stdout

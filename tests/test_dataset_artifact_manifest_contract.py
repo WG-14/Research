@@ -4,6 +4,7 @@ from tests.dataset_provenance_fixture import (
     TEST_SOURCE_CATALOG,
     TEST_SOURCE_PROVENANCE,
     build_test_source_catalog,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
 )
 import json
 import sqlite3
@@ -12,7 +13,6 @@ import pytest
 from datetime import datetime, timezone
 from market_research.research.dataset_freeze import (
     DatasetFreezeError,
-    freeze_sqlite_candles_dataset,
 )
 from market_research.research.datasets.artifact_manifest import (
     ArtifactManifestError,
@@ -63,7 +63,7 @@ def test_freeze_writes_first_class_artifact_manifest(tmp_path: Path) -> None:
     )
     assert manifest.content_hash == frozen["artifact_content_hash"]
     assert manifest.locator.path == frozen["artifact_path"]
-    assert manifest.schema_version == 3
+    assert manifest.schema_version == 4
     assert (
         manifest.source_provenance.provenance_manifest_hash
         == frozen["source_provenance_hash"]
@@ -121,10 +121,10 @@ def test_source_provenance_priority_and_supported_semantics_fail_closed() -> Non
         parse_dataset_source_provenance(payload)
 
 
-def test_source_provenance_v3_binds_catalog_and_external_acquisition_evidence() -> None:
+def test_source_provenance_v4_binds_catalog_and_external_acquisition_evidence() -> None:
     source = TEST_SOURCE_PROVENANCE.sources[0]
 
-    assert TEST_SOURCE_PROVENANCE.schema_version == 3
+    assert TEST_SOURCE_PROVENANCE.schema_version == 4
     assert TEST_SOURCE_PROVENANCE.source_catalog == TEST_SOURCE_CATALOG
     serialized_catalog = TEST_SOURCE_PROVENANCE.as_dict()["source_catalog"]
     assert isinstance(serialized_catalog, dict)
@@ -141,6 +141,19 @@ def test_source_provenance_v3_binds_catalog_and_external_acquisition_evidence() 
     assert source.retry_count == 0
     assert source.acquisition_status == "complete"
     assert source.error_code == ""
+    assert source.artifact_uri.startswith("/")
+    assert all(
+        stage.transformation_receipt_uri.startswith("/")
+        for stage in TEST_SOURCE_PROVENANCE.lineage
+    )
+    assert all(
+        stage.code_artifact_uri.startswith("/")
+        for stage in TEST_SOURCE_PROVENANCE.lineage
+    )
+    assert all(
+        stage.config_artifact_uri.startswith("/")
+        for stage in TEST_SOURCE_PROVENANCE.lineage
+    )
 
 
 def test_source_provenance_rejects_legacy_or_missing_catalog_contract() -> None:
@@ -301,7 +314,9 @@ def test_lineage_layers_cannot_be_omitted_or_reordered() -> None:
         parse_dataset_source_provenance(payload)
 
 
-def test_legacy_artifact_manifest_schema_two_requires_refreeze(tmp_path: Path) -> None:
+def test_legacy_artifact_manifest_schema_three_requires_refreeze(
+    tmp_path: Path,
+) -> None:
     frozen = freeze_sqlite_candles_dataset(
         source_provenance=TEST_SOURCE_PROVENANCE,
         source_db=_source(tmp_path),
@@ -312,7 +327,7 @@ def test_legacy_artifact_manifest_schema_two_requires_refreeze(tmp_path: Path) -
         out_dir=tmp_path / "out",
     )
     payload = json.loads(Path(frozen["artifact_manifest_uri"]).read_text())
-    payload["schema_version"] = 2
+    payload["schema_version"] = 3
     with pytest.raises(ArtifactManifestError, match="schema_version_unsupported"):
         parse_artifact_manifest(payload)
 

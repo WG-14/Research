@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import grp
 import hashlib
 import hmac
@@ -12,6 +13,7 @@ import os
 import pwd
 import re
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -51,6 +53,63 @@ _OWNER_KEYS = (
 )
 _PLACEHOLDERS = ("SET_REQUIRED", "REPLACE", "CHANGEME", "UNASSIGNED", "TODO")
 _PREFLIGHT_RECEIPT = Path("/run/research-operations-preflight/observation.json")
+_DATASET_TRANSFORMATION_TRUST_STORE = Path(
+    "/etc/research-ops/dataset-transformation-trust.json"
+)
+_DATASET_TRANSFORMATION_KEY_ROOT = Path(
+    "/etc/research-ops/dataset-transformation-keys"
+)
+_DATASET_TRANSFORMATION_TRUST_FIELDS = {
+    "schema_version",
+    "artifact_type",
+    "authority_id",
+    "issued_at",
+    "expires_at",
+    "keys",
+}
+_DATASET_TRANSFORMATION_KEY_FIELDS = {
+    "key_id",
+    "algorithm",
+    "public_key_path",
+    "public_key_content_hash",
+    "valid_from",
+    "valid_until",
+    "revoked_at",
+    "revocation_reason",
+}
+_INDEPENDENT_VERIFIER_TRUST_STORE = Path(
+    "/etc/research-ops/independent-verifier-trust.json"
+)
+_INDEPENDENT_VERIFIER_KEY_ROOT = Path(
+    "/etc/research-ops/independent-verifier-keys"
+)
+_INDEPENDENT_VERIFIER_TRUST_FIELDS = {
+    "schema_version",
+    "artifact_type",
+    "authority_id",
+    "issued_at",
+    "expires_at",
+    "keys",
+}
+_INDEPENDENT_VERIFIER_KEY_FIELDS = {
+    "key_id",
+    "algorithm",
+    "public_key_path",
+    "public_key_content_hash",
+    "valid_from",
+    "valid_until",
+    "revoked_at",
+    "revocation_reason",
+}
+_LINUX_FS_IOC_GETFLAGS = (
+    (2 << 30)  # _IOC_READ
+    | (ord("f") << 8)
+    | 1
+    | (struct.calcsize("l") << 16)
+)
+_LINUX_FS_APPEND_FL = 0x00000020
+_LINUX_LONG_BYTES = struct.calcsize("l")
+_TRUST_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,254}$")
 _OPERATIONS_PROJECT_ROOT = Path("services/research_operations")
 _DEPLOYMENT_MARKER = Path("deploy/OFFICIAL_DEPLOYMENT")
 _DEPLOYMENT_TREES = (Path("deploy/native"), Path("scripts"))
@@ -72,6 +131,23 @@ _SERVICE_GROUP_CONTRACT = {
     "RESEARCH_OPS_WEB_PROXY_GROUP": "research-web-proxy",
     "RESEARCH_OPS_DIAGNOSTICS_PROXY_GROUP": "research-ops-proxy",
 }
+_REQUIRED_NATIVE_TOOLS = (
+    "/usr/bin/bwrap",
+    "/usr/bin/jq",
+    "/usr/bin/openssl",
+    "/usr/bin/pg_dump",
+    "/usr/bin/pg_restore",
+    "/usr/bin/psql",
+    "/usr/bin/python3",
+    "/usr/bin/prlimit",
+    "/usr/bin/realpath",
+    "/usr/bin/id",
+    "/usr/bin/stat",
+    "/usr/bin/sync",
+    "/usr/bin/tar",
+    "/usr/bin/timeout",
+    "/usr/sbin/nginx",
+)
 
 
 class PreflightError(RuntimeError):
@@ -226,6 +302,68 @@ def _exact_directory(
         raise PreflightError(f"directory_contract_invalid:{code}")
 
 
+def _exact_shared_authority_file(
+    path: Path,
+    code: str,
+    *,
+    owner_uid: int,
+    group_gid: int,
+    require_append_only: bool = False,
+) -> None:
+    """Require one pre-created, non-aliased cross-principal authority inode."""
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise PreflightError(f"authority_file_unavailable:{code}")
+    descriptor = -1
+    try:
+        link_status = path.lstat()
+        if stat.S_ISLNK(link_status.st_mode):
+            raise PreflightError(f"authority_file_contract_invalid:{code}")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0),
+        )
+        status = os.fstat(descriptor)
+    except OSError as error:
+        raise PreflightError(f"authority_file_unavailable:{code}") from error
+    try:
+        if (
+            (link_status.st_dev, link_status.st_ino)
+            != (status.st_dev, status.st_ino)
+            or not stat.S_ISREG(status.st_mode)
+            or status.st_uid != owner_uid
+            or status.st_gid != group_gid
+            or stat.S_IMODE(status.st_mode) != 0o660
+            or status.st_nlink != 1
+        ):
+            raise PreflightError(f"authority_file_contract_invalid:{code}")
+        if require_append_only and not (
+            _linux_file_flags(descriptor, code) & _LINUX_FS_APPEND_FL
+        ):
+            raise PreflightError(f"authority_file_append_only_missing:{code}")
+    finally:
+        os.close(descriptor)
+
+
+def _linux_file_flags(descriptor: int, code: str) -> int:
+    try:
+        import fcntl
+
+        raw = fcntl.ioctl(
+            descriptor,
+            _LINUX_FS_IOC_GETFLAGS,
+            b"\0" * _LINUX_LONG_BYTES,
+        )
+    except (ImportError, OSError) as error:
+        raise PreflightError(
+            f"authority_file_append_only_unverifiable:{code}"
+        ) from error
+    if not isinstance(raw, bytes) or len(raw) != _LINUX_LONG_BYTES:
+        raise PreflightError(f"authority_file_append_only_unverifiable:{code}")
+    return int.from_bytes(raw, byteorder=sys.byteorder, signed=False)
+
+
 def _load_json(path: Path, code: str) -> dict[str, object]:
     try:
         raw = path.read_bytes()
@@ -237,6 +375,390 @@ def _load_json(path: Path, code: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise PreflightError(f"json_invalid:{code}")
     return value
+
+
+def _trust_utc(value: object, code: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise PreflightError(f"dataset_transformation_trust_invalid:{code}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise PreflightError(
+            f"dataset_transformation_trust_invalid:{code}"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
+        raise PreflightError(f"dataset_transformation_trust_invalid:{code}")
+    return parsed.astimezone(UTC)
+
+
+def _trust_identifier(value: object, code: str) -> str:
+    if not isinstance(value, str) or _TRUST_IDENTIFIER.fullmatch(value) is None:
+        raise PreflightError(f"dataset_transformation_trust_invalid:{code}")
+    return value
+
+
+def _validate_dataset_transformation_trust(env: Mapping[str, str]) -> None:
+    """Validate the administrator-installed dataset receipt authority.
+
+    The runtime path is fixed by the native profile and the exact byte digest
+    is stored in the root-only environment file.  Dataset manifests and job
+    payloads cannot choose either value.
+    """
+
+    trust_path = _absolute(env, "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH")
+    if trust_path != _DATASET_TRANSFORMATION_TRUST_STORE:
+        raise PreflightError("dataset_transformation_trust_path_invalid")
+    expected_hash = _required(
+        env, "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH"
+    )
+    if _DIGEST.fullmatch(expected_hash) is None:
+        raise PreflightError("dataset_transformation_trust_hash_invalid")
+    trust_status = _root_public_file(
+        trust_path, "dataset_transformation_trust_store"
+    )
+    if trust_status.st_nlink != 1:
+        raise PreflightError("dataset_transformation_trust_store_hardlink")
+    _exact_directory(
+        _DATASET_TRANSFORMATION_KEY_ROOT,
+        "dataset_transformation_key_root",
+        owner_uid=0,
+        group_gid=0,
+        mode=0o755,
+    )
+    try:
+        raw = trust_path.read_bytes()
+    except OSError as error:
+        raise PreflightError(
+            "dataset_transformation_trust_store_unavailable"
+        ) from error
+    if (
+        not raw
+        or len(raw) > 262_144
+        or "sha256:" + hashlib.sha256(raw).hexdigest() != expected_hash
+    ):
+        raise PreflightError("dataset_transformation_trust_store_hash_mismatch")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PreflightError("dataset_transformation_trust_store_invalid") from error
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _DATASET_TRANSFORMATION_TRUST_FIELDS
+    ):
+        raise PreflightError("dataset_transformation_trust_store_shape_invalid")
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
+    if raw != canonical:
+        raise PreflightError("dataset_transformation_trust_store_not_canonical")
+    if (
+        payload.get("schema_version") != 1
+        or payload.get("artifact_type") != "dataset_transformation_trust_store"
+    ):
+        raise PreflightError("dataset_transformation_trust_store_contract_invalid")
+    _trust_identifier(payload.get("authority_id"), "authority_id")
+    issued_at = _trust_utc(payload.get("issued_at"), "issued_at")
+    expires_at = _trust_utc(payload.get("expires_at"), "expires_at")
+    current = datetime.now(UTC)
+    if current < issued_at or current > expires_at or expires_at <= issued_at:
+        raise PreflightError("dataset_transformation_trust_store_time_invalid")
+    keys = payload.get("keys")
+    if not isinstance(keys, list) or not keys:
+        raise PreflightError("dataset_transformation_trust_keys_required")
+    key_ids: set[str] = set()
+    key_hashes: set[str] = set()
+    key_paths: set[Path] = set()
+    active_key_count = 0
+    for item in keys:
+        if (
+            not isinstance(item, dict)
+            or set(item) != _DATASET_TRANSFORMATION_KEY_FIELDS
+        ):
+            raise PreflightError("dataset_transformation_trust_key_shape_invalid")
+        key_id = _trust_identifier(item.get("key_id"), "key_id")
+        if item.get("algorithm") != "ed25519":
+            raise PreflightError("dataset_transformation_trust_key_algorithm_invalid")
+        raw_key_path = item.get("public_key_path")
+        if not isinstance(raw_key_path, str):
+            raise PreflightError("dataset_transformation_trust_key_path_invalid")
+        key_path = Path(raw_key_path)
+        if (
+            not key_path.is_absolute()
+            or os.path.normpath(raw_key_path) != raw_key_path
+            or key_path.parent != _DATASET_TRANSFORMATION_KEY_ROOT
+        ):
+            raise PreflightError("dataset_transformation_trust_key_path_invalid")
+        key_hash = item.get("public_key_content_hash")
+        if not isinstance(key_hash, str) or _DIGEST.fullmatch(key_hash) is None:
+            raise PreflightError("dataset_transformation_trust_key_hash_invalid")
+        if key_id in key_ids or key_hash in key_hashes or key_path in key_paths:
+            raise PreflightError("dataset_transformation_trust_key_duplicate")
+        key_ids.add(key_id)
+        key_hashes.add(key_hash)
+        key_paths.add(key_path)
+        valid_from = _trust_utc(item.get("valid_from"), "key_valid_from")
+        valid_until = _trust_utc(item.get("valid_until"), "key_valid_until")
+        if valid_until <= valid_from:
+            raise PreflightError("dataset_transformation_trust_key_time_invalid")
+        revoked_at_value = item.get("revoked_at")
+        revocation_reason = item.get("revocation_reason")
+        if revoked_at_value is None:
+            if revocation_reason != "":
+                raise PreflightError(
+                    "dataset_transformation_trust_key_revocation_invalid"
+                )
+            revoked_at = None
+        else:
+            revoked_at = _trust_utc(revoked_at_value, "key_revoked_at")
+            if (
+                revoked_at < valid_from
+                or not isinstance(revocation_reason, str)
+                or not revocation_reason.strip()
+            ):
+                raise PreflightError(
+                    "dataset_transformation_trust_key_revocation_invalid"
+                )
+        if (
+            valid_from <= current <= valid_until
+            and (revoked_at is None or current < revoked_at)
+        ):
+            active_key_count += 1
+        key_status = _root_public_file(
+            key_path, f"dataset_transformation_key:{key_id}"
+        )
+        if key_status.st_nlink != 1:
+            raise PreflightError("dataset_transformation_trust_key_hardlink")
+        try:
+            key_raw = key_path.read_bytes()
+        except OSError as error:
+            raise PreflightError(
+                "dataset_transformation_trust_key_unavailable"
+            ) from error
+        if "sha256:" + hashlib.sha256(key_raw).hexdigest() != key_hash:
+            raise PreflightError("dataset_transformation_trust_key_hash_mismatch")
+        if not key_raw.startswith(b"ed25519:") or not key_raw.endswith(b"\n"):
+            raise PreflightError("dataset_transformation_trust_key_invalid")
+        encoded = key_raw.removeprefix(b"ed25519:").removesuffix(b"\n")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise PreflightError("dataset_transformation_trust_key_invalid") from error
+        if len(decoded) != 32 or base64.b64encode(decoded) != encoded:
+            raise PreflightError("dataset_transformation_trust_key_invalid")
+    if active_key_count == 0:
+        raise PreflightError("dataset_transformation_trust_active_key_required")
+
+
+def _independent_trust_utc(value: object, code: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise PreflightError(f"independent_verifier_trust_invalid:{code}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise PreflightError(
+            f"independent_verifier_trust_invalid:{code}"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
+        raise PreflightError(f"independent_verifier_trust_invalid:{code}")
+    return parsed.astimezone(UTC)
+
+
+def _independent_trust_identifier(value: object, code: str) -> str:
+    if not isinstance(value, str) or _TRUST_IDENTIFIER.fullmatch(value) is None:
+        raise PreflightError(f"independent_verifier_trust_invalid:{code}")
+    return value
+
+
+def _root_owned_nonwritable_parent_chain(path: Path, code: str) -> None:
+    current = path
+    try:
+        while True:
+            status = current.lstat()
+            if (
+                stat.S_ISLNK(status.st_mode)
+                or not stat.S_ISDIR(status.st_mode)
+                or status.st_uid != 0
+                or status.st_gid != 0
+                or stat.S_IMODE(status.st_mode) & 0o022
+            ):
+                raise PreflightError(f"parent_chain_invalid:{code}")
+            parent = current.parent
+            if parent == current:
+                return
+            current = parent
+    except OSError as error:
+        raise PreflightError(f"parent_chain_invalid:{code}") from error
+
+
+def _validate_independent_verifier_trust(env: Mapping[str, str]) -> None:
+    """Mirror Core's fixed Ed25519 independent-verifier trust contract."""
+
+    trust_path = _absolute(env, "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH")
+    if trust_path != _INDEPENDENT_VERIFIER_TRUST_STORE:
+        raise PreflightError("independent_verifier_trust_path_invalid")
+    expected_hash = _required(
+        env, "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH"
+    )
+    if _DIGEST.fullmatch(expected_hash) is None:
+        raise PreflightError("independent_verifier_trust_hash_invalid")
+    _root_owned_nonwritable_parent_chain(
+        trust_path.parent,
+        "independent_verifier_trust_store",
+    )
+    trust_status = _root_public_file(
+        trust_path,
+        "independent_verifier_trust_store",
+    )
+    if trust_status.st_nlink != 1:
+        raise PreflightError("independent_verifier_trust_store_hardlink")
+    _exact_directory(
+        _INDEPENDENT_VERIFIER_KEY_ROOT,
+        "independent_verifier_key_root",
+        owner_uid=0,
+        group_gid=0,
+        mode=0o755,
+    )
+    _root_owned_nonwritable_parent_chain(
+        _INDEPENDENT_VERIFIER_KEY_ROOT,
+        "independent_verifier_key_root",
+    )
+    try:
+        raw = trust_path.read_bytes()
+    except OSError as error:
+        raise PreflightError("independent_verifier_trust_store_unavailable") from error
+    if (
+        not raw
+        or len(raw) > 262_144
+        or "sha256:" + hashlib.sha256(raw).hexdigest() != expected_hash
+    ):
+        raise PreflightError("independent_verifier_trust_store_hash_mismatch")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PreflightError("independent_verifier_trust_store_invalid") from error
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _INDEPENDENT_VERIFIER_TRUST_FIELDS
+    ):
+        raise PreflightError("independent_verifier_trust_store_shape_invalid")
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
+    if raw != canonical:
+        raise PreflightError("independent_verifier_trust_store_not_canonical")
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+        or payload.get("artifact_type") != "independent_verifier_trust_store"
+    ):
+        raise PreflightError("independent_verifier_trust_store_contract_invalid")
+    _independent_trust_identifier(payload.get("authority_id"), "authority_id")
+    issued_at = _independent_trust_utc(payload.get("issued_at"), "issued_at")
+    expires_at = _independent_trust_utc(payload.get("expires_at"), "expires_at")
+    current = datetime.now(UTC)
+    if current < issued_at or current > expires_at or expires_at <= issued_at:
+        raise PreflightError("independent_verifier_trust_store_time_invalid")
+    keys = payload.get("keys")
+    if not isinstance(keys, list) or not keys:
+        raise PreflightError("independent_verifier_trust_keys_required")
+    identities: list[tuple[str, str]] = []
+    key_ids: set[str] = set()
+    key_hashes: set[str] = set()
+    key_paths: set[Path] = set()
+    active_key_count = 0
+    for item in keys:
+        if (
+            not isinstance(item, dict)
+            or set(item) != _INDEPENDENT_VERIFIER_KEY_FIELDS
+        ):
+            raise PreflightError("independent_verifier_trust_key_shape_invalid")
+        key_id = _independent_trust_identifier(item.get("key_id"), "key_id")
+        if item.get("algorithm") != "ed25519":
+            raise PreflightError("independent_verifier_trust_key_algorithm_invalid")
+        raw_key_path = item.get("public_key_path")
+        if not isinstance(raw_key_path, str):
+            raise PreflightError("independent_verifier_trust_key_path_invalid")
+        key_path = Path(raw_key_path)
+        if (
+            not key_path.is_absolute()
+            or os.path.normpath(raw_key_path) != raw_key_path
+            or key_path.parent != _INDEPENDENT_VERIFIER_KEY_ROOT
+        ):
+            raise PreflightError("independent_verifier_trust_key_path_invalid")
+        key_hash = item.get("public_key_content_hash")
+        if not isinstance(key_hash, str) or _DIGEST.fullmatch(key_hash) is None:
+            raise PreflightError("independent_verifier_trust_key_hash_invalid")
+        if key_id in key_ids or key_hash in key_hashes or key_path in key_paths:
+            raise PreflightError("independent_verifier_trust_key_duplicate")
+        key_ids.add(key_id)
+        key_hashes.add(key_hash)
+        key_paths.add(key_path)
+        identities.append((key_id, str(key_path)))
+        valid_from = _independent_trust_utc(item.get("valid_from"), "key_valid_from")
+        valid_until = _independent_trust_utc(
+            item.get("valid_until"), "key_valid_until"
+        )
+        if valid_until <= valid_from:
+            raise PreflightError("independent_verifier_trust_key_time_invalid")
+        revoked_at_value = item.get("revoked_at")
+        revocation_reason = item.get("revocation_reason")
+        if revoked_at_value is None:
+            if revocation_reason != "":
+                raise PreflightError(
+                    "independent_verifier_trust_key_revocation_invalid"
+                )
+            revoked_at = None
+        else:
+            revoked_at = _independent_trust_utc(
+                revoked_at_value,
+                "key_revoked_at",
+            )
+            if (
+                revoked_at < valid_from
+                or revoked_at > valid_until
+                or not isinstance(revocation_reason, str)
+                or not revocation_reason.strip()
+            ):
+                raise PreflightError(
+                    "independent_verifier_trust_key_revocation_invalid"
+                )
+        if valid_from <= current <= valid_until and revoked_at is None:
+            active_key_count += 1
+        key_status = _root_public_file(
+            key_path,
+            f"independent_verifier_key:{key_id}",
+        )
+        if key_status.st_nlink != 1:
+            raise PreflightError("independent_verifier_trust_key_hardlink")
+        try:
+            key_raw = key_path.read_bytes()
+        except OSError as error:
+            raise PreflightError(
+                "independent_verifier_trust_key_unavailable"
+            ) from error
+        if "sha256:" + hashlib.sha256(key_raw).hexdigest() != key_hash:
+            raise PreflightError("independent_verifier_trust_key_hash_mismatch")
+        if not key_raw.startswith(b"ed25519:") or not key_raw.endswith(b"\n"):
+            raise PreflightError("independent_verifier_trust_key_invalid")
+        encoded = key_raw.removeprefix(b"ed25519:").removesuffix(b"\n")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise PreflightError("independent_verifier_trust_key_invalid") from error
+        if len(decoded) != 32 or base64.b64encode(decoded) != encoded:
+            raise PreflightError("independent_verifier_trust_key_invalid")
+    if identities != sorted(identities):
+        raise PreflightError("independent_verifier_trust_keys_not_canonical_order")
+    if active_key_count == 0:
+        raise PreflightError("independent_verifier_trust_active_key_required")
 
 
 def _receipt_payload(
@@ -574,6 +1096,15 @@ def _validate_native_path_contracts(env: Mapping[str, str]) -> None:
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH": (
             "/srv/research/registry/research_validate_experiment_identity.jsonl"
         ),
+        "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH": (
+            "/srv/research/registry/final_holdout_authority.jsonl"
+        ),
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH": (
+            "/etc/research-ops/independent-verifier-trust.json"
+        ),
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH": (
+            "/etc/research-ops/dataset-transformation-trust.json"
+        ),
         "INTERNAL_WEB_STATIC_ROOT": ("/srv/research/artifacts/_internal_web/static"),
         "RESEARCH_OPS_FILESYSTEM_QUALIFICATION_RECEIPT": (
             "/etc/research-ops/filesystem-qualification.json"
@@ -683,6 +1214,24 @@ def _validate_research_root_permissions(
             owner_uid=0,
             group_gid=service_gid,
             mode=mode,
+        )
+    final_holdout_registry = _absolute(env, "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH")
+    for path, code, require_append_only in (
+        (final_holdout_registry, "final_holdout_authority", True),
+        (
+            final_holdout_registry.with_suffix(
+                final_holdout_registry.suffix + ".lock"
+            ),
+            "final_holdout_authority_lock",
+            False,
+        ),
+    ):
+        _exact_shared_authority_file(
+            path,
+            code,
+            owner_uid=0,
+            group_gid=service_gid,
+            require_append_only=require_append_only,
         )
     writer_namespaces = {
         data_root / "_internal_web/manifests": (
@@ -1038,20 +1587,7 @@ def _validate_runtime_files(env: Mapping[str, str]) -> None:
 
 
 def _validate_native_tools() -> None:
-    for path in (
-        "/usr/bin/jq",
-        "/usr/bin/openssl",
-        "/usr/bin/pg_dump",
-        "/usr/bin/pg_restore",
-        "/usr/bin/psql",
-        "/usr/bin/python3",
-        "/usr/bin/realpath",
-        "/usr/bin/id",
-        "/usr/bin/stat",
-        "/usr/bin/sync",
-        "/usr/bin/tar",
-        "/usr/sbin/nginx",
-    ):
+    for path in _REQUIRED_NATIVE_TOOLS:
         candidate = Path(path)
         try:
             status = candidate.stat()
@@ -1186,6 +1722,8 @@ def main() -> int:
         )
         _validate_owner_assignments(env)
         _validate_native_path_contracts(env)
+        _validate_independent_verifier_trust(env)
+        _validate_dataset_transformation_trust(env)
         _validate_research_root_permissions(
             env,
             service_gid=service_group.gr_gid,

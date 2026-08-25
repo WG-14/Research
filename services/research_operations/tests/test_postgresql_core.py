@@ -139,6 +139,11 @@ def clean_operational_state(live_dsn: str, monkeypatch: pytest.MonkeyPatch) -> N
 
 def _clean(dsn: str) -> None:
     with psycopg.connect(dsn) as conn:
+        # The shared Web schema correctly makes audit intents immutable.  This
+        # connection exists only to reset the disposable Operations CI
+        # database between cases, so suppress ordinary triggers for this one
+        # transaction instead of weakening the migrated production guards.
+        conn.execute("SET LOCAL session_replication_role = replica")
         conn.execute(
             """
             TRUNCATE research_ops.service_alert_event,

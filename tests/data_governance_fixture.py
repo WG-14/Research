@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from market_research.paths import ResearchPathManager
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.data_governance import (
     DataGovernanceAdmission,
     DatasetLicensePolicy,
@@ -21,7 +20,10 @@ from market_research.research.data_governance import (
     research_scope_ref_from_manifest,
 )
 from market_research.research.hashing import sha256_prefixed
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 
 
 def attach_immutable_dataset_artifact(

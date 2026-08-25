@@ -41,6 +41,9 @@ RESEARCH_COMMANDS = {
     "research-registry-validate",
     "research-mark-attempt-aborted",
     "research-export-strategy-package",
+    "research-build-portable-package",
+    "research-verify-portable-package",
+    "research-reproduce-portable-package",
     "research-compare",
     "research-render-report",
     "research-governance-transition",
@@ -118,7 +121,11 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
+        "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH",
         "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH",
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH",
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH",
         "RESEARCH_DB_PATH",
         "RESEARCH_MAX_WORKERS",
         "RESEARCH_RANDOM_SEED",
@@ -152,6 +159,13 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(
         / "market-research"
         / "_registry"
         / "research_validate_experiment_identity.jsonl"
+    )
+    assert paths.final_holdout_registry_path() == (
+        tmp_path
+        / "state"
+        / "market-research"
+        / "_holdout_authority"
+        / "final_holdout_authority.jsonl"
     )
     assert not settings.data_root.exists()
 

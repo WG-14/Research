@@ -25,6 +25,7 @@ from market_research.research.independent_verification import (
     independent_reproduction_evidence,
     load_independent_verification,
     publish_independent_verification,
+    reproduced_terminal_selection_artifact_path,
     validate_independent_verification_registry,
 )
 from market_research.research.final_selection import compute_final_holdout_result_hash
@@ -242,8 +243,8 @@ def test_result_binds_principal_without_leaking_external_key(
     trust_path = manager.settings.independent_verifier_trust_store_path
     assert trust_path is not None
     trust = json.loads(trust_path.read_text(encoding="utf-8"))
-    key_path = Path(trust["keys"][0]["key_path"])
-    key = key_path.read_bytes()
+    key_path = Path(trust["keys"][0]["public_key_path"])
+    public_key_file = key_path.read_bytes()
     artifact = independent_verification_result_path(manager, result.ref()).read_text(
         encoding="utf-8"
     )
@@ -257,8 +258,8 @@ def test_result_binds_principal_without_leaking_external_key(
     assert result.principal_assertion_hash in serialized
     assert result.principal_assertion_issuer in serialized
     assert "authenticated-subject" in serialized
-    assert key.hex() not in serialized
-    assert base64.b64encode(key).decode("ascii") not in serialized
+    assert public_key_file.hex() not in serialized
+    assert base64.b64encode(public_key_file).decode("ascii") not in serialized
     assert str(key_path) not in serialized
 
 
@@ -337,6 +338,125 @@ def test_terminal_evidence_uses_receipt_bound_external_source_path(
     )
 
     assert evidence["source_report_path"] == str(external_source_path.resolve())
+
+
+def test_terminal_evidence_binds_canonical_persisted_selection_artifact(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    baseline, baseline_path, reproduced_path = seed_reproduction_receipts(
+        manager=manager,
+        experiment_id="persisted-terminal-selection",
+        source_report_hash=_hash("1"),
+        manifest_hash=_hash("2"),
+    )
+
+    evidence = independent_reproduction_evidence(
+        manager=manager,
+        baseline_receipt_path=baseline_path,
+        reproduced_receipt_path=reproduced_path,
+    )
+
+    prefix = str(baseline["receipt_content_hash"]).removeprefix("sha256:")[:12]
+    isolated_manager = ResearchPathManager.from_settings(
+        replace(
+            manager.settings,
+            artifact_root=(
+                manager.artifact_root
+                / "reproductions"
+                / "persisted-terminal-selection"
+                / prefix
+            ),
+            report_root=(
+                manager.report_root
+                / "reproductions"
+                / "persisted-terminal-selection"
+                / prefix
+            ),
+            cache_root=(
+                manager.cache_root
+                / "reproductions"
+                / "persisted-terminal-selection"
+                / prefix
+            ),
+            final_holdout_registry_path=manager.final_holdout_registry_path(),
+        ),
+        project_root=manager.project_root,
+    )
+    canonical_path = reproduced_terminal_selection_artifact_path(
+        manager=isolated_manager,
+        experiment_id="persisted-terminal-selection",
+    )
+    persisted = json.loads(canonical_path.read_text(encoding="utf-8"))
+    assert evidence["reproduced_terminal_selection_artifact_path"] == str(
+        canonical_path
+    )
+    assert (
+        evidence["reproduced_terminal_selection_artifact_content_hash"]
+        == (persisted["content_hash"])
+    )
+    assert str(evidence["reproduced_terminal_selection_artifact_hash"]).startswith(
+        "sha256:"
+    )
+
+
+def test_terminal_evidence_rejects_missing_or_rebound_selection_artifact(
+    tmp_path: Path,
+) -> None:
+    missing_manager = _manager(tmp_path / "missing")
+    _, missing_baseline, missing_reproduced = seed_reproduction_receipts(
+        manager=missing_manager,
+        experiment_id="missing-terminal-selection",
+        source_report_hash=_hash("1"),
+        manifest_hash=_hash("2"),
+    )
+    missing_evidence = independent_reproduction_evidence(
+        manager=missing_manager,
+        baseline_receipt_path=missing_baseline,
+        reproduced_receipt_path=missing_reproduced,
+    )
+    Path(str(missing_evidence["reproduced_terminal_selection_artifact_path"])).unlink()
+    with pytest.raises(
+        IndependentVerificationError,
+        match="terminal_selection_invalid",
+    ):
+        independent_reproduction_evidence(
+            manager=missing_manager,
+            baseline_receipt_path=missing_baseline,
+            reproduced_receipt_path=missing_reproduced,
+        )
+
+    rebound_manager = _manager(tmp_path / "rebound")
+    _, rebound_baseline, rebound_reproduced = seed_reproduction_receipts(
+        manager=rebound_manager,
+        experiment_id="rebound-terminal-selection",
+        source_report_hash=_hash("3"),
+        manifest_hash=_hash("4"),
+    )
+    rebound_evidence = independent_reproduction_evidence(
+        manager=rebound_manager,
+        baseline_receipt_path=rebound_baseline,
+        reproduced_receipt_path=rebound_reproduced,
+    )
+    rebound_path = Path(
+        str(rebound_evidence["reproduced_terminal_selection_artifact_path"])
+    )
+    rebound = json.loads(rebound_path.read_text(encoding="utf-8"))
+    rebound["selected_candidate_id"] = "forged-terminal-candidate"
+    rebound["content_hash"] = sha256_prefixed(
+        {key: value for key, value in rebound.items() if key != "content_hash"},
+        label="selection_artifact",
+    )
+    rebound_path.write_text(json.dumps(rebound), encoding="utf-8")
+    with pytest.raises(
+        IndependentVerificationError,
+        match="terminal_reproduction_binding_mismatch",
+    ):
+        independent_reproduction_evidence(
+            manager=rebound_manager,
+            baseline_receipt_path=rebound_baseline,
+            reproduced_receipt_path=rebound_reproduced,
+        )
 
 
 def test_pass_requires_clean_equal_comparison_and_independent_role(

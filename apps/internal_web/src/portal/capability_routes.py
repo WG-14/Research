@@ -44,6 +44,14 @@ WEB_CAPABILITY_WORKFLOWS: dict[str, tuple[str, str]] = {
         "project-reference",
         "portal.write_research_project",
     ),
+    "research-project-record-study-stage": (
+        "project-study-stage",
+        "portal.write_research_project",
+    ),
+    "research-project-preregister-study": (
+        "project-preregister",
+        "portal.write_research_project",
+    ),
     "research-project-transition": (
         "project-transition",
         "portal.manage_research_project",

@@ -34,6 +34,7 @@ def execute_research_command(
                 end=args.end,
                 out_path=args.out,
                 provenance_manifest_path=args.provenance_manifest,
+                manager=context.paths,
             )
         )
 
@@ -59,6 +60,17 @@ def execute_research_command(
         "research-multi-asset-reproduce",
     }:
         return _execute_multi_asset_application_command(
+            command=command,
+            args=args,
+            context=context,
+        )
+
+    if command in {
+        "research-build-portable-package",
+        "research-verify-portable-package",
+        "research-reproduce-portable-package",
+    }:
+        return _execute_portable_research_package_command(
             command=command,
             args=args,
             context=context,
@@ -99,6 +111,69 @@ def execute_research_command(
         return rc
 
     return _dispatch_research_command(command, args, context, cli)
+
+
+def _execute_portable_research_package_command(
+    *,
+    command: str,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+) -> int:
+    from market_research.research.portable_research_package import (
+        PortableResearchPackageError,
+        build_portable_research_package,
+        reproduce_portable_research_package,
+        verify_portable_research_package,
+    )
+    from market_research.storage_io import write_json_atomic_create_or_verify
+
+    try:
+        if command == "research-build-portable-package":
+            payload = build_portable_research_package(
+                manager=context.paths,
+                result_path=args.result,
+                experiment_manifest_path=args.manifest,
+                reproduction_receipt_path=args.receipt,
+                output_path=args.out,
+                dataset_mode=args.dataset_mode,
+                independent_reproduction_path=args.independent_reproduction,
+            )
+        elif command == "research-verify-portable-package":
+            payload = verify_portable_research_package(
+                args.package,
+                external_artifact_manifest_path=args.external_artifact_manifest,
+                external_dataset_path=args.external_dataset,
+            ).as_dict()
+        elif command == "research-reproduce-portable-package":
+            payload = reproduce_portable_research_package(
+                args.package,
+                workspace=args.workspace,
+                external_artifact_manifest_path=args.external_artifact_manifest,
+                external_dataset_path=args.external_dataset,
+                verification_id=args.verification_id,
+                verification_version=args.verification_version,
+                verifier_assertion_path=args.verifier_assertion,
+            )
+        else:  # pragma: no cover - narrowed by caller.
+            raise ValueError(f"unsupported portable package command: {command}")
+        output = getattr(args, "out", None)
+        if command != "research-build-portable-package" and output is not None:
+            target = context.paths.external_output_path(
+                output,
+                label="portable research package receipt",
+            )
+            write_json_atomic_create_or_verify(target, payload)
+    except (OSError, ValueError, PortableResearchPackageError) as exc:
+        context.printer(
+            f"[RESEARCH-PORTABLE-PACKAGE] command={command} error={exc}"
+        )
+        return 1
+    content_hash = payload.get("content_hash") or payload.get(
+        "package_manifest_hash"
+    )
+    context.run_result_hash = str(content_hash or "") or None
+    context.printer(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def _dispatch_research_command(

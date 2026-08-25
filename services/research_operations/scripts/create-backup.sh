@@ -20,6 +20,10 @@ runtime_directory=$(realpath -e -- "$RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY")
 test "$runtime_directory" = "$RESEARCH_OPS_BACKUP_RUNTIME_DIRECTORY" || exit 65
 test "$(stat -c '%a' -- "$runtime_directory")" = 700 || exit 65
 test "$(stat -c '%u' -- "$runtime_directory")" = "$(id -u)" || exit 65
+: "${RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH:?identity registry path required}"
+: "${RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH:=$(dirname -- "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")/final_holdout_authority.jsonl}"
+test "$(dirname -- "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")" = \
+  "$(dirname -- "$RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH")" || exit 64
 
 resume_id=${BACKUP_RESUME_ID:-}
 if test -n "$resume_id"; then

@@ -16,7 +16,11 @@ from typing import (
 from .decision_event import OrderIntent, ResearchDecisionEvent
 from .execution_model.base import ExecutionFill, ExecutionRequest
 from .portfolio_ledger import LedgerEntry
-from .hashing import sha256_prefixed
+from .immutable_contract import canonical_mutable
+from .point_in_time_selection import (
+    PointInTimeSelectionError,
+    validate_persisted_point_in_time_evidence,
+)
 
 if TYPE_CHECKING:
     from .strategy_contract import CompiledStrategyContract
@@ -364,8 +368,12 @@ class BacktestRun:
     materialized_parameters_hash: str | None = None
     parameter_source_map_hash: str | None = None
     point_in_time_decision_evidence: tuple[dict[str, object], ...] = ()
+    point_in_time_evidence: dict[str, object] | None = None
     point_in_time_decision_stream_hash: str | None = None
     point_in_time_authority_binding_hash: str | None = None
+    point_in_time_evidence_content_hash: str | None = None
+    point_in_time_universe_schema_version: int | None = None
+    point_in_time_promotion_classification: str | None = None
     metrics_hash: str | None = None
     authoritative_decision_ids: tuple[str, ...] = ()
 
@@ -376,32 +384,66 @@ class BacktestRun:
             fill_timeline_violations,
         )
 
-        if self.point_in_time_decision_evidence:
-            row_hashes: list[str] = []
-            for row in self.point_in_time_decision_evidence:
-                payload = dict(row)
-                recorded = payload.pop("row_hash", None)
-                calculated = sha256_prefixed(
-                    payload, label="point_in_time_decision_row"
-                )
-                if recorded != calculated:
-                    raise ValueError("point_in_time_decision_row_hash_mismatch")
-                row_hashes.append(calculated)
-            calculated_stream_hash = sha256_prefixed(
-                {"schema_version": 1, "row_hashes": row_hashes},
-                label="point_in_time_decision_stream",
+        point_in_time_fields_present = bool(
+            self.point_in_time_decision_evidence
+        ) or any(
+            value is not None
+            for value in (
+                self.point_in_time_evidence,
+                self.point_in_time_decision_stream_hash,
+                self.point_in_time_authority_binding_hash,
+                self.point_in_time_evidence_content_hash,
+                self.point_in_time_universe_schema_version,
+                self.point_in_time_promotion_classification,
             )
-            if self.point_in_time_decision_stream_hash != calculated_stream_hash:
-                raise ValueError("point_in_time_decision_stream_hash_mismatch")
+        )
+        if point_in_time_fields_present:
+            if self.point_in_time_evidence is None:
+                raise ValueError("point_in_time_full_evidence_required")
+            try:
+                persisted = validate_persisted_point_in_time_evidence(
+                    self.point_in_time_evidence
+                )
+            except PointInTimeSelectionError as exc:
+                raise ValueError(f"point_in_time_evidence_invalid:{exc}") from exc
+            persisted_rows = persisted.get("rows")
+            if (
+                not isinstance(persisted_rows, list)
+                or canonical_mutable(self.point_in_time_decision_evidence)
+                != persisted_rows
+            ):
+                raise ValueError("point_in_time_run_rows_evidence_mismatch")
+            expected_bindings = {
+                "point_in_time_decision_stream_hash": persisted.get(
+                    "decision_stream_hash"
+                ),
+                "point_in_time_authority_binding_hash": persisted.get(
+                    "authority_binding_hash"
+                ),
+                "point_in_time_evidence_content_hash": persisted.get("content_hash"),
+                "point_in_time_universe_schema_version": persisted.get(
+                    "universe_schema_version"
+                ),
+                "point_in_time_promotion_classification": persisted.get(
+                    "promotion_classification"
+                ),
+            }
+            actual_bindings = {
+                "point_in_time_decision_stream_hash": self.point_in_time_decision_stream_hash,
+                "point_in_time_authority_binding_hash": self.point_in_time_authority_binding_hash,
+                "point_in_time_evidence_content_hash": self.point_in_time_evidence_content_hash,
+                "point_in_time_universe_schema_version": self.point_in_time_universe_schema_version,
+                "point_in_time_promotion_classification": self.point_in_time_promotion_classification,
+            }
+            if actual_bindings != expected_bindings:
+                raise ValueError("point_in_time_run_evidence_binding_mismatch")
+            if persisted.get("selected_candle_count") != self.candle_count:
+                raise ValueError("point_in_time_selected_candle_count_mismatch")
             summary = self.execution_event_summary or {}
-            if summary.get("point_in_time_decision_stream_hash") != (
-                calculated_stream_hash
+            if any(
+                summary.get(key) != value for key, value in expected_bindings.items()
             ):
-                raise ValueError("point_in_time_summary_stream_hash_mismatch")
-            if summary.get("point_in_time_authority_binding_hash") != (
-                self.point_in_time_authority_binding_hash
-            ):
-                raise ValueError("point_in_time_summary_authority_hash_mismatch")
+                raise ValueError("point_in_time_summary_binding_mismatch")
 
         if self.dataset_snapshot_hash is not None:
             summary = self.execution_event_summary or {}

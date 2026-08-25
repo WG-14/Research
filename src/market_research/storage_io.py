@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import struct
+import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -12,6 +15,16 @@ _MAX_ATOMIC_JSON_BYTES = 16 * 1024 * 1024
 _DEFAULT_ATOMIC_PUBLICATION_MODE = 0o600
 _SHARED_ATOMIC_PUBLICATION_MODE = 0o640
 ATOMIC_PUBLICATION_MODE_ENV = "MARKET_RESEARCH_ATOMIC_PUBLICATION_MODE"
+_LOCK_PUBLICATION_RETRY_COUNT = 100
+_LOCK_PUBLICATION_RETRY_SECONDS = 0.001
+_LINUX_FS_IOC_GETFLAGS = (
+    (2 << 30)  # _IOC_READ
+    | (ord("f") << 8)
+    | 1
+    | (struct.calcsize("l") << 16)
+)
+_LINUX_FS_APPEND_FL = 0x00000020
+_LINUX_LONG_BYTES = struct.calcsize("l")
 
 
 def _ensure_parent(path: Path) -> None:
@@ -175,6 +188,20 @@ def open_lock_file(path: Path) -> int:
     _ensure_parent(path)
     publication_mode = _atomic_publication_mode(None)
     lock_mode = 0o600 if publication_mode == 0o600 else 0o660
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    existing = _open_existing_lock_file(
+        path,
+        flags=flags,
+        lock_mode=lock_mode,
+        require_parent_group=(
+            publication_mode == _SHARED_ATOMIC_PUBLICATION_MODE
+        ),
+        missing_ok=True,
+    )
+    if existing >= 0:
+        return existing
+
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )
@@ -203,33 +230,219 @@ def open_lock_file(path: Path) -> int:
     if published:
         return descriptor
 
-    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return _open_existing_lock_file(
+        path,
+        flags=flags,
+        lock_mode=lock_mode,
+        require_parent_group=(
+            publication_mode == _SHARED_ATOMIC_PUBLICATION_MODE
+        ),
+        missing_ok=False,
+    )
+
+
+def _open_existing_lock_file(
+    path: Path,
+    *,
+    flags: int,
+    lock_mode: int,
+    require_parent_group: bool,
+    missing_ok: bool,
+) -> int:
+    """Open an existing lock while tolerating only our publication instant.
+
+    ``open_lock_file`` publishes a fully permissioned inode with ``link(2)``
+    and then removes its private temporary name.  A concurrent opener can see
+    link count two during those few instructions.  It must retry rather than
+    misclassify a legitimate first creator, while a persistent hard link still
+    fails after the bounded publication window.
+    """
+
+    for attempt in range(_LOCK_PUBLICATION_RETRY_COUNT):
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            if missing_ok:
+                return -1
+            raise ValueError("process_lock_access_invalid") from None
+        except OSError as exc:
+            raise ValueError("process_lock_access_invalid") from exc
+        status = os.fstat(descriptor)
+        if status.st_nlink == 2 and attempt + 1 < _LOCK_PUBLICATION_RETRY_COUNT:
+            os.close(descriptor)
+            time.sleep(_LOCK_PUBLICATION_RETRY_SECONDS)
+            continue
+        _validate_lock_descriptor(
+            descriptor,
+            path=path,
+            lock_mode=lock_mode,
+            require_parent_group=require_parent_group,
+        )
+        return descriptor
+    raise ValueError("process_lock_access_invalid")
+
+
+def _validate_lock_descriptor(
+    descriptor: int,
+    *,
+    path: Path,
+    lock_mode: int,
+    require_parent_group: bool,
+) -> None:
     try:
-        existing = os.open(path, flags)
-    except OSError as exc:
-        raise ValueError("process_lock_access_invalid") from exc
-    try:
-        status = os.fstat(existing)
+        status = os.fstat(descriptor)
         parent_status = path.parent.stat()
         if (
             not stat.S_ISREG(status.st_mode)
             or stat.S_IMODE(status.st_mode) != lock_mode
-            or (
-                publication_mode == _SHARED_ATOMIC_PUBLICATION_MODE
-                and status.st_gid != parent_status.st_gid
-            )
+            or status.st_nlink != 1
+            or (require_parent_group and status.st_gid != parent_status.st_gid)
         ):
             raise ValueError("process_lock_access_invalid")
     except BaseException:
-        os.close(existing)
+        os.close(descriptor)
         raise
-    return existing
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    _append_jsonl_with_mode(
+        path,
+        record,
+        publication_mode=_atomic_publication_mode(None),
+        require_parent_group=False,
+        require_unique_inode=False,
+    )
+
+
+def append_authority_jsonl(
+    path: Path,
+    record: dict[str, Any],
+    *,
+    require_kernel_append_only: bool = False,
+) -> None:
+    """Append to a cross-principal authority ledger without weakening audits.
+
+    Ordinary audit streams remain owner-writable ``0600``/``0640`` files.  An
+    operated final-holdout authority is different: the parent worker reserves
+    access and its isolated child activates/completes that same append-only
+    chain.  The qualified shared profile therefore uses exact ``0660`` and the
+    parent directory's group; the standalone profile remains exact ``0600``.
+    Only a caller that identifies that final-holdout ledger opts into the
+    kernel append-only check; unrelated operated authority streams retain their
+    own installation contract.
+    """
+
+    configured_mode = _atomic_publication_mode(None)
+    authority_mode = (
+        0o600
+        if configured_mode == _DEFAULT_ATOMIC_PUBLICATION_MODE
+        else 0o660
+    )
+    _append_jsonl_with_mode(
+        path,
+        record,
+        publication_mode=authority_mode,
+        require_parent_group=(authority_mode == 0o660),
+        require_unique_inode=True,
+        require_kernel_append_only=(
+            require_kernel_append_only
+            and _operated_shared_authority_profile()
+        ),
+    )
+
+
+def ensure_authority_directory(path: Path) -> None:
+    """Create or validate the immediate directory of an authority ledger.
+
+    The private profile rejects a group/world-writable leaf.  The operated
+    cross-principal profile requires exact setgid ``2770`` so every newly
+    published ledger/lock inode inherits the one trusted service group.
+    Symbolic-link components are rejected by :func:`ensure_directory` in both
+    profiles.
+    """
+
+    configured_mode = _atomic_publication_mode(None)
+    shared = configured_mode == _SHARED_ATOMIC_PUBLICATION_MODE
+    ensure_directory(path, require_shared_mode=shared)
+    try:
+        status = path.lstat()
+    except OSError as exc:
+        raise ValueError("authority_directory_access_invalid") from exc
+    mode = stat.S_IMODE(status.st_mode)
+    if (
+        stat.S_ISLNK(status.st_mode)
+        or not stat.S_ISDIR(status.st_mode)
+        or (shared and mode != 0o2770)
+        or (not shared and bool(mode & 0o022))
+    ):
+        raise ValueError("authority_directory_access_invalid")
+
+
+def read_authority_text(
+    path: Path,
+    *,
+    require_kernel_append_only: bool = False,
+) -> str | None:
+    """Read one authority inode through a no-follow, exact-mode descriptor.
+
+    ``None`` denotes an authority that has not yet been initialized in the
+    standalone profile.  Existing symlinks, hard links, non-regular files,
+    wrong groups, and permissive modes are contract violations, not empty
+    registries.  Kernel append-only enforcement is likewise an explicit
+    final-holdout-ledger opt-in, not a property of every authority reader.
+    """
+
+    ensure_authority_directory(path.parent)
+    configured_mode = _atomic_publication_mode(None)
+    shared = configured_mode == _SHARED_ATOMIC_PUBLICATION_MODE
+    expected_mode = 0o660 if shared else 0o600
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RuntimeError("authority_file_no_follow_unavailable")
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("authority_file_access_invalid") from exc
+    try:
+        status = os.fstat(descriptor)
+        parent_status = path.parent.stat()
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or stat.S_IMODE(status.st_mode) != expected_mode
+            or status.st_nlink != 1
+            or (shared and status.st_gid != parent_status.st_gid)
+            or (not shared and status.st_uid != os.geteuid())
+        ):
+            raise ValueError("authority_file_access_invalid")
+        if require_kernel_append_only and _operated_shared_authority_profile():
+            _require_kernel_append_only(descriptor)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("authority_file_access_invalid") from exc
+
+
+def _append_jsonl_with_mode(
+    path: Path,
+    record: dict[str, Any],
+    *,
+    publication_mode: int,
+    require_parent_group: bool,
+    require_unique_inode: bool,
+    require_kernel_append_only: bool = False,
+) -> None:
     _ensure_parent(path)
-    publication_mode = _atomic_publication_mode(None)
     line = json.dumps(
         record,
         ensure_ascii=False,
@@ -247,10 +460,19 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
         created = False
     with os.fdopen(descriptor, "a", encoding="utf-8", newline="\n") as handle:
         status = os.fstat(handle.fileno())
-        if not stat.S_ISREG(status.st_mode) or (
-            not created and stat.S_IMODE(status.st_mode) != publication_mode
+        try:
+            parent_status = path.parent.stat()
+        except OSError as exc:
+            raise ValueError("append_jsonl_access_mode_invalid") from exc
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or (not created and stat.S_IMODE(status.st_mode) != publication_mode)
+            or (require_unique_inode and status.st_nlink != 1)
+            or (require_parent_group and status.st_gid != parent_status.st_gid)
         ):
             raise ValueError("append_jsonl_access_mode_invalid")
+        if require_kernel_append_only:
+            _require_kernel_append_only(handle.fileno())
         handle.write(line + "\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -420,6 +642,34 @@ def _atomic_publication_mode(mode: int | None) -> int:
     }:
         raise ValueError("atomic_publication_mode_invalid")
     return selected
+
+
+def _operated_shared_authority_profile() -> bool:
+    return (
+        os.environ.get("RESEARCH_RUNTIME_PROFILE") == "operated"
+        and _atomic_publication_mode(None) == _SHARED_ATOMIC_PUBLICATION_MODE
+    )
+
+
+def _linux_file_flags(descriptor: int) -> int:
+    try:
+        import fcntl
+
+        raw = fcntl.ioctl(
+            descriptor,
+            _LINUX_FS_IOC_GETFLAGS,
+            b"\0" * _LINUX_LONG_BYTES,
+        )
+    except (ImportError, OSError) as exc:
+        raise ValueError("authority_file_append_only_unverifiable") from exc
+    if not isinstance(raw, bytes) or len(raw) != _LINUX_LONG_BYTES:
+        raise ValueError("authority_file_append_only_unverifiable")
+    return int.from_bytes(raw, byteorder=sys.byteorder, signed=False)
+
+
+def _require_kernel_append_only(descriptor: int) -> None:
+    if not _linux_file_flags(descriptor) & _LINUX_FS_APPEND_FL:
+        raise ValueError("authority_file_kernel_append_only_required")
 
 
 def _set_completed_publication_mode(descriptor: int, mode: int) -> None:

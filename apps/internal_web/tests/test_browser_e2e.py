@@ -161,10 +161,9 @@ def test_browser_research_workflow_from_login_to_verified_download(
         assert preflight.capability_id == ResearchJob.Capability.PREFLIGHT
         assert preflight.status == ResearchJob.Status.SUCCEEDED
 
-        page.reload()
         expect(
             page.get_by_role("heading", name="사전 점검이 완료되었습니다")
-        ).to_be_visible()
+        ).to_be_visible(timeout=10_000)
         expect(
             page.get_by_text("해시 검증").locator("xpath=following-sibling::strong")
         ).to_have_text("확인됨")
@@ -181,10 +180,9 @@ def test_browser_research_workflow_from_login_to_verified_download(
         assert validation.capability_id == ResearchJob.Capability.VALIDATE
         assert validation.status == ResearchJob.Status.SUCCEEDED, validation.error_code
 
-        page.reload()
         expect(
             page.get_by_role("heading", name="연구 검증이 완료되었습니다")
-        ).to_be_visible()
+        ).to_be_visible(timeout=10_000)
         page.get_by_text("고급 근거 보기 · 실행 ID와 hash").click()
         expect(page.get_by_text(validation.result_hash, exact=True)).to_be_visible()
         with page.expect_download() as download_info:

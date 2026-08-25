@@ -415,10 +415,12 @@ authenticated replaying producer before this boundary can claim M4.
 
 `research.retention_policy` distinguishes active approved research, official
 releases, audit evidence, dataset inputs, superseded studies, rejected
-research, failed runs, and exploratory work. Official/audit/input evidence is
-permanent under the standard policy. Other classes require an archived
-lifecycle and a class-specific minimum age. Any legal hold or active lineage
-reference takes priority and blocks deletion eligibility.
+research, failed runs, and exploratory work. Official/audit/input evidence and
+all failed or rejected research are permanent under standard policy version 2;
+negative evidence can never receive a deletion authorization. Exploratory and
+superseded classes require an archived lifecycle and a class-specific minimum
+age. Any legal hold or active lineage reference takes priority and blocks
+deletion eligibility.
 
 Eligibility does not delete data. Operations must receive a short-lived,
 two-person authorization bound to the exact subject, policy, evaluation, and

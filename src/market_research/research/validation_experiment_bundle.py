@@ -1,9 +1,13 @@
-"""Hash-bound admission contract for caller-supplied validation experiments.
+"""Hash-bound admission contract for validation experiments.
 
 The executable experiments live in :mod:`validation_experiments`.  This module
 does not rerun them; it reconstructs their serialized dataclasses, rechecks
 cross-field semantics, and binds the complete outputs to the manifest, frozen
 dataset, temporal plan, and selected candidate before deriving the gate status.
+
+Production promotion uses the manifest-authoritative native executor.  The
+parser remains here so stored evidence can be independently verified; parsing
+an externally supplied result is not execution authority.
 """
 
 from __future__ import annotations
@@ -874,6 +878,15 @@ def _build_component_evidence(
             binding_reasons.append(
                 "validation_experiment_nested_selection_candidate_hash_mismatch"
             )
+        # A nested study is selection evidence, not a decorative robustness
+        # attachment.  Aggregate the genuinely out-of-sample score earned by
+        # each inner-selected candidate, then bind the deterministic winner to
+        # the terminal candidate.  A self-consistent bundle cannot rebind the
+        # result to a candidate the nested procedure did not select.
+        if _nested_terminal_candidate_id(value) != selected_candidate_id:
+            binding_reasons.append(
+                "validation_experiment_nested_selection_terminal_winner_mismatch"
+            )
         passed = all(
             fold.outer_evaluation.status is EvaluationStatus.PASS
             for fold in value.folds
@@ -921,6 +934,31 @@ def _build_component_evidence(
         evidence_hash=evidence_hash,
         evidence_payload_hash=_component_payload_hash(evidence),
         evidence=FrozenDict(evidence),
+    )
+
+
+def _nested_terminal_candidate_id(result: NestedSelectionResult) -> str | None:
+    scores: dict[str, list[float]] = {}
+    for fold in result.folds:
+        evaluation = fold.outer_evaluation
+        if evaluation.status is not EvaluationStatus.PASS or evaluation.score is None:
+            continue
+        scores.setdefault(fold.selected_candidate.candidate_id, []).append(
+            float(evaluation.score)
+        )
+    if not scores:
+        return None
+    means = {
+        candidate_id: _canonical_mean(values)
+        for candidate_id, values in scores.items()
+    }
+    best = (
+        max(means.values())
+        if result.policy.direction is MetricDirection.MAXIMIZE
+        else min(means.values())
+    )
+    return min(
+        candidate_id for candidate_id, score in means.items() if score == best
     )
 
 

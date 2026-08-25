@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import Any, Literal
 
 from django.conf import settings
@@ -28,6 +29,11 @@ from market_research.application.adapter_contracts import (
     load_governance_rows,
     sha256_prefixed,
     validate_governance_registry,
+)
+from market_research.application.governance_authorization import (
+    APPROVE_CANDIDATE_ACTION,
+    RECORD_REVIEW_ACTION,
+    _authenticated_web_governance_context,
 )
 
 from .audit import record_web_audit_event
@@ -155,21 +161,26 @@ def record_job_review(
             actor_id=actor.actor_id,
             duty=GovernanceDutyClaim.Duty.REVIEWER,
         )
-        result = ResearchGovernanceApplicationService(
-            settings.RESEARCH_PATHS
-        ).record_review(
-            HumanReviewRequest(
-                request_id=correlation_id,
-                idempotency_key=operation_id,
-                actor=actor,
-                subject=subject,
-                decision=decision,
-                rationale=rationale,
-                reviewed_artifact_hash=job.result_hash,
-                requested_changes=requested_changes,
-                prohibited_actor_ids=_originator_actor_ids(job),
-            )
+        review_request = HumanReviewRequest(
+            request_id=correlation_id,
+            idempotency_key=operation_id,
+            actor=actor,
+            subject=subject,
+            decision=decision,
+            rationale=rationale,
+            reviewed_artifact_hash=job.result_hash,
+            requested_changes=requested_changes,
+            prohibited_actor_ids=_originator_actor_ids(job),
         )
+        with _authenticated_governance_context(
+            user=user,
+            action=RECORD_REVIEW_ACTION,
+            actor=actor,
+            request=review_request,
+        ):
+            result = ResearchGovernanceApplicationService(
+                settings.RESEARCH_PATHS
+            ).record_review(review_request)
         try:
             authoritative = GovernanceDecision.objects.create(
                 subject=state,
@@ -273,26 +284,31 @@ def approve_job_candidate(
         verification = IndependentVerificationReference.model_validate(
             verification_payload
         )
-        result = ResearchGovernanceApplicationService(
-            settings.RESEARCH_PATHS
-        ).approve_candidate(
-            StrategyApprovalRequest(
-                request_id=correlation_id,
-                idempotency_key=approval_request_id,
-                actor=actor,
-                source_report_path=str(source_path),
-                subject_version=subject.subject_version,
-                rationale=rationale,
-                resolved_requirement_ids=resolved_requirement_ids,
-                output_path=str(target),
-                expected_source_report_hash=job.result_hash,
-                independent_verification=verification,
-                originator_actor_ids=originator_actor_ids,
-                prohibited_actor_ids=(
-                    originator_actor_ids | frozenset(prior_reviewer_ids)
-                ),
-            )
+        approval_request = StrategyApprovalRequest(
+            request_id=correlation_id,
+            idempotency_key=approval_request_id,
+            actor=actor,
+            source_report_path=str(source_path),
+            subject_version=subject.subject_version,
+            rationale=rationale,
+            resolved_requirement_ids=resolved_requirement_ids,
+            output_path=str(target),
+            expected_source_report_hash=job.result_hash,
+            independent_verification=verification,
+            originator_actor_ids=originator_actor_ids,
+            prohibited_actor_ids=(
+                originator_actor_ids | frozenset(prior_reviewer_ids)
+            ),
         )
+        with _authenticated_governance_context(
+            user=user,
+            action=APPROVE_CANDIDATE_ACTION,
+            actor=actor,
+            request=approval_request,
+        ):
+            result = ResearchGovernanceApplicationService(
+                settings.RESEARCH_PATHS
+            ).approve_candidate(approval_request)
         if not result.content_hash:
             raise GovernanceError("strategy_candidate_approval_hash_missing")
         try:
@@ -585,6 +601,28 @@ def _actor(user: Any) -> ActorContext:
         roles=tuple(roles),
         permissions=frozenset(permissions),
         source="web",
+    )
+
+
+def _authenticated_governance_context(
+    *,
+    user: Any,
+    action: str,
+    actor: ActorContext,
+    request: HumanReviewRequest | StrategyApprovalRequest,
+) -> AbstractContextManager[object]:
+    """Bind the core one-shot capability to this authenticated Django user."""
+
+    if not bool(getattr(user, "is_authenticated", False)):
+        raise GovernanceError("authenticated_web_governance_session_required")
+    session_subject = str(getattr(user, "pk", "") or "").strip()
+    if not session_subject or session_subject != actor.actor_id:
+        raise GovernanceError("authenticated_web_governance_session_mismatch")
+    return _authenticated_web_governance_context(
+        action=action,
+        session_subject=session_subject,
+        actor=actor,
+        request=request,
     )
 
 

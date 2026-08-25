@@ -15,7 +15,10 @@ from market_research.application.platform_contracts import (
     ResearchPathManager,
     ResearchSettings,
 )
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 from market_research.research.datasets.source_catalog import build_source_catalog
 from market_research.research.datasets.source_provenance import (
     DatasetSourceProvenance,
@@ -73,6 +76,7 @@ def _source_provenance() -> DatasetSourceProvenance:
         source_catalog=catalog,
         sources=(
             {
+                **TEST_SOURCE_PROVENANCE.sources[0].as_dict(),
                 "provider_id": "web-test-provider",
                 "dataset_id": "web-test-candles",
                 "release_id": "release-v1",
@@ -82,27 +86,21 @@ def _source_provenance() -> DatasetSourceProvenance:
                 "received_at": "2026-01-01T00:00:01Z",
                 "response_version": "web-export-v1",
                 "acquisition_code_version": "external-web-fixture-v1",
-                "retry_count": 0,
-                "acquisition_status": "complete",
-                "error_code": "",
-                "coverage_start_ts": -(2**63),
-                "coverage_end_ts": 2**63 - 1,
-                "content_hash": "sha256:" + "1" * 64,
             },
         ),
         source_priority=("web-test-provider",),
         lineage=tuple(
             {
+                **stage.as_dict(),
                 "layer": layer,
                 "artifact_id": f"web-{layer}-v1",
-                "content_hash": "sha256:" + character * 64,
                 "schema_version": 1,
                 "transformation_id": f"web-{layer}-transform-v1",
             }
-            for layer, character in (
-                ("raw", "2"),
-                ("cleaned", "3"),
-                ("standardized", "4"),
+            for layer, stage in zip(
+                ("raw", "cleaned", "standardized"),
+                TEST_SOURCE_PROVENANCE.lineage,
+                strict=True,
             )
         ),
     )

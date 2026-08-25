@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 from market_research.research.dataset_snapshot import FrozenSQLiteCandleAdapter
 from market_research.research.datasets.contracts import (
     DatasetArtifactRef,
@@ -8,7 +11,6 @@ from market_research.research.datasets.contracts import (
     DatasetRunContext,
     DatasetSliceQuery,
 )
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from .test_dataset_artifact_manifest_contract import _source
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 from market_research.research.validation_protocol import (

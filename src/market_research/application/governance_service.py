@@ -50,6 +50,11 @@ from .contracts import (
     StrategyApprovalRequest,
     StrategyApprovalResult,
 )
+from .governance_authorization import (
+    APPROVE_CANDIDATE_ACTION,
+    RECORD_REVIEW_ACTION,
+    require_authenticated_web_governance,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +83,12 @@ class ResearchGovernanceApplicationService:
         """Record CHANGES_REQUESTED or REJECTED through the common boundary."""
 
         ensure_capability_authorized("research-record-human-review", request.actor)
-        actor = _required_actor(request.actor)
+        actor = _required_authenticated_web_actor(request.actor)
+        require_authenticated_web_governance(
+            action=RECORD_REVIEW_ACTION,
+            actor=actor,
+            request=request,
+        )
         _ensure_actor_is_not_prohibited(actor, request.prohibited_actor_ids)
         if request.decision == HumanReviewDecision.APPROVED.value:
             raise GovernanceError(
@@ -124,7 +134,12 @@ class ResearchGovernanceApplicationService:
             "research-approve-strategy-candidate",
             request.actor,
         )
-        actor = _required_actor(request.actor)
+        actor = _required_authenticated_web_actor(request.actor)
+        require_authenticated_web_governance(
+            action=APPROVE_CANDIDATE_ACTION,
+            actor=actor,
+            request=request,
+        )
         _ensure_actor_is_not_prohibited(actor, request.prohibited_actor_ids)
         if "research_approver" not in actor.roles:
             raise GovernanceError("strategy_approval_actor_role_required")
@@ -349,9 +364,17 @@ class ResearchGovernanceApplicationService:
         )
 
 
-def _required_actor(actor: ActorContext | None) -> ActorContext:
+def _required_authenticated_web_actor(actor: ActorContext | None) -> ActorContext:
     if actor is None:
         raise GovernanceError("governance_actor_context_required")
+    # The UI-neutral service accepts an already-authenticated adapter snapshot,
+    # but the public CLI is not such an adapter.  The internal Web boundary
+    # derives subject, roles, and explicit permissions from the server-side
+    # Django session and also owns the durable duty-claim transaction.
+    if actor.source != "web":
+        raise GovernanceError("authenticated_web_governance_actor_required")
+    if "*" in actor.permissions:
+        raise GovernanceError("governance_wildcard_permission_forbidden")
     return actor
 
 
@@ -367,8 +390,6 @@ def _reviewer_role(actor: ActorContext) -> str:
     for role in ("research_reviewer", "research_approver"):
         if role in actor.roles:
             return role
-    if actor.roles:
-        return actor.roles[0]
     raise GovernanceError("human_review_actor_role_required")
 
 

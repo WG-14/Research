@@ -16,6 +16,13 @@
     <dt>Content hash</dt><dd>{{ project.content_hash }}</dd>
     <dt>자산군</dt><dd>{{ project.asset_classes|join:", " }}</dd>
     <dt>시장</dt><dd>{{ project.markets|join:", " }}</dd>
+    <dt>투자기간</dt><dd>{{ project.investment_horizon }}</dd>
+    <dt>예상 현상</dt><dd>{{ project.expected_phenomenon }}</dd>
+    <dt>경제적 설명</dt><dd>{{ project.economic_explanation }}</dd>
+    <dt>기존 연구 관계</dt><dd>{{ project.prior_research_relationship }}</dd>
+    <dt>필요 데이터</dt><dd>{{ project.required_data|join:", " }}</dd>
+    <dt>예상 난점</dt><dd>{{ project.expected_challenges|join:", " }}</dd>
+    <dt>유사 연구 평가</dt><dd>{{ project.similar_research_assessment }}</dd>
     <dt>구성원</dt>
     <dd>
       <ul>{% for member in project.members %}<li>{{ member.actor_id }} · {{ member.role }}</li>{% endfor %}</ul>
@@ -23,7 +30,7 @@
     <dt>연결된 객체</dt>
     <dd>
       {% if project.object_refs %}
-      <p>아래 값은 artifact resolver 결과가 아니라, 종류·ID·버전·SHA-256에 고정된 typed reference입니다.</p>
+      <p>아래 참조는 외부 불변 파일과 semantic SHA-256을 resolver가 검증한 객체입니다.</p>
       <ul>
         {% for reference in project.object_refs %}
         <li>
@@ -31,6 +38,7 @@
           <code>{{ reference.object_id }}</code>
           <span>v{{ reference.version }}</span>
           <code>{{ reference.content_hash }}</code>
+          <code>{{ reference.artifact_file_hash }}</code>
         </li>
         {% endfor %}
       </ul>
@@ -53,6 +61,8 @@
     {% endif %}
     {% if can_attach_project_reference %}
     <a class="button" href="{% url 'portal:project-reference' project.project_id %}">객체 참조 연결</a>
+    <a class="button" href="{% url 'portal:project-study-stage' project.project_id %}">독립 연구 단계 기록</a>
+    <a class="button" href="{% url 'portal:project-preregister' project.project_id %}">사전등록 설계 고정</a>
     {% endif %}
     {% if can_transition_project %}
     <a class="button" href="{% url 'portal:project-transition' project.project_id %}">Lifecycle 변경</a>

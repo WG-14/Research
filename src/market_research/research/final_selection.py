@@ -298,7 +298,8 @@ def _selection_candidate_bindings(
                 ],
                 "selection_score_hash": scores_by_candidate_id[candidate_id].get(
                     "score_hash"
-                ),
+                )
+                or scores_by_candidate_id[candidate_id].get("content_hash"),
             }
         )
     return bindings
@@ -762,6 +763,25 @@ def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
         isinstance(item, dict) for item in candidates
     ):
         return sorted(set(reasons) | {"final_selection_score_hash_mismatch"})
+    if contract.get("authority") == "manifest_native_nested_selection":
+        reasons.extend(
+            _native_nested_final_selection_reasons(
+                report=report,
+                contract=contract,
+                candidates=list(candidates),
+            )
+        )
+        selection_artifact = report.get("selection_artifact")
+        if not isinstance(selection_artifact, dict):
+            reasons.append("selection_artifact_missing")
+        else:
+            reasons.extend(
+                validate_selection_artifact_binding(
+                    report=report,
+                    selection_artifact=selection_artifact,
+                )
+            )
+        return sorted(set(reasons))
     recomputed = apply_final_selection_contract(
         contract=contract,
         candidates=list(candidates),
@@ -813,6 +833,182 @@ def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
                 )
             )
     return sorted(set(reasons))
+
+
+def _native_nested_final_selection_reasons(
+    *,
+    report: dict[str, Any],
+    contract: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> list[str]:
+    """Validate the native nested winner without replaying preliminary ranking."""
+
+    reasons: list[str] = []
+    expected_contract_fields = {
+        "schema_version",
+        "authority",
+        "manifest_hash",
+        "nested_selection_contract",
+        "nested_selection_contract_hash",
+        "manifest_candidate_universe_hash",
+        "pre_holdout_eligibility_hash",
+        "nested_selection_result_hash",
+        "terminal_selection_rule",
+        "terminal_selection_scores_hash",
+        "native_validation_computation_receipt_hash",
+    }
+    if set(contract) != expected_contract_fields or contract.get("schema_version") != 1:
+        reasons.append("native_nested_final_selection_contract_invalid")
+    if contract.get("authority") != "manifest_native_nested_selection":
+        reasons.append("native_nested_final_selection_authority_invalid")
+    nested_contract = contract.get("nested_selection_contract")
+    if not isinstance(nested_contract, dict) or contract.get(
+        "nested_selection_contract_hash"
+    ) != sha256_prefixed(
+        nested_contract,
+        label="manifest_native_nested_selection_contract",
+    ):
+        reasons.append("native_nested_final_selection_contract_hash_mismatch")
+        nested_contract = {}
+    if contract.get("terminal_selection_rule") != nested_contract.get(
+        "terminal_selection_rule"
+    ):
+        reasons.append("native_nested_final_selection_rule_mismatch")
+    if contract.get("manifest_hash") != report.get("manifest_hash"):
+        reasons.append("native_nested_final_selection_manifest_mismatch")
+
+    scores = report.get("candidate_final_scores")
+    score_fields = {
+        "candidate_id",
+        "candidate_definition_hash",
+        "outer_pass_count",
+        "outer_mean_score",
+        "selected",
+        "content_hash",
+    }
+    valid_scores = isinstance(scores, list) and bool(scores)
+    if valid_scores:
+        assert isinstance(scores, list)
+        valid_scores = (
+            all(
+                isinstance(item, dict)
+                and set(item) == score_fields
+                and bool(str(item.get("candidate_id") or ""))
+                and str(item.get("candidate_definition_hash") or "").startswith(
+                    "sha256:"
+                )
+                and isinstance(item.get("outer_pass_count"), int)
+                and not isinstance(item.get("outer_pass_count"), bool)
+                and int(item["outer_pass_count"]) >= 0
+                and (
+                    item.get("outer_mean_score") is None
+                    or (
+                        isinstance(item.get("outer_mean_score"), (int, float))
+                        and not isinstance(item.get("outer_mean_score"), bool)
+                        and math.isfinite(float(item["outer_mean_score"]))
+                    )
+                )
+                and isinstance(item.get("selected"), bool)
+                and item.get("content_hash")
+                == sha256_prefixed(
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key != "content_hash"
+                    },
+                    label="native_validation_terminal_candidate_score",
+                )
+                for item in scores
+            )
+            and scores
+            == sorted(scores, key=lambda item: str(item.get("candidate_id")))
+            and len({str(item.get("candidate_id")) for item in scores})
+            == len(scores)
+        )
+    if not valid_scores:
+        reasons.append("native_nested_final_selection_scores_invalid")
+        return reasons
+    assert isinstance(scores, list)
+    if report.get("candidate_final_scores_hash") != sha256_prefixed(scores):
+        reasons.append("final_selection_score_hash_mismatch")
+    if contract.get("terminal_selection_scores_hash") != sha256_prefixed(
+        scores,
+        label="native_validation_terminal_selection_scores",
+    ):
+        reasons.append("native_nested_final_selection_scores_hash_mismatch")
+
+    candidate_ids = {
+        str(item.get("parameter_candidate_id") or item.get("candidate_id") or "")
+        for item in candidates
+    }
+    score_ids = {str(item.get("candidate_id") or "") for item in scores}
+    if "" in candidate_ids or candidate_ids != score_ids:
+        reasons.append("native_nested_final_selection_universe_mismatch")
+    scored = [item for item in scores if item.get("outer_mean_score") is not None]
+    direction = nested_contract.get("direction")
+    expected_winner: str | None = None
+    if scored and direction in {"MAXIMIZE", "MINIMIZE"}:
+        best = (
+            max(float(item["outer_mean_score"]) for item in scored)
+            if direction == "MAXIMIZE"
+            else min(float(item["outer_mean_score"]) for item in scored)
+        )
+        expected_winner = min(
+            str(item["candidate_id"])
+            for item in scored
+            if float(item["outer_mean_score"]) == best
+        )
+    else:
+        reasons.append("native_nested_final_selection_winner_missing")
+    selected_rows = [item for item in scores if item.get("selected") is True]
+    if (
+        len(selected_rows) != 1
+        or expected_winner is None
+        or selected_rows[0].get("candidate_id") != expected_winner
+    ):
+        reasons.append("native_nested_final_selection_winner_mismatch")
+    else:
+        selected_hash = selected_rows[0].get("content_hash")
+        if report.get("selected_candidate_score_hash") != selected_hash:
+            reasons.append("final_selection_score_hash_mismatch")
+        if any(
+            report.get(field) != expected_winner
+            for field in ("selected_candidate_id", "best_candidate_id")
+        ):
+            reasons.append("final_selection_selected_candidate_mismatch")
+    if (
+        report.get("final_selection_gate_result") != "PASS"
+        or report.get("final_selection_fail_reasons") not in ([], None)
+        or report.get("final_selection_authority")
+        != "manifest_native_nested_selection"
+    ):
+        reasons.append("final_selection_gate_not_passed")
+
+    artifact = report.get("selection_artifact")
+    authority = artifact.get("selection_authority_binding") if isinstance(
+        artifact, dict
+    ) else None
+    if not isinstance(authority, dict):
+        reasons.append("native_nested_final_selection_authority_invalid")
+    else:
+        for field in (
+            "manifest_hash",
+            "manifest_candidate_universe_hash",
+            "pre_holdout_eligibility_hash",
+            "nested_selection_result_hash",
+            "terminal_selection_rule",
+            "terminal_selection_scores_hash",
+            "native_validation_computation_receipt_hash",
+        ):
+            if contract.get(field) != authority.get(field):
+                reasons.append(
+                    "native_nested_final_selection_authority_" + field + "_mismatch"
+                )
+        if authority.get("terminal_selection_scores") != scores:
+            reasons.append(
+                "native_nested_final_selection_authority_scores_mismatch"
+            )
+    return reasons
 
 
 def _contract_payload(

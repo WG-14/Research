@@ -5,6 +5,7 @@ description = "Offline and reproducible market-strategy research toolkit"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=45,<47",
     "pandas>=3.0.1",
     "pydantic>=2.12.5",
 ]

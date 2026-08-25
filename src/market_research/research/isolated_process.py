@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -24,6 +25,13 @@ from market_research.storage_io import write_text_atomic
 
 class IsolatedProcessError(RuntimeError):
     pass
+
+
+_OPERATED_SANDBOX_TOOLS = {
+    "bwrap": Path("/usr/bin/bwrap"),
+    "prlimit": Path("/usr/bin/prlimit"),
+    "timeout": Path("/usr/bin/timeout"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,10 +78,7 @@ def run_isolated_command(
     """Run one command with fail-closed limits and bounded captured output."""
     if not command or any(not str(item) for item in command):
         raise IsolatedProcessError("isolated_process_command_invalid")
-    tools = {name: shutil.which(name) for name in ("bwrap", "prlimit", "timeout")}
-    if any(value is None for value in tools.values()):
-        missing = ",".join(name for name, value in tools.items() if value is None)
-        raise IsolatedProcessError(f"isolated_process_runtime_missing:{missing}")
+    tools = _sandbox_tools()
     resolved_cwd = cwd.expanduser().resolve(strict=True)
     resolved_readable_roots = _resolved_readable_roots(readable_roots)
     resolved_roots = _resolved_writable_roots(writable_roots)
@@ -93,6 +98,11 @@ def run_isolated_command(
         f"{wall:.6f}s",
         str(tools["bwrap"]),
         "--unshare-user",
+        # The parent worker may create this one user namespace, but research
+        # code must not create nested namespaces and recover namespace-local
+        # root capabilities inside its sandbox.
+        "--disable-userns",
+        "--assert-userns-disabled",
         "--dev",
         "/dev",
         "--proc",
@@ -117,6 +127,13 @@ def run_isolated_command(
         sandbox_command.extend(("--dir", str(directory)))
     for root in readonly_mounts:
         sandbox_command.extend(("--ro-bind", str(root), str(root)))
+    # A file bind needs an existing destination inode. Seed file-shaped
+    # destinations read-only while the namespace skeleton is still mutable;
+    # the declared file is over-mounted writable only after the skeleton is
+    # frozen. Directories already have destinations from ``--dir`` above.
+    for root in resolved_roots:
+        if root.is_file():
+            sandbox_command.extend(("--ro-bind", str(root), str(root)))
     # Freeze the namespace skeleton and read-only inputs before adding the
     # declared writable mounts. This also makes undeclared sibling paths
     # unavailable for writes in the private tmpfs.
@@ -223,16 +240,93 @@ def run_isolated_command(
     )
 
 
+def _sandbox_tools() -> dict[str, str]:
+    if os.getenv("RESEARCH_RUNTIME_PROFILE") == "operated":
+        resolved: dict[str, str] = {}
+        missing_names: list[str] = []
+        for name, candidate in _OPERATED_SANDBOX_TOOLS.items():
+            try:
+                status = candidate.lstat()
+                actual = candidate.resolve(strict=True)
+            except OSError:
+                missing_names.append(name)
+                continue
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or not os.access(candidate, os.X_OK)
+                or actual != candidate
+                or status.st_nlink < 1
+            ):
+                raise IsolatedProcessError(
+                    f"isolated_process_operated_runtime_invalid:{name}"
+                )
+            resolved[name] = str(candidate)
+        if missing_names:
+            raise IsolatedProcessError(
+                "isolated_process_runtime_missing:"
+                + ",".join(sorted(missing_names))
+            )
+        return resolved
+    tools = {name: shutil.which(name) for name in _OPERATED_SANDBOX_TOOLS}
+    if any(value is None for value in tools.values()):
+        missing_text = ",".join(
+            name for name, value in tools.items() if value is None
+        )
+        raise IsolatedProcessError(
+            f"isolated_process_runtime_missing:{missing_text}"
+        )
+    return {name: str(value) for name, value in tools.items() if value is not None}
+
+
 def _resolved_writable_roots(values: Sequence[Path]) -> tuple[Path, ...]:
     result: list[Path] = []
     for value in values:
-        path = value.expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        if path == Path("/"):
+        candidate = value.expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = Path(os.path.abspath(candidate))
+        if candidate == Path("/"):
             raise IsolatedProcessError("isolated_process_writable_root_too_broad")
+        _reject_writable_root_symlinks(candidate)
+        try:
+            status = candidate.lstat()
+        except FileNotFoundError:
+            candidate.mkdir(parents=True, exist_ok=True)
+            _reject_writable_root_symlinks(candidate)
+            status = candidate.lstat()
+        except OSError as exc:
+            raise IsolatedProcessError(
+                "isolated_process_writable_root_invalid"
+            ) from exc
+        if not (stat.S_ISDIR(status.st_mode) or stat.S_ISREG(status.st_mode)):
+            raise IsolatedProcessError("isolated_process_writable_root_invalid")
+        if stat.S_IMODE(status.st_mode) & 0o002:
+            raise IsolatedProcessError(
+                "isolated_process_writable_root_world_writable"
+            )
+        if stat.S_ISREG(status.st_mode) and status.st_nlink != 1:
+            raise IsolatedProcessError("isolated_process_writable_root_aliased")
+        path = candidate.resolve(strict=True)
         if path not in result:
             result.append(path)
     return tuple(sorted(result, key=str))
+
+
+def _reject_writable_root_symlinks(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            status = current.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise IsolatedProcessError(
+                "isolated_process_writable_root_invalid"
+            ) from exc
+        if stat.S_ISLNK(status.st_mode):
+            raise IsolatedProcessError("isolated_process_writable_root_symlink")
 
 
 def _resolved_readable_roots(values: Sequence[Path]) -> tuple[Path, ...]:

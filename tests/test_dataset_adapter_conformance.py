@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 from pathlib import Path
 
 from market_research.research.datasets.verification import (
@@ -12,7 +15,6 @@ from market_research.research.datasets.registry import (
     DatasetAdapterRegistry,
     default_dataset_adapter_registry,
 )
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.dataset_snapshot import (
     Candle,
     DatasetLoadContext,

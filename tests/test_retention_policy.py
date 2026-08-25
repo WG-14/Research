@@ -24,7 +24,7 @@ HASH_C = "sha256:" + "c" * 64
 
 def _subject(
     *,
-    retention_class: ResearchRetentionClass = ResearchRetentionClass.FAILED_RUN,
+    retention_class: ResearchRetentionClass = ResearchRetentionClass.EXPLORATORY,
     lifecycle: RetentionLifecycle = RetentionLifecycle.ARCHIVED,
     active_reference_ids: tuple[str, ...] = (),
     legal_hold_ids: tuple[str, ...] = (),
@@ -56,12 +56,14 @@ def test_standard_policy_covers_every_class_and_is_deterministic() -> None:
         first.version = "2"  # type: ignore[misc]
 
 
-def test_official_release_and_audit_evidence_are_permanent() -> None:
+def test_official_and_negative_evidence_are_permanent() -> None:
     policy = standard_research_retention_policy()
     for retention_class in (
         ResearchRetentionClass.OFFICIAL_RELEASE,
         ResearchRetentionClass.AUDIT_EVIDENCE,
         ResearchRetentionClass.DATASET_INPUT,
+        ResearchRetentionClass.FAILED_RUN,
+        ResearchRetentionClass.REJECTED,
     ):
         evaluation = evaluate_research_retention(
             subject=_subject(retention_class=retention_class),
@@ -70,6 +72,40 @@ def test_official_release_and_audit_evidence_are_permanent() -> None:
         )
         assert evaluation.decision is RetentionDecision.KEEP_PERMANENT
         assert not evaluation.deletion_eligible
+
+
+@pytest.mark.parametrize(
+    "retention_class",
+    (ResearchRetentionClass.FAILED_RUN, ResearchRetentionClass.REJECTED),
+)
+def test_negative_evidence_can_never_receive_deletion_authorization(
+    retention_class: ResearchRetentionClass,
+) -> None:
+    policy = standard_research_retention_policy()
+    subject = _subject(retention_class=retention_class)
+    evaluation = evaluate_research_retention(
+        subject=subject,
+        policy=policy,
+        evaluated_at="2100-01-01T00:00:00Z",
+    )
+
+    with pytest.raises(
+        RetentionPolicyError,
+        match="retention_authorization_subject_not_eligible",
+    ):
+        authorize_retention_deletion(
+            operation_id="negative-evidence-delete-forbidden",
+            subject=subject,
+            evaluation=evaluation,
+            policy=policy,
+            requester_id="data-owner",
+            requester_assertion_hash=HASH_B,
+            reviewer_id="security-reviewer",
+            reviewer_assertion_hash=HASH_C,
+            reason_code="negative_evidence_delete_forbidden",
+            authorized_at="2100-01-01T00:01:00Z",
+            expires_at="2100-01-01T00:31:00Z",
+        )
 
 
 def test_legal_hold_and_active_lineage_block_age_eligible_evidence() -> None:
@@ -91,7 +127,7 @@ def test_legal_hold_and_active_lineage_block_age_eligible_evidence() -> None:
     assert referenced.blocking_ids == ("official-package-7",)
 
 
-def test_failed_research_requires_archive_and_minimum_age() -> None:
+def test_exploratory_research_requires_archive_and_minimum_age() -> None:
     policy = standard_research_retention_policy()
     not_archived = evaluate_research_retention(
         subject=_subject(lifecycle=RetentionLifecycle.FAILED),
@@ -111,7 +147,7 @@ def test_failed_research_requires_archive_and_minimum_age() -> None:
 
     assert not_archived.decision is RetentionDecision.BLOCKED_LIFECYCLE
     assert too_young.decision is RetentionDecision.KEEP_MINIMUM_AGE
-    assert too_young.eligible_at == "2026-01-01T00:00:00.000000Z"
+    assert too_young.eligible_at == "2025-06-30T00:00:00.000000Z"
     assert eligible.deletion_eligible
 
 
@@ -132,7 +168,7 @@ def _authorization():
         requester_assertion_hash=HASH_B,
         reviewer_id="security-reviewer",
         reviewer_assertion_hash=HASH_C,
-        reason_code="expired_failed_run",
+        reason_code="expired_exploratory_run",
         authorized_at="2026-01-02T00:01:00Z",
         expires_at="2026-01-02T00:31:00Z",
     )
@@ -180,7 +216,7 @@ def test_authorization_rejects_same_actor_blocked_subject_and_changed_hashes() -
             requester_assertion_hash=HASH_B,
             reviewer_id="same-actor",
             reviewer_assertion_hash=HASH_C,
-            reason_code="expired_failed_run",
+            reason_code="expired_exploratory_run",
             authorized_at="2026-01-02T00:01:00Z",
             expires_at="2026-01-02T00:31:00Z",
         )
@@ -204,7 +240,7 @@ def test_authorization_rejects_same_actor_blocked_subject_and_changed_hashes() -
             requester_assertion_hash=HASH_B,
             reviewer_id="security-reviewer",
             reviewer_assertion_hash=HASH_C,
-            reason_code="expired_failed_run",
+            reason_code="expired_exploratory_run",
             authorized_at="2030-01-01T00:01:00Z",
             expires_at="2030-01-01T00:31:00Z",
         )
@@ -244,7 +280,7 @@ def test_authorization_window_cannot_exceed_policy() -> None:
             requester_assertion_hash=HASH_B,
             reviewer_id="security-reviewer",
             reviewer_assertion_hash=HASH_C,
-            reason_code="expired_failed_run",
+            reason_code="expired_exploratory_run",
             authorized_at="2026-01-02T00:01:00Z",
             expires_at="2026-01-02T02:01:00Z",
         )

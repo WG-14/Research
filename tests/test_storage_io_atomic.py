@@ -7,9 +7,11 @@ import pytest
 import market_research.storage_io as storage_io
 from market_research.storage_io import (
     ATOMIC_PUBLICATION_MODE_ENV,
+    append_authority_jsonl,
     append_jsonl,
     ensure_directory,
     open_lock_file,
+    read_authority_text,
     write_json_atomic,
     write_json_atomic_create_or_verify,
     write_jsonl_atomic,
@@ -62,6 +64,17 @@ def test_process_lock_rejects_existing_symlink(
     assert real.read_text(encoding="utf-8") == "sentinel"
 
 
+def test_process_lock_rejects_hardlinked_inode(tmp_path: Path) -> None:
+    real = tmp_path / "real.lock"
+    descriptor = open_lock_file(real)
+    os.close(descriptor)
+    alias = tmp_path / "registry.lock"
+    alias.hardlink_to(real)
+
+    with pytest.raises(ValueError, match="process_lock_access_invalid"):
+        open_lock_file(real)
+
+
 def test_append_jsonl_is_private_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -85,6 +98,116 @@ def test_append_jsonl_shared_profile_is_exactly_group_readable(
     append_jsonl(target, {"event_id": "two"})
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+def test_authority_jsonl_shared_profile_is_exactly_group_writable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+    target = tmp_path / "authority.jsonl"
+
+    append_authority_jsonl(target, {"event_id": "reserved"})
+    append_authority_jsonl(target, {"event_id": "activated"})
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o660
+    assert target.stat().st_gid == target.parent.stat().st_gid
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o664, 0o666])
+def test_authority_jsonl_shared_profile_rejects_noncanonical_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+    target = tmp_path / "authority.jsonl"
+    target.write_text("sentinel\n", encoding="utf-8")
+    target.chmod(mode)
+
+    with pytest.raises(ValueError, match="append_jsonl_access_mode_invalid"):
+        append_authority_jsonl(target, {"event_id": "must-not-append"})
+
+    assert target.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_authority_jsonl_rejects_hardlinked_inode(tmp_path: Path) -> None:
+    target = tmp_path / "authority.jsonl"
+    append_authority_jsonl(target, {"event_id": "reserved"})
+    alias = tmp_path / "authority-alias.jsonl"
+    alias.hardlink_to(target)
+
+    with pytest.raises(ValueError, match="append_jsonl_access_mode_invalid"):
+        append_authority_jsonl(target, {"event_id": "must-not-append"})
+
+
+def test_operated_shared_authority_requires_kernel_append_only_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tmp_path.chmod(0o2770)
+    target = tmp_path / "authority.jsonl"
+    target.write_text('{"event_id":"reserved"}\n', encoding="utf-8")
+    target.chmod(0o660)
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setattr(storage_io, "_linux_file_flags", lambda _fd: 0)
+
+    with pytest.raises(ValueError, match="kernel_append_only_required"):
+        append_authority_jsonl(
+            target,
+            {"event_id": "must-not-append"},
+            require_kernel_append_only=True,
+        )
+    with pytest.raises(ValueError, match="kernel_append_only_required"):
+        read_authority_text(target, require_kernel_append_only=True)
+    assert target.read_text(encoding="utf-8") == '{"event_id":"reserved"}\n'
+
+
+def test_operated_shared_authority_accepts_attested_kernel_append_only_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tmp_path.chmod(0o2770)
+    target = tmp_path / "authority.jsonl"
+    target.write_text('{"event_id":"reserved"}\n', encoding="utf-8")
+    target.chmod(0o660)
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setattr(
+        storage_io,
+        "_linux_file_flags",
+        lambda _fd: storage_io._LINUX_FS_APPEND_FL,
+    )
+
+    append_authority_jsonl(
+        target,
+        {"event_id": "activated"},
+        require_kernel_append_only=True,
+    )
+
+    assert read_authority_text(target, require_kernel_append_only=True) == (
+        '{"event_id":"reserved"}\n' '{"event_id":"activated"}\n'
+    )
+
+
+def test_operated_shared_generic_authority_does_not_inherit_holdout_append_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tmp_path.chmod(0o2770)
+    target = tmp_path / "generic-authority.jsonl"
+    target.write_text('{"event_id":"reserved"}\n', encoding="utf-8")
+    target.chmod(0o660)
+    monkeypatch.setenv(ATOMIC_PUBLICATION_MODE_ENV, "0640")
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setattr(storage_io, "_linux_file_flags", lambda _fd: 0)
+
+    append_authority_jsonl(target, {"event_id": "completed"})
+
+    assert read_authority_text(target) == (
+        '{"event_id":"reserved"}\n' '{"event_id":"completed"}\n'
+    )
 
 
 def test_append_jsonl_rejects_existing_file_with_wrong_access_mode(

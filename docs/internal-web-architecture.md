@@ -143,11 +143,14 @@ Every Research CLI command has exactly one GUI policy:
 | `research-registry-validate` | `admin_only` | Administrative validation with a safe summary. |
 | `research-mark-attempt-aborted` | `cli_only` | Break-glass lifecycle mutation is not a normal GUI action. |
 | `research-export-strategy-package` | `admin_only` | Exports approved authoritative evidence. |
+| `research-build-portable-package` | `cli_only` | Builds a deterministic immutable classic result/receipt/manifest package; dataset bytes are included only under canonical export authority. |
+| `research-verify-portable-package` | `cli_only` | Verifies the complete package graph and any explicit content-addressed external dataset without exposing paths through the GUI. |
+| `research-reproduce-portable-package` | `cli_only` | Cold-replays a verified package from a non-editable installed wheel in an empty repository-external workspace. |
 | `research-compare` | `required` | Compares hash-verified managed reports selected by opaque IDs. |
 | `research-render-report` | `cli_only` | Web renders bounded projections rather than exposing the CLI renderer. |
-| `research-governance-transition` | `admin_only` | Critical lifecycle mutation behind explicit governance policy. |
-| `research-record-human-review` | `admin_only` | Records independent review against the current evidence hash. |
-| `research-approve-strategy-candidate` | `admin_only` | Step-up, separation-of-duties, locked lifecycle, and idempotency gates apply. |
+| `research-governance-transition` | `admin_only` | The public CLI is fail-closed; material transitions are system-managed or require an authenticated Web governance workflow. |
+| `research-record-human-review` | `admin_only` | The public CLI is fail-closed; Web derives reviewer identity, role, and permission from the server-side session and records review against the current evidence hash. |
+| `research-approve-strategy-candidate` | `admin_only` | The public CLI is fail-closed; the authenticated Web transaction applies step-up permission, durable duty separation, locked lifecycle, and idempotency gates. |
 | `research-derivative-register` | `cli_only` | Registers a complete repository-external immutable derivative evidence bundle; no generic upload surface is exposed. |
 | `research-derivative-replay` | `cli_only` | Replays a hash-bound external derivative evidence bundle without exposing paths through the GUI. |
 | `research-derivative-diff` | `cli_only` | Compares immutable derivative packages as an expert evidence diagnostic. |

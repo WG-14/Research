@@ -80,6 +80,12 @@ def hypothesis_spec_v2(
         "created_at": "2025-12-04T00:00:00+00:00",
         "phenomenon": phenomenon,
         "mechanism": mechanism,
+        "targets": [market],
+        "measurement_method": (
+            "Net next-bar conditional return after registered fees and slippage"
+        ),
+        "expected_direction": "positive",
+        "evaluation_period": "2025-01-01 through 2025-12-31 UTC",
         "observation_conditions": ["uptrend", "sufficient candle coverage"],
         "comparison_target": "cash",
         "falsification_criteria": ["validation return is not positive"],

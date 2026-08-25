@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from django import forms
@@ -36,6 +37,8 @@ from market_research.application import (
     ResearchProjectReferenceRequest,
     ResearchProjectRevisionRequest,
     ResearchProjectSearchRequest,
+    ResearchStudyPreregistrationRequest,
+    ResearchStudyStageRequest,
     ResearchProjectTransitionRequest,
     ResearchProjectWorkspaceRequest,
     has_research_project_permission,
@@ -103,7 +106,50 @@ class ProjectCreateForm(forms.Form):
         label="시장",
         help_text="쉼표로 구분합니다.",
     )
+    investment_horizon = forms.CharField(max_length=2_000, label="투자기간")
+    expected_phenomenon = forms.CharField(
+        max_length=10_000, widget=forms.Textarea, label="예상 현상"
+    )
+    economic_explanation = forms.CharField(
+        max_length=10_000, widget=forms.Textarea, label="경제적 설명"
+    )
+    prior_research_relationship = forms.CharField(
+        max_length=10_000, widget=forms.Textarea, label="기존 연구 관계"
+    )
+    required_data = forms.CharField(
+        max_length=4_000, label="필요 데이터", help_text="쉼표로 구분합니다."
+    )
+    expected_challenges = forms.CharField(
+        max_length=4_000, label="예상 난점", help_text="쉼표로 구분합니다."
+    )
+    similar_research_assessment = forms.CharField(
+        max_length=4_000,
+        initial="none_identified",
+        label="유사 연구 평가",
+        help_text="없으면 정확히 none_identified를 입력합니다.",
+    )
+    similar_research_refs = forms.CharField(
+        max_length=40_000,
+        required=False,
+        widget=forms.Textarea,
+        label="유사 연구 불변 참조",
+        help_text=(
+            "한 줄에 KIND,object_id,version,content_hash,absolute_uri,file_hash"
+        ),
+    )
     reason = forms.CharField(max_length=4_000, widget=forms.Textarea, label="사유")
+
+    def clean_similar_research_refs(self) -> tuple[dict[str, str], ...]:
+        return _parse_external_reference_lines(
+            str(self.cleaned_data.get("similar_research_refs") or "")
+        )
+
+    def clean(self) -> dict[str, Any] | None:
+        cleaned = super().clean()
+        if cleaned is None:
+            return cleaned
+        _validate_similar_reference_form(cleaned, self)
+        return cleaned
 
 
 class ProjectRevisionForm(forms.Form):
@@ -116,7 +162,43 @@ class ProjectRevisionForm(forms.Form):
     )
     asset_classes = forms.CharField(max_length=1_000, label="자산군")
     markets = forms.CharField(max_length=1_000, label="시장")
+    investment_horizon = forms.CharField(max_length=2_000, label="투자기간")
+    expected_phenomenon = forms.CharField(
+        max_length=10_000, widget=forms.Textarea, label="예상 현상"
+    )
+    economic_explanation = forms.CharField(
+        max_length=10_000, widget=forms.Textarea, label="경제적 설명"
+    )
+    prior_research_relationship = forms.CharField(
+        max_length=10_000, widget=forms.Textarea, label="기존 연구 관계"
+    )
+    required_data = forms.CharField(max_length=4_000, label="필요 데이터")
+    expected_challenges = forms.CharField(max_length=4_000, label="예상 난점")
+    similar_research_assessment = forms.CharField(
+        max_length=4_000, label="유사 연구 평가"
+    )
+    similar_research_refs = forms.CharField(
+        max_length=40_000,
+        required=False,
+        widget=forms.Textarea,
+        label="유사 연구 불변 참조",
+        help_text=(
+            "한 줄에 KIND,object_id,version,content_hash,absolute_uri,file_hash"
+        ),
+    )
     reason = forms.CharField(max_length=4_000, widget=forms.Textarea, label="사유")
+
+    def clean_similar_research_refs(self) -> tuple[dict[str, str], ...]:
+        return _parse_external_reference_lines(
+            str(self.cleaned_data.get("similar_research_refs") or "")
+        )
+
+    def clean(self) -> dict[str, Any] | None:
+        cleaned = super().clean()
+        if cleaned is None:
+            return cleaned
+        _validate_similar_reference_form(cleaned, self)
+        return cleaned
 
 
 class ProjectMembersForm(forms.Form):
@@ -156,6 +238,11 @@ class ProjectReferenceForm(forms.Form):
     object_id = forms.RegexField(regex=_IDENTIFIER, max_length=255)
     version = forms.RegexField(regex=_IDENTIFIER, max_length=255)
     content_hash = forms.RegexField(regex=r"^sha256:[0-9a-f]{64}$", max_length=71)
+    artifact_uri = forms.CharField(
+        max_length=8_192,
+        help_text="configured repository-external root 아래의 절대 경로",
+    )
+    artifact_file_hash = forms.RegexField(regex=r"^sha256:[0-9a-f]{64}$", max_length=71)
     reason = forms.CharField(max_length=4_000, widget=forms.Textarea)
 
     def __init__(
@@ -185,6 +272,93 @@ class ProjectTransitionForm(forms.Form):
         required=False,
     )
     reason = forms.CharField(max_length=4_000, widget=forms.Textarea)
+
+
+class ProjectStudyStageForm(forms.Form):
+    expected_project_version = forms.IntegerField(min_value=1, widget=forms.HiddenInput)
+    hypothesis_object_id = forms.RegexField(regex=_IDENTIFIER, max_length=255)
+    hypothesis_version = forms.RegexField(regex=_IDENTIFIER, max_length=255)
+    to_state = forms.ChoiceField(
+        choices=(
+            ("IDEA", "IDEA"),
+            ("STRUCTURED", "STRUCTURED"),
+            ("EXPLORATORY", "EXPLORATORY"),
+        )
+    )
+    exploration_evidence_hash = forms.RegexField(
+        regex=r"^sha256:[0-9a-f]{64}$",
+        max_length=71,
+        required=False,
+    )
+    reason = forms.CharField(max_length=4_000, widget=forms.Textarea)
+
+    def clean(self) -> dict[str, Any] | None:
+        cleaned = super().clean()
+        if cleaned is None:
+            return cleaned
+        target = cleaned.get("to_state")
+        evidence = cleaned.get("exploration_evidence_hash")
+        if target == "EXPLORATORY" and not evidence:
+            self.add_error(
+                "exploration_evidence_hash",
+                "EXPLORATORY 단계에는 탐색 증빙 해시가 필요합니다.",
+            )
+        elif target != "EXPLORATORY" and evidence:
+            self.add_error(
+                "exploration_evidence_hash",
+                "탐색 증빙은 EXPLORATORY 단계에만 기록합니다.",
+            )
+        return cleaned
+
+
+class ProjectPreregistrationForm(forms.Form):
+    expected_project_version = forms.IntegerField(min_value=1, widget=forms.HiddenInput)
+    hypothesis_object_id = forms.RegexField(regex=_IDENTIFIER, max_length=255)
+    hypothesis_version = forms.RegexField(regex=_IDENTIFIER, max_length=255)
+    registration_id = forms.RegexField(regex=_IDENTIFIER, max_length=255)
+    registration_version = forms.IntegerField(min_value=1, initial=1)
+    manifest_hash = forms.RegexField(regex=r"^sha256:[0-9a-f]{64}$", max_length=71)
+    registered_at = forms.DateTimeField(
+        help_text="외부 사전등록 증빙의 timezone 포함 시각"
+    )
+    sample_starts_at = forms.DateTimeField()
+    sample_ends_at = forms.DateTimeField()
+    universe = forms.CharField(max_length=10_000, help_text="쉼표 구분")
+    exclusion_criteria = forms.CharField(max_length=10_000, help_text="쉼표 구분")
+    variable_definitions = forms.CharField(max_length=20_000, help_text="쉼표 구분")
+    target_variable = forms.CharField(max_length=10_000, widget=forms.Textarea)
+    portfolio_construction = forms.CharField(max_length=10_000, widget=forms.Textarea)
+    rebalancing_policy = forms.CharField(max_length=10_000, widget=forms.Textarea)
+    primary_metrics = forms.CharField(max_length=10_000, help_text="쉼표 구분")
+    cost_assumptions = forms.CharField(max_length=10_000, help_text="쉼표 구분")
+    phase_windows = forms.CharField(
+        max_length=20_000,
+        widget=forms.Textarea,
+        help_text="phase,starts_at,ends_at 순서로 정확히 네 줄",
+    )
+    rejection_criteria = forms.CharField(max_length=10_000, help_text="쉼표 구분")
+    data_suitability_evidence_hash = forms.RegexField(
+        regex=r"^sha256:[0-9a-f]{64}$", max_length=71
+    )
+    signal_definition_hash = forms.RegexField(
+        regex=r"^sha256:[0-9a-f]{64}$", max_length=71
+    )
+    reason = forms.CharField(max_length=4_000, widget=forms.Textarea)
+
+    def clean_phase_windows(self) -> tuple[dict[str, str], ...]:
+        rows: list[dict[str, str]] = []
+        for raw_line in str(self.cleaned_data["phase_windows"]).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = tuple(part.strip() for part in line.split(","))
+            if len(parts) != 3:
+                raise forms.ValidationError("phase window 형식이 올바르지 않습니다.")
+            rows.append({"phase": parts[0], "starts_at": parts[1], "ends_at": parts[2]})
+        expected = ("exploration", "development", "validation", "final_holdout")
+        if tuple(row["phase"] for row in rows) != expected:
+            raise forms.ValidationError("네 phase를 고정 순서로 입력해 주세요.")
+        return tuple(rows)
 
 
 def _service() -> ResearchProjectApplicationService:
@@ -225,6 +399,82 @@ def _csv(value: object) -> tuple[str, ...]:
     if not values or len(values) != len(set(values)):
         raise ValueError("project_scope_invalid")
     return values
+
+
+def _parse_external_reference_lines(value: str) -> tuple[dict[str, str], ...]:
+    references: list[dict[str, str]] = []
+    identities: set[tuple[str, str, str]] = set()
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = tuple(part.strip() for part in line.split(","))
+        if (
+            len(parts) != 6
+            or parts[0] not in _REFERENCE_KINDS
+            or _IDENTIFIER.fullmatch(parts[1]) is None
+            or _IDENTIFIER.fullmatch(parts[2]) is None
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", parts[3]) is None
+            or not Path(parts[4]).is_absolute()
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", parts[5]) is None
+        ):
+            raise forms.ValidationError("불변 객체 참조 형식이 올바르지 않습니다.")
+        identity = (parts[0], parts[1], parts[2])
+        if identity in identities:
+            raise forms.ValidationError("중복된 불변 객체 참조입니다.")
+        identities.add(identity)
+        references.append(
+            {
+                "kind": parts[0],
+                "object_id": parts[1],
+                "version": parts[2],
+                "content_hash": parts[3],
+                "artifact_uri": parts[4],
+                "artifact_file_hash": parts[5],
+            }
+        )
+    return tuple(references)
+
+
+def _validate_similar_reference_form(cleaned: dict[str, Any], form: forms.Form) -> None:
+    assessment = str(cleaned.get("similar_research_assessment") or "").casefold()
+    references = tuple(cleaned.get("similar_research_refs") or ())
+    if assessment == "none_identified" and references:
+        form.add_error(
+            "similar_research_refs",
+            "none_identified 평가에는 참조를 연결할 수 없습니다.",
+        )
+    elif assessment != "none_identified" and not references:
+        form.add_error(
+            "similar_research_refs",
+            "유사 연구가 있으면 해석 가능한 불변 참조가 필요합니다.",
+        )
+
+
+def _reference_inputs(
+    *, project_id: str, values: tuple[dict[str, str], ...]
+) -> tuple[dict[str, str], ...]:
+    return tuple({"project_id": project_id, **value} for value in values)
+
+
+def _reference_lines(values: object) -> str:
+    if not isinstance(values, list):
+        return ""
+    return "\n".join(
+        ",".join(
+            str(value[key])
+            for key in (
+                "kind",
+                "object_id",
+                "version",
+                "content_hash",
+                "artifact_uri",
+                "artifact_file_hash",
+            )
+        )
+        for value in values
+        if isinstance(value, dict)
+    )
 
 
 def _project_context(
@@ -462,6 +712,23 @@ def project_create(request: HttpRequest) -> HttpResponse:
                     "owner_id": actor.actor_id,
                     "asset_classes": _csv(form.cleaned_data["asset_classes"]),
                     "markets": _csv(form.cleaned_data["markets"]),
+                    "investment_horizon": form.cleaned_data["investment_horizon"],
+                    "expected_phenomenon": form.cleaned_data["expected_phenomenon"],
+                    "economic_explanation": form.cleaned_data["economic_explanation"],
+                    "prior_research_relationship": form.cleaned_data[
+                        "prior_research_relationship"
+                    ],
+                    "required_data": _csv(form.cleaned_data["required_data"]),
+                    "expected_challenges": _csv(
+                        form.cleaned_data["expected_challenges"]
+                    ),
+                    "similar_research_assessment": form.cleaned_data[
+                        "similar_research_assessment"
+                    ],
+                    "similar_research_refs": _reference_inputs(
+                        project_id=str(form.cleaned_data["project_id"]),
+                        values=form.cleaned_data["similar_research_refs"],
+                    ),
                     "members": ({"actor_id": actor.actor_id, "role": "OWNER"},),
                 }
             )
@@ -570,6 +837,14 @@ def project_revise(request: HttpRequest, project_id: str) -> HttpResponse:
         "research_question": project["research_question"],
         "asset_classes": ",".join(project["asset_classes"]),
         "markets": ",".join(project["markets"]),
+        "investment_horizon": project["investment_horizon"],
+        "expected_phenomenon": project["expected_phenomenon"],
+        "economic_explanation": project["economic_explanation"],
+        "prior_research_relationship": project["prior_research_relationship"],
+        "required_data": ",".join(project["required_data"]),
+        "expected_challenges": ",".join(project["expected_challenges"]),
+        "similar_research_assessment": project["similar_research_assessment"],
+        "similar_research_refs": _reference_lines(project["similar_research_refs"]),
     }
     form = ProjectRevisionForm(request.POST or None, initial=initial)
     if request.method == "GET" or not form.is_valid():
@@ -593,6 +868,23 @@ def project_revise(request: HttpRequest, project_id: str) -> HttpResponse:
                     "research_question": form.cleaned_data["research_question"],
                     "asset_classes": _csv(form.cleaned_data["asset_classes"]),
                     "markets": _csv(form.cleaned_data["markets"]),
+                    "investment_horizon": form.cleaned_data["investment_horizon"],
+                    "expected_phenomenon": form.cleaned_data["expected_phenomenon"],
+                    "economic_explanation": form.cleaned_data["economic_explanation"],
+                    "prior_research_relationship": form.cleaned_data[
+                        "prior_research_relationship"
+                    ],
+                    "required_data": _csv(form.cleaned_data["required_data"]),
+                    "expected_challenges": _csv(
+                        form.cleaned_data["expected_challenges"]
+                    ),
+                    "similar_research_assessment": form.cleaned_data[
+                        "similar_research_assessment"
+                    ],
+                    "similar_research_refs": _reference_inputs(
+                        project_id=project_id,
+                        values=form.cleaned_data["similar_research_refs"],
+                    ),
                 }
             )
         )
@@ -722,6 +1014,8 @@ def project_reference(request: HttpRequest, project_id: str) -> HttpResponse:
                 "object_id": form.cleaned_data["object_id"],
                 "version": form.cleaned_data["version"],
                 "content_hash": form.cleaned_data["content_hash"],
+                "artifact_uri": form.cleaned_data["artifact_uri"],
+                "artifact_file_hash": form.cleaned_data["artifact_file_hash"],
             }
         )
         result = _service().attach_reference(
@@ -759,6 +1053,184 @@ def project_reference(request: HttpRequest, project_id: str) -> HttpResponse:
     ) as exc:
         return _handle_project_error(request, exc)
     messages.success(request, "해시 고정 typed reference를 연결했습니다.")
+    return redirect("portal:project-detail", project_id=project_id)
+
+
+@login_required
+@permission_required(PROJECT_WRITE_PERMISSION, raise_exception=True)
+@require_http_methods(["GET", "POST"])
+def project_study_stage(request: HttpRequest, project_id: str) -> HttpResponse:
+    try:
+        project = _load_project(request, project_id)
+        _require_project_role(
+            request,
+            project=project,
+            permission=ResearchProjectPermission.LINK_HYPOTHESIS,
+        )
+    except (
+        ApplicationAuthorizationError,
+        OSError,
+        PydanticValidationError,
+        ResearchProjectError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _handle_project_error(request, exc)
+    form = ProjectStudyStageForm(
+        request.POST or None,
+        initial={"expected_project_version": project["version"]},
+    )
+    if request.method == "GET" or not form.is_valid():
+        return _render_action_form(
+            request,
+            project=project,
+            form=form,
+            action="study-stage",
+        )
+    try:
+        result = _service().record_study_stage(
+            ResearchStudyStageRequest.model_validate(
+                {
+                    **_request_metadata(
+                        request, reason=str(form.cleaned_data["reason"])
+                    ),
+                    "project_id": project_id,
+                    "expected_project_version": form.cleaned_data[
+                        "expected_project_version"
+                    ],
+                    "hypothesis_object_id": form.cleaned_data["hypothesis_object_id"],
+                    "hypothesis_version": form.cleaned_data["hypothesis_version"],
+                    "to_state": form.cleaned_data["to_state"],
+                    "exploration_evidence_hash": form.cleaned_data[
+                        "exploration_evidence_hash"
+                    ]
+                    or None,
+                }
+            )
+        )
+        _audit(
+            request,
+            action="research_study_stage_recorded",
+            project=project,
+            details={
+                "hypothesis_id": result.hypothesis_id,
+                "hypothesis_version": result.hypothesis_version,
+                "state": result.state,
+                "transition_row_hash": result.transition_row_hash,
+            },
+        )
+    except (
+        ApplicationAuthorizationError,
+        OSError,
+        PydanticValidationError,
+        ResearchProjectError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _handle_project_error(request, exc)
+    messages.success(request, "독립 연구 단계 이벤트를 기록했습니다.")
+    return redirect("portal:project-detail", project_id=project_id)
+
+
+@login_required
+@permission_required(PROJECT_WRITE_PERMISSION, raise_exception=True)
+@require_http_methods(["GET", "POST"])
+def project_preregister(request: HttpRequest, project_id: str) -> HttpResponse:
+    try:
+        project = _load_project(request, project_id)
+        _require_project_role(
+            request,
+            project=project,
+            permission=ResearchProjectPermission.LINK_HYPOTHESIS,
+        )
+    except (
+        ApplicationAuthorizationError,
+        OSError,
+        PydanticValidationError,
+        ResearchProjectError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _handle_project_error(request, exc)
+    form = ProjectPreregistrationForm(
+        request.POST or None,
+        initial={"expected_project_version": project["version"]},
+    )
+    if request.method == "GET" or not form.is_valid():
+        return _render_action_form(
+            request,
+            project=project,
+            form=form,
+            action="preregister",
+        )
+    try:
+        metadata = _request_metadata(request, reason=str(form.cleaned_data["reason"]))
+        metadata["recorded_at"] = form.cleaned_data["registered_at"].isoformat()
+        result = _service().preregister_study(
+            ResearchStudyPreregistrationRequest.model_validate(
+                {
+                    **metadata,
+                    "project_id": project_id,
+                    "expected_project_version": form.cleaned_data[
+                        "expected_project_version"
+                    ],
+                    "hypothesis_object_id": form.cleaned_data["hypothesis_object_id"],
+                    "hypothesis_version": form.cleaned_data["hypothesis_version"],
+                    "registration_id": form.cleaned_data["registration_id"],
+                    "registration_version": form.cleaned_data["registration_version"],
+                    "manifest_hash": form.cleaned_data["manifest_hash"],
+                    "sample_starts_at": form.cleaned_data[
+                        "sample_starts_at"
+                    ].isoformat(),
+                    "sample_ends_at": form.cleaned_data["sample_ends_at"].isoformat(),
+                    "universe": _csv(form.cleaned_data["universe"]),
+                    "exclusion_criteria": _csv(form.cleaned_data["exclusion_criteria"]),
+                    "variable_definitions": _csv(
+                        form.cleaned_data["variable_definitions"]
+                    ),
+                    "target_variable": form.cleaned_data["target_variable"],
+                    "portfolio_construction": form.cleaned_data[
+                        "portfolio_construction"
+                    ],
+                    "rebalancing_policy": form.cleaned_data["rebalancing_policy"],
+                    "primary_metrics": _csv(form.cleaned_data["primary_metrics"]),
+                    "cost_assumptions": _csv(form.cleaned_data["cost_assumptions"]),
+                    "phase_windows": form.cleaned_data["phase_windows"],
+                    "rejection_criteria": _csv(form.cleaned_data["rejection_criteria"]),
+                    "data_suitability_evidence_hash": form.cleaned_data[
+                        "data_suitability_evidence_hash"
+                    ],
+                    "signal_definition_hash": form.cleaned_data[
+                        "signal_definition_hash"
+                    ],
+                }
+            )
+        )
+        _audit(
+            request,
+            action="research_study_preregistered",
+            project=project,
+            details={
+                "hypothesis_id": result.hypothesis_id,
+                "hypothesis_version": result.hypothesis_version,
+                "preregistration_hash": result.preregistration_hash,
+                "preregistration_row_hash": result.preregistration_row_hash,
+            },
+        )
+    except (
+        ApplicationAuthorizationError,
+        OSError,
+        PydanticValidationError,
+        ResearchProjectError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _handle_project_error(request, exc)
+    messages.success(request, "독립 사전등록 설계를 불변 registry에 기록했습니다.")
     return redirect("portal:project-detail", project_id=project_id)
 
 

@@ -14,12 +14,16 @@ from .contracts import (
 
 
 def cli_actor_context() -> ActorContext:
-    # The local CLI is already an explicitly trusted server-side interface.
-    # Give that adapter a visible wildcard instead of silently bypassing the
-    # application authorization boundary.
+    """Return the least-privilege actor used by non-governance CLI adapters.
+
+    The command line is not an identity provider.  It may run local research
+    and read preflight evidence, but it must never acquire review, approval,
+    exception, or lifecycle-mutation authority merely because it is local.
+    """
+
     return ActorContext(
         actor_id="local-cli",
-        permissions=frozenset({"*"}),
+        permissions=frozenset({"research.execute", "research.view"}),
         source="cli",
     )
 

@@ -119,6 +119,75 @@ def test_terminal_validation_artifact_preflight_leaves_no_partial_publication(
         assert not (tmp_path / "research_candidate_report.json").exists()
 
 
+def test_terminal_validation_publishes_external_and_canonical_summary_atomically(
+    tmp_path: Path,
+) -> None:
+    payloads: dict[str, dict[str, object]] = {
+        "summary": {"artifact_type": "validated_research_result", "revision": 3},
+        "candidate": {"artifact_type": "research_candidate_report", "revision": 3},
+        "selected": {"candidate_id": "candidate-3", "revision": 3},
+    }
+    report_root = tmp_path / "reports"
+    external_summary = tmp_path / "external" / "validated-summary.json"
+    canonical_summary = report_root / "validation_summary.json"
+
+    _publish_terminal_validation_artifacts(
+        summary_target=external_summary,
+        canonical_summary_target=canonical_summary,
+        summary=payloads["summary"],
+        candidate_target=report_root / "research_candidate_report.json",
+        decision_report=payloads["candidate"],
+        selected_target=report_root / "selected_candidate.json",
+        selected_candidate=payloads["selected"],
+    )
+
+    assert external_summary.read_bytes() == canonical_summary.read_bytes()
+    prior = {
+        path: path.read_bytes()
+        for path in (
+            external_summary,
+            canonical_summary,
+            report_root / "research_candidate_report.json",
+            report_root / "selected_candidate.json",
+        )
+    }
+    _publish_terminal_validation_artifacts(
+        summary_target=external_summary,
+        canonical_summary_target=canonical_summary,
+        summary=deepcopy(payloads["summary"]),
+        candidate_target=report_root / "research_candidate_report.json",
+        decision_report=deepcopy(payloads["candidate"]),
+        selected_target=report_root / "selected_candidate.json",
+        selected_candidate=deepcopy(payloads["selected"]),
+    )
+    assert {path: path.read_bytes() for path in prior} == prior
+
+    conflicting_root = tmp_path / "conflicting-reports"
+    conflicting_canonical = conflicting_root / "validation_summary.json"
+    conflicting_canonical.parent.mkdir(parents=True, exist_ok=True)
+    conflicting_canonical.write_text('{"immutable":"prior"}\n', encoding="utf-8")
+    conflicting_external = tmp_path / "conflicting-external" / "summary.json"
+    with pytest.raises(
+        ValidationRunError,
+        match=(
+            r"terminal_validation_artifact_publication_failed:"
+            r"validation_summary.json:atomic_json_target_conflict"
+        ),
+    ):
+        _publish_terminal_validation_artifacts(
+            summary_target=conflicting_external,
+            canonical_summary_target=conflicting_canonical,
+            summary=payloads["summary"],
+            candidate_target=conflicting_root / "research_candidate_report.json",
+            decision_report=payloads["candidate"],
+            selected_target=conflicting_root / "selected_candidate.json",
+            selected_candidate=payloads["selected"],
+        )
+    assert not conflicting_external.exists()
+    assert not (conflicting_root / "research_candidate_report.json").exists()
+    assert not (conflicting_root / "selected_candidate.json").exists()
+
+
 def _full_candidate(*, detail_policy: str) -> dict[str, Any]:
     return {
         "parameter_candidate_id": "candidate-1",

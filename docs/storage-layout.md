@@ -10,6 +10,13 @@ repository-external and configured through `ResearchSettings`.
 - validation identity registry: `RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH`,
   or the derived common-parent `_registry/research_validate_experiment_identity.jsonl`
   only when artifact and report roots are siblings
+- final-holdout authority: `RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH`, or the
+  common-parent `_holdout_authority/final_holdout_authority.jsonl`; operated
+  jobs always receive this shared path explicitly and never derive it from a
+  per-job sandbox root; the operated ledger and its `.lock` inode are
+  pre-created as exact `0660`, single-link regular files in the one trusted
+  setgid service group, and the ledger additionally carries the Linux kernel
+  append-only flag
 
 Use SQLite for candle inputs, atomic writes for JSON reports, and append-only
 JSONL for audit streams. Paths must be absolute and outside the repository.
@@ -39,6 +46,13 @@ validator, alert, diagnostics, retention, and backup processes see research
 roots read-only. Preflight byte-binds the installed units to the immutable
 release. The shared group and setgid roots provide backup readability and
 directory creation; they are not, by themselves, an authorization boundary.
+The Job worker is the narrow exception for final-holdout coordination: its
+unit and nested process sandbox bind only the authority ledger and lock files
+writable. The containing registry directory and every sibling path remain
+read-only, so the child cannot create, replace, unlink, or redirect an
+authority inode. Both the storage boundary and native preflight reject
+symlinks, non-regular or multiply linked files, wrong groups, and noncanonical
+or world-writable modes.
 Backtest, walk-forward, final-holdout, validation-summary, decision-report, and
 rendered comparison outputs use the report root by default. Candidate detail,
 audit, statistical-selection, and reproduction evidence remain derived

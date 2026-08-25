@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.models.query import QuerySet
 from django.utils import timezone
 
@@ -308,7 +308,25 @@ def test_validator_recomputes_pending_intent_hash(
     with transaction.atomic():
         event = _record()
     tampered = {**event.payload, "details": {"tampered": True}}
-    WebAuditEvent.objects.filter(pk=event.pk).update(payload=tampered)
+    queryset = WebAuditEvent.objects.filter(pk=event.pk)
+    if connection.vendor == "postgresql":
+        # The operated database must reject this mutation before the
+        # application validator ever sees it.  Deliberately disable user
+        # triggers only inside the disposable test database afterwards so we
+        # can also exercise detection of corruption below that DB boundary
+        # (for example, a damaged restore or privileged storage rewrite).
+        with pytest.raises(
+            DatabaseError,
+            match="portal_web_audit_event_intent_mutation_rejected",
+        ):
+            queryset.update(payload=tampered)
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL session_replication_role = replica")
+            updated = queryset.update(payload=tampered)
+    else:
+        updated = queryset.update(payload=tampered)
+    assert updated == 1
 
     validation = validate_web_audit_outbox()
     assert validation["status"] == "FAIL"

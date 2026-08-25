@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,13 @@ from market_research.research.corporate_action_contract import (
     parse_corporate_action_set,
 )
 from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
+from market_research.research.datasets.source_provenance import (
+    build_dataset_source_provenance,
+)
+from market_research.research.datasets.verification import (
+    DatasetVerificationResult,
+    VerificationStatus,
+)
 from market_research.research.experiment_manifest import DateRange
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.instrument_contract import parse_instrument_master
@@ -29,10 +37,17 @@ from market_research.research.point_in_time_selection import (
 )
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research.universe_contract import parse_point_in_time_universe
+from market_research.research.universe_contract import (
+    build_survivorship_evidence_manifest,
+)
 from market_research.research_composition import (
     resolve_builtin_strategy as resolve_research_strategy,
 )
 from tests.test_instrument_domain_contracts import _instrument
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    build_test_source_catalog,
+)
 
 
 def _hash(char: str) -> str:
@@ -43,31 +58,95 @@ def _file_hash(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _typed_source_provenance(provider_id: str):
+    template = TEST_SOURCE_PROVENANCE
+    source = template.sources[0].as_dict()
+    source["provider_id"] = provider_id
+    return build_dataset_source_provenance(
+        source_catalog=build_test_source_catalog(provider_id=provider_id),
+        sources=(source,),
+        source_priority=(provider_id,),
+        lineage=tuple(item.as_dict() for item in template.lineage),
+    )
+
+
+def _verified_dataset_result() -> DatasetVerificationResult:
+    return DatasetVerificationResult(
+        overall_status=VerificationStatus.VERIFIED,
+        content_status=VerificationStatus.VERIFIED,
+        expected_content_hash=_hash("a"),
+        actual_content_hash=_hash("a"),
+        content_method="test_canonical_artifact_bytes",
+        schema_status=VerificationStatus.VERIFIED,
+        expected_schema_hash=_hash("b"),
+        actual_schema_hash=_hash("b"),
+        locator_status=VerificationStatus.VERIFIED,
+        locator_type="content_addressed_local",
+        scope_status=VerificationStatus.VERIFIED,
+        declared_scope={"market": "KRW-BTC", "interval": "1m"},
+        actual_scope={"market": "KRW-BTC", "interval": "1m"},
+        adapter_name="test_immutable_adapter",
+        adapter_version="1",
+    )
+
+
 def _membership(
     *,
     version: int = 1,
     valid_to: str = "2026-12-31",
     status: str = "active",
     observed_at: str = "2025-12-01T00:00:00+00:00",
+    schema_version: int = 1,
 ) -> dict[str, object]:
-    return {
-        "schema_version": 1,
+    common: dict[str, object] = {
+        "schema_version": schema_version,
         "membership_id": "um_btc_selection_0001",
         "membership_version_id": f"umv_btc_selection_0001_v{version}",
         "version": version,
         "universe_id": "univ_selection_test_0001",
         "instrument_id": "inst_btc_internal_0001",
-        "valid_from": "2026-01-01",
-        "valid_to": valid_to,
-        "status": status,
-        "published_at": observed_at,
-        "observed_at": observed_at,
         "source_content_hash": _hash(str(version)),
         "attributes": [],
         "supersedes_version_id": (
             "umv_btc_selection_0001_v1" if version == 2 else None
         ),
         "correction_reason": "reviewed end-date correction" if version == 2 else None,
+    }
+    if schema_version == 1:
+        return {
+            **common,
+            "valid_from": "2026-01-01",
+            "valid_to": valid_to,
+            "status": status,
+            "published_at": observed_at,
+            "observed_at": observed_at,
+        }
+    effective_end = (
+        "2026-07-01T00:00:00+00:00"
+        if valid_to == "2026-06-30"
+        else "2027-01-01T00:00:00+00:00"
+    )
+    return {
+        **common,
+        "effective_time": "2026-01-01T00:00:00+00:00",
+        "effective_end_time": effective_end,
+        "publication_time": observed_at,
+        "vendor_arrival_time": observed_at,
+        "ingestion_time": observed_at,
+        "revision_time": observed_at,
+        "constituent_state": "included",
+        "tradability_state": "tradable",
+        "issuer_id": "issuer_btc_selection_0001",
+        "security_id": "security_btc_selection_0001",
+        "listing_id": "listing_btc_selection_0001",
+        "exchange_mic": "XOFF",
+        "provider_id": "manifest_market",
+        "vendor_symbol": "KRW-BTC",
+        "security_kind": "primary",
+        "parent_issuer_id": None,
+        "country_code": "KR",
+        "trading_currency": "KRW",
+        "accounting_currency": "KRW",
     }
 
 
@@ -77,11 +156,15 @@ def _universe(
     *,
     future_correction: bool = False,
     inactive_valid_to: str | None = None,
+    schema_version: int = 1,
+    survivorship_source_uri: str | None = None,
+    survivorship_source_hash: str | None = None,
 ):
     memberships = [
         _membership(
             valid_to=inactive_valid_to or "2026-12-31",
             status="inactive" if inactive_valid_to else "active",
+            schema_version=schema_version,
         )
     ]
     if future_correction:
@@ -91,23 +174,37 @@ def _universe(
                 valid_to="2026-06-30",
                 status="inactive",
                 observed_at="2026-08-01T00:00:00+00:00",
+                schema_version=schema_version,
             )
         )
-    return parse_point_in_time_universe(
-        {
-            "schema_version": 1,
-            "universe_id": "univ_selection_test_0001",
-            "universe_version_id": "univv_selection_test_0001_v1",
-            "version": 1,
-            "name": "Frozen selection test universe",
-            "source_uri": source_uri,
-            "source_content_hash": source_hash,
-            "source_schema_hash": _hash("a"),
-            "prepared_at": "2026-12-31T00:00:00+00:00",
-            "observed_at": "2026-12-31T00:00:00+00:00",
-            "memberships": memberships,
-        }
-    )
+    payload: dict[str, object] = {
+        "schema_version": schema_version,
+        "universe_id": "univ_selection_test_0001",
+        "universe_version_id": "univv_selection_test_0001_v1",
+        "version": 1,
+        "name": "Frozen selection test universe",
+        "source_uri": source_uri,
+        "source_content_hash": source_hash,
+        "source_schema_hash": _hash("a"),
+        "prepared_at": "2026-12-31T00:00:00+00:00",
+        "observed_at": "2026-12-31T00:00:00+00:00",
+        "memberships": memberships,
+    }
+    if schema_version == 2:
+        payload.update(
+            {
+                "coverage_start": "2026-01-01T00:00:00+00:00",
+                "coverage_end": "2027-01-01T00:00:00+00:00",
+                "population_definition_hash": _hash("b"),
+                "survivorship_evidence_uri": survivorship_source_uri or source_uri,
+                "survivorship_evidence_hash": (survivorship_source_hash or source_hash),
+                "survivorship_policy": (
+                    "complete_historical_population_including_delisted_bankrupt_"
+                    "merged_withdrawn_and_halted_v1"
+                ),
+            }
+        )
+    return parse_point_in_time_universe(payload)
 
 
 def _calendar(source_uri: str, source_hash: str):
@@ -293,6 +390,10 @@ def _snapshot(manifest, *timestamps: str) -> DatasetSnapshot:
             },
         }
     }
+    provenance = None
+    if manifest.universe.schema_version == 2:
+        provider_id = str(manifest.universe.memberships[0].provider_id)
+        provenance = _typed_source_provenance(provider_id)
     return DatasetSnapshot(
         snapshot_id="pit-test",
         source="offline_fixture",
@@ -302,6 +403,18 @@ def _snapshot(manifest, *timestamps: str) -> DatasetSnapshot:
         date_range=DateRange("2026-07-01", "2026-12-31"),
         candles=candles,
         options=options,
+        source_provenance_hash=(
+            provenance.provenance_manifest_hash if provenance is not None else None
+        ),
+        adapter_provenance=(
+            {
+                "source_provenance": provenance.as_dict(),
+                "source_provenance_hash": provenance.provenance_manifest_hash,
+            }
+            if provenance is not None
+            else None
+        ),
+        verification=_verified_dataset_result() if provenance is not None else None,
     )
 
 
@@ -464,18 +577,48 @@ def test_known_future_effective_action_correction_supersedes_old_version() -> No
 
 def test_validation_scope_rejects_missing_authority_and_source_tamper(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     universe_source = tmp_path / "universe-source.json"
+    survivorship_source = tmp_path / "survivorship-evidence.json"
     calendar_source = tmp_path / "calendar-source.json"
     universe_source.write_bytes(b"immutable-universe-source-v1")
     calendar_source.write_bytes(b"immutable-calendar-source-v1")
-    universe = _universe(str(universe_source), _file_hash(universe_source))
+    preliminary = _universe(
+        str(universe_source),
+        _file_hash(universe_source),
+        schema_version=2,
+        survivorship_source_uri=str(survivorship_source),
+        survivorship_source_hash=_hash("0"),
+    )
+    survivorship_source.write_text(
+        json.dumps(
+            build_survivorship_evidence_manifest(
+                universe=preliminary,
+                source_snapshot_hash=_file_hash(universe_source),
+            ),
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    universe = _universe(
+        str(universe_source),
+        _file_hash(universe_source),
+        schema_version=2,
+        survivorship_source_uri=str(survivorship_source),
+        survivorship_source_hash=_file_hash(survivorship_source),
+    )
     calendar = _calendar(str(calendar_source), _file_hash(calendar_source))
     manifest = _manifest(
         universe=universe,
         calendar=calendar,
         classification="validated_candidate",
     )
+
+    def _forbid_second_path_read(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("survivorship verification must parse pinned bytes")
+
+    monkeypatch.setattr(Path, "read_text", _forbid_second_path_read)
     binding = require_point_in_time_scope(manifest, verify_source_content=True)
     assert (
         binding["authorities"]["source_content_verification"]["point_in_time_universe"][
@@ -488,6 +631,26 @@ def test_validation_scope_rejects_missing_authority_and_source_tamper(
         snapshot=_snapshot(manifest, "2026-07-02T14:00:00+00:00"),
     )
     assert evidence["selected_candle_count"] == 1
+
+    shape_only = replace(
+        _snapshot(manifest, "2026-07-02T14:00:00+00:00"),
+        source_provenance_hash=None,
+        verification=None,
+        adapter_provenance={
+            "source_provenance": {
+                "source_priority": ["manifest_market"],
+                "sources": [{"provider_id": "manifest_market"}],
+            }
+        },
+    )
+    with pytest.raises(
+        PointInTimeSelectionError,
+        match="dataset_provider_provenance_required",
+    ):
+        build_point_in_time_decision_evidence(
+            manifest=manifest,
+            snapshot=shape_only,
+        )
 
     missing = copy.copy(manifest)
     missing.market_calendar = None

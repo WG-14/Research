@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -13,10 +14,13 @@ from django.urls import reverse
 
 from market_research.paths import ResearchPathManager
 from market_research.research.research_project import (
+    ResearchProjectObjectKind,
     get_research_project,
     research_project_namespaces,
     research_project_registry_path,
+    resolved_research_object_envelope,
 )
+from market_research.research.hashing import canonical_json_bytes
 from market_research.settings import ResearchSettings
 
 
@@ -58,6 +62,51 @@ def _group_user(group_name: str) -> Any:
     return user
 
 
+def _agenda_form() -> dict[str, str]:
+    return {
+        "investment_horizon": "One to twenty trading days",
+        "expected_phenomenon": "Liquidity compensation persists after costs.",
+        "economic_explanation": "Inventory risk earns a return premium.",
+        "prior_research_relationship": "Narrows prior liquidity studies.",
+        "required_data": "point-in-time prices,delisting-complete universe",
+        "expected_challenges": "survivorship bias,capacity estimation",
+        "similar_research_assessment": "none_identified",
+        "similar_research_refs": "",
+    }
+
+
+def _resolved_reference_form(
+    paths: ResearchPathManager,
+    *,
+    kind: str,
+    object_id: str,
+    version: str = "1",
+) -> dict[str, str]:
+    envelope = resolved_research_object_envelope(
+        kind=ResearchProjectObjectKind(kind),
+        object_id=object_id,
+        version=version,
+        object_payload={
+            "logical_id": object_id,
+            "version": version,
+            "evidence": f"web-{kind.casefold()}",
+        },
+    )
+    raw = canonical_json_bytes(envelope)
+    artifact = paths.artifact_root / "resolved-web" / f"{kind}-{object_id}.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(raw)
+    artifact.chmod(0o644)
+    return {
+        "kind": kind,
+        "object_id": object_id,
+        "version": version,
+        "content_hash": str(envelope["content_hash"]),
+        "artifact_uri": str(artifact.resolve()),
+        "artifact_file_hash": "sha256:" + hashlib.sha256(raw).hexdigest(),
+    }
+
+
 def test_authenticated_project_crud_workflow_binds_actor_and_hides_paths(
     client: Any,
     tmp_path: Path,
@@ -77,6 +126,7 @@ def test_authenticated_project_crud_workflow_binds_actor_and_hides_paths(
             "research_question": "Does the signal survive strict validation?",
             "asset_classes": "EQUITY,FUTURE",
             "markets": "KRX,NYSE",
+            **_agenda_form(),
             "reason": "Create an explicit governed research workspace",
         },
     )
@@ -94,6 +144,7 @@ def test_authenticated_project_crud_workflow_binds_actor_and_hides_paths(
             "research_question": "Does the revised signal survive validation?",
             "asset_classes": "EQUITY",
             "markets": "KRX",
+            **_agenda_form(),
             "reason": "Narrow the preregistered scope",
         },
     )
@@ -110,14 +161,16 @@ def test_authenticated_project_crud_workflow_binds_actor_and_hides_paths(
     assert members.status_code == 302
 
     client.force_login(researcher)
+    resolved_result = _resolved_reference_form(
+        paths,
+        kind="RESULT",
+        object_id="validated-result-1",
+    )
     reference = client.post(
         reverse("portal:project-reference", args=(project_id,)),
         {
             "expected_version": 3,
-            "kind": "RESULT",
-            "object_id": "validated-result-1",
-            "version": "1",
-            "content_hash": f"sha256:{'a' * 64}",
+            **resolved_result,
             "reason": "Bind the validated result",
         },
     )
@@ -152,7 +205,7 @@ def test_authenticated_project_crud_workflow_binds_actor_and_hides_paths(
             "kind": "RESULT",
             "object_id": "validated-result-1",
             "version": "1",
-            "content_hash": f"sha256:{'a' * 64}",
+            "content_hash": resolved_result["content_hash"],
         },
     )
     for response in (list_response, detail_response, impact_response):
@@ -201,6 +254,7 @@ def test_project_routes_require_django_permission_and_project_membership(
                 "research_question": "Can a non-member discover this project?",
                 "asset_classes": "EQUITY",
                 "markets": "KRX",
+                **_agenda_form(),
                 "reason": "Test project-scoped authorization",
             },
         ).status_code
@@ -281,6 +335,7 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
             "research_question": "Do global and project roles both bind?",
             "asset_classes": "EQUITY",
             "markets": "KRX",
+            **_agenda_form(),
             "reason": "Prove ordinary-role access without portal admin",
             # Browser-supplied authority fields are ignored. The adapter owns
             # the actor, event id, and timestamp.
@@ -323,6 +378,8 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
     researcher_body = researcher_detail.content.decode("utf-8")
     assert researcher_detail.status_code == 200
     assert "객체 참조 연결" in researcher_body
+    assert "독립 연구 단계 기록" in researcher_body
+    assert "사전등록 설계 고정" in researcher_body
     assert "격리 작업공간 준비" in researcher_body
     assert "구성원 관리" not in researcher_body
     assert "Lifecycle 변경" not in researcher_body
@@ -333,6 +390,18 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
     reference_form = client.get(
         reverse("portal:project-reference", args=(project_id,))
     ).content.decode("utf-8")
+    assert (
+        client.get(
+            reverse("portal:project-study-stage", args=(project_id,))
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            reverse("portal:project-preregister", args=(project_id,))
+        ).status_code
+        == 200
+    )
     assert all(
         f'value="{kind}"' in reference_form
         for kind in ("HYPOTHESIS", "CODE", "EXPERIMENT", "RESULT")
@@ -343,23 +412,24 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
         reverse("portal:project-reference", args=(project_id,)),
         {
             "expected_version": 2,
-            "kind": "PACKAGE",
-            "object_id": "forged-package",
-            "version": "1",
-            "content_hash": f"sha256:{'f' * 64}",
+            **_resolved_reference_form(
+                paths, kind="PACKAGE", object_id="forged-package"
+            ),
             "reason": "Must fail the project-role half of the gate",
         },
     )
     assert forged.status_code == 200
     assert get_research_project(paths, project_id).version == 2
+    resolved_result = _resolved_reference_form(
+        paths,
+        kind="RESULT",
+        object_id="validated-result-role-gate",
+    )
     result_reference = client.post(
         reverse("portal:project-reference", args=(project_id,)),
         {
             "expected_version": 2,
-            "kind": "RESULT",
-            "object_id": "validated-result-role-gate",
-            "version": "1",
-            "content_hash": f"sha256:{'a' * 64}",
+            **resolved_result,
             "reason": "Researcher binds validated result",
         },
     )
@@ -381,14 +451,16 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
     ).content.decode("utf-8")
     assert 'value="REVIEW"' in reviewer_form
     assert 'value="RESULT"' not in reviewer_form
+    resolved_review = _resolved_reference_form(
+        paths,
+        kind="REVIEW",
+        object_id="independent-review-role-gate",
+    )
     review_reference = client.post(
         reverse("portal:project-reference", args=(project_id,)),
         {
             "expected_version": 3,
-            "kind": "REVIEW",
-            "object_id": "independent-review-role-gate",
-            "version": "1",
-            "content_hash": f"sha256:{'b' * 64}",
+            **resolved_review,
             "reason": "Reviewer binds review evidence",
         },
     )
@@ -419,14 +491,16 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
     ).content.decode("utf-8")
     assert 'value="PACKAGE"' in publisher_form
     assert 'value="REVIEW"' not in publisher_form
+    resolved_package = _resolved_reference_form(
+        paths,
+        kind="PACKAGE",
+        object_id="official-package-role-gate",
+    )
     package_reference = client.post(
         reverse("portal:project-reference", args=(project_id,)),
         {
             "expected_version": 5,
-            "kind": "PACKAGE",
-            "object_id": "official-package-role-gate",
-            "version": "1",
-            "content_hash": f"sha256:{'c' * 64}",
+            **resolved_package,
             "reason": "Publisher binds immutable package reference",
         },
     )
@@ -439,9 +513,9 @@ def test_project_global_permissions_and_membership_roles_form_dual_gate(
     typed_reference_detail = client.get(
         reverse("portal:project-detail", args=(project_id,))
     ).content.decode("utf-8")
-    assert "artifact resolver 결과가 아니라" in typed_reference_detail
+    assert "resolver가 검증한 객체" in typed_reference_detail
     assert "official-package-role-gate" in typed_reference_detail
-    assert f"sha256:{'c' * 64}" in typed_reference_detail
+    assert resolved_package["content_hash"] in typed_reference_detail
     assert 'href="official-package-role-gate"' not in typed_reference_detail
 
     client.force_login(viewer)

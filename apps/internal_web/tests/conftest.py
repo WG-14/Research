@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -18,6 +19,47 @@ from portal.models import ManifestUpload
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+@pytest.fixture(scope="session", autouse=True)
+def _postgresql_test_database_immutable_flush_bridge():
+    """Let Django clean its disposable PostgreSQL database without weakening prod.
+
+    The production triggers correctly reject ``TRUNCATE``.  Django's
+    ``TransactionTestCase`` cleanup also uses ``TRUNCATE``, so an unqualified
+    test run otherwise succeeds once and then contaminates every later case.
+    Intercept only Django's flush operation, only when the active database is
+    the backend-generated test database, and restore every trigger immediately
+    after the atomic cleanup.  Application queries never receive this bypass.
+    """
+
+    from django.db.backends.postgresql.operations import DatabaseOperations
+    from django.db import transaction
+
+    original = DatabaseOperations.execute_sql_flush
+
+    def execute_test_flush(self, sql_list):
+        connection = self.connection
+        active_name = str(connection.settings_dict.get("NAME") or "")
+        configured_name = os.environ.get("INTERNAL_WEB_DATABASE_NAME", "").strip()
+        expected_test_name = f"test_{configured_name}"
+        if active_name != expected_test_name:
+            return original(self, sql_list)
+
+        with transaction.atomic(
+            using=connection.alias,
+            savepoint=connection.features.can_rollback_ddl,
+        ):
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL session_replication_role = replica")
+                for sql in sql_list:
+                    cursor.execute(sql)
+        return None
+
+    DatabaseOperations.execute_sql_flush = execute_test_flush
+    try:
+        yield
+    finally:
+        DatabaseOperations.execute_sql_flush = original
 
 
 @pytest.fixture

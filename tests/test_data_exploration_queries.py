@@ -12,7 +12,6 @@ from market_research.research.data_exploration_queries import (
     query_feature_definition_detail,
     query_feature_definitions,
 )
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.datasets.source_provenance import (
     DatasetSourceProvenance,
     build_dataset_source_provenance,
@@ -24,6 +23,7 @@ from market_research.research_composition import builtin_strategy_registry
 from market_research.settings import ResearchSettings
 from tests.dataset_provenance_fixture import (
     TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
 )
 
 

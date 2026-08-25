@@ -345,6 +345,11 @@ class ResearchApplicationService:
                 validation_experiment_bundle_path=(
                     request.validation_experiment_bundle_path
                 ),
+                final_holdout_reservation=(
+                    request.final_holdout_reservation.model_dump(mode="python")
+                    if request.final_holdout_reservation is not None
+                    else None
+                ),
                 progress_callback=progress,
                 strategy_registry=self.strategy_registry,
                 run_id=handle.run_id,

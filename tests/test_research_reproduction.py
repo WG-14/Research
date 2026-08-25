@@ -18,6 +18,7 @@ from market_research.research.code_provenance import (
 )
 from market_research.research.execution_plan import (
     DETERMINISTIC_SINGLE_THREAD_ENVIRONMENT_VARIABLES,
+    RESULT_AFFECTING_ENVIRONMENT_VARIABLES,
 )
 from market_research.research_composition import load_builtin_manifest as load_manifest
 from market_research.research.reproduction import (
@@ -153,6 +154,54 @@ def test_receipt_binds_completed_backtest_to_stable_evidence(tmp_path: Path) -> 
         identities,
         label="resolved_dependency_contract",
     )
+
+
+def test_receipt_excludes_secrets_and_rejects_self_rehashed_secret_injection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_name = "RESEARCH_TEST_API_SECRET"
+    secret_value = "test-only-secret-value-that-must-never-enter-evidence"
+    monkeypatch.setenv(secret_name, secret_value)
+    _, _, _, report = _run_report(tmp_path)
+    receipt_path = Path(str(report["reproduction_receipt_path"]))
+    serialized = receipt_path.read_text(encoding="utf-8")
+
+    assert secret_name not in serialized
+    assert secret_value not in serialized
+    receipt = load_reproduction_receipt(receipt_path)
+    affecting = receipt["stable_fingerprint"]["strict_environment"][
+        "runtime_semantics"
+    ]["result_affecting_environment"]
+    assert set(affecting) == set(RESULT_AFFECTING_ENVIRONMENT_VARIABLES)
+
+    # Rehash every affected envelope to prove rejection comes from the closed
+    # environment schema, not merely from a stale outer content hash.
+    tampered = copy.deepcopy(receipt)
+    fingerprint = tampered["stable_fingerprint"]
+    strict_environment = fingerprint["strict_environment"]
+    strict_environment["runtime_semantics"]["result_affecting_environment"][
+        secret_name
+    ] = secret_value
+    _rehash_runtime_semantics(strict_environment)
+    _rehash_manual_fingerprint(fingerprint)
+    tampered["stable_fingerprint_hash"] = fingerprint["stable_fingerprint_hash"]
+    tampered["receipt_content_hash"] = sha256_prefixed(
+        {
+            key: value
+            for key, value in tampered.items()
+            if key != "receipt_content_hash"
+        },
+        label="reproduction_receipt_content",
+    )
+    tampered_path = tmp_path / "self-rehashed-secret-receipt.json"
+    tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(
+        ReproductionContractError,
+        match="result_affecting_environment is invalid",
+    ):
+        load_reproduction_receipt(tampered_path)
 
 
 def test_dirty_exploratory_run_is_explicitly_receipt_ineligible(

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from market_research.paths import ResearchPathManager
@@ -18,6 +20,11 @@ from .governance import (
     validate_governance_registry,
 )
 from .hashing import sha256_prefixed
+from .hash_chain import (
+    HashChainSnapshot,
+    mutate_hash_chained_jsonl_atomic,
+    read_hash_chained_jsonl_snapshot,
+)
 from .hypothesis_contract import HypothesisSpec
 from .knowledge_contract import KnowledgeRef
 from .knowledge_registry import (
@@ -26,7 +33,21 @@ from .knowledge_registry import (
     require_validation_admission,
 )
 from .research_classification import requires_candidate_validation
-from .research_standard import ResearchStandardBinding
+from .research_standard import (
+    PreregisteredResearchDesign,
+    ResearchPhase,
+    ResearchStandardBinding,
+    parse_preregistered_research_design,
+    parse_timestamp,
+    require_hash,
+    require_stable_id,
+)
+from .split_usage_policy import (
+    SplitExposurePurpose,
+    latest_confirmatory_exposure_at,
+    record_split_exposure,
+    require_successor_after_confirmatory_exposure,
+)
 from .validation_decision import (
     classify_validation_result,
     preserve_failed_validation,
@@ -47,23 +68,175 @@ class StudyLifecyclePublication:
     transition_row: dict[str, Any] | None = None
 
 
-_STANDARD_STATES = (
-    "IDEA",
-    "STRUCTURED",
-    "EXPLORATORY",
-    "PREREGISTERED",
-    "VALIDATING",
-)
-_LEGACY_STATES = (
-    "IDEA",
-    "HYPOTHESIS_DEFINED",
-    "EXPLORING",
-    "VALIDATING",
-)
 _TERMINAL_VALIDATION_STATES = frozenset(
     {"VALIDATED", "REJECTED", "INCONCLUSIVE", "SUPPORTED"}
 )
 _POLICY_ACTOR = "study-lifecycle-policy"
+_PREREGISTRATION_SCHEMA_VERSION = 1
+_PREREGISTRATION_HASH_LABEL = "study_preregistration_registry"
+_VALIDATION_TRANSITION_REASON = (
+    "Begin validation from an independently frozen preregistration."
+)
+
+
+def study_preregistration_registry_path(manager: ResearchPathManager) -> Path:
+    path = manager.artifact_path(
+        "reports",
+        "research",
+        "_registry",
+        "study_preregistrations.jsonl",
+    )
+    if manager.is_within(path, manager.project_root):
+        raise StudyLifecycleError(
+            "study_preregistration_registry_must_be_repository_external"
+        )
+    return path
+
+
+def record_study_stage(
+    *,
+    manager: ResearchPathManager,
+    hypothesis: HypothesisSpec,
+    to_state: str,
+    actor_id: str,
+    recorded_at: str,
+    reason: str,
+    exploration_evidence_hash: str | None = None,
+) -> dict[str, Any]:
+    """Record exactly one pre-validation stage as an independent event."""
+
+    if hypothesis.schema_version != 2:
+        raise StudyLifecycleError("study_lifecycle_hypothesis_lineage_required")
+    target = str(to_state).strip().upper()
+    sources = {"IDEA": None, "STRUCTURED": "IDEA", "EXPLORATORY": "STRUCTURED"}
+    if target not in sources:
+        raise StudyLifecycleError("study_lifecycle_stage_not_recordable")
+    normalized_actor = require_stable_id(actor_id, "study_lifecycle.actor_id")
+    if actor_id == _POLICY_ACTOR:
+        raise StudyLifecycleError("study_lifecycle_human_stage_actor_required")
+    normalized_reason = str(reason).strip()
+    if not normalized_reason:
+        raise StudyLifecycleError("study_lifecycle_stage_reason_required")
+    proposed_at = parse_timestamp(recorded_at, "study_lifecycle.recorded_at")
+    subject = _subject(hypothesis)
+    existing_rows = _subject_transition_rows(manager, subject)
+    existing_target = next(
+        (row for row in existing_rows if row.get("to_state") == target), None
+    )
+    if existing_target is None and existing_rows:
+        current_at = parse_timestamp(
+            str(existing_rows[-1].get("recorded_at") or ""),
+            "study_lifecycle.recorded_at",
+        )
+        if proposed_at <= current_at:
+            raise StudyLifecycleError(
+                "study_lifecycle_stage_timestamps_not_strictly_increasing"
+            )
+    publish_manifest_lineage(manager=manager, hypothesis=hypothesis)
+    evidence = _prevalidation_stage_evidence(
+        hypothesis=hypothesis,
+        target=target,
+        exploration_evidence_hash=exploration_evidence_hash,
+    )
+    row = _ensure_transition(
+        manager=manager,
+        subject=subject,
+        source=sources[target],
+        target=target,
+        evidence=evidence,
+        recorded_at=recorded_at,
+        reason=normalized_reason,
+        actor_id=normalized_actor,
+    )
+    if (
+        row.get("actor_id") != normalized_actor
+        or row.get("recorded_at") != recorded_at
+        or row.get("reason") != normalized_reason
+    ):
+        raise StudyLifecycleError("study_lifecycle_stage_event_conflict")
+    _require_strict_prevalidation_history(manager, subject, hypothesis=hypothesis)
+    return row
+
+
+def preregister_study(
+    *,
+    manager: ResearchPathManager,
+    hypothesis: HypothesisSpec,
+    design: PreregisteredResearchDesign,
+    reason: str,
+) -> dict[str, Any]:
+    """Freeze D-06 material and transition an existing exploratory study."""
+
+    if hypothesis.schema_version != 2:
+        raise StudyLifecycleError("study_lifecycle_hypothesis_lineage_required")
+    if not hypothesis.pre_registration_verified:
+        raise StudyLifecycleError(
+            "study_lifecycle_formal_preregistration_evidence_required"
+        )
+    if (
+        design.hypothesis_contract_hash != hypothesis.contract_hash()
+        or design.registered_at != hypothesis.pre_registered_at
+        or design.external_registration_evidence_hash
+        != hypothesis.registration_evidence_hash
+    ):
+        raise StudyLifecycleError("study_lifecycle_preregistration_binding_mismatch")
+    if design.registered_by == _POLICY_ACTOR:
+        raise StudyLifecycleError("study_lifecycle_human_stage_actor_required")
+    require_stable_id(design.registered_by, "study_preregistration.registered_by")
+    normalized_reason = str(reason).strip()
+    if not normalized_reason:
+        raise StudyLifecycleError("study_lifecycle_stage_reason_required")
+    subject = _subject(hypothesis)
+    rows = _subject_transition_rows(manager, subject)
+    if not rows or rows[-1].get("to_state") != "EXPLORATORY":
+        raise StudyLifecycleError(
+            "study_lifecycle_preregistration_requires_exploratory_state"
+        )
+    prior_at = parse_timestamp(
+        str(rows[-1]["recorded_at"]), "study_lifecycle.recorded_at"
+    )
+    registered_at = parse_timestamp(
+        design.registered_at, "study_preregistration.registered_at"
+    )
+    if registered_at <= prior_at:
+        raise StudyLifecycleError(
+            "study_lifecycle_stage_timestamps_not_strictly_increasing"
+        )
+    exposure_at = latest_confirmatory_exposure_at(
+        manager=manager,
+        hypothesis_id=hypothesis.hypothesis_id,
+        hypothesis_version=hypothesis.version,
+    )
+    if exposure_at is not None:
+        raise StudyLifecycleError(
+            "study_lifecycle_preregistration_after_confirmatory_exposure"
+        )
+    registry_row = _publish_preregistration(manager=manager, design=design)
+    transition = _ensure_transition(
+        manager=manager,
+        subject=subject,
+        source="EXPLORATORY",
+        target="PREREGISTERED",
+        evidence={
+            "preregistration_hash": design.content_hash,
+            "preregistration_registry_row_hash": str(registry_row["row_hash"]),
+            "external_preregistration_evidence_hash": (
+                design.external_registration_evidence_hash
+            ),
+            "validation_manifest_hash": design.manifest_hash,
+        },
+        recorded_at=design.registered_at,
+        reason=normalized_reason,
+        actor_id=design.registered_by,
+    )
+    if (
+        transition.get("actor_id") != design.registered_by
+        or transition.get("recorded_at") != design.registered_at
+        or transition.get("reason") != normalized_reason
+    ):
+        raise StudyLifecycleError("study_lifecycle_stage_event_conflict")
+    _require_strict_prevalidation_history(manager, subject, hypothesis=hypothesis)
+    return {"preregistration": registry_row, "transition": transition}
 
 
 def admit_study_validation(
@@ -86,142 +259,78 @@ def admit_study_validation(
         standard_binding, ResearchStandardBinding
     ):
         raise StudyLifecycleError("study_lifecycle_research_standard_invalid")
+    subject = _subject(hypothesis)
+    timestamp = _admission_timestamp(admission)
+    run_hash = _run_identity_hash(manifest, hypothesis, run_id) if run_id else None
+    standard_evidence = _research_standard_lifecycle_evidence(standard_binding)
+    design, preregistration_row = _require_preexisting_preregistration(
+        manager=manager,
+        hypothesis=hypothesis,
+        manifest_hash=str(manifest.manifest_hash()),
+        admission=admission,
+    )
     publish_manifest_lineage(
         manager=manager,
         hypothesis=hypothesis,
         research_standard_binding=standard_binding,
     )
-    subject = _subject(hypothesis)
-    timestamp = _admission_timestamp(admission)
-    run_hash = _run_identity_hash(manifest, hypothesis, run_id) if run_id else None
-    standard_evidence = _research_standard_lifecycle_evidence(standard_binding)
-    standard_steps = (
-        (
-            None,
-            "IDEA",
-            {
-                "hypothesis_semantic_fingerprint": hypothesis.semantic_fingerprint(),
-                **(
-                    {
-                        "research_standard_observation_set_hash": standard_evidence[
-                            "observation_set_hash"
-                        ]
-                    }
-                    if standard_evidence
-                    else {}
-                ),
-            },
+    validation_evidence = {
+        "validation_manifest_hash": str(manifest.manifest_hash()),
+        "validation_admission_row_hash": admission["row_hash"],
+        "preregistration_hash": design.content_hash,
+        "preregistration_registry_row_hash": str(preregistration_row["row_hash"]),
+        **(
+            {"research_standard_binding_hash": standard_evidence["binding_hash"]}
+            if standard_evidence
+            else {}
         ),
-        (
-            "IDEA",
-            "STRUCTURED",
-            {
-                "hypothesis_contract_hash": hypothesis.contract_hash(),
-                "hypothesis_lineage_hash": str(hypothesis.lineage_hash()),
-                **(
-                    {
-                        "research_standard_binding_hash": standard_evidence[
-                            "binding_hash"
-                        ],
-                        "research_standard_question_hash": standard_evidence[
-                            "research_question_hash"
-                        ],
-                        "research_standard_mechanism_hash": standard_evidence[
-                            "mechanism_hash"
-                        ],
-                        "research_standard_hypothesis_hash": standard_evidence[
-                            "hypothesis_version_hash"
-                        ],
-                    }
-                    if standard_evidence
-                    else {}
-                ),
-            },
-        ),
-        (
-            "STRUCTURED",
-            "EXPLORATORY",
-            {
-                "hypothesis_lineage_hash": str(hypothesis.lineage_hash()),
-                **(
-                    {
-                        "research_standard_binding_hash": standard_evidence[
-                            "binding_hash"
-                        ]
-                    }
-                    if standard_evidence
-                    else {}
-                ),
-            },
-        ),
-        (
-            "EXPLORATORY",
-            "PREREGISTERED",
-            {
-                "preregistration_hash": admission["record_hash"],
-                "validation_admission_row_hash": admission["row_hash"],
-                **(
-                    {
-                        "external_preregistration_evidence_hash": standard_evidence[
-                            "preregistration_evidence_hash"
-                        ]
-                    }
-                    if standard_evidence
-                    and standard_evidence.get("preregistration_evidence_hash")
-                    else {}
-                ),
-            },
-        ),
-        (
-            "PREREGISTERED",
-            "VALIDATING",
-            {
-                "validation_manifest_hash": str(manifest.manifest_hash()),
-                "validation_admission_row_hash": admission["row_hash"],
-                **(
-                    {
-                        "research_standard_binding_hash": standard_evidence[
-                            "binding_hash"
-                        ]
-                    }
-                    if standard_evidence
-                    else {}
-                ),
-                **(
-                    {"validation_run_identity_hash": run_hash}
-                    if run_hash is not None
-                    else {}
-                ),
-            },
-        ),
+        **({"validation_run_identity_hash": run_hash} if run_hash is not None else {}),
+    }
+    transition = _ensure_transition(
+        manager=manager,
+        subject=subject,
+        source="PREREGISTERED",
+        target="VALIDATING",
+        evidence=validation_evidence,
+        recorded_at=timestamp,
+        reason=_VALIDATION_TRANSITION_REASON,
     )
-    legacy_steps: tuple[tuple[str | None, str, dict[str, str]], ...] = (
-        standard_steps[0],
-        (
-            "IDEA",
-            "HYPOTHESIS_DEFINED",
-            {"hypothesis_contract_hash": hypothesis.contract_hash()},
-        ),
-        ("HYPOTHESIS_DEFINED", "EXPLORING", {}),
-        (
-            "EXPLORING",
-            "VALIDATING",
-            {"validation_manifest_hash": str(manifest.manifest_hash())},
-        ),
+    if (
+        transition.get("actor_id") != _POLICY_ACTOR
+        or transition.get("recorded_at") != timestamp
+        or transition.get("reason") != _VALIDATION_TRANSITION_REASON
+    ):
+        raise StudyLifecycleError("study_lifecycle_validation_event_conflict")
+    admission_row = admission.get("admission")
+    admission_payload = (
+        admission_row.get("payload") if isinstance(admission_row, Mapping) else None
     )
-    existing = _subject_transition_rows(manager, subject)
-    legacy = any(row.get("to_state") in _LEGACY_STATES[1:3] for row in existing)
-    steps = legacy_steps if legacy else standard_steps
-    for source, target, evidence in steps:
-        _ensure_transition(
-            manager=manager,
-            subject=subject,
-            source=source,
-            target=target,
-            evidence=evidence,
-            recorded_at=timestamp,
-            reason=f"Advance the immutable admitted study to {target}.",
-        )
+    admission_actor = (
+        admission_payload.get("actor_id")
+        if isinstance(admission_payload, Mapping)
+        else None
+    )
+    if not isinstance(admission_actor, str):
+        raise StudyLifecycleError("study_lifecycle_admission_actor_missing")
+    record_split_exposure(
+        manager=manager,
+        event_id="validation-exposure:"
+        + sha256_prefixed(
+            {
+                "hypothesis_id": hypothesis.hypothesis_id,
+                "hypothesis_version": hypothesis.version,
+                "admission_row_hash": admission["row_hash"],
+            },
+            label="study_validation_exposure_identity",
+        )[7:],
+        hypothesis_id=hypothesis.hypothesis_id,
+        hypothesis_version=hypothesis.version,
+        split_name=ResearchPhase.VALIDATION,
+        purpose=SplitExposurePurpose.CONFIRMATORY_VALIDATION,
+        actor_id=admission_actor,
+        recorded_at=timestamp,
+        source_artifact_hash=str(manifest.manifest_hash()),
+    )
     state = current_lifecycle_state(manager=manager, subject=subject)
     if state not in {"VALIDATING", *_TERMINAL_VALIDATION_STATES}:
         raise StudyLifecycleError(f"study_lifecycle_admission_state_invalid:{state}")
@@ -390,6 +499,12 @@ def register_posthoc_followup(
         raise StudyLifecycleError("posthoc_followup_new_version_required")
     if original.contract_hash() == followup.contract_hash():
         raise StudyLifecycleError("posthoc_followup_distinct_contract_required")
+    require_successor_after_confirmatory_exposure(
+        manager=manager,
+        hypothesis_id=original.hypothesis_id,
+        exposed_version=original.version,
+        proposed_version=followup.version,
+    )
     original_question = original.research_question_ref
     followup_question = followup.research_question_ref
     if (
@@ -406,6 +521,51 @@ def register_posthoc_followup(
         followup.version,
         followup.contract_hash(),
     )
+
+
+def _prevalidation_stage_evidence(
+    *,
+    hypothesis: HypothesisSpec,
+    target: str,
+    exploration_evidence_hash: str | None,
+) -> dict[str, str]:
+    if target == "IDEA":
+        return {"hypothesis_semantic_fingerprint": hypothesis.semantic_fingerprint()}
+    if target == "STRUCTURED":
+        return {
+            "hypothesis_contract_hash": hypothesis.contract_hash(),
+            "hypothesis_lineage_hash": str(hypothesis.lineage_hash()),
+            "testable_hypothesis_definition_hash": sha256_prefixed(
+                {
+                    "targets": list(hypothesis.targets),
+                    "measurement_method": hypothesis.measurement_method,
+                    "expected_direction": hypothesis.expected_direction,
+                    "evaluation_period": hypothesis.evaluation_period,
+                    "mechanism": hypothesis.mechanism,
+                    "comparison_target": hypothesis.comparison_target,
+                    "observation_conditions": list(hypothesis.observation_conditions),
+                    "falsification_criteria": list(hypothesis.falsification_criteria),
+                },
+                label="testable_hypothesis_definition",
+            ),
+        }
+    if target != "EXPLORATORY":
+        raise StudyLifecycleError("study_lifecycle_stage_not_recordable")
+    if not isinstance(exploration_evidence_hash, str):
+        raise StudyLifecycleError("study_lifecycle_exploration_evidence_required")
+    try:
+        require_hash(
+            exploration_evidence_hash,
+            "study_lifecycle.exploration_evidence_hash",
+        )
+    except ValueError as exc:
+        raise StudyLifecycleError(
+            "study_lifecycle_exploration_evidence_required"
+        ) from exc
+    return {
+        "hypothesis_lineage_hash": str(hypothesis.lineage_hash()),
+        "exploration_evidence_hash": exploration_evidence_hash,
+    }
 
 
 def _required_hypothesis(manifest: Any) -> HypothesisSpec:
@@ -443,6 +603,273 @@ def _subject(hypothesis: HypothesisSpec) -> GovernanceSubject:
         hypothesis.hypothesis_id,
         hypothesis.version,
     )
+
+
+def _publish_preregistration(
+    *,
+    manager: ResearchPathManager,
+    design: PreregisteredResearchDesign,
+) -> dict[str, Any]:
+    path = study_preregistration_registry_path(manager)
+    event_id = f"{design.registration_id}.{design.version}"
+    payload = {
+        "schema_version": _PREREGISTRATION_SCHEMA_VERSION,
+        "event_id": event_id,
+        "registration_id": design.registration_id,
+        "version": design.version,
+        "registered_at": design.registered_at,
+        "registered_by": design.registered_by,
+        "design": design.as_dict(),
+        "design_hash": design.content_hash,
+    }
+
+    def mutation(
+        snapshot: HashChainSnapshot,
+        stage: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        matches = [row for row in snapshot.rows if row.get("event_id") == event_id]
+        if matches:
+            if len(matches) != 1 or any(
+                matches[0].get(key) != value for key, value in payload.items()
+            ):
+                raise StudyLifecycleError("study_preregistration_identity_conflict")
+            return dict(matches[0])
+        prior_versions = [
+            row
+            for row in snapshot.rows
+            if row.get("registration_id") == design.registration_id
+        ]
+        if prior_versions:
+            latest_version = max(int(row.get("version") or 0) for row in prior_versions)
+            latest_timestamp = max(
+                parse_timestamp(
+                    str(row.get("registered_at") or ""),
+                    "study_preregistration.registered_at",
+                )
+                for row in prior_versions
+            )
+            if design.version <= latest_version:
+                raise StudyLifecycleError(
+                    "study_preregistration_version_not_strictly_increasing"
+                )
+            if (
+                parse_timestamp(
+                    design.registered_at,
+                    "study_preregistration.registered_at",
+                )
+                <= latest_timestamp
+            ):
+                raise StudyLifecycleError(
+                    "study_preregistration_timestamp_not_strictly_increasing"
+                )
+        return stage(payload)
+
+    try:
+        return dict(
+            mutate_hash_chained_jsonl_atomic(
+                path=path,
+                label=_PREREGISTRATION_HASH_LABEL,
+                mutation=mutation,
+            ).value
+        )
+    except StudyLifecycleError:
+        raise
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        raise StudyLifecycleError(
+            f"study_preregistration_registry_write_failed:{exc}"
+        ) from exc
+
+
+def _preregistration_rows(manager: ResearchPathManager) -> tuple[dict[str, Any], ...]:
+    try:
+        snapshot = read_hash_chained_jsonl_snapshot(
+            path=study_preregistration_registry_path(manager),
+            label=_PREREGISTRATION_HASH_LABEL,
+        )
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        raise StudyLifecycleError(
+            f"study_preregistration_registry_invalid:{exc}"
+        ) from exc
+    if snapshot.status != "PASS":
+        raise StudyLifecycleError("study_preregistration_registry_invalid")
+    return tuple(dict(row) for row in snapshot.rows)
+
+
+def _require_preexisting_preregistration(
+    *,
+    manager: ResearchPathManager,
+    hypothesis: HypothesisSpec,
+    manifest_hash: str,
+    admission: Mapping[str, Any],
+) -> tuple[PreregisteredResearchDesign, dict[str, Any]]:
+    if not hypothesis.pre_registration_verified:
+        raise StudyLifecycleError(
+            "study_lifecycle_formal_preregistration_evidence_required"
+        )
+    admission_row = admission.get("admission")
+    admission_payload = (
+        admission_row.get("payload") if isinstance(admission_row, Mapping) else None
+    )
+    if (
+        not isinstance(admission_payload, Mapping)
+        or admission_payload.get("admission_status")
+        != "FORMAL_PREREGISTERED_EXTERNAL_EVIDENCE"
+    ):
+        raise StudyLifecycleError(
+            "study_lifecycle_formal_preregistration_admission_required"
+        )
+    registration_id = str(admission_payload.get("experiment_id") or "")
+    rows = []
+    for row in _preregistration_rows(manager):
+        raw_design = row.get("design")
+        if (
+            row.get("registration_id") == registration_id
+            and isinstance(raw_design, Mapping)
+            and raw_design.get("manifest_hash") == manifest_hash
+            and raw_design.get("hypothesis_contract_hash") == hypothesis.contract_hash()
+        ):
+            rows.append(row)
+    if len(rows) != 1:
+        raise StudyLifecycleError("study_lifecycle_preexisting_preregistration_missing")
+    row = rows[0]
+    try:
+        design = parse_preregistered_research_design(row.get("design"))
+    except (TypeError, ValueError) as exc:
+        raise StudyLifecycleError(
+            "study_lifecycle_preregistration_payload_invalid"
+        ) from exc
+    recorded_payload = {
+        key: value
+        for key, value in row.items()
+        if key not in {"sequence", "prior_hash", "row_hash"}
+    }
+    expected_payload = {
+        "schema_version": _PREREGISTRATION_SCHEMA_VERSION,
+        "event_id": f"{design.registration_id}.{design.version}",
+        "registration_id": design.registration_id,
+        "version": design.version,
+        "registered_at": design.registered_at,
+        "registered_by": design.registered_by,
+        "design": design.as_dict(),
+        "design_hash": design.content_hash,
+    }
+    if (
+        recorded_payload != expected_payload
+        or row.get("design_hash") != design.content_hash
+        or design.registration_id != registration_id
+        or design.manifest_hash != manifest_hash
+        or design.hypothesis_contract_hash != hypothesis.contract_hash()
+        or design.registered_at != hypothesis.pre_registered_at
+        or design.external_registration_evidence_hash
+        != hypothesis.registration_evidence_hash
+    ):
+        raise StudyLifecycleError("study_lifecycle_preregistration_binding_mismatch")
+    subject = _subject(hypothesis)
+    history = _require_strict_prevalidation_history(
+        manager,
+        subject,
+        hypothesis=hypothesis,
+    )
+    if tuple(row.get("to_state") for row in history) != (
+        "IDEA",
+        "STRUCTURED",
+        "EXPLORATORY",
+        "PREREGISTERED",
+    ):
+        raise StudyLifecycleError("study_lifecycle_preexisting_preregistration_missing")
+    preregistered = history[-1]
+    evidence = preregistered.get("evidence_hashes")
+    if not isinstance(evidence, Mapping) or (
+        evidence.get("preregistration_hash") != design.content_hash
+        or evidence.get("preregistration_registry_row_hash") != row.get("row_hash")
+        or evidence.get("validation_manifest_hash") != manifest_hash
+    ):
+        raise StudyLifecycleError(
+            "study_lifecycle_preregistration_transition_binding_mismatch"
+        )
+    admitted_at = parse_timestamp(
+        _admission_timestamp(admission), "study_lifecycle.admitted_at"
+    )
+    registered_at = parse_timestamp(
+        design.registered_at, "study_lifecycle.registered_at"
+    )
+    if admitted_at <= registered_at:
+        raise StudyLifecycleError("study_lifecycle_admission_not_after_preregistration")
+    exposure_at = latest_confirmatory_exposure_at(
+        manager=manager,
+        hypothesis_id=hypothesis.hypothesis_id,
+        hypothesis_version=hypothesis.version,
+    )
+    if exposure_at is not None and exposure_at < admitted_at:
+        raise StudyLifecycleError(
+            "study_lifecycle_confirmatory_exposure_precedes_admission"
+        )
+    return design, row
+
+
+def _require_strict_prevalidation_history(
+    manager: ResearchPathManager,
+    subject: GovernanceSubject,
+    *,
+    hypothesis: HypothesisSpec,
+) -> tuple[dict[str, Any], ...]:
+    rows = _subject_transition_rows(manager, subject)
+    expected = ("IDEA", "STRUCTURED", "EXPLORATORY", "PREREGISTERED")
+    prefix = tuple(row for row in rows if row.get("to_state") in expected)
+    actual = tuple(str(row.get("to_state")) for row in prefix)
+    if actual not in {expected[: len(actual)], expected}:
+        raise StudyLifecycleError("study_lifecycle_prevalidation_history_invalid")
+    if len(actual) > len(expected):
+        raise StudyLifecycleError("study_lifecycle_prevalidation_history_invalid")
+    timestamps: list[datetime] = []
+    for row in prefix:
+        if row.get("actor_id") == _POLICY_ACTOR:
+            raise StudyLifecycleError(
+                "study_lifecycle_synthetic_prevalidation_history_forbidden"
+            )
+        timestamps.append(
+            parse_timestamp(
+                str(row.get("recorded_at") or ""),
+                "study_lifecycle.recorded_at",
+            )
+        )
+        state = str(row.get("to_state") or "")
+        evidence = row.get("evidence_hashes")
+        if not isinstance(evidence, Mapping):
+            raise StudyLifecycleError("study_lifecycle_prevalidation_evidence_invalid")
+        if state in {"IDEA", "STRUCTURED"}:
+            expected_evidence = _prevalidation_stage_evidence(
+                hypothesis=hypothesis,
+                target=state,
+                exploration_evidence_hash=None,
+            )
+            if dict(evidence) != expected_evidence:
+                raise StudyLifecycleError(
+                    "study_lifecycle_prevalidation_evidence_invalid"
+                )
+        elif state == "EXPLORATORY":
+            exploration_hash = evidence.get("exploration_evidence_hash")
+            try:
+                expected_evidence = _prevalidation_stage_evidence(
+                    hypothesis=hypothesis,
+                    target=state,
+                    exploration_evidence_hash=(
+                        exploration_hash if isinstance(exploration_hash, str) else None
+                    ),
+                )
+            except StudyLifecycleError as exc:
+                raise StudyLifecycleError(
+                    "study_lifecycle_prevalidation_evidence_invalid"
+                ) from exc
+            if dict(evidence) != expected_evidence:
+                raise StudyLifecycleError(
+                    "study_lifecycle_prevalidation_evidence_invalid"
+                )
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        raise StudyLifecycleError(
+            "study_lifecycle_stage_timestamps_not_strictly_increasing"
+        )
+    return prefix
 
 
 def _normalize_admission(
@@ -589,6 +1016,7 @@ def _ensure_transition(
     evidence: Mapping[str, str],
     recorded_at: str | None,
     reason: str,
+    actor_id: str = _POLICY_ACTOR,
 ) -> dict[str, Any]:
     for _attempt in range(8):
         rows = _subject_transition_rows(manager, subject)
@@ -610,7 +1038,7 @@ def _ensure_transition(
                 subject=subject,
                 from_state=source,
                 to_state=target,
-                actor_id=_POLICY_ACTOR,
+                actor_id=actor_id,
                 reason=reason,
                 evidence_hashes=evidence,
                 recorded_at=recorded_at,

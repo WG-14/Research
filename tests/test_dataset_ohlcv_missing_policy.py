@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 from market_research.research.data_plane import _scan_candles_sql
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 from market_research.research.dataset_snapshot import load_dataset_split
 from market_research.research.datasets.hashing_contract import artifact_content_hash
 from market_research.research_composition import load_builtin_manifest
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
 from tests.research_noop_success_fixture import create_success_fixture
 
 

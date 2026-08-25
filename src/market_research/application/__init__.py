@@ -30,6 +30,7 @@ from .contracts import (
     ApplicationResult,
     ApplicationWarning,
     ArtifactReference,
+    FinalHoldoutReservation,
     GovernanceSubjectRef,
     HumanReviewRequest,
     HumanReviewResult,
@@ -51,6 +52,10 @@ from .contracts import (
     ResearchProjectRevisionRequest,
     ResearchProjectSearchRequest,
     ResearchProjectSearchResult,
+    ResearchPhaseWindowInput,
+    ResearchStudyLifecycleResult,
+    ResearchStudyPreregistrationRequest,
+    ResearchStudyStageRequest,
     ResearchProjectTransitionRequest,
     ResearchProjectWorkspaceRequest,
     ResearchProjectWorkspaceResult,
@@ -76,6 +81,12 @@ from .service import ResearchApplicationService
 from .governance_service import ResearchGovernanceApplicationService
 from .project_service import ResearchProjectApplicationService
 from .release import ReleaseMetadata, ReleaseMetadataError
+from .holdout_authority import (
+    abort_operated_final_holdout,
+    reserve_operated_final_holdout,
+    reserve_trusted_independent_reproduction_holdout,
+    validate_operated_final_holdout_authority,
+)
 from .cli_execution import (
     ADMITTED_CLI_EXECUTION_SCOPE,
     LEGACY_WEB_CLAIM_SCOPE,
@@ -99,6 +110,7 @@ __all__ = [
     "ApplicationResult",
     "ApplicationWarning",
     "ArtifactReference",
+    "FinalHoldoutReservation",
     "CAPABILITIES",
     "CancellationRequested",
     "CapabilityExecutionMode",
@@ -141,6 +153,10 @@ __all__ = [
     "ResearchProjectRevisionRequest",
     "ResearchProjectSearchRequest",
     "ResearchProjectSearchResult",
+    "ResearchPhaseWindowInput",
+    "ResearchStudyLifecycleResult",
+    "ResearchStudyPreregistrationRequest",
+    "ResearchStudyStageRequest",
     "ResearchProjectTransitionRequest",
     "ResearchProjectWorkspaceRequest",
     "ResearchProjectWorkspaceResult",
@@ -168,4 +184,8 @@ __all__ = [
     "is_operated_runtime",
     "project_permission_for_reference",
     "require_operated_execution_capability",
+    "abort_operated_final_holdout",
+    "reserve_operated_final_holdout",
+    "reserve_trusted_independent_reproduction_holdout",
+    "validate_operated_final_holdout_authority",
 ]

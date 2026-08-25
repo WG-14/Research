@@ -4,7 +4,10 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 from market_research.research import cli
+from market_research.research.governance import governance_registry_path
 from market_research.research.hashing import (
     report_content_hash_payload,
     sha256_prefixed,
@@ -14,88 +17,69 @@ from tests.test_run_lifecycle import _context
 from tests.test_strategy_research_package import _result
 
 
-def test_governance_cli_records_transition_and_human_change_request(
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    (
+        (
+            "research-governance-transition",
+            argparse.Namespace(
+                subject_type="strategy_candidate",
+                subject_id="candidate-1",
+                subject_version="1",
+                from_state=None,
+                to_state="RESEARCH_APPROVED",
+                actor="forged-admin",
+                reason="caller claims approval authority",
+                evidence=[],
+            ),
+        ),
+        (
+            "research-record-human-review",
+            argparse.Namespace(
+                subject_type="strategy_candidate",
+                subject_id="candidate-1",
+                subject_version="1",
+                decision="REJECTED",
+                reviewer="forged-reviewer",
+                reviewer_role="research_approver",
+                rationale="caller claims reviewer role",
+                reviewed_artifact_hash="sha256:" + "a" * 64,
+                requested_changes="/does/not/exist.json",
+                resolved_requirement=[],
+            ),
+        ),
+        (
+            "research-approve-strategy-candidate",
+            argparse.Namespace(
+                result="/does/not/exist.json",
+                subject_version="1",
+                reviewer="forged-approver",
+                rationale="caller claims final approval authority",
+                resolved_requirement=[],
+                verification_id="forged-verification",
+                verification_version="1",
+                verification_hash="sha256:" + "b" * 64,
+                originator=["someone-else"],
+                out="/does/not/exist/approval.json",
+            ),
+        ),
+    ),
+)
+def test_governance_cli_rejects_caller_supplied_identity_without_mutation(
     tmp_path: Path,
+    command: str,
+    arguments: argparse.Namespace,
 ) -> None:
     context = _context(tmp_path)
-    transition = argparse.Namespace(
-        subject_type="strategy_candidate",
-        subject_id="candidate-1",
-        subject_version="1",
-        from_state=None,
-        to_state="DRAFT",
-        actor="researcher-a",
-        reason="candidate created",
-        evidence=[],
-    )
-    assert (
-        execute_research_command("research-governance-transition", transition, context)
-        == 0
-    )
-    for source, target, evidence in (
-        (
-            "DRAFT",
-            "BACKTESTED",
-            ["backtest_report_hash=sha256:" + "1" * 64],
-        ),
-        (
-            "BACKTESTED",
-            "ROBUSTNESS_PASSED",
-            ["stress_suite_hash=sha256:" + "2" * 64],
-        ),
-        (
-            "ROBUSTNESS_PASSED",
-            "OUT_OF_SAMPLE_PASSED",
-            ["final_holdout_confirmation_hash=sha256:" + "3" * 64],
-        ),
-    ):
-        advance = argparse.Namespace(
-            subject_type="strategy_candidate",
-            subject_id="candidate-1",
-            subject_version="1",
-            from_state=source,
-            to_state=target,
-            actor="researcher-a",
-            reason=f"advance candidate to {target}",
-            evidence=evidence,
-        )
-        assert (
-            execute_research_command(
-                "research-governance-transition",
-                advance,
-                context,
-            )
-            == 0
-        )
+    output: list[str] = []
+    context.printer = output.append
 
-    changes_path = tmp_path / "changes.json"
-    changes_path.write_text(
-        json.dumps(
-            [
-                {
-                    "requirement_id": "REQ-1",
-                    "description": "explain economic mechanism",
-                    "verification_condition": "report contains reviewed mechanism analysis",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-    review = argparse.Namespace(
-        subject_type="strategy_candidate",
-        subject_id="candidate-1",
-        subject_version="1",
-        decision="CHANGES_REQUESTED",
-        reviewer="reviewer-a",
-        reviewer_role="research_reviewer",
-        rationale="mechanism explanation is incomplete",
-        reviewed_artifact_hash="sha256:" + "a" * 64,
-        requested_changes=str(changes_path),
-        resolved_requirement=[],
-    )
-    assert (
-        execute_research_command("research-record-human-review", review, context) == 0
-    )
+    assert execute_research_command(command, arguments, context) == 1
+    assert not governance_registry_path(context.paths).exists()
+    assert output == [
+        "[RESEARCH-GOVERNANCE-CLI-DISABLED] "
+        f"command={command} error=authenticated_internal_web_governance_required"
+    ]
 
 
 def test_approval_cli_rejects_report_with_stale_content_hash(tmp_path: Path) -> None:
@@ -187,7 +171,8 @@ def test_approval_cli_rejects_pass_summary_with_failed_stage(
 
     assert rc == 1
     assert not (tmp_path / "approval.json").exists()
-    assert any(
-        "validated_research_result_stage_not_passed:dataset_quality" in line
-        for line in output
-    )
+    assert output == [
+        "[RESEARCH-GOVERNANCE-CLI-DISABLED] "
+        "command=research-approve-strategy-candidate "
+        "error=authenticated_internal_web_governance_required"
+    ]

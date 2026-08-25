@@ -300,6 +300,11 @@ def _force_source_open_and_remove_fixture(
     receipt_hash: str | None,
 ) -> None:
     with psycopg.connect(dsn) as connection:
+        # This helper cleans only rows created by one disposable CI rehearsal.
+        # Production correctly rejects deletion of Web audit events, so match
+        # the suite's centralized test-database cleanup policy for this single
+        # transaction instead of weakening the migrated trigger.
+        connection.execute("SET LOCAL session_replication_role = replica")
         connection.execute(
             """
             UPDATE research_ops.runtime_control

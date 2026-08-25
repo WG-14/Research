@@ -222,9 +222,9 @@ def standard_research_retention_policy() -> ResearchRetentionPolicy:
         ),
         RetentionRule(
             ResearchRetentionClass.FAILED_RUN,
-            minimum_age_days=365,
+            minimum_age_days=None,
             require_archived=True,
-            preserve_permanently=False,
+            preserve_permanently=True,
         ),
         RetentionRule(
             ResearchRetentionClass.OFFICIAL_RELEASE,
@@ -234,9 +234,9 @@ def standard_research_retention_policy() -> ResearchRetentionPolicy:
         ),
         RetentionRule(
             ResearchRetentionClass.REJECTED,
-            minimum_age_days=1_095,
+            minimum_age_days=None,
             require_archived=True,
-            preserve_permanently=False,
+            preserve_permanently=True,
         ),
         RetentionRule(
             ResearchRetentionClass.SUPERSEDED,
@@ -247,7 +247,7 @@ def standard_research_retention_policy() -> ResearchRetentionPolicy:
     )
     return ResearchRetentionPolicy(
         policy_id="standard-offline-research-retention",
-        version="1",
+        version="2",
         rules=tuple(sorted(rules, key=lambda item: item.retention_class.value)),
         maximum_authorization_seconds=3_600,
     )

@@ -10,6 +10,7 @@ from market_research.research.experiment_registry import (
     research_identity_from_manifest,
 )
 from market_research.research.hashing import sha256_prefixed
+from market_research.research.hypothesis_contract import parse_hypothesis_spec
 from market_research.research_composition import parse_builtin_manifest
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 from tests.test_research_semantics_v2_contract import _manifest_payload
@@ -184,6 +185,10 @@ def test_schema_one_is_readable_only_for_legacy_research_only_manifests():
             "research_question",
             "research_question_ref",
             "observation_refs",
+            "targets",
+            "measurement_method",
+            "expected_direction",
+            "evaluation_period",
         }
     }
     legacy["schema_version"] = 1
@@ -213,6 +218,10 @@ def test_schema_one_pre_registration_fails_closed_even_for_research_only():
             "research_question",
             "research_question_ref",
             "observation_refs",
+            "targets",
+            "measurement_method",
+            "expected_direction",
+            "evaluation_period",
         }
     }
     legacy.update(
@@ -243,6 +252,10 @@ def test_schema_one_fails_closed_for_validation_bound_manifest():
             "research_question",
             "research_question_ref",
             "observation_refs",
+            "targets",
+            "measurement_method",
+            "expected_direction",
+            "evaluation_period",
         }
     }
     legacy["schema_version"] = 1
@@ -253,6 +266,20 @@ def test_schema_one_fails_closed_for_validation_bound_manifest():
 
     with pytest.raises(ManifestValidationError, match="schema_version 2"):
         parse_builtin_manifest(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("targets", "measurement_method", "expected_direction", "evaluation_period"),
+)
+def test_schema_two_requires_explicit_testable_hypothesis_dimensions(
+    field: str,
+) -> None:
+    payload = _hypothesis_spec()
+    payload.pop(field)
+
+    with pytest.raises(ValueError, match=field):
+        parse_hypothesis_spec(payload)
 
 
 def test_lineage_rejects_missing_mismatched_and_orphan_observation_refs():

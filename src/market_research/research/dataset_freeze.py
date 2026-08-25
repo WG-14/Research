@@ -10,6 +10,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from market_research.paths import ResearchPathManager
+
 from ..storage_io import write_json_atomic
 from .datasets.artifact_manifest import (
     ArtifactManifest,
@@ -24,7 +26,10 @@ from .datasets.hashing_contract import (
 )
 from .datasets.source_provenance import (
     DatasetSourceProvenance,
+    SourceProvenanceError,
+    copy_verified_external_local_artifact,
     load_dataset_source_provenance,
+    validate_source_artifact_chain,
     validate_source_coverage,
 )
 from market_research.research.intervals import interval_to_milliseconds
@@ -88,6 +93,7 @@ def freeze_sqlite_candles_dataset(
     end_ts: int,
     out_dir: str | Path,
     source_provenance: DatasetSourceProvenance,
+    manager: ResearchPathManager | None = None,
     failure_stage: str | None = None,
 ) -> dict[str, Any]:
     """Publish a verified directory bundle using atomicity-only durability.
@@ -97,17 +103,59 @@ def freeze_sqlite_candles_dataset(
     rename; parent-directory fsync is not part of this contract.
     ``failure_stage`` is a deterministic test hook and is not exposed by CLI.
     """
-    source = Path(source_db).expanduser().resolve()
+    source_input = Path(source_db).expanduser()
+    if not source_input.is_absolute():
+        raise DatasetFreezeError("research_freeze_dataset_source_must_be_absolute")
     out_root = Path(out_dir).expanduser()
     if not out_root.is_absolute():
         raise DatasetFreezeError("research_freeze_dataset_rejects_repo_relative_output")
     _reject_repo_path(out_root, label="research_freeze_dataset_output")
-    validate_source_coverage(
-        source_provenance, start_ts=int(start_ts), end_ts=int(end_ts)
-    )
-    rows = _read_candle_rows(
-        source, market=market, interval=interval, start_ts=start_ts, end_ts=end_ts
-    )
+    if not isinstance(manager, ResearchPathManager):
+        raise DatasetFreezeError("dataset_transformation_trust_manager_required")
+    out_root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        source = validate_source_artifact_chain(
+            source_provenance,
+            manager=manager,
+        )
+        if source_input.absolute() != source:
+            raise SourceProvenanceError("standardized_artifact_uri_source_db_mismatch")
+        validate_source_coverage(
+            source_provenance, start_ts=int(start_ts), end_ts=int(end_ts)
+        )
+        with tempfile.TemporaryDirectory(
+            prefix=".freeze-source-snapshot-",
+            dir=out_root.parent,
+        ) as snapshot_root:
+            snapshot = copy_verified_external_local_artifact(
+                str(source),
+                source_provenance.lineage[-1].content_hash,
+                repository_root=manager.project_root,
+                destination=Path(snapshot_root) / "standardized.sqlite",
+                label="standardized_artifact",
+            )
+            all_rows = _read_all_artifact_rows(snapshot)
+            standardized = source_provenance.lineage[-1]
+            standardized_canonical_hash = artifact_content_hash(all_rows)
+            if standardized_canonical_hash != standardized.canonical_content_hash:
+                raise SourceProvenanceError(
+                    "standardized_artifact_canonical_content_hash_mismatch"
+                )
+            # Re-open and re-hash every bound file, signature, trust anchor,
+            # code, and config after consuming the descriptor-derived snapshot.
+            validate_source_artifact_chain(
+                source_provenance,
+                manager=manager,
+            )
+    except (SourceProvenanceError, sqlite3.Error, OSError, ValueError) as exc:
+        raise DatasetFreezeError(str(exc)) from exc
+    rows = [
+        tuple(row[2:])
+        for row in all_rows
+        if str(row[0]) == str(market)
+        and str(row[1]) == str(interval)
+        and int(start_ts) <= int(row[2]) <= int(end_ts)
+    ]
     content_hash = artifact_content_hash(rows, market=market, interval=interval)
     artifact_key_hash = dataset_artifact_key_hash(
         content_hash=content_hash,
@@ -453,6 +501,7 @@ def cmd_research_freeze_dataset(
     end: str,
     out_path: str,
     provenance_manifest_path: str,
+    manager: ResearchPathManager,
 ) -> int:
     from .experiment_manifest import DateRange
 
@@ -468,6 +517,7 @@ def cmd_research_freeze_dataset(
                 end_ts=date_range.end_ts_ms(),
                 out_dir=out_path,
                 source_provenance=source_provenance,
+                manager=manager,
             ),
             sort_keys=True,
             ensure_ascii=False,

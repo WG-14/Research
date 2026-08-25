@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,13 @@ import pytest
 
 import tools.reference_audit as reference_audit
 import tools.reference_audit_receipt as receipt_tool
+from tools.reference_audit_authority import (
+    AUDIT_SESSION_HISTORY_RELATIVE_ROOT,
+    AUDIT_SESSION_ID,
+    INSTRUCTION_RELATIVE_PATH,
+    RUBRIC_RELATIVE_PATH,
+    validate_audit_authority,
+)
 from tools.reference_audit import (
     DEFAULT_MATRIX,
     DuplicateKeyError,
@@ -152,23 +160,18 @@ def _assert_machine_result_schema(result: object) -> None:
     assert source["fatal_gate_count"] == 12
 
     audit_history = result["audit_history"]
-    iteration = audit_history["logical_phase_count"]
-    assert 7 <= iteration <= 10
+    assert audit_history["session_id"] == AUDIT_SESSION_ID
+    iteration = audit_history["iteration_count"]
+    assert 1 <= iteration <= 10
     assert audit_history["current_surface_iteration"] == iteration
-    assert audit_history["retained_snapshot_iterations"] == list(
-        range(6, iteration)
-    )
-    assert "no separately retained source" in audit_history["semantics"]
+    assert audit_history["retained_snapshot_iterations"] == list(range(1, iteration))
+    assert AUDIT_SESSION_ID in audit_history["semantics"]
     assert [item["iteration"] for item in audit_history["phases"]] == list(
         range(1, iteration + 1)
     )
     assert all(
-        item["history_kind"] == "logical_phase_without_retained_snapshot"
-        for item in audit_history["phases"][:5]
-    )
-    assert all(
         item["history_kind"] == "retained_assessment_snapshot"
-        for item in audit_history["phases"][5:-1]
+        for item in audit_history["phases"][:-1]
     )
     assert audit_history["phases"][-1]["history_kind"] == (
         "current_surface_reassessment"
@@ -319,11 +322,37 @@ def test_current_a_j_source_is_the_single_hash_bound_authority() -> None:
         "ce507e16b37a8915ba34f12907aac3145dd512859951d391781e5a390fb675a5"
     )
     assert matrix["canonical_source"]["instruction_sha256"] == (
-        "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
+        "a367c42b2d13824e8a5933b7bd6369eea35903dccc8a66027c7e450b3eef4564"
     )
+    assert matrix["canonical_source"]["audit_session_id"] == AUDIT_SESSION_ID
     assert matrix["canonical_source"]["criterion_count"] == 184
     assert matrix["canonical_source"]["fatal_gate_count"] == 12
     assert matrix["assessment"]["repository_commit_role"] == REPOSITORY_COMMIT_ROLE
+
+
+def test_raw_attachment_authority_is_present_and_tamper_evident(
+    tmp_path: Path,
+) -> None:
+    authority = validate_audit_authority()
+
+    assert authority.session_id == AUDIT_SESSION_ID
+    assert authority.rubric_path == RUBRIC_RELATIVE_PATH.as_posix()
+    assert authority.instruction_path == INSTRUCTION_RELATIVE_PATH.as_posix()
+
+    isolated_root = tmp_path / "isolated-authority"
+    for relative in (RUBRIC_RELATIVE_PATH, INSTRUCTION_RELATIVE_PATH):
+        destination = isolated_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(PROJECT_ROOT / relative, destination)
+    assert validate_audit_authority(project_root=isolated_root) == authority
+
+    instruction = isolated_root / INSTRUCTION_RELATIVE_PATH
+    instruction.write_bytes(instruction.read_bytes() + b"tamper")
+    with pytest.raises(
+        ValueError,
+        match="audit_instruction_authority_hash_mismatch",
+    ):
+        validate_audit_authority(project_root=isolated_root)
 
 
 def test_missing_receipt_caps_claims_and_fatal_gates_fail_closed(
@@ -361,9 +390,7 @@ def test_generated_reference_matrix_is_checked_in_without_drift() -> None:
     matrix = load_matrix(DEFAULT_MATRIX)
 
     assert matrix == build_matrix()
-    assert "no separately retained source" in matrix["assessment"][
-        "history_semantics"
-    ]
+    assert AUDIT_SESSION_ID in matrix["assessment"]["history_semantics"]
     iteration = matrix["assessment"]["iteration"]
     assert all(
         [entry["iteration"] for entry in criterion["assessment_history"]]
@@ -372,17 +399,9 @@ def test_generated_reference_matrix_is_checked_in_without_drift() -> None:
     )
     assert all(
         all(
-            entry["history_kind"]
-            == "logical_phase_without_retained_snapshot"
-            and entry["evidence_scope"] == "not_retained_for_this_logical_phase"
-            and entry["maturity"] == "M0"
-            and entry["status"] == "MISSING"
-            for entry in criterion["assessment_history"][:5]
-        )
-        and all(
             entry["history_kind"] == "retained_assessment_snapshot"
             and entry["retained_snapshot_sha256"]
-            for entry in criterion["assessment_history"][5:-1]
+            for entry in criterion["assessment_history"][:-1]
         )
         and criterion["assessment_history"][-1]["history_kind"]
         == "current_surface_reassessment"
@@ -396,11 +415,7 @@ def test_retained_history_entry_is_bound_to_full_snapshot_bytes(
     snapshot = load_matrix(DEFAULT_MATRIX)
     iteration = snapshot["assessment"]["iteration"]
     surface = snapshot["assessment"]["assessment_surface"]["sha256"]
-    history_root = (
-        tmp_path
-        / "docs"
-        / "investment-research-platform-audit-history"
-    )
+    history_root = tmp_path / AUDIT_SESSION_HISTORY_RELATIVE_ROOT
     history_root.mkdir(parents=True)
     target = history_root / f"iteration-{iteration:03d}-{surface}.json"
     target.write_text(
@@ -414,18 +429,21 @@ def test_retained_history_entry_is_bound_to_full_snapshot_bytes(
         "history_kind": "retained_assessment_snapshot",
         "evidence_scope": (
             "retained_snapshot:"
-            f"docs/investment-research-platform-audit-history/{target.name};"
+            f"{AUDIT_SESSION_HISTORY_RELATIVE_ROOT.as_posix()}/{target.name};"
             f"assessment_surface:{surface}"
         ),
         "retained_snapshot_sha256": content_sha256,
     }
 
-    assert reference_audit._retained_history_snapshot_findings(
-        matrix_root=tmp_path,
-        criterion_id=criterion["id"],
-        entry=entry,
-        cache={},
-    ) == []
+    assert (
+        reference_audit._retained_history_snapshot_findings(
+            matrix_root=tmp_path,
+            criterion_id=criterion["id"],
+            entry=entry,
+            cache={},
+        )
+        == []
+    )
 
     tampered_claim = {**entry, "retained_snapshot_sha256": "0" * 64}
     assert reference_audit._retained_history_snapshot_findings(
@@ -667,9 +685,10 @@ def test_receipt_runner_writes_only_after_a_clean_exact_run(
     assert Path(observed_environment["RESEARCH_CACHE_ROOT"]) == (
         isolated_root / "cache"
     )
-    assert Path(
-        observed_environment["RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH"]
-    ) == isolated_root / "identity" / "experiment-identities.jsonl"
+    assert (
+        Path(observed_environment["RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH"])
+        == isolated_root / "identity" / "experiment-identities.jsonl"
+    )
     assert Path(observed_environment["XDG_STATE_HOME"]) == isolated_root / "xdg-state"
     assert not isolated_root.exists()
 
@@ -1049,7 +1068,11 @@ def test_assessment_history_requires_sequence_and_final_binding(
 ) -> None:
     payload = _conservative_matrix(tmp_path)
     history = payload["criteria"][0]["assessment_history"]
-    history.pop(0)
+    # A new authority session legitimately starts with one current-surface
+    # entry.  Add a forged extra entry instead of assuming that a historical
+    # entry is always available to remove.
+    history.append(copy.deepcopy(history[-1]))
+    history[-1]["iteration"] = int(history[-2]["iteration"]) + 1
     history[-1]["diagnosis"] = "forged diagnosis"
 
     evaluation = evaluate_matrix(_write_matrix(tmp_path / "matrix.json", payload))
@@ -1151,6 +1174,96 @@ def test_local_e4_receipt_inventory_excludes_conditional_postgresql_files(
         "services/research_operations/tests/test_prior_release_upgrade.py"
         not in required
     )
+
+
+def test_current_matrix_binds_pit_corporate_and_portable_evidence_without_overclaim(
+    tmp_path: Path,
+) -> None:
+    conservative = _conservative_matrix(tmp_path)
+    document, _, required = _receipt_document(conservative)
+    receipt_path = tmp_path / "local-self-attested-receipt.json"
+    receipt_path.write_text(json.dumps(document), encoding="utf-8")
+
+    matrix = build_matrix(receipt_path=receipt_path)
+    by_id = {row["id"]: row for row in matrix["criteria"]}
+    assert {
+        criterion_id: by_id[criterion_id]["maturity"]
+        for criterion_id in (
+            "B-06",
+            "B-07",
+            "B-08",
+            "B-09",
+            "C-19",
+            "E-04",
+            "E-06",
+            "E-24",
+            "G-02",
+            "H-01",
+            "H-02",
+            "H-03",
+            "H-04",
+            "H-05",
+            "H-06",
+            "H-07",
+            "H-08",
+            "H-09",
+            "H-10",
+            "H-11",
+            "H-12",
+        )
+    } == {
+        "B-06": "M4",
+        "B-07": "M4",
+        "B-08": "M3",
+        "B-09": "M3",
+        "C-19": "M4",
+        "E-04": "M4",
+        "E-06": "M3",
+        "E-24": "M4",
+        "G-02": "M4",
+        "H-01": "M3",
+        "H-02": "M3",
+        "H-03": "M4",
+        "H-04": "M3",
+        "H-05": "M3",
+        "H-06": "M3",
+        "H-07": "M3",
+        "H-08": "M3",
+        "H-09": "M3",
+        "H-10": "M3",
+        "H-11": "M4",
+        "H-12": "M4",
+    }
+    assert "NOT_LOCALLY_OR_OMNISCIENTLY_PROVABLE" in by_id["B-06"]["gap"]
+    assert "UNVERIFIED_NO_PROVIDER_SOURCE_ARTIFACT_CONTRACT" in by_id["B-08"]["gap"]
+    assert "replacement price-series/InstrumentMaster" in by_id["E-06"]["gap"]
+    assert "같은 host" in by_id["G-02"]["gap"]
+    assert "OS filesystem/network namespace" in by_id["G-02"]["gap"]
+    assert "`INCOMPLETE`" in by_id["H-01"]["gap"]
+    assert "`INCOMPLETE`" in by_id["H-07"]["gap"]
+
+    assert {
+        "tests/test_point_in_time_universe_v2.py",
+        "tests/test_corporate_action_accounting_v2.py",
+        "tests/test_portable_research_package.py",
+        "tests/test_portable_research_package_wheel_cold.py",
+    }.issubset(required)
+    assert "tests/test_point_in_time_universe_v2.py" in {
+        item["test"] for item in by_id["B-06"]["objective_evidence"]
+    }
+    assert "tests/test_corporate_action_accounting_v2.py" in {
+        item["test"] for item in by_id["E-24"]["objective_evidence"]
+    }
+    assert "tests/test_portable_research_package_wheel_cold.py" in {
+        item["test"] for item in by_id["G-02"]["objective_evidence"]
+    }
+
+    gates = {gate["id"]: gate for gate in matrix["fatal_gates"]}
+    assert gates["FG-04"]["verification_method"].endswith(
+        "tests/test_point_in_time_universe_v2.py"
+    )
+    assert "전지적으로 증명한다고 주장하지 않는다" in gates["FG-04"]["evidence"]
+    assert "독립 E5" in gates["FG-06"]["evidence"]
 
 
 def test_generated_result_preserves_validation_incidents_and_external_pg_gap(

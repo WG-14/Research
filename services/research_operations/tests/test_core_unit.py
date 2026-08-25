@@ -6,6 +6,7 @@ import random
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -432,6 +433,165 @@ def test_production_research_dispatch_uses_supervised_child(monkeypatch) -> None
         "decision": decision,
         "progress": progress,
     }
+
+
+def test_runtime_package_roots_follow_installed_distributions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    site_packages = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+    for package_name in research_job_worker_module._RUNTIME_PACKAGE_NAMES:
+        (site_packages / package_name).mkdir(parents=True)
+
+    def installed_spec(package_name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            submodule_search_locations=[str(site_packages / package_name)]
+        )
+
+    monkeypatch.setattr(research_job_worker_module, "find_spec", installed_spec)
+
+    assert research_job_worker_module.runtime_package_import_roots() == (
+        site_packages.resolve(),
+    )
+    assert not (tmp_path / "venv" / "src").exists()
+
+
+def test_operated_runtime_package_roots_are_bound_to_active_distributions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment_prefix = tmp_path / "venv"
+    site_packages = (
+        environment_prefix / "lib" / "python3.12" / "site-packages"
+    )
+    for package_name in research_job_worker_module._RUNTIME_PACKAGE_NAMES:
+        (site_packages / package_name).mkdir(parents=True)
+
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setattr(
+        research_job_worker_module.sys, "prefix", str(environment_prefix)
+    )
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "find_spec",
+        lambda package_name: SimpleNamespace(
+            submodule_search_locations=[str(site_packages / package_name)]
+        ),
+    )
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "distribution",
+        lambda _name: SimpleNamespace(locate_file=lambda _path: site_packages),
+    )
+
+    assert research_job_worker_module.runtime_package_import_roots() == (
+        site_packages.resolve(),
+    )
+
+
+def test_operated_runtime_package_roots_reject_outside_prefix_and_symlink(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment_prefix = tmp_path / "venv"
+    environment_prefix.mkdir()
+    outside_root = tmp_path / "polluted" / "site-packages"
+    for package_name in research_job_worker_module._RUNTIME_PACKAGE_NAMES:
+        (outside_root / package_name).mkdir(parents=True)
+
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setattr(
+        research_job_worker_module.sys, "prefix", str(environment_prefix)
+    )
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "find_spec",
+        lambda package_name: SimpleNamespace(
+            submodule_search_locations=[str(outside_root / package_name)]
+        ),
+    )
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "distribution",
+        lambda _name: SimpleNamespace(locate_file=lambda _path: outside_root),
+    )
+    with pytest.raises(
+        SandboxUnavailableError,
+        match="research_job_runtime_distribution_binding_invalid:market_research",
+    ):
+        research_job_worker_module.runtime_package_import_roots()
+
+    linked_target = tmp_path / "attacker" / "market_research"
+    linked_target.mkdir(parents=True)
+    linked_package = (
+        environment_prefix
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "market_research"
+    )
+    linked_package.parent.mkdir(parents=True)
+    linked_package.symlink_to(linked_target, target_is_directory=True)
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "find_spec",
+        lambda _name: SimpleNamespace(
+            submodule_search_locations=[str(linked_package)]
+        ),
+    )
+    with pytest.raises(
+        SandboxUnavailableError,
+        match="research_job_runtime_package_path_invalid:market_research",
+    ):
+        research_job_worker_module.runtime_package_import_roots()
+
+    monkeypatch.delenv("RESEARCH_RUNTIME_PROFILE")
+    real_package = tmp_path / "real" / "market_research"
+    real_package.mkdir(parents=True)
+    linked_package = tmp_path / "linked" / "market_research"
+    linked_package.parent.mkdir()
+    linked_package.symlink_to(real_package, target_is_directory=True)
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "find_spec",
+        lambda _name: SimpleNamespace(
+            submodule_search_locations=[str(linked_package)]
+        ),
+    )
+    with pytest.raises(
+        SandboxUnavailableError,
+        match="research_job_runtime_package_path_invalid:market_research",
+    ):
+        research_job_worker_module.runtime_package_import_roots()
+
+
+def test_runtime_package_roots_fail_closed_on_missing_or_ambiguous_package(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(research_job_worker_module, "find_spec", lambda _name: None)
+    with pytest.raises(
+        SandboxUnavailableError,
+        match="research_job_runtime_package_unavailable:market_research",
+    ):
+        research_job_worker_module.runtime_package_import_roots()
+
+    first = tmp_path / "one" / "market_research"
+    second = tmp_path / "two" / "market_research"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    monkeypatch.setattr(
+        research_job_worker_module,
+        "find_spec",
+        lambda _name: SimpleNamespace(
+            submodule_search_locations=[str(first), str(second)]
+        ),
+    )
+    with pytest.raises(
+        SandboxUnavailableError,
+        match="research_job_runtime_package_ambiguous:market_research",
+    ):
+        research_job_worker_module.runtime_package_import_roots()
 
 
 def test_research_job_child_limits_are_bounded(monkeypatch) -> None:

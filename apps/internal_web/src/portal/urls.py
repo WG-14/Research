@@ -123,6 +123,16 @@ urlpatterns = [
         name="project-reference",
     ),
     path(
+        "projects/<str:project_id>/study-stage/",
+        project_views.project_study_stage,
+        name="project-study-stage",
+    ),
+    path(
+        "projects/<str:project_id>/preregister/",
+        project_views.project_preregister,
+        name="project-preregister",
+    ),
+    path(
         "projects/<str:project_id>/transition/",
         project_views.project_transition,
         name="project-transition",

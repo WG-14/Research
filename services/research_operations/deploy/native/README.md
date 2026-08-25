@@ -36,6 +36,10 @@ research-proxy                            dedicated Nginx worker identity
 /etc/research-ops/secrets/*                0600 root:root source secrets
 /etc/research-ops/secrets/operated-execution.key 0400 root:root, exactly 32 bytes
 /etc/research-ops/backup-signing.pub       0644 root:root public key
+/etc/research-ops/dataset-transformation-trust.json 0644 root:root canonical trust store
+/etc/research-ops/dataset-transformation-keys/*.ed25519.pub 0644 root:root public keys
+/etc/research-ops/independent-verifier-trust.json 0644 root:root canonical trust store
+/etc/research-ops/independent-verifier-keys/*.ed25519.pub 0644 root:root public keys
 /etc/research-ops/pki/*                    organization-managed, outside Git
 /srv/research/data                         2750 root:research-ops (immutable input)
 /srv/research/data/_internal_web/manifests 2770 root:research-ops
@@ -74,6 +78,12 @@ sudo install -d -o research-web -g research-ops -m 2770 \
   /srv/research/cache/research/projects
 sudo install -d -o research-job -g research-ops -m 2770 \
   /srv/research/artifacts/_operations_sandbox
+sudo install -o root -g research-ops -m 0660 /dev/null \
+  /srv/research/registry/final_holdout_authority.jsonl
+sudo install -o root -g research-ops -m 0660 /dev/null \
+  /srv/research/registry/final_holdout_authority.jsonl.lock
+sudo /usr/bin/chattr +a \
+  /srv/research/registry/final_holdout_authority.jsonl
 sudo install -d -o research-backup -g research-backup -m 0750 \
   /srv/research-backups /srv/research-offsite-receipts
 ```
@@ -111,6 +121,62 @@ openssl rand 32 | sudo install -o root -g root -m 0400 /dev/stdin \
   /etc/research-ops/secrets/operated-execution.key
 ```
 
+Install the data steward's Ed25519 public keys and canonical trust store as
+public, administrator-owned files. The corresponding private signing keys stay
+outside this host and repository. The store schema is
+`dataset_transformation_trust_store` version 1; every key entry binds its fixed
+path, exact byte hash, validity interval, and optional revocation time/reason.
+It may retain revoked keys for rejection evidence but must contain at least one
+currently valid, non-revoked key. Set
+`RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH` to the SHA-256 of the exact
+installed JSON bytes (including its single trailing newline):
+
+```sh
+sudo install -d -o root -g root -m 0755 \
+  /etc/research-ops/dataset-transformation-keys
+sudo install -o root -g root -m 0644 \
+  /absolute/reviewed/steward.ed25519.pub \
+  /etc/research-ops/dataset-transformation-keys/steward.ed25519.pub
+sudo install -o root -g root -m 0644 \
+  /absolute/reviewed/dataset-transformation-trust.json \
+  /etc/research-ops/dataset-transformation-trust.json
+sha256sum /etc/research-ops/dataset-transformation-trust.json
+```
+
+Preflight fixes both locations, rejects links/hardlinks or noncanonical bytes,
+checks root ownership and exact modes, verifies store/key byte hashes and
+Ed25519 encoding, and enforces store/key validity and revocation state. A
+dataset manifest, API request, job payload, or local environment cannot add an
+authority. Rotate by installing a reviewed new key and canonical store first,
+updating the root-only runtime environment digest, and rerunning preflight;
+record revocation in the store instead of deleting compromised key history.
+
+Install the independent identity authority separately. Assertion schema v2 is
+Ed25519-only; the issuer's private key remains on the external identity system
+and is never installed or projected into a research service. The canonical
+`independent_verifier_trust_store` version 1 binds one `authority_id`, store
+issue/expiry times, and sorted unique public-key IDs, paths, content hashes,
+validity intervals, and revocation records. Set
+`RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH` to the SHA-256 of the exact
+installed JSON bytes, including its one trailing newline:
+
+```sh
+sudo install -d -o root -g root -m 0755 \
+  /etc/research-ops/independent-verifier-keys
+sudo install -o root -g root -m 0644 \
+  /absolute/reviewed/verifier.ed25519.pub \
+  /etc/research-ops/independent-verifier-keys/verifier.ed25519.pub
+sudo install -o root -g root -m 0644 \
+  /absolute/reviewed/independent-verifier-trust.json \
+  /etc/research-ops/independent-verifier-trust.json
+sha256sum /etc/research-ops/independent-verifier-trust.json
+```
+
+Preflight and the production loader enforce those exact paths and digest,
+root-owned non-writable parent chains, `0644 root:root` single-link files,
+canonical JSON/public-key encoding, validity, revocation, and stable descriptor
+identity. A CLI caller cannot replace the path, digest, store, or public key.
+
 Build and generate `release.json` from the clean release commit before adding
 the venv or manifest to the immutable release directory. Install with the
 manifest and artifact directory at absolute staging paths:
@@ -138,6 +204,27 @@ installation are forbidden for the official native runtime. Make `current`
 visible only after this check and the root-owned release copy are complete.
 Never run a service from a developer checkout or editable installation.
 
+The admitted Job worker resolves the import roots of the four installed
+packages from the running interpreter and mounts those verified directories
+read-only into each child. In the operated profile those roots must be under
+the active `sys.prefix` and match installed distribution metadata; direct
+package symlinks and `PATH` substitution are rejected. It never guesses a
+checkout-style `.venv/src` directory. The Job unit permits only the mount,
+user, IPC, PID, UTS, and network namespace types required by bubblewrap (the
+child's network namespace has no host interfaces); cgroup namespaces remain
+denied. It permits `AF_NETLINK` only so bubblewrap can configure that isolated
+loopback. This unit alone leaves `ProtectKernelTunables` disabled because
+bubblewrap must set the namespaced user-namespace limit while creating the
+child; the unprivileged, capability-free parent then invokes
+`--disable-userns --assert-userns-disabled`, so research code cannot create a
+nested user namespace. Other units continue to deny all namespace creation
+and protect kernel tunables. Preflight and the operated runner both use the
+same absolute `/usr/bin/bwrap`, `/usr/bin/prlimit`, and `/usr/bin/timeout`.
+CI installs the exact wheels outside the checkout and performs a real
+bubblewrap import smoke test. Site acceptance must repeat
+submit→claim→sandbox→receipt under the installed unit and PostgreSQL; static
+unit parsing is not a substitute for that host qualification.
+
 Run the filesystem qualifier for all five roles and install its path-redacted
 receipt at `/etc/research-ops/filesystem-qualification.json`. The native unit
 sandbox treats datasets as read-only, allows only Web to write the manifest
@@ -146,6 +233,27 @@ read-only mounts, permits migration to write only public static assets, and
 makes outbox, validator, alert, diagnostics, retention, and backup views of
 research roots read-only. Preflight requires every mountpoint above to exist
 with the exact owner, group, and mode before a service starts.
+
+`RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH` is the shared append-only exposure
+authority at `/srv/research/registry/final_holdout_authority.jsonl`. It must
+never point into a per-job sandbox, artifact namespace, or report namespace.
+Native installation pre-creates that ledger and its `.lock` inode as exact
+`0660 root:research-ops` files and applies the Linux kernel append-only flag to
+the ledger. Preflight and the operated storage boundary verify that flag; the
+service has neither `CAP_LINUX_IMMUTABLE` nor a nested user namespace with
+which to clear it. The Job worker and its sandbox receive write
+access to those two files only, never to the authority directory or sibling
+registries.
+The parent Job worker reserves the manifest/dataset/holdout scope before
+launch, passes only the content-addressed reservation and fence to the child,
+and records pre-exposure aborts separately from activated exposures.
+Ordinary operated validation may create only a `PRIMARY_CONFIRMATION`
+reservation. A terminal replay is a separate
+`INDEPENDENT_REPRODUCTION` purpose with a one-per-primary budget; it requires
+the completed primary receipt/result plus a verified, time-bounded
+`independent_verifier` assertion. Actor names, worker roles, and generic
+registry payloads cannot request that purpose, and its activation and result
+must exactly match the primary candidate and evidence bindings.
 
 ## Production PKI gate
 

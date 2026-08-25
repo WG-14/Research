@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -17,7 +18,9 @@ from market_research.application import (
     ResearchApplicationService,
     ResearchPreflightRequest,
     ResearchValidationRequest,
+    abort_operated_final_holdout,
     require_operated_execution_capability,
+    reserve_operated_final_holdout,
 )
 from market_research.application.adapter_contracts import (
     content_hash_payload,
@@ -212,6 +215,25 @@ class ResearchJobDispatcher:
         child_cache = root / "cache"
         child_registry = root / "control" / "experiment_identity.jsonl"
         base = settings.RESEARCH_PATHS.settings
+        actor = ActorContext(
+            actor_id=job.actor_id,
+            roles=tuple(str(item) for item in job.actor_roles),
+            permissions=frozenset(str(item) for item in job.actor_permissions),
+            source="worker",
+        )
+        final_holdout_reservation = None
+        if job.capability_id == ResearchJob.Capability.VALIDATE:
+            try:
+                final_holdout_reservation = reserve_operated_final_holdout(
+                    paths=settings.RESEARCH_PATHS,
+                    strategy_registry=builtin_strategy_registry(),
+                    manifest_path=str(manifest_path),
+                    request_id=str(job.pk),
+                    request_hash=str(job.request_hash),
+                    actor=actor,
+                )
+            except (OSError, ValueError) as exc:
+                raise PublicJobError("FINAL_HOLDOUT_AUTHORITY_REJECTED") from exc
         return {
             "schema_version": 1,
             "job_id": str(job.pk),
@@ -222,6 +244,7 @@ class ResearchJobDispatcher:
             "manifest_path": str(manifest_path),
             "runtime_project_root": str(settings.RESEARCH_PATHS.project_root),
             "sandbox_root": str(root),
+            "final_holdout_reservation": final_holdout_reservation,
             "settings": {
                 "data_root": str(base.data_root),
                 "artifact_root": str(child_artifacts),
@@ -231,6 +254,9 @@ class ResearchJobDispatcher:
                 "max_workers": int(base.max_workers),
                 "random_seed": int(base.random_seed),
                 "experiment_identity_registry_path": str(child_registry),
+                "final_holdout_registry_path": str(
+                    settings.RESEARCH_PATHS.final_holdout_registry_path()
+                ),
             },
             "actor": {
                 "actor_id": str(job.actor_id),
@@ -318,6 +344,24 @@ class ResearchJobDispatcher:
                 research_outcome=str(payload.get("research_outcome") or ""),
             )
         raise PublicJobError("CAPABILITY_NOT_AVAILABLE_IN_WEB")
+
+    @staticmethod
+    def abort_sandbox_reservation(
+        request: object,
+        *,
+        reason: str,
+    ) -> None:
+        if not isinstance(request, dict):
+            return
+        reservation = request.get("final_holdout_reservation")
+        if not isinstance(reservation, dict):
+            return
+        with suppress(OSError, ValueError):
+            abort_operated_final_holdout(
+                paths=settings.RESEARCH_PATHS,
+                reservation=reservation,
+                reason=reason,
+            )
 
     @staticmethod
     def _authorize_job(job: ResearchJob) -> None:

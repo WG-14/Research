@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,9 @@ from market_research.application import (
     ResearchProjectReferenceRequest,
     ResearchProjectRevisionRequest,
     ResearchProjectSearchRequest,
+    ResearchPhaseWindowInput,
+    ResearchStudyPreregistrationRequest,
+    ResearchStudyStageRequest,
     ResearchProjectTransitionRequest,
     ResearchProjectWorkspaceRequest,
     get_capability,
@@ -39,10 +43,13 @@ from market_research.research.research_project import (
     research_project_history,
     research_project_namespaces,
     research_project_registry_path,
+    resolved_research_object_envelope,
     validate_research_project_registry,
 )
+from market_research.research.hashing import canonical_json_bytes
 from market_research.settings import ResearchSettings
 from market_research.storage_io import ATOMIC_PUBLICATION_MODE_ENV
+from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 
 
 _BASE_TIME = datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
@@ -120,6 +127,62 @@ def _members(prefix: str = "a") -> tuple[ResearchProjectMemberInput, ...]:
     )
 
 
+def _agenda() -> dict[str, object]:
+    return {
+        "investment_horizon": "One to twenty trading days",
+        "expected_phenomenon": "Liquidity compensation persists after costs.",
+        "economic_explanation": "Inventory risk is compensated by future returns.",
+        "prior_research_relationship": "Replicates and narrows prior liquidity work.",
+        "required_data": ("point-in-time prices", "delisting-complete universe"),
+        "expected_challenges": ("survivorship bias", "capacity estimation"),
+        "similar_research_assessment": "none_identified",
+        "similar_research_refs": (),
+    }
+
+
+def _object_ref(
+    paths: ResearchPathManager,
+    *,
+    project_id: str,
+    kind: _ProjectObjectKindInput,
+    object_id: str,
+    version: str = "v1",
+    marker: str = "1",
+    object_payload: dict[str, object] | None = None,
+) -> ResearchProjectObjectRefInput:
+    payload: dict[str, object]
+    if object_payload is not None:
+        payload = object_payload
+    elif kind == "HYPOTHESIS":
+        payload = hypothesis_spec_v2(hypothesis_id=object_id, version=version)
+    else:
+        payload = {
+            "logical_id": object_id,
+            "version": version,
+            "evidence": marker,
+        }
+    envelope = resolved_research_object_envelope(
+        kind=ResearchProjectObjectKind(kind),
+        object_id=object_id,
+        version=version,
+        object_payload=payload,
+    )
+    raw = canonical_json_bytes(envelope)
+    artifact = paths.artifact_root / "resolved" / f"{kind}-{object_id}-{version}.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(raw)
+    artifact.chmod(0o644)
+    return ResearchProjectObjectRefInput(
+        project_id=project_id,
+        kind=kind,
+        object_id=object_id,
+        version=version,
+        content_hash=str(envelope["content_hash"]),
+        artifact_uri=str(artifact.resolve()),
+        artifact_file_hash="sha256:" + hashlib.sha256(raw).hexdigest(),
+    )
+
+
 def _create_request(
     project_id: str,
     *,
@@ -138,6 +201,7 @@ def _create_request(
         owner_id=f"owner-{prefix}",
         asset_classes=("EQUITY", "FUTURE"),
         markets=("KRX", "NYSE"),
+        **_agenda(),
         members=_members(prefix),
         actor=_actor(f"owner-{prefix}", "research.project.manage"),
     )
@@ -205,7 +269,7 @@ def test_project_schema_registry_idempotence_tamper_and_external_namespaces(
     assert first.event_created is True
     assert repeated.event_created is False
     assert repeated.registry_row_hash == first.registry_row_hash
-    assert first.project["schema_version"] == 1
+    assert first.project["schema_version"] == 2
     assert first.project["version"] == 1
     assert first.project["status"] == "DRAFT"
     assert first.compute_root is not None
@@ -340,6 +404,250 @@ def test_project_registry_rejects_symlink_escape_from_artifact_root(
         research_project_registry_path(paths)
 
 
+def test_external_object_resolver_rejects_tamper_symlink_and_missing_object(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = ResearchProjectApplicationService(paths)
+    project = _create(service, "project-resolver")
+    reference = _object_ref(
+        paths,
+        project_id="project-resolver",
+        kind="CODE",
+        object_id="code-resolved",
+    )
+    artifact = Path(reference.artifact_uri)
+    artifact.write_bytes(artifact.read_bytes() + b"\n")
+    with pytest.raises(
+        ResearchProjectIntegrityError,
+        match="artifact_file_hash_mismatch",
+    ):
+        service.attach_reference(
+            ResearchProjectReferenceRequest(
+                project_id="project-resolver",
+                event_id="attach-tampered-code",
+                recorded_at=_time(1),
+                reason="Tampered bytes cannot be linked.",
+                expected_version=_version(project),
+                reference=reference,
+                actor=_actor("researcher-a", "research.project.write"),
+            )
+        )
+
+    valid = _object_ref(
+        paths,
+        project_id="project-resolver",
+        kind="CODE",
+        object_id="code-symlink",
+    )
+    link_root = paths.artifact_root / "linked-resolved"
+    link_root.symlink_to((paths.artifact_root / "resolved"), target_is_directory=True)
+    linked = valid.model_copy(
+        update={"artifact_uri": str(link_root / Path(valid.artifact_uri).name)}
+    )
+    with pytest.raises(
+        ResearchProjectIntegrityError,
+        match="artifact_symlink_forbidden",
+    ):
+        service.attach_reference(
+            ResearchProjectReferenceRequest(
+                project_id="project-resolver",
+                event_id="attach-symlink-code",
+                recorded_at=_time(2),
+                reason="Symlinked objects are not resolver authorities.",
+                expected_version=_version(project),
+                reference=linked,
+                actor=_actor("researcher-a", "research.project.write"),
+            )
+        )
+
+    missing = valid.model_copy(
+        update={"artifact_uri": str(paths.artifact_root / "missing.json")}
+    )
+    with pytest.raises(ResearchProjectIntegrityError, match="artifact_missing"):
+        service.attach_reference(
+            ResearchProjectReferenceRequest(
+                project_id="project-resolver",
+                event_id="attach-missing-code",
+                recorded_at=_time(3),
+                reason="Missing objects cannot be linked.",
+                expected_version=_version(project),
+                reference=missing,
+                actor=_actor("researcher-a", "research.project.write"),
+            )
+        )
+
+
+def test_resolved_object_envelope_binds_payload_identity() -> None:
+    with pytest.raises(
+        ResearchProjectIntegrityError,
+        match="payload_identity_mismatch",
+    ):
+        resolved_research_object_envelope(
+            kind=ResearchProjectObjectKind.RESULT,
+            object_id="declared-result",
+            version="v1",
+            object_payload={
+                "logical_id": "different-result",
+                "version": "v1",
+                "evidence": "forged",
+            },
+        )
+    with pytest.raises(
+        ResearchProjectIntegrityError,
+        match="payload_identity_mismatch",
+    ):
+        resolved_research_object_envelope(
+            kind=ResearchProjectObjectKind.HYPOTHESIS,
+            object_id="declared-hypothesis",
+            version="1.0.0",
+            object_payload=hypothesis_spec_v2(
+                hypothesis_id="different-hypothesis",
+                version="1.0.0",
+            ),
+        )
+
+
+def test_agenda_related_research_requires_and_resolves_hash_bound_object(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    reference = _object_ref(
+        paths,
+        project_id="project-related",
+        kind="HYPOTHESIS",
+        object_id="prior-hypothesis",
+        version="1.0.0",
+    )
+    request = _create_request("project-related").model_copy(
+        update={
+            "similar_research_assessment": "extends_prior_confirmatory_research",
+            "similar_research_refs": (reference,),
+        }
+    )
+    created = ResearchProjectApplicationService(paths).create(request)
+
+    assert created.project["investment_horizon"] == "One to twenty trading days"
+    assert created.project["required_data"]
+    assert created.project["expected_challenges"]
+    assert created.project["similar_research_refs"] == [reference.model_dump()]
+
+
+def test_application_service_records_independent_stages_and_full_preregistration(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = ResearchProjectApplicationService(paths)
+    project = _create(service, "project-preregister")
+    hypothesis_payload = hypothesis_spec_v2(
+        hypothesis_id="hypothesis-preregister",
+        version="1.0.0",
+        registration_status="pre_registered",
+        pre_registered_at="2025-12-20T00:00:00+00:00",
+        registration_evidence_hash="sha256:" + "e" * 64,
+    )
+    reference = _object_ref(
+        paths,
+        project_id="project-preregister",
+        kind="HYPOTHESIS",
+        object_id="hypothesis-preregister",
+        version="1.0.0",
+        object_payload=hypothesis_payload,
+    )
+    attached = service.attach_reference(
+        ResearchProjectReferenceRequest(
+            project_id="project-preregister",
+            event_id="attach-hypothesis-preregister",
+            recorded_at=_time(1),
+            reason="Bind the resolved hypothesis before lifecycle work.",
+            expected_version=_version(project),
+            reference=reference,
+            actor=_actor("researcher-a", "research.project.write"),
+        )
+    )
+    for index, (state, recorded_at, evidence_hash) in enumerate(
+        (
+            ("IDEA", "2025-12-05T00:00:00+00:00", None),
+            ("STRUCTURED", "2025-12-06T00:00:00+00:00", None),
+            (
+                "EXPLORATORY",
+                "2025-12-07T00:00:00+00:00",
+                "sha256:" + "d" * 64,
+            ),
+        ),
+        start=1,
+    ):
+        result = service.record_study_stage(
+            ResearchStudyStageRequest(
+                project_id="project-preregister",
+                event_id=f"study-stage-{index}",
+                recorded_at=recorded_at,
+                reason=f"Record independent {state} evidence.",
+                expected_project_version=_version(attached.project),
+                hypothesis_object_id="hypothesis-preregister",
+                hypothesis_version="1.0.0",
+                to_state=cast(Any, state),
+                exploration_evidence_hash=evidence_hash,
+                actor=_actor("researcher-a", "research.project.write"),
+            )
+        )
+        assert result.state == state
+
+    preregistered = service.preregister_study(
+        ResearchStudyPreregistrationRequest(
+            project_id="project-preregister",
+            event_id="preregister-study-1",
+            recorded_at="2025-12-20T00:00:00+00:00",
+            reason="Freeze the complete confirmatory design.",
+            expected_project_version=_version(attached.project),
+            hypothesis_object_id="hypothesis-preregister",
+            hypothesis_version="1.0.0",
+            registration_id="experiment-preregister",
+            registration_version=1,
+            manifest_hash="sha256:" + "a" * 64,
+            sample_starts_at="2025-01-01T00:00:00+00:00",
+            sample_ends_at="2026-01-01T00:00:00+00:00",
+            universe=("KRW-BTC",),
+            exclusion_criteria=("missing immutable candle",),
+            variable_definitions=("closed-candle SMA crossover",),
+            target_variable="next-candle net return",
+            portfolio_construction="single-asset long-or-cash",
+            rebalancing_policy="registered crossover only",
+            primary_metrics=("net return", "profit factor"),
+            cost_assumptions=("fee_rate=0.001", "fixed slippage"),
+            phase_windows=(
+                ResearchPhaseWindowInput(
+                    phase="exploration",
+                    starts_at="2025-01-01T00:00:00+00:00",
+                    ends_at="2025-04-01T00:00:00+00:00",
+                ),
+                ResearchPhaseWindowInput(
+                    phase="development",
+                    starts_at="2025-04-01T00:00:00+00:00",
+                    ends_at="2025-07-01T00:00:00+00:00",
+                ),
+                ResearchPhaseWindowInput(
+                    phase="validation",
+                    starts_at="2025-07-01T00:00:00+00:00",
+                    ends_at="2025-10-01T00:00:00+00:00",
+                ),
+                ResearchPhaseWindowInput(
+                    phase="final_holdout",
+                    starts_at="2025-10-01T00:00:00+00:00",
+                    ends_at="2026-01-01T00:00:00+00:00",
+                ),
+            ),
+            rejection_criteria=("net return is not positive",),
+            data_suitability_evidence_hash="sha256:" + "b" * 64,
+            signal_definition_hash="sha256:" + "c" * 64,
+            actor=_actor("researcher-a", "research.project.write"),
+        )
+    )
+    assert preregistered.state == "PREREGISTERED"
+    assert preregistered.preregistration_hash is not None
+    assert preregistered.preregistration_row_hash is not None
+
+
 def test_project_namespace_rejects_symlink_alias_within_artifact_root(
     tmp_path: Path,
 ) -> None:
@@ -384,12 +692,12 @@ def test_role_scoped_lineage_search_reverse_impact_and_cross_project_denial(
                 recorded_at=_time(index),
                 reason=f"Bind immutable {kind.lower()} evidence",
                 expected_version=version,
-                reference=ResearchProjectObjectRefInput(
+                reference=_object_ref(
+                    paths,
                     project_id="project-a",
                     kind=kind,
                     object_id=object_id,
-                    version="v1",
-                    content_hash="sha256:" + f"{index:064x}",
+                    marker=str(index),
                 ),
                 actor=_actor(actor_id, "research.project.write"),
             )
@@ -443,12 +751,12 @@ def test_role_scoped_lineage_search_reverse_impact_and_cross_project_denial(
                 recorded_at=_time(20),
                 reason="Invalid role escalation",
                 expected_version=version,
-                reference=ResearchProjectObjectRefInput(
+                reference=_object_ref(
+                    paths,
                     project_id="project-a",
                     kind="VERIFICATION",
                     object_id="verification-by-researcher",
-                    version="v1",
-                    content_hash="sha256:" + "a" * 64,
+                    marker="a",
                 ),
                 actor=_actor("researcher-a", "research.project.write"),
             )
@@ -462,12 +770,12 @@ def test_role_scoped_lineage_search_reverse_impact_and_cross_project_denial(
                 recorded_at=_time(21),
                 reason="Actor belongs only to another project",
                 expected_version=1,
-                reference=ResearchProjectObjectRefInput(
+                reference=_object_ref(
+                    paths,
                     project_id="project-b",
                     kind="CODE",
                     object_id="code-cross-project",
-                    version="v1",
-                    content_hash="sha256:" + "b" * 64,
+                    marker="b",
                 ),
                 actor=_actor("researcher-a", "research.project.write"),
             )
@@ -483,22 +791,22 @@ def test_role_scoped_lineage_search_reverse_impact_and_cross_project_denial(
             recorded_at=_time(22),
             reason="Reference scope mismatch",
             expected_version=1,
-            reference=ResearchProjectObjectRefInput(
+            reference=_object_ref(
+                paths,
                 project_id="project-a",
                 kind="CODE",
                 object_id="code-cross-project",
-                version="v1",
-                content_hash="sha256:" + "c" * 64,
+                marker="c",
             ),
             actor=_actor("researcher-b", "research.project.write"),
         )
 
-    exact_ref = ResearchProjectObjectRef(
-        project_id="project-a",
-        kind=ResearchProjectObjectKind.DATASET,
-        object_id="dataset-a",
-        version="v1",
-        content_hash="sha256:" + f"{3:064x}",
+    exact_ref = ResearchProjectObjectRef.from_dict(
+        next(
+            ref
+            for ref in cast(list[dict[str, Any]], latest["object_refs"])
+            if ref["kind"] == "DATASET"
+        )
     )
     with pytest.raises(
         ResearchProjectConflictError,
@@ -559,6 +867,7 @@ def test_project_revision_membership_version_and_read_acl(
             research_question="Does the signal survive in liquid KRX equities?",
             asset_classes=("EQUITY",),
             markets=("KRX",),
+            **_agenda(),
             actor=_actor("owner-v", "research.project.manage"),
         )
     )
@@ -631,6 +940,7 @@ def test_project_revision_membership_version_and_read_acl(
                 research_question="Stale question",
                 asset_classes=("EQUITY",),
                 markets=("KRX",),
+                **_agenda(),
                 actor=_actor("owner-v", "research.project.manage"),
             )
         )

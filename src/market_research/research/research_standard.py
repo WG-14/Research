@@ -79,6 +79,15 @@ class HypothesisRelation(StrEnum):
     ALTERNATIVE_MECHANISM = "ALTERNATIVE_MECHANISM"
 
 
+class ResearchPhase(StrEnum):
+    """Mutually exclusive data-use phases in one confirmatory design."""
+
+    EXPLORATION = "exploration"
+    DEVELOPMENT = "development"
+    VALIDATION = "validation"
+    FINAL_HOLDOUT = "final_holdout"
+
+
 def _non_empty_tuple(values: tuple[str, ...], field_name: str) -> None:
     if not values or any(not value.strip() for value in values):
         raise ResearchStandardError(f"{field_name}_required")
@@ -93,6 +102,311 @@ def _hash_tuple(values: tuple[str, ...], field_name: str, *, allow_empty: bool) 
         raise ResearchStandardError(f"{field_name}_duplicate")
     for value in values:
         require_hash(value, field_name)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchPhaseWindow:
+    phase: ResearchPhase
+    starts_at: str
+    ends_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "phase", ResearchPhase(self.phase))
+        start = parse_timestamp(self.starts_at, "research_phase.starts_at")
+        end = parse_timestamp(self.ends_at, "research_phase.ends_at")
+        if end <= start:
+            raise ResearchStandardError("research_phase_window_invalid")
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "phase": self.phase.value,
+            "starts_at": self.starts_at,
+            "ends_at": self.ends_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PreregisteredResearchDesign:
+    """Immutable D-06 design frozen before confirmatory access begins."""
+
+    registration_id: str
+    version: int
+    manifest_hash: str
+    hypothesis_contract_hash: str
+    registered_by: str
+    registered_at: str
+    sample_starts_at: str
+    sample_ends_at: str
+    universe: tuple[str, ...]
+    exclusion_criteria: tuple[str, ...]
+    variable_definitions: tuple[str, ...]
+    target_variable: str
+    portfolio_construction: str
+    rebalancing_policy: str
+    primary_metrics: tuple[str, ...]
+    cost_assumptions: tuple[str, ...]
+    phase_windows: tuple[ResearchPhaseWindow, ...]
+    rejection_criteria: tuple[str, ...]
+    data_suitability_evidence_hash: str
+    signal_definition_hash: str
+    external_registration_evidence_hash: str
+    schema_version: int = RESEARCH_STANDARD_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != RESEARCH_STANDARD_SCHEMA_VERSION:
+            raise ResearchStandardError(
+                "preregistered_research_design_schema_version_unsupported"
+            )
+        require_stable_id(
+            self.registration_id,
+            "preregistered_research_design.registration_id",
+        )
+        require_stable_id(
+            self.registered_by,
+            "preregistered_research_design.registered_by",
+        )
+        if self.version < 1:
+            raise ResearchStandardError("preregistered_research_design_version_invalid")
+        parse_timestamp(
+            self.registered_at,
+            "preregistered_research_design.registered_at",
+        )
+        sample_start = parse_timestamp(
+            self.sample_starts_at,
+            "preregistered_research_design.sample_starts_at",
+        )
+        sample_end = parse_timestamp(
+            self.sample_ends_at,
+            "preregistered_research_design.sample_ends_at",
+        )
+        if sample_end <= sample_start:
+            raise ResearchStandardError(
+                "preregistered_research_design_sample_period_invalid"
+            )
+        for field_name, value in (
+            ("target_variable", self.target_variable),
+            ("portfolio_construction", self.portfolio_construction),
+            ("rebalancing_policy", self.rebalancing_policy),
+        ):
+            if not value.strip():
+                raise ResearchStandardError(
+                    f"preregistered_research_design_{field_name}_required"
+                )
+        for field_name, values in (
+            ("universe", self.universe),
+            ("exclusion_criteria", self.exclusion_criteria),
+            ("variable_definitions", self.variable_definitions),
+            ("primary_metrics", self.primary_metrics),
+            ("cost_assumptions", self.cost_assumptions),
+            ("rejection_criteria", self.rejection_criteria),
+        ):
+            _non_empty_tuple(
+                values,
+                f"preregistered_research_design.{field_name}",
+            )
+        for field_name, value in (
+            ("manifest_hash", self.manifest_hash),
+            ("hypothesis_contract_hash", self.hypothesis_contract_hash),
+            (
+                "data_suitability_evidence_hash",
+                self.data_suitability_evidence_hash,
+            ),
+            ("signal_definition_hash", self.signal_definition_hash),
+            (
+                "external_registration_evidence_hash",
+                self.external_registration_evidence_hash,
+            ),
+        ):
+            require_hash(value, f"preregistered_research_design.{field_name}")
+        if any(
+            not isinstance(window, ResearchPhaseWindow) for window in self.phase_windows
+        ):
+            raise ResearchStandardError(
+                "preregistered_research_design_phase_window_invalid"
+            )
+        expected_phases = tuple(ResearchPhase)
+        actual_phases = tuple(window.phase for window in self.phase_windows)
+        if actual_phases != expected_phases:
+            raise ResearchStandardError(
+                "preregistered_research_design_phase_order_invalid"
+            )
+        previous_end: datetime | None = None
+        for window in self.phase_windows:
+            start = parse_timestamp(window.starts_at, "research_phase.starts_at")
+            end = parse_timestamp(window.ends_at, "research_phase.ends_at")
+            if start < sample_start or end > sample_end:
+                raise ResearchStandardError(
+                    "preregistered_research_design_phase_outside_sample"
+                )
+            if previous_end is not None and start < previous_end:
+                raise ResearchStandardError(
+                    "preregistered_research_design_phase_overlap"
+                )
+            previous_end = end
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "registration_id": self.registration_id,
+            "version": self.version,
+            "manifest_hash": self.manifest_hash,
+            "hypothesis_contract_hash": self.hypothesis_contract_hash,
+            "registered_by": self.registered_by,
+            "registered_at": self.registered_at,
+            "sample_starts_at": self.sample_starts_at,
+            "sample_ends_at": self.sample_ends_at,
+            "universe": list(self.universe),
+            "exclusion_criteria": list(self.exclusion_criteria),
+            "variable_definitions": list(self.variable_definitions),
+            "target_variable": self.target_variable,
+            "portfolio_construction": self.portfolio_construction,
+            "rebalancing_policy": self.rebalancing_policy,
+            "primary_metrics": list(self.primary_metrics),
+            "cost_assumptions": list(self.cost_assumptions),
+            "phase_windows": [item.as_dict() for item in self.phase_windows],
+            "rejection_criteria": list(self.rejection_criteria),
+            "data_suitability_evidence_hash": self.data_suitability_evidence_hash,
+            "signal_definition_hash": self.signal_definition_hash,
+            "external_registration_evidence_hash": (
+                self.external_registration_evidence_hash
+            ),
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return sha256_prefixed(
+            self.as_dict(),
+            label="preregistered_research_design_v2",
+        )
+
+
+def parse_preregistered_research_design(
+    value: object,
+) -> PreregisteredResearchDesign:
+    if not isinstance(value, Mapping):
+        raise ResearchStandardError("preregistered_research_design_must_be_object")
+    expected = {
+        "schema_version",
+        "registration_id",
+        "version",
+        "manifest_hash",
+        "hypothesis_contract_hash",
+        "registered_by",
+        "registered_at",
+        "sample_starts_at",
+        "sample_ends_at",
+        "universe",
+        "exclusion_criteria",
+        "variable_definitions",
+        "target_variable",
+        "portfolio_construction",
+        "rebalancing_policy",
+        "primary_metrics",
+        "cost_assumptions",
+        "phase_windows",
+        "rejection_criteria",
+        "data_suitability_evidence_hash",
+        "signal_definition_hash",
+        "external_registration_evidence_hash",
+    }
+    if set(value) != expected:
+        raise ResearchStandardError("preregistered_research_design_fields_invalid")
+
+    def text_value(field_name: str) -> str:
+        item = value[field_name]
+        if not isinstance(item, str) or not item.strip():
+            raise ResearchStandardError(
+                f"preregistered_research_design_{field_name}_required"
+            )
+        return item
+
+    def tuple_value(field_name: str) -> tuple[str, ...]:
+        item = value[field_name]
+        if not isinstance(item, list):
+            raise ResearchStandardError(
+                f"preregistered_research_design_{field_name}_must_be_array"
+            )
+        return tuple(
+            candidate
+            if isinstance(candidate, str)
+            else (_raise_design_field(field_name))
+            for candidate in item
+        )
+
+    raw_windows = value["phase_windows"]
+    if not isinstance(raw_windows, list):
+        raise ResearchStandardError(
+            "preregistered_research_design_phase_windows_must_be_array"
+        )
+    windows: list[ResearchPhaseWindow] = []
+    for raw in raw_windows:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "phase",
+            "starts_at",
+            "ends_at",
+        }:
+            raise ResearchStandardError(
+                "preregistered_research_design_phase_window_invalid"
+            )
+        windows.append(
+            ResearchPhaseWindow(
+                phase=ResearchPhase(_design_text_from(raw, "phase")),
+                starts_at=_design_text_from(raw, "starts_at"),
+                ends_at=_design_text_from(raw, "ends_at"),
+            )
+        )
+    raw_version = value["version"]
+    raw_schema = value["schema_version"]
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, int)
+        or isinstance(raw_schema, bool)
+        or not isinstance(raw_schema, int)
+    ):
+        raise ResearchStandardError(
+            "preregistered_research_design_integer_field_invalid"
+        )
+    return PreregisteredResearchDesign(
+        schema_version=raw_schema,
+        registration_id=text_value("registration_id"),
+        version=raw_version,
+        manifest_hash=text_value("manifest_hash"),
+        hypothesis_contract_hash=text_value("hypothesis_contract_hash"),
+        registered_by=text_value("registered_by"),
+        registered_at=text_value("registered_at"),
+        sample_starts_at=text_value("sample_starts_at"),
+        sample_ends_at=text_value("sample_ends_at"),
+        universe=tuple_value("universe"),
+        exclusion_criteria=tuple_value("exclusion_criteria"),
+        variable_definitions=tuple_value("variable_definitions"),
+        target_variable=text_value("target_variable"),
+        portfolio_construction=text_value("portfolio_construction"),
+        rebalancing_policy=text_value("rebalancing_policy"),
+        primary_metrics=tuple_value("primary_metrics"),
+        cost_assumptions=tuple_value("cost_assumptions"),
+        phase_windows=tuple(windows),
+        rejection_criteria=tuple_value("rejection_criteria"),
+        data_suitability_evidence_hash=text_value("data_suitability_evidence_hash"),
+        signal_definition_hash=text_value("signal_definition_hash"),
+        external_registration_evidence_hash=text_value(
+            "external_registration_evidence_hash"
+        ),
+    )
+
+
+def _design_text_from(value: Mapping[str, object], field_name: str) -> str:
+    item = value[field_name]
+    if not isinstance(item, str) or not item.strip():
+        raise ResearchStandardError(
+            f"preregistered_research_design_{field_name}_required"
+        )
+    return item
+
+
+def _raise_design_field(field_name: str) -> str:
+    raise ResearchStandardError(
+        f"preregistered_research_design_{field_name}_must_contain_strings"
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -27,7 +27,10 @@ confirmation, registry/lifecycle validation, unresolved-requirement checks, and
 originator/prior-reviewer separation. The core rechecks those conditions under
 the governance-stream lock, publishes the review and transition as one atomic
 old-or-new file update, and returns the same evidence for an exact request-ID
-replay. Arbitrary governance transitions,
+replay. The public CLI cannot record a review or approval: those commands fail
+closed without touching the governance stream, and the shared application
+service requires a one-shot action/actor/request capability issued from the
+authenticated Django session. Arbitrary governance transitions,
 historical CLI report discovery, reproduction, retry, and state repair remain
 disabled.
 
@@ -56,6 +59,7 @@ export RESEARCH_ARTIFACT_ROOT=/absolute/external/research/artifacts
 export RESEARCH_REPORT_ROOT=/absolute/external/research/reports
 export RESEARCH_CACHE_ROOT=/absolute/external/research/cache
 export RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH=/absolute/external/research/_registry/research_validate_experiment_identity.jsonl
+export RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH=/absolute/external/research/_registry/final_holdout_authority.jsonl
 export RESEARCH_DB_PATH=/absolute/external/research/input.sqlite
 export INTERNAL_WEB_SECRET_KEY='replace-with-a-development-secret'
 export INTERNAL_WEB_SECURE_SSL_REDIRECT=false

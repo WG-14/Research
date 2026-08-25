@@ -10,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
+from market_research.paths import ResearchPathManager
 from market_research.research.intervals import interval_to_milliseconds
 from market_research.market_knowledge_time import validated_observed_at_ms
 from market_research.orderbook_depth_store import summarize_orderbook_depth_evidence
@@ -49,12 +50,10 @@ from .corporate_action_contract import (
     transform_raw_ohlcv,
 )
 from .corporate_action_portfolio import (
-    CASH_INCOME_EVENT_TYPES,
     CorporateActionPortfolioError,
     CorporateActionPortfolioPlan,
-    QUANTITY_ADJUSTMENT_EVENT_TYPES,
+    LEGACY_SUPPORTED_PORTFOLIO_EVENT_TYPES,
     SUPPORTED_PORTFOLIO_EVENT_TYPES,
-    TERMINAL_PORTFOLIO_EVENT_TYPES,
     build_corporate_action_portfolio_plan,
     latest_causally_applicable_events,
 )
@@ -65,6 +64,8 @@ _CORPORATE_ACTION_KNOWN_AT_AUTHORITY = (
     "manifest.dataset.options.corporate_action_known_at"
 )
 _CORPORATE_ACTION_STRATEGY_PRICE_POLICY = "raw_only_static_snapshot"
+
+
 @dataclass(frozen=True)
 class Candle:
     ts: int
@@ -446,6 +447,8 @@ def load_dataset_split(
     manifest: ExperimentManifest,
     split_name: str,
     run_context: DatasetRunContext | None = None,
+    manager: ResearchPathManager | None = None,
+    holdout_read_capability: dict[str, Any] | None = None,
 ) -> DatasetSnapshot:
     date_range = _split_range(manifest, split_name)
     return load_dataset_range(
@@ -454,6 +457,8 @@ def load_dataset_split(
         split_name=split_name,
         date_range=date_range,
         run_context=run_context,
+        manager=manager,
+        holdout_read_capability=holdout_read_capability,
     )
 
 
@@ -464,7 +469,33 @@ def load_dataset_range(
     split_name: str,
     date_range: DateRange,
     run_context: DatasetRunContext | None = None,
+    manager: ResearchPathManager | None = None,
+    holdout_read_capability: dict[str, Any] | None = None,
 ) -> DatasetSnapshot:
+    final_holdout = manifest.dataset.split.final_holdout
+    if final_holdout is not None and not (
+        date_range.end_ts_ms() < final_holdout.start_ts_ms()
+        or date_range.start_ts_ms() > final_holdout.end_ts_ms()
+    ):
+        if date_range != final_holdout:
+            raise ValueError("final_holdout_read_capability_range_mismatch")
+        if manager is None or holdout_read_capability is None:
+            raise ValueError("final_holdout_read_capability_required")
+        # Import locally to keep the dataset contract independent while still
+        # making the durable authority ledger the only exposure boundary.
+        from .experiment_registry import (
+            consume_final_holdout_read_capability,
+            final_holdout_authority_scope_hash,
+        )
+
+        consume_final_holdout_read_capability(
+            manager=manager,
+            capability=holdout_read_capability,
+            manifest_hash=manifest.manifest_hash(),
+            authority_scope_hash=final_holdout_authority_scope_hash(manifest),
+            split_name=split_name,
+            requested_range=final_holdout.as_dict(),
+        )
     registry = default_dataset_adapter_registry()
     adapter = registry.resolve(manifest.dataset.source)
     top_of_book_spec = manifest.dataset.top_of_book
@@ -837,9 +868,13 @@ def _validate_corporate_action_portfolio_plan(
             if event.effective_ts_ms == effective_ts
         )
         if len(simultaneous) > 1:
-            raise CorporateActionPortfolioError(
-                "corporate_action_same_timestamp_event_ordering_terms_required"
-            )
+            sequences = [event.same_timestamp_sequence for event in simultaneous]
+            if any(item is None for item in sequences) or len(sequences) != len(
+                set(sequences)
+            ):
+                raise CorporateActionPortfolioError(
+                    "corporate_action_same_timestamp_event_ordering_terms_required"
+                )
     earliest_version_by_event: dict[str, int] = {}
     for event in plan.events:
         earliest_version_by_event[event.event_id] = min(
@@ -848,9 +883,7 @@ def _validate_corporate_action_portfolio_plan(
         )
     for event in plan.events:
         effective_in_period = event.effective_ts_ms < period_end_ms
-        is_initial_version = (
-            event.version == earliest_version_by_event[event.event_id]
-        )
+        is_initial_version = event.version == earliest_version_by_event[event.event_id]
         if (
             effective_in_period
             and is_initial_version
@@ -872,26 +905,42 @@ def _validate_corporate_action_portfolio_plan(
                 "corporate_action_event_aware_portfolio_accounting_required"
             )
         if (
+            event.accounting_terms is None
+            and event.event_type not in LEGACY_SUPPORTED_PORTFOLIO_EVENT_TYPES
+        ):
+            raise CorporateActionContractError(
+                "corporate_action_event_aware_portfolio_accounting_required"
+            )
+        if (
             event.cash_currency is not None
             and event.cash_currency != plan.trading_currency
         ):
             raise CorporateActionPortfolioError(
                 "corporate_action_portfolio_cash_currency_mismatch"
             )
-        if event.event_type == "etf_merger" and (
-            event.cash_amount is None
-            or event.replacement_instrument_id is not None
-            or event.replacement_symbol is not None
+        if (
+            event.accounting_terms is None
+            and event.event_type == "etf_merger"
+            and (
+                event.cash_amount is None
+                or event.replacement_instrument_id is not None
+                or event.replacement_symbol is not None
+            )
         ):
             raise CorporateActionPortfolioError(
                 "corporate_action_stock_merger_conversion_unsupported"
             )
-        if (
-            event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES
-            and event.replacement_instrument_id is not None
-        ):
+        if event.is_terminal and event.replacement_instrument_id is not None:
             raise CorporateActionPortfolioError(
                 "corporate_action_terminal_replacement_conversion_unsupported"
+            )
+        if (
+            event.accounting_terms is not None
+            and event.accounting_terms.settlement_policy
+            in {"stock_merger", "mixed_merger"}
+        ):
+            raise CorporateActionPortfolioError(
+                "corporate_action_replacement_price_series_binding_required"
             )
         if event.event_type == "ticker_change":
             if event.replacement_instrument_id not in {
@@ -922,9 +971,8 @@ def _validate_corporate_action_portfolio_plan(
                 raise CorporateActionPortfolioError(
                     "corporate_action_ticker_change_mapping_missing"
                 )
-        if event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES and any(
-            candle.available_at_ms(interval=snapshot.interval)
-            > event.effective_ts_ms
+        if event.is_terminal and any(
+            candle.available_at_ms(interval=snapshot.interval) > event.effective_ts_ms
             for candle in snapshot.candles
         ):
             raise CorporateActionPortfolioError(
@@ -934,8 +982,8 @@ def _validate_corporate_action_portfolio_plan(
             )
         if (
             event.effective_ts_ms > int(last_market_boundary.timestamp() * 1000)
-            and event.event_type
-            in QUANTITY_ADJUSTMENT_EVENT_TYPES | CASH_INCOME_EVENT_TYPES
+            and event.has_economic_effect
+            and not event.is_terminal
         ):
             raise CorporateActionPortfolioError(
                 "corporate_action_economic_event_after_last_market_observation_unsupported"
@@ -1481,6 +1529,16 @@ def _build_source_agnostic_dataset_quality_report(
                 ),
                 "point_in_time_evidence_content_hash": (
                     snapshot.point_in_time_decision_evidence.get("content_hash")
+                ),
+                "point_in_time_universe_schema_version": (
+                    snapshot.point_in_time_decision_evidence.get(
+                        "universe_schema_version"
+                    )
+                ),
+                "point_in_time_promotion_classification": (
+                    snapshot.point_in_time_decision_evidence.get(
+                        "promotion_classification"
+                    )
                 ),
                 "point_in_time_selected_candle_count": (
                     snapshot.point_in_time_decision_evidence.get(

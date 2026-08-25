@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "artifact_type": "dataset_source_provenance",
   "source_catalog": {
     "schema_version": 1,
@@ -54,6 +54,7 @@
       "error_code": "",
       "coverage_start_ts": 1672531200000,
       "coverage_end_ts": 1777679999999,
+      "artifact_uri": "/abs/external/source/provider-export.bin",
       "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     }
   ],
@@ -73,24 +74,41 @@
     {
       "layer": "raw",
       "artifact_id": "replace-with-raw-artifact-id",
+      "artifact_uri": "/abs/external/lineage/raw.bin",
       "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "schema_version": 1,
-      "transformation_id": "replace-with-acquisition-contract-id"
+      "transformation_id": "replace-with-acquisition-contract-id",
+      "transformation_receipt_uri": "/abs/external/receipts/raw.receipt.json",
+      "transformation_receipt_content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "code_artifact_uri": "/abs/external/transforms/acquisition.code",
+      "config_artifact_uri": "/abs/external/transforms/acquisition.config.json"
     },
     {
       "layer": "cleaned",
       "artifact_id": "replace-with-cleaned-artifact-id",
+      "artifact_uri": "/abs/external/lineage/cleaned.bin",
       "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "schema_version": 1,
-      "transformation_id": "replace-with-cleaning-contract-id"
+      "transformation_id": "replace-with-cleaning-contract-id",
+      "transformation_receipt_uri": "/abs/external/receipts/cleaned.receipt.json",
+      "transformation_receipt_content_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "code_artifact_uri": "/abs/external/transforms/cleaning.code",
+      "config_artifact_uri": "/abs/external/transforms/cleaning.config.json"
     },
     {
       "layer": "standardized",
       "artifact_id": "replace-with-standardized-artifact-id",
+      "artifact_uri": "/abs/candles.sqlite",
       "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "schema_version": 1,
-      "transformation_id": "replace-with-standardization-contract-id"
+      "transformation_id": "replace-with-standardization-contract-id",
+      "transformation_receipt_uri": "/abs/external/receipts/standardized.receipt.json",
+      "transformation_receipt_content_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "code_artifact_uri": "/abs/external/transforms/standardization.code",
+      "config_artifact_uri": "/abs/external/transforms/standardization.config.json",
+      "canonicalization_id": "market_research.artifact_content_v2",
+      "canonical_content_hash": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     }
   ],
-  "provenance_manifest_hash": "sha256:a6f06862ab62d9423863d4a3ae41c2b1f009cd53cdfd7a4f35e38431d6362a52"
+  "provenance_manifest_hash": "sha256:2d1861cf65601380cfc8a7c7e1bf1559b4ebce33a4e785162222872ae014f83c"
 }

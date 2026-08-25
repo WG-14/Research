@@ -13,6 +13,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from errno import EDQUOT, ENOSPC
+from importlib.metadata import PackageNotFoundError, distribution
+from importlib.util import find_spec
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -46,6 +48,98 @@ from .outbox import OutboxStore, sanitize_error
 from .runtime_guard import require_operated_preflight_receipt
 
 RESEARCH_NAMESPACE_AUTHORITY = "market-research:experiment:v1"
+_RUNTIME_PACKAGE_NAMES = (
+    "market_research",
+    "market_research_web",
+    "portal",
+    "research_operations",
+)
+_PACKAGE_DISTRIBUTIONS = {
+    "market_research": "market-research",
+    "market_research_web": "market-research-internal-web",
+    "portal": "market-research-internal-web",
+    "research_operations": "research-operations",
+}
+
+
+def runtime_package_import_roots() -> tuple[Path, ...]:
+    """Return verified import roots for the packages used by sandbox children.
+
+    The official runtime is an exact-wheel installation, where source-tree
+    guesses such as ``Path(__file__).parents[4] / 'src'`` do not exist. Resolve
+    the packages that the parent worker actually imported instead. This also
+    supports source-checkout development without making that layout part of the
+    production contract.
+    """
+
+    roots: set[Path] = set()
+    for package_name in _RUNTIME_PACKAGE_NAMES:
+        spec = find_spec(package_name)
+        locations = spec.submodule_search_locations if spec is not None else None
+        if locations is None:
+            raise SandboxUnavailableError(
+                f"research_job_runtime_package_unavailable:{package_name}"
+            )
+        resolved_locations: list[tuple[Path, Path]] = []
+        for location in locations:
+            lexical_path = Path(location).expanduser().absolute()
+            if lexical_path.is_symlink():
+                raise SandboxUnavailableError(
+                    f"research_job_runtime_package_path_invalid:{package_name}"
+                )
+            try:
+                package_path = lexical_path.resolve(strict=True)
+            except OSError as exc:
+                raise SandboxUnavailableError(
+                    f"research_job_runtime_package_unavailable:{package_name}"
+                ) from exc
+            if (
+                package_path.name != package_name
+                or package_path == Path("/")
+                or not package_path.is_dir()
+            ):
+                raise SandboxUnavailableError(
+                    f"research_job_runtime_package_path_invalid:{package_name}"
+                )
+            resolved_locations.append((lexical_path, package_path))
+        if len(resolved_locations) != 1:
+            raise SandboxUnavailableError(
+                f"research_job_runtime_package_ambiguous:{package_name}"
+            )
+        lexical_package_path, package_path = resolved_locations[0]
+        import_root = package_path.parent
+        if import_root == Path("/"):
+            raise SandboxUnavailableError(
+                f"research_job_runtime_import_root_too_broad:{package_name}"
+            )
+        if os.getenv("RESEARCH_RUNTIME_PROFILE") == "operated":
+            try:
+                environment_prefix = Path(sys.prefix).resolve(strict=True)
+                distribution_root = Path(
+                    str(
+                        distribution(
+                            _PACKAGE_DISTRIBUTIONS[package_name]
+                        ).locate_file("")
+                    )
+                ).resolve(strict=True)
+            except (OSError, PackageNotFoundError) as exc:
+                raise SandboxUnavailableError(
+                    f"research_job_runtime_distribution_unavailable:{package_name}"
+                ) from exc
+            if (
+                import_root == environment_prefix
+                or not import_root.is_relative_to(environment_prefix)
+                or distribution_root != import_root
+            ):
+                raise SandboxUnavailableError(
+                    f"research_job_runtime_distribution_binding_invalid:{package_name}"
+                )
+        elif lexical_package_path != package_path:
+            raise SandboxUnavailableError(
+                f"research_job_runtime_package_path_invalid:{package_name}"
+            )
+        roots.add(import_root)
+    return tuple(sorted(roots, key=str))
 
 
 def configure_django(
@@ -590,23 +684,49 @@ def _run_isolated_dispatcher_child(
     log_path = control_root / "sandbox.log"
     with research_job_execution_context(decision):
         request = dispatcher.build_sandbox_request(job, sandbox_root=sandbox_root)
-    write_json_atomic(request_path, request, mode=0o640)
-    settings_value = request["settings"]
-    if not isinstance(settings_value, dict):
-        raise IsolatedJobProcessError("isolated_research_job_settings_invalid")
-    runtime_project_root = Path(str(request["runtime_project_root"])).resolve()
-    package_source_root = Path(__file__).resolve().parents[4] / "src"
-    readable_roots = {
-        Path(sys.prefix).resolve(),
-        runtime_project_root,
-        package_source_root.resolve(),
-        Path(str(request["manifest_path"])).resolve(),
-        Path(str(settings_value["data_root"])).resolve(),
-    }
-    db_path = settings_value.get("db_path")
-    if isinstance(db_path, str) and db_path:
-        readable_roots.add(Path(db_path).resolve())
-    progress({"stage": "preparing_sandbox"})
+
+    def abort_reservation(reason: str) -> None:
+        with suppress(OSError, ValueError):
+            dispatcher.abort_sandbox_reservation(request, reason=reason)
+
+    try:
+        write_json_atomic(request_path, request, mode=0o640)
+        settings_value = request["settings"]
+        if not isinstance(settings_value, dict):
+            raise IsolatedJobProcessError("isolated_research_job_settings_invalid")
+        runtime_project_root = Path(str(request["runtime_project_root"])).resolve()
+        package_import_roots = runtime_package_import_roots()
+        readable_roots = {
+            Path(sys.prefix).resolve(),
+            runtime_project_root,
+            *package_import_roots,
+            Path(str(request["manifest_path"])).resolve(),
+            Path(str(settings_value["data_root"])).resolve(),
+        }
+        db_path = settings_value.get("db_path")
+        if isinstance(db_path, str) and db_path:
+            readable_roots.add(Path(db_path).resolve())
+        final_holdout_registry = Path(
+            str(settings_value["final_holdout_registry_path"])
+        ).resolve()
+        writable_roots = [sandbox_root]
+        if isinstance(request.get("final_holdout_reservation"), dict):
+            # The parent reservation has already created both regular files.
+            # Expose only the append target and its process-lock inode; the
+            # isolated child never receives mutation rights over the shared
+            # authority directory or sibling registries.
+            writable_roots.extend(
+                (
+                    final_holdout_registry,
+                    final_holdout_registry.with_suffix(
+                        final_holdout_registry.suffix + ".lock"
+                    ),
+                )
+            )
+        progress({"stage": "preparing_sandbox"})
+    except Exception:
+        abort_reservation("sandbox_request_preparation_failed")
+        raise
     last_cancellation_check = 0.0
     cancellation_cache = False
 
@@ -625,11 +745,12 @@ def _run_isolated_dispatcher_child(
     child_env = {
         "PATH": os.pathsep.join((str(Path(sys.executable).parent), "/usr/bin", "/bin")),
         "VIRTUAL_ENV": str(Path(sys.prefix).resolve()),
-        "PYTHONPATH": str(package_source_root.resolve()),
+        "PYTHONPATH": os.pathsep.join(str(path) for path in package_import_roots),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TZ": "UTC",
         "PYTHONHASHSEED": "0",
+        "RESEARCH_RUNTIME_PROFILE": "operated",
         # The operated worker's artifact roots are owned by the shared
         # research-ops group and must remain readable by the distinct backup
         # principal.  The core library otherwise defaults to private 0600.
@@ -656,7 +777,7 @@ def _run_isolated_dispatcher_child(
             cwd=sandbox_root,
             env=child_env,
             readable_roots=tuple(sorted(readable_roots, key=str)),
-            writable_roots=(sandbox_root,),
+            writable_roots=tuple(writable_roots),
             policy=IsolatedProcessPolicy(
                 wall_timeout_seconds=float(_job_execution_timeout_seconds()),
                 memory_limit_mb=float(_job_child_memory_limit_mb()),
@@ -669,29 +790,46 @@ def _run_isolated_dispatcher_child(
             cancellation_requested=cancellation_requested,
         )
     except IsolatedProcessError as exc:
+        abort_reservation("sandbox_initialization_failed")
         raise SandboxUnavailableError("research_job_sandbox_unavailable") from exc
+    except Exception:
+        abort_reservation("sandbox_execution_failed")
+        raise
     if completed.status == "sandbox_unavailable":
+        abort_reservation("sandbox_unavailable")
         raise SandboxUnavailableError("research_job_sandbox_unavailable")
     if completed.status == "cancelled":
+        abort_reservation("sandbox_cancelled")
         raise JobCancellationRequested("research_job_cancellation_requested")
     if completed.status == "timed_out":
+        abort_reservation("sandbox_timed_out")
         raise TimeoutError("isolated_research_job_execution_timeout")
     if completed.status == "resource_exhausted":
+        abort_reservation("sandbox_resource_exhausted")
         raise MemoryError("isolated_research_job_resource_exhausted")
     if completed.status != "succeeded":
+        abort_reservation("sandbox_child_failed")
         raise IsolatedJobProcessError("isolated_research_job_child_failed")
     try:
         if result_path.stat().st_size > 16 * 1024 * 1024:
             raise IsolatedJobProcessError("isolated_research_job_result_too_large")
         payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except IsolatedJobProcessError:
+        abort_reservation("sandbox_result_invalid")
+        raise
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        abort_reservation("sandbox_result_invalid")
         raise IsolatedJobProcessError("isolated_research_job_result_invalid") from exc
-    progress({"stage": "validating_output"})
-    return dispatcher.accept_sandbox_result(
-        job,
-        payload,
-        sandbox_root=sandbox_root,
-    )
+    try:
+        progress({"stage": "validating_output"})
+        return dispatcher.accept_sandbox_result(
+            job,
+            payload,
+            sandbox_root=sandbox_root,
+        )
+    except BaseException:
+        abort_reservation("sandbox_result_rejected")
+        raise
 
 
 def _job_execution_timeout_seconds() -> int:

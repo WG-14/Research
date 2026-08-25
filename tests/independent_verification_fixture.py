@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import secrets
+import base64
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Mapping
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from market_research.paths import ResearchPathManager
 from market_research.research.code_provenance import (
@@ -44,6 +48,7 @@ from market_research.research.independent_verification import (
     independent_code_binding_hash,
     independent_reproduction_evidence,
     publish_independent_verification,
+    reproduced_terminal_selection_artifact_path,
 )
 from market_research.research.reproduction import (
     REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
@@ -61,6 +66,8 @@ from market_research.storage_io import write_json_atomic_create_or_verify
 
 _FIXTURE_CONFIRMATION_PUBLISH_LOCK = Lock()
 _FIXTURE_VERIFICATION_PUBLISH_LOCK = Lock()
+_FIXTURE_PRINCIPAL_KEY_LOCK = Lock()
+_FIXTURE_PRINCIPAL_KEYS: dict[Path, Ed25519PrivateKey] = {}
 
 
 def seed_reproduction_receipts(
@@ -215,6 +222,13 @@ def seed_reproduction_receipts(
         selection_artifact=selection_artifact,
     )
     write_json_atomic_create_or_verify(reproduced_report_path, reproduced_report)
+    write_json_atomic_create_or_verify(
+        reproduced_terminal_selection_artifact_path(
+            manager=reproduction_manager,
+            experiment_id=experiment_id,
+        ),
+        selection_artifact,
+    )
     _publish_fixture_confirmation(
         manager=reproduction_manager,
         experiment_id=experiment_id,
@@ -537,7 +551,7 @@ def provision_test_principal_assertion(
         expires_at=expires.isoformat(),
         nonce=nonce or f"test-{secrets.token_hex(16)}",
         scope=scope,
-        key=key,
+        private_key=key,
     )
     return trusted_manager, assertion
 
@@ -547,7 +561,7 @@ def _test_trust_manager(
     manager: ResearchPathManager,
     issuer: str,
     key_id: str,
-) -> tuple[ResearchPathManager, bytes]:
+) -> tuple[ResearchPathManager, Ed25519PrivateKey]:
     configured = manager.settings.independent_verifier_trust_store_path
     trust_root = (
         configured.parent
@@ -555,22 +569,34 @@ def _test_trust_manager(
         else manager.artifact_root.parent / "_independent_verifier_test_trust"
     )
     trust_root.mkdir(parents=True, exist_ok=True)
-    key_path = trust_root / "principal-assertion.key"
+    key_path = trust_root / "principal-assertion.ed25519.pub"
     trust_path = configured or trust_root / "trust-store.json"
-    if key_path.exists():
-        key = key_path.read_bytes()
-    else:
-        key = secrets.token_bytes(32)
-        key_path.write_bytes(key)
-        key_path.chmod(0o600)
+    with _FIXTURE_PRINCIPAL_KEY_LOCK:
+        key = _FIXTURE_PRINCIPAL_KEYS.get(key_path.resolve())
+        if key is None:
+            key = Ed25519PrivateKey.generate()
+            _FIXTURE_PRINCIPAL_KEYS[key_path.resolve()] = key
+    key_path.write_bytes(
+        b"ed25519:" + base64.b64encode(key.public_key().public_bytes_raw()) + b"\n"
+    )
+    key_path.chmod(0o644)
+    key_hash = "sha256:" + hashlib.sha256(key_path.read_bytes()).hexdigest()
     trust_payload = {
         "schema_version": 1,
+        "artifact_type": "independent_verifier_trust_store",
+        "authority_id": issuer,
+        "issued_at": "2020-01-01T00:00:00Z",
+        "expires_at": "2100-01-01T00:00:00Z",
         "keys": [
             {
-                "issuer": issuer,
                 "key_id": key_id,
-                "algorithm": "hmac-sha256",
-                "key_path": str(key_path.resolve()),
+                "algorithm": "ed25519",
+                "public_key_path": str(key_path.resolve()),
+                "public_key_content_hash": key_hash,
+                "valid_from": "2020-01-01T00:00:00Z",
+                "valid_until": "2100-01-01T00:00:00Z",
+                "revoked_at": None,
+                "revocation_reason": "",
             }
         ],
     }
@@ -581,6 +607,9 @@ def _test_trust_manager(
     settings = replace(
         manager.settings,
         independent_verifier_trust_store_path=trust_path.resolve(),
+        independent_verifier_trust_store_hash=(
+            "sha256:" + hashlib.sha256(trust_path.read_bytes()).hexdigest()
+        ),
     )
     return (
         ResearchPathManager.from_settings(
@@ -623,6 +652,7 @@ def _fixture_reproduction_manager(
         artifact_root=manager.artifact_root / "reproductions" / experiment_id / prefix,
         report_root=manager.report_root / "reproductions" / experiment_id / prefix,
         cache_root=manager.cache_root / "reproductions" / experiment_id / prefix,
+        final_holdout_registry_path=manager.final_holdout_registry_path(),
     )
     return ResearchPathManager.from_settings(
         settings,

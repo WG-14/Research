@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 from statistics import fmean
 from types import SimpleNamespace
@@ -348,6 +349,33 @@ def _manifest():
                 final_holdout=None,
             )
         ),
+    )
+
+
+def test_nested_terminal_winner_cannot_be_rebound_to_a_different_candidate() -> None:
+    capability = _capability()
+    outputs = _all_outputs()
+    rebound_scope = _scope(
+        selected_candidate_id="candidate-b",
+        selected_candidate_hash=OTHER_HASH,
+    )
+    rebound_outputs = replace(outputs, scope=rebound_scope)
+
+    bundle = build_validation_experiment_bundle(
+        manifest_hash=MANIFEST_HASH,
+        dataset_snapshot_hash=DATASET_HASH,
+        temporal_plan_hash=TEMPORAL_PLAN_HASH,
+        selected_candidate_id="candidate-b",
+        selected_candidate_hash=OTHER_HASH,
+        capability=capability,
+        policy=capability.policy,
+        outputs=rebound_outputs,
+    )
+
+    assert bundle.gate_result.value == "FAIL"
+    assert (
+        "validation_experiment_nested_selection_terminal_winner_mismatch"
+        in bundle.gate_reasons
     )
 
 
@@ -745,7 +773,9 @@ def test_terminal_result_validator_rechecks_embedded_bundle_integrity() -> None:
         "validation_experiment_gate_result": bundle["gate_result"],
         "validation_experiment_gate_reasons": bundle["gate_reasons"],
     }
-    assert _validated_validation_experiment_reasons(report) == []
+    assert _validated_validation_experiment_reasons(report) == [
+        "validated_research_result_native_validation_binding_missing"
+    ]
 
     report["validation_experiment_bundle"] = copy.deepcopy(bundle)
     _result_evidence(

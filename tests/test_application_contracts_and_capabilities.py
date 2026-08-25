@@ -139,6 +139,8 @@ def test_capability_registry_covers_every_cli_command_and_read_only_queries() ->
 
 def test_cli_and_mapping_preflight_adapters_build_equal_requests() -> None:
     actor = cli_actor_context()
+    assert actor.permissions == frozenset({"research.execute", "research.view"})
+    assert "*" not in actor.permissions
     namespace = argparse.Namespace(
         manifest=" /external/manifest.json ",
         execution_calibration="/external/calibration.json",

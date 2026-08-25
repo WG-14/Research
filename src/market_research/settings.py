@@ -46,6 +46,21 @@ def _optional_external_absolute_path(key: str, value: str | None) -> Path | None
     return None if not raw else _external_absolute_path(key, raw, Path(raw))
 
 
+def _optional_external_authority_path(key: str, value: str | None) -> Path | None:
+    """Retain the lexical authority path so later link checks remain possible."""
+
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise ResearchSettingsError(f"{key} must be an absolute path")
+    lexical = Path(os.path.abspath(os.fspath(expanded)))
+    if _RepositoryBoundary.is_within_repository(lexical):
+        raise ResearchSettingsError(f"{key} must be outside the repository: {lexical}")
+    return lexical
+
+
 def _positive_int(key: str, value: str | None, default: int) -> int:
     raw = (value or "").strip()
     if not raw:
@@ -69,6 +84,19 @@ def _int(key: str, value: str | None, default: int) -> int:
         raise ResearchSettingsError(f"{key} must be an integer") from exc
 
 
+def _optional_sha256(key: str, value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if (
+        len(raw) != 71
+        or not raw.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in raw[7:])
+    ):
+        raise ResearchSettingsError(f"{key} must be a sha256: digest")
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchSettings:
     """Research-only configuration resolved after CLI argument parsing."""
@@ -82,6 +110,10 @@ class ResearchSettings:
     random_seed: int
     experiment_identity_registry_path: Path | None = None
     independent_verifier_trust_store_path: Path | None = None
+    independent_verifier_trust_store_hash: str | None = None
+    final_holdout_registry_path: Path | None = None
+    dataset_transformation_trust_store_path: Path | None = None
+    dataset_transformation_trust_store_hash: str | None = None
 
     @classmethod
     def from_env(cls) -> "ResearchSettings":
@@ -117,8 +149,24 @@ class ResearchSettings:
                 "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
                 os.getenv("RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH"),
             ),
-            independent_verifier_trust_store_path=_optional_external_absolute_path(
+            independent_verifier_trust_store_path=_optional_external_authority_path(
                 "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
                 os.getenv("RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH"),
+            ),
+            independent_verifier_trust_store_hash=_optional_sha256(
+                "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH",
+                os.getenv("RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH"),
+            ),
+            final_holdout_registry_path=_optional_external_authority_path(
+                "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH",
+                os.getenv("RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH"),
+            ),
+            dataset_transformation_trust_store_path=_optional_external_absolute_path(
+                "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH",
+                os.getenv("RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH"),
+            ),
+            dataset_transformation_trust_store_hash=_optional_sha256(
+                "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH",
+                os.getenv("RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH"),
             ),
         )

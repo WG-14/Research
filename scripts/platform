@@ -97,6 +97,8 @@ PY
   RESEARCH_CACHE_ROOT="$research_test_state_root/cache"
   RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH="${research_test_state_root}/identity/"\
 "experiment-identities.jsonl"
+  RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH="${research_test_state_root}/identity/"\
+"final-holdout-authority.jsonl"
   XDG_STATE_HOME="$research_test_state_root/xdg-state"
   mkdir -p \
     "$RESEARCH_DATA_ROOT" \
@@ -107,6 +109,7 @@ PY
     "$XDG_STATE_HOME"
   export RESEARCH_DATA_ROOT RESEARCH_ARTIFACT_ROOT RESEARCH_REPORT_ROOT
   export RESEARCH_CACHE_ROOT RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH
+  export RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH
   export XDG_STATE_HOME
 }
 
@@ -147,6 +150,13 @@ case "${1:-}" in
       echo "INTERNAL_WEB_DATABASE_ENGINE=postgresql is required" >&2
       exit 78
     fi
+    python3 tools/check_integration_database_contract.py
+    # Operations migrations own foreign keys into the Web audit outbox.  Apply
+    # the shared Web schema first so this public launcher is self-contained on
+    # a freshly created integration database, just like the CI deployment job.
+    uv run --package market-research-internal-web python \
+      apps/internal_web/manage.py migrate --noinput \
+      --settings=market_research_web.settings_test
     uv run --package market-research-internal-web pytest -q \
       apps/internal_web/tests/test_postgresql_integration_contract.py \
       apps/internal_web/tests/test_governance_postgresql_atomicity.py

@@ -41,20 +41,31 @@ PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 ProtectProc=invisible
-ProtectKernelTunables=true
+# bubblewrap's --disable-userns writes the namespaced max_user_namespaces
+# control while constructing the child. This worker is itself unprivileged,
+# has no capabilities, and uses NoNewPrivileges; all other units retain the
+# global ProtectKernelTunables=true policy.
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
 InaccessiblePaths=/etc/research-ops/secrets
-RestrictNamespaces=true
+# The mandatory child sandbox creates private mount, user, IPC, PID, UTS, and
+# network namespaces. Keep cgroup namespaces denied while allowing exactly the
+# namespace types bubblewrap needs; a blanket namespace denial would make every
+# admitted job fail before its child starts.
+RestrictNamespaces=mnt user ipc pid uts net
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# bubblewrap needs NETLINK_ROUTE while constructing the isolated network
+# namespace, even though the child itself receives no external network access.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 ReadOnlyPaths=/srv/research/data
-ReadWritePaths=/srv/research/artifacts /srv/research/reports /srv/research/cache /srv/research/registry
+ReadWritePaths=/srv/research/artifacts /srv/research/reports /srv/research/cache
+ReadWritePaths=/srv/research/registry/final_holdout_authority.jsonl /srv/research/registry/final_holdout_authority.jsonl.lock
 ReadOnlyPaths=/srv/research/artifacts/_internal_web
 ReadOnlyPaths=/srv/research/artifacts/reports/research/_registry
 ReadOnlyPaths=/srv/research/artifacts/derived/research/projects

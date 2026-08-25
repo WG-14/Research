@@ -529,9 +529,7 @@ def _bind_validation_experiment(report):
         candidates=tuple(
             sorted(
                 (
-                    selected_candidate
-                    if item == fixture_candidate
-                    else item
+                    selected_candidate if item == fixture_candidate else item
                     for item in base_nested.candidates
                 ),
                 key=lambda item: (item.candidate_id, item.version),
@@ -790,6 +788,10 @@ def _publish_terminal_usage_binding(report, manager):
 
 def test_package_contains_execution_and_ledger_contract_hashes(monkeypatch, tmp_path):
     monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_validated_research_result",
+        lambda report, manager=None: [],
+    )
+    monkeypatch.setattr(
         "market_research.research.strategy_package.validate_final_selection_report",
         lambda report: [],
     )
@@ -866,6 +868,10 @@ def test_governed_source_package_requires_exact_export_usage_commit(
     monkeypatch, tmp_path
 ):
     monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_validated_research_result",
+        lambda report, manager=None: [],
+    )
+    monkeypatch.setattr(
         "market_research.research.strategy_package.validate_final_selection_report",
         lambda report: [],
     )
@@ -917,6 +923,10 @@ def test_governed_source_package_requires_exact_export_usage_commit(
 
 def test_package_self_contains_complete_review_specification(monkeypatch, tmp_path):
     monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_validated_research_result",
+        lambda report, manager=None: [],
+    )
+    monkeypatch.setattr(
         "market_research.research.strategy_package.validate_final_selection_report",
         lambda report: [],
     )
@@ -960,6 +970,10 @@ def test_package_self_contains_complete_review_specification(monkeypatch, tmp_pa
 def test_package_preserves_internal_instrument_and_action_identity(
     monkeypatch, tmp_path
 ):
+    monkeypatch.setattr(
+        "market_research.research.strategy_package.validate_validated_research_result",
+        lambda report, manager=None: [],
+    )
     monkeypatch.setattr(
         "market_research.research.strategy_package.validate_final_selection_report",
         lambda report: [],

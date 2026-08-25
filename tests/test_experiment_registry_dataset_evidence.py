@@ -34,6 +34,7 @@ from market_research.research_cli.context import ResearchAppContext
 
 from .test_frozen_dataset_multi_split_integration import (
     _prepare_confirmable_single_candidate_report,
+    _reserve_primary_holdout_for_test,
     frozen_manifest_and_manager,
 )
 
@@ -64,12 +65,21 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
         manifest=parsed,
         manager=manager,
     )
+    final_holdout_reservation, pre_holdout_gate_hash = (
+        _reserve_primary_holdout_for_test(
+            report=report,
+            manifest=parsed,
+            manager=manager,
+        )
+    )
     confirmation = run_final_holdout_confirmation(
         manifest=parsed,
         selection_report=report,
         db_path=None,
         manager=manager,
         strategy_registry=builtin_strategy_registry(),
+        final_holdout_reservation=final_holdout_reservation,
+        pre_holdout_gate_hash=pre_holdout_gate_hash,
     )
     rows = load_experiment_registry_rows(Path(confirmation["experiment_registry_path"]))
     reservation = next(

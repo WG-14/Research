@@ -7,7 +7,7 @@ Use the `ResearchPathManager` and atomic storage helpers for every output.
 
 ## Authoritative dataset inputs
 
-Authoritative runs use artifact-manifest schema 3 and
+Authoritative runs use artifact-manifest schema 4 and
 `dataset.source=frozen_sqlite_candles`. The artifact identity binds complete
 OHLCV content, physical schema, exact scope, and a strict source-provenance
 manifest. That provenance records every source and its priority, acquisition
@@ -15,7 +15,7 @@ request parameters, request and receipt times, provider response version,
 external preparation-code version, retry count, complete/partial/failed status,
 error code, coverage, upstream checksum, supported market semantics, and the
 ordered raw, cleaned, and standardized lineage stages. Source-provenance schema
-3 also embeds the complete hash-bound source catalog: provider identity, data
+4 also embeds the complete hash-bound source catalog: provider identity, data
 kind, frequency, approved source kinds, point-in-time and revision policies,
 license and research-use terms, redistribution policy, quality level, owner,
 delivery lag, staleness, and the exact external-preparation and credential
@@ -24,7 +24,38 @@ that entry's approved source kinds. Secret-like request parameter names are
 rejected. Partial or failed source records may be retained as provenance
 evidence but cannot be promoted into an authoritative frozen artifact.
 
-The frozen-candle source-provenance v3 scope remains deliberately narrow:
+Every source and lineage stage in provenance v4 has a normalized absolute
+repository-external local artifact URI and the SHA-256 of its exact bytes.
+Each raw, cleaned, and standardized edge requires a canonical external receipt
+that binds ordered logical input artifact IDs and hashes, the logical output ID
+and hash, output schema/canonicalization metadata, a transformation ID, and
+exact external code and configuration byte hashes. Each receipt is domain-
+separated and signed with Ed25519 by an administrator-approved transformation
+authority. Freeze verifies authority and key identity, store/key validity,
+revocation, signature time, source-receipt/transform causal order, and the
+signature before accepting the edge. The sole production trust store and its
+exact hash come from the operated, root-owned deployment configuration; a
+manifest or API caller cannot supply or replace them. Test issuers are injected
+only by test fixtures and cannot pass the production ownership gate.
+
+The manifest separately locates and verifies the receipt, code, and
+configuration files. Freeze rejects missing files, special files, symlinks or
+symlinked parents, repository paths, byte-hash drift, receipt-chain breaks, and
+code/config drift. Path components are opened through pinned no-follow
+descriptors and the complete chain is verified again after reading the
+standardized snapshot. Receipt artifact bindings are path-independent so
+verified files can be relocated by explicitly rebuilding only their
+locator-bearing v4 provenance manifest; no legacy manifest is rewritten
+automatically.
+
+The standardized artifact must be the exact SQLite file passed to the official
+freeze command. Its physical byte hash and its complete logical candle-row
+hash under `market_research.artifact_content_v2` are both verified before any
+slice is published, and the entire physical chain is verified again after the
+SQLite read. A hash edited only in a provenance manifest or receipt therefore
+cannot substitute different bytes.
+
+The frozen-candle source-provenance v4 scope remains deliberately narrow:
 single-instrument spot data, UTC, and a continuous 24x7 observation calendar.
 Price adjustment, corporate actions, and point-in-time universe membership are
 `not_applicable` to that physical artifact schema, so a provenance manifest
@@ -56,8 +87,8 @@ volume is never converted to real zero volume. Mutable SQLite remains an
 explicit exploratory compatibility source and cannot produce an authoritative
 reproduction receipt.
 
-Artifact-manifest schema 2 has no source provenance and is read-only legacy.
-Source-provenance schemas 1 and 2 are also rejected rather than translated.
-There is no automatic migration: review and bind a complete source catalog,
-then refreeze the original external input with a valid provenance-v3 manifest
-to create a new schema-3 artifact.
+Artifact-manifest schemas 2 and 3 and source-provenance schemas 1 through 3
+require refreeze. They are rejected rather than translated. There is no
+automatic migration: review and bind the physical source/stage files, code,
+configuration, and canonical receipts, then refreeze the original external
+input with a valid provenance-v4 manifest to create a new schema-4 artifact.

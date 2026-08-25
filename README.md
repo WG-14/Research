@@ -72,6 +72,12 @@ scripts/platform research --help
 from the root lock. The package-specific test commands remain available when a
 change affects only one trust domain.
 
+`test-integration` requires the `INTERNAL_WEB_DATABASE_*` settings and
+`RESEARCH_OPS_TEST_DATABASE_URL` to describe the same disposable PostgreSQL
+database. It verifies that identity, applies the shared Web migrations needed
+by Operations foreign keys, and then runs the Web and Operations concurrency
+contracts.
+
 `verify-complete` is bound to the current July 2026 investment-research
 platform rubric supplied for this review by source and instruction SHA-256. It
 validates exactly 184 A--J criteria and 12 fatal gates in the
@@ -147,15 +153,19 @@ read-only Linux process sandbox; operated jobs execute in supervised child
 processes so a strategy timeout or memory failure does not take down the
 control plane.
 
-The CLI consumes externally prepared immutable datasets. A typical local
-workflow is:
+The CLI consumes externally prepared immutable datasets. Authoritative dataset
+freeze is a separate data-administration action: the production API accepts
+only an `operated` runtime with an exact root-owned transformation trust store
+and root-owned Ed25519 public keys. Neither a provenance manifest nor a CLI
+argument can select that authority. The public `research-freeze-dataset`
+command therefore fails closed on an ordinary researcher workstation, while
+direct CLI bootstrap is itself disabled on an operated service host; an
+admitted data-administration adapter must call the same freeze API there.
+
+After an administrator publishes the immutable artifact manifest, a typical
+local research workflow is:
 
 ```sh
-scripts/platform research research-freeze-dataset \
-  --db /abs/candles.sqlite \
-  --market KRW-BTC --interval 1m --start 2025-01-01 --end 2025-03-31 \
-  --provenance-manifest /abs/dataset-source-provenance.json \
-  --out /abs/datasets
 scripts/platform research research-readiness \
   --manifest /abs/experiment.json --json
 scripts/platform research research-backtest \
@@ -185,11 +195,62 @@ nonzero. The comparison document is written to `--out` (or beneath the
 configured external report root when omitted), and records the isolated
 reproduced report and receipt paths plus exact drift rows.
 
+### Portable classic research package
+
+An official classic result, its exact reproduction receipt and experiment
+manifest can be promoted from a symbolic recipe to one deterministic `.mrpkg`
+archive. The archive carries the research summary, hypothesis, data/code/
+environment/parameter manifests, result index, validation evidence,
+limitations, reproduction plan, artifact sidecar, and a hash for every member.
+It never carries credentials, private keys, trust-store authority, or a private
+verifier assertion.
+
+Dataset transport is explicit and fail closed:
+
+- `included` embeds the frozen SQLite bytes only when the result is bound to a
+  canonical `RESEARCH_PACKAGE_EXPORT=ALLOW` decision for
+  `INTERNAL_RESEARCH_PACKAGE` and the governing license permits derivative
+  retention;
+- `external_content_addressed` embeds no dataset bytes and records the exact
+  sidecar, content, schema, identity and manifest hashes. Verification and
+  replay then require both the byte-identical sidecar and frozen SQLite file as
+  explicit arguments.
+
+```sh
+market-research research-build-portable-package \
+  --result /abs/reports/experiment-id/backtest_report.json \
+  --manifest /abs/experiment.json \
+  --receipt /abs/reports/experiment-id/reproduction_receipt.json \
+  --dataset-mode external_content_addressed \
+  --out /abs/packages/experiment-id.mrpkg
+
+market-research research-verify-portable-package \
+  --package /abs/packages/experiment-id.mrpkg \
+  --external-artifact-manifest /abs/frozen/artifact.manifest.json \
+  --external-dataset /abs/frozen/candles.sqlite \
+  --out /abs/receipts/package-verification.json
+
+market-research research-reproduce-portable-package \
+  --package /abs/packages/experiment-id.mrpkg \
+  --external-artifact-manifest /abs/frozen/artifact.manifest.json \
+  --external-dataset /abs/frozen/candles.sqlite \
+  --workspace /abs/empty-replay-workspace \
+  --out /abs/receipts/package-reproduction.json
+```
+
+Cold replay refuses a baseline that was not created by a non-editable installed
+`market-research` distribution. It executes the real CLI twice under
+`python -I` from empty CWD, HOME and cache roots, verifies that the imported
+module is owned by the installed distribution, and requires exact fingerprint
+agreement. A package containing validated evidence remains explicitly
+non-promotable offline: canonical registry/principal authority, public trust,
+the signed external verifier assertion and shared one-use holdout authority are
+external prerequisites, never inferred from caller-supplied JSON.
+
 Publishing an authoritative independent-verification result additionally
 requires a cryptographically authenticated, time-bounded principal assertion:
 
 ```sh
-export RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH=/abs/identity/trust-store.json
 scripts/platform research research-reproduce-run \
   --manifest /abs/experiment.json \
   --receipt /abs/reports/experiment-id/reproduction-receipt.json \
@@ -199,24 +260,35 @@ scripts/platform research research-reproduce-run \
   --out /abs/reports/reproduction-result.json
 ```
 
-The external issuer signs the assertion with a repository-external key. Its
+The external issuer signs assertion schema v2 with an Ed25519 private key that
+is never installed on the research host. Its
 issuer, key ID, authenticated subject, roles, authentication/expiry times,
 nonce, audience, and exact verification scope are hash-bound. The scope
 includes the verification identity, experiment and research versions, source
-report hash, and baseline receipt hash. The trust-store JSON identifies the
-issuer/key ID and an absolute external key path; key bytes and key paths are
-never copied into research artifacts. A caller-supplied `--verifier` value is
-only a display alias. Supplying an alias without `--verifier-assertion` retains
-legacy diagnostics as explicitly non-authoritative `RESEARCH_ONLY` output and
-cannot satisfy an approval gate.
+report hash, and baseline receipt hash. In the operated profile the sole trust
+store is `/etc/research-ops/independent-verifier-trust.json`; its exact byte
+digest comes from the root-owned runtime environment. The canonical store
+binds one authority and each Ed25519 public key's fixed path, content hash,
+validity interval, and revocation state. Both it and public keys are
+`0644 root:root`, single-link files beneath root-owned, non-writable directory
+chains. The verifier rejects path overrides, unknown/legacy assertion schemas,
+HMAC assertions, expired or future authority material, revoked keys, link
+aliases, content substitution, and mutation during descriptor reads. Public
+keys and their paths are never copied into research artifacts. A caller-supplied
+`--verifier` value is only a display alias. Supplying an alias without
+`--verifier-assertion` retains diagnostics as explicitly non-authoritative
+`RESEARCH_ONLY` output and cannot satisfy an approval gate.
 
-On POSIX hosts, verifier key files must have no group or other permission bits
-(for example mode `0600` or `0400`); overly broad modes fail closed. Non-POSIX
-hosts are rejected until their identity adapter provides an equivalent ACL
-verifier. The identity authority must also exclusively control the trust-store,
-key, and their parent directories: pathname checks cannot protect a file that
-an untrusted local principal is permitted to replace between validation and
-read.
+For a validated terminal result, the signed mode is also the only mode allowed
+one final-holdout replay. The shared authority records it as
+`INDEPENDENT_REPRODUCTION`, binds the completed primary confirmation/result and
+validated-result receipt together with the assertion subject, scope hash,
+content hash, and nonce, and consumes the one-replay budget at reservation.
+The ordinary `PRIMARY_CONFIRMATION` purpose, a caller-supplied verifier alias,
+or a generic actor/registry payload cannot be relabeled into this exception.
+
+Non-POSIX hosts are rejected until their identity adapter provides equivalent
+no-follow, ownership, link-count, byte-pinning, and descriptor-stability checks.
 
 Validation-bound studies advance through immutable, evidence-backed states:
 `IDEA → STRUCTURED → EXPLORATORY → PREREGISTERED → VALIDATING`, followed by
@@ -229,9 +301,11 @@ definitions, validation decision, prospective stream, conclusion, and
 reproduction receipt. These are research conclusions only and never authorize
 capital deployment.
 
-The freeze command accepts only provenance schema 3, including its complete
-hash-bound external source catalog; legacy provenance is not translated. It
-prints the generated schema-3 `artifact_manifest_uri` and
+The freeze command accepts only provenance schema 4, including its complete
+hash-bound external source catalog, physical source/stage byte bindings, and
+raw → cleaned → standardized transformation receipts with verified external
+code and configuration bytes. Legacy provenance is not translated. It prints
+the generated schema-4 `artifact_manifest_uri` and
 `artifact_manifest_hash`. Bind both exact values into the experiment manifest
 and set `dataset.source=frozen_sqlite_candles`. The mutable
 `dataset.source=sqlite_candles` compatibility path is exploratory only and
@@ -253,6 +327,7 @@ to absolute repository-external locations:
 - `RESEARCH_REPORT_ROOT`: research and operator-readable reports;
 - `RESEARCH_CACHE_ROOT`: disposable cache;
 - `RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH`: append-only experiment identity authority;
+- `RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH`: shared append-only final-holdout reservation and exposure authority;
 - `RESEARCH_DB_PATH`: optional local SQLite candle input for commands that require it.
 
 Production PostgreSQL, credentials, certificates, private keys, backups,

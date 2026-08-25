@@ -8,6 +8,7 @@ receipt=${3:?usage: restore-rehearsal.sh ABS_BACKUP ABS_NEW_NAMESPACE ABS_RECEIP
 : "${POSTGRES_MAJOR:?required}"
 : "${RESEARCH_OPS_RECOVERY_DATABASE_NAME:?fresh target database required}"
 : "${RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH:?source identity path required}"
+: "${RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH:=$(dirname -- "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")/final_holdout_authority.jsonl}"
 resume=${RESEARCH_OPS_RECOVERY_RESUME:-false}
 case "$resume" in true|false) ;; *) exit 64 ;; esac
 case "$namespace" in /*) ;; *) exit 64 ;; esac
@@ -15,6 +16,10 @@ recovery_started_at=$(date -u '+%Y-%m-%dT%H:%M:%S.%6NZ')
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 identity_basename=$(basename -- "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")
 case "$identity_basename" in ''|.|..|*/*) exit 64 ;; esac
+holdout_authority_basename=$(basename -- "$RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH")
+case "$holdout_authority_basename" in ''|.|..|*/*) exit 64 ;; esac
+test "$(dirname -- "$RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH")" = \
+  "$(dirname -- "$RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH")" || exit 64
 
 research-ops backup-verify --backup-directory "$backup" --postgresql-major "$POSTGRES_MAJOR"
 table_count=$(psql -Atqc "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")
@@ -66,6 +71,7 @@ else
 fi
 chmod 0700 "$namespace/cache"
 export RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH="$namespace/identity_registry/$identity_basename"
+export RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH="$namespace/identity_registry/$holdout_authority_basename"
 # Recovery verification is intentionally read-only even though the isolated
 # PostgreSQL server is a writable primary.
 export PGOPTIONS="-c default_transaction_read_only=on -c timezone=UTC"

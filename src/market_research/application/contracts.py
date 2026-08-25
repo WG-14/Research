@@ -8,6 +8,7 @@ for canonical hashing and research semantics.
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -114,15 +115,39 @@ class ResearchPreflightRequest(ApplicationRequest):
         return normalized
 
 
+class FinalHoldoutReservation(FrozenApplicationModel):
+    """Immutable, content-addressed fence transported across an adapter boundary."""
+
+    schema_version: Literal[2] = 2
+    registry_path: str = Field(min_length=1)
+    registry_path_hash: Sha256
+    reservation_row_hash: Sha256
+    authority_scope_hash: Sha256
+    manifest_hash: Sha256
+    pre_exposure_reservation_key_hash: Sha256
+    reservation_request_hash: Sha256
+    access_purpose: Literal["PRIMARY_CONFIRMATION", "INDEPENDENT_REPRODUCTION"]
+    purpose_binding_hash: Sha256
+    fence_generation: int = Field(ge=1)
+    content_hash: Sha256
+
+    @field_validator("registry_path")
+    @classmethod
+    def _registry_path_must_be_absolute(cls, value: str) -> str:
+        normalized = value.strip()
+        if not Path(normalized).is_absolute():
+            raise ValueError("final_holdout_registry_path_must_be_absolute")
+        return normalized
+
+
 class ResearchValidationRequest(ResearchPreflightRequest):
     candidate_id: str | None = None
     out_path: str | None = None
     validation_experiment_bundle_path: str | None = None
+    final_holdout_reservation: FinalHoldoutReservation | None = None
     mode: Literal["strict"] = "strict"
 
-    @field_validator(
-        "candidate_id", "out_path", "validation_experiment_bundle_path"
-    )
+    @field_validator("candidate_id", "out_path", "validation_experiment_bundle_path")
     @classmethod
     def _normalize_optional_values(cls, value: str | None) -> str | None:
         if value is None:
@@ -190,6 +215,37 @@ class ResearchProjectObjectRefInput(FrozenApplicationModel):
     object_id: ProjectId
     version: ProjectId
     content_hash: Sha256
+    artifact_uri: str = Field(min_length=1, max_length=8_192)
+    artifact_file_hash: Sha256
+
+    @field_validator("artifact_uri")
+    @classmethod
+    def _artifact_uri_must_be_absolute(cls, value: str) -> str:
+        normalized = value.strip()
+        if not Path(normalized).is_absolute():
+            raise ValueError("research_project_ref_artifact_uri_must_be_absolute")
+        return normalized
+
+
+def _validate_similar_research_refs(
+    *,
+    project_id: str,
+    assessment: str,
+    references: tuple[ResearchProjectObjectRefInput, ...],
+) -> None:
+    if any(reference.project_id != project_id for reference in references):
+        raise ValueError("research_project_cross_project_similar_ref_forbidden")
+    identities = [
+        (reference.kind, reference.object_id, reference.version)
+        for reference in references
+    ]
+    if len(set(identities)) != len(identities):
+        raise ValueError("research_project_similar_ref_duplicate")
+    if assessment.casefold() == "none_identified":
+        if references:
+            raise ValueError("research_project_similar_ref_conflicts_with_assessment")
+    elif not references:
+        raise ValueError("research_project_similar_ref_required")
 
 
 class ResearchProjectMutationRequest(ApplicationRequest):
@@ -215,9 +271,25 @@ class ResearchProjectCreateRequest(ResearchProjectMutationRequest):
     version: Literal[1] = 1
     asset_classes: tuple[str, ...] = Field(min_length=1)
     markets: tuple[str, ...] = Field(min_length=1)
+    investment_horizon: str = Field(min_length=1, max_length=2_000)
+    expected_phenomenon: str = Field(min_length=1, max_length=10_000)
+    economic_explanation: str = Field(min_length=1, max_length=10_000)
+    prior_research_relationship: str = Field(min_length=1, max_length=10_000)
+    required_data: tuple[str, ...] = Field(min_length=1)
+    expected_challenges: tuple[str, ...] = Field(min_length=1)
+    similar_research_assessment: str = Field(min_length=1, max_length=4_000)
+    similar_research_refs: tuple[ResearchProjectObjectRefInput, ...] = ()
     members: tuple[ResearchProjectMemberInput, ...] = Field(min_length=1)
 
-    @field_validator("title", "research_question")
+    @field_validator(
+        "title",
+        "research_question",
+        "investment_horizon",
+        "expected_phenomenon",
+        "economic_explanation",
+        "prior_research_relationship",
+        "similar_research_assessment",
+    )
     @classmethod
     def _normalize_project_required_text(cls, value: str) -> str:
         normalized = value.strip()
@@ -225,7 +297,12 @@ class ResearchProjectCreateRequest(ResearchProjectMutationRequest):
             raise ValueError("research_project_required_text_missing")
         return normalized
 
-    @field_validator("asset_classes", "markets")
+    @field_validator(
+        "asset_classes",
+        "markets",
+        "required_data",
+        "expected_challenges",
+    )
     @classmethod
     def _normalize_project_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(str(value).strip() for value in values)
@@ -241,6 +318,11 @@ class ResearchProjectCreateRequest(ResearchProjectMutationRequest):
         owners = [member.actor_id for member in self.members if member.role == "OWNER"]
         if len(actor_ids) != len(set(actor_ids)) or owners != [self.owner_id]:
             raise ValueError("research_project_owner_membership_invalid")
+        _validate_similar_research_refs(
+            project_id=self.project_id,
+            assessment=self.similar_research_assessment,
+            references=self.similar_research_refs,
+        )
         return self
 
 
@@ -262,8 +344,24 @@ class ResearchProjectRevisionRequest(ResearchProjectMutationRequest):
     research_question: str = Field(min_length=1, max_length=10_000)
     asset_classes: tuple[str, ...] = Field(min_length=1)
     markets: tuple[str, ...] = Field(min_length=1)
+    investment_horizon: str = Field(min_length=1, max_length=2_000)
+    expected_phenomenon: str = Field(min_length=1, max_length=10_000)
+    economic_explanation: str = Field(min_length=1, max_length=10_000)
+    prior_research_relationship: str = Field(min_length=1, max_length=10_000)
+    required_data: tuple[str, ...] = Field(min_length=1)
+    expected_challenges: tuple[str, ...] = Field(min_length=1)
+    similar_research_assessment: str = Field(min_length=1, max_length=4_000)
+    similar_research_refs: tuple[ResearchProjectObjectRefInput, ...] = ()
 
-    @field_validator("title", "research_question")
+    @field_validator(
+        "title",
+        "research_question",
+        "investment_horizon",
+        "expected_phenomenon",
+        "economic_explanation",
+        "prior_research_relationship",
+        "similar_research_assessment",
+    )
     @classmethod
     def _normalize_revision_required_text(cls, value: str) -> str:
         normalized = value.strip()
@@ -271,7 +369,12 @@ class ResearchProjectRevisionRequest(ResearchProjectMutationRequest):
             raise ValueError("research_project_required_text_missing")
         return normalized
 
-    @field_validator("asset_classes", "markets")
+    @field_validator(
+        "asset_classes",
+        "markets",
+        "required_data",
+        "expected_challenges",
+    )
     @classmethod
     def _normalize_revision_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(str(value).strip() for value in values)
@@ -280,6 +383,15 @@ class ResearchProjectRevisionRequest(ResearchProjectMutationRequest):
         ):
             raise ValueError("research_project_scope_invalid")
         return tuple(sorted(normalized))
+
+    @model_validator(mode="after")
+    def _validate_similar_research(self) -> "ResearchProjectRevisionRequest":
+        _validate_similar_research_refs(
+            project_id=self.project_id,
+            assessment=self.similar_research_assessment,
+            references=self.similar_research_refs,
+        )
+        return self
 
 
 class ResearchProjectReferenceRequest(ResearchProjectMutationRequest):
@@ -291,6 +403,81 @@ class ResearchProjectReferenceRequest(ResearchProjectMutationRequest):
         if self.reference.project_id != self.project_id:
             raise ValueError("research_project_cross_project_ref_forbidden")
         return self
+
+
+class ResearchStudyStageRequest(ResearchProjectMutationRequest):
+    expected_project_version: int = Field(ge=1)
+    hypothesis_object_id: ProjectId
+    hypothesis_version: ProjectId
+    to_state: Literal["IDEA", "STRUCTURED", "EXPLORATORY"]
+    exploration_evidence_hash: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def _validate_stage_evidence(self) -> "ResearchStudyStageRequest":
+        if self.to_state == "EXPLORATORY":
+            if self.exploration_evidence_hash is None:
+                raise ValueError("study_lifecycle_exploration_evidence_required")
+        elif self.exploration_evidence_hash is not None:
+            raise ValueError("study_lifecycle_exploration_evidence_not_allowed")
+        return self
+
+
+class ResearchPhaseWindowInput(FrozenApplicationModel):
+    phase: Literal["exploration", "development", "validation", "final_holdout"]
+    starts_at: str = Field(min_length=1, max_length=64)
+    ends_at: str = Field(min_length=1, max_length=64)
+
+
+class ResearchStudyPreregistrationRequest(ResearchProjectMutationRequest):
+    expected_project_version: int = Field(ge=1)
+    hypothesis_object_id: ProjectId
+    hypothesis_version: ProjectId
+    registration_id: ProjectId
+    registration_version: int = Field(ge=1)
+    manifest_hash: Sha256
+    sample_starts_at: str = Field(min_length=1, max_length=64)
+    sample_ends_at: str = Field(min_length=1, max_length=64)
+    universe: tuple[str, ...] = Field(min_length=1)
+    exclusion_criteria: tuple[str, ...] = Field(min_length=1)
+    variable_definitions: tuple[str, ...] = Field(min_length=1)
+    target_variable: str = Field(min_length=1, max_length=10_000)
+    portfolio_construction: str = Field(min_length=1, max_length=10_000)
+    rebalancing_policy: str = Field(min_length=1, max_length=10_000)
+    primary_metrics: tuple[str, ...] = Field(min_length=1)
+    cost_assumptions: tuple[str, ...] = Field(min_length=1)
+    phase_windows: tuple[ResearchPhaseWindowInput, ...] = Field(min_length=4)
+    rejection_criteria: tuple[str, ...] = Field(min_length=1)
+    data_suitability_evidence_hash: Sha256
+    signal_definition_hash: Sha256
+
+    @field_validator(
+        "target_variable",
+        "portfolio_construction",
+        "rebalancing_policy",
+    )
+    @classmethod
+    def _normalize_design_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("study_preregistration_design_text_required")
+        return normalized
+
+    @field_validator(
+        "universe",
+        "exclusion_criteria",
+        "variable_definitions",
+        "primary_metrics",
+        "cost_assumptions",
+        "rejection_criteria",
+    )
+    @classmethod
+    def _normalize_design_lists(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(str(value).strip() for value in values)
+        if any(not value for value in normalized) or len(set(normalized)) != len(
+            normalized
+        ):
+            raise ValueError("study_preregistration_design_list_invalid")
+        return normalized
 
 
 class ResearchProjectTransitionRequest(ResearchProjectMutationRequest):
@@ -561,6 +748,21 @@ class ResearchProjectMutationResult(ApplicationResult):
     event_created: bool
     compute_root: str | None = None
     cache_root: str | None = None
+
+
+class ResearchStudyLifecycleResult(ApplicationResult):
+    project_id: ProjectId
+    hypothesis_id: ProjectId
+    hypothesis_version: ProjectId
+    state: Literal[
+        "IDEA",
+        "STRUCTURED",
+        "EXPLORATORY",
+        "PREREGISTERED",
+    ]
+    transition_row_hash: Sha256
+    preregistration_row_hash: Sha256 | None = None
+    preregistration_hash: Sha256 | None = None
 
 
 class ResearchProjectQueryResult(ApplicationResult):

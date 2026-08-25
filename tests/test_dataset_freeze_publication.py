@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    build_bound_test_source_provenance,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+    use_test_transformation_trust,
+)
 import json
 import multiprocessing
 import shutil
@@ -11,7 +16,6 @@ import pytest
 from .test_dataset_artifact_manifest_contract import _source
 from market_research.research.dataset_freeze import (
     DatasetFreezeError,
-    freeze_sqlite_candles_dataset,
 )
 from market_research.research.datasets.artifact_manifest import (
     ArtifactManifestError,
@@ -32,14 +36,15 @@ def _publish_process(
     winner_published=None,
     tamper_winner: bool = False,
     role: str = "publisher",
+    source_provenance=None,
 ) -> None:
     """Independent-process publisher used to exercise the filesystem race path."""
     import market_research.research.dataset_freeze as freezer
 
     original_replace = freezer.os.replace
-    original_hash = freezer.artifact_content_hash
+    original_key_hash = freezer.dataset_artifact_key_hash
     if force_collision:
-        freezer.artifact_content_hash = lambda *args, **kwargs: "sha256:" + "f" * 64
+        freezer.dataset_artifact_key_hash = lambda *args, **kwargs: "sha256:" + "f" * 64
     if wait_for_winner is not None:
         wait_for_winner.wait(10)
         if tamper_winner:
@@ -54,15 +59,20 @@ def _publish_process(
 
         freezer.os.replace = synchronized_replace
     try:
-        result = freezer.freeze_sqlite_candles_dataset(
-            source_provenance=TEST_SOURCE_PROVENANCE,
-            source_db=source,
-            market="KRW-BTC",
-            interval="1m",
-            start_ts=1,
-            end_ts=end_ts,
-            out_dir=out_dir,
+        provenance = source_provenance or build_bound_test_source_provenance(
+            source, template=TEST_SOURCE_PROVENANCE
         )
+        with use_test_transformation_trust(provenance) as manager:
+            result = freezer.freeze_sqlite_candles_dataset(
+                source_provenance=provenance,
+                source_db=source,
+                market="KRW-BTC",
+                interval="1m",
+                start_ts=1,
+                end_ts=end_ts,
+                out_dir=out_dir,
+                manager=manager,
+            )
         queue.put({"status": "ok", "role": role, "result": result})
         if winner_published is not None:
             winner_published.set()
@@ -80,7 +90,7 @@ def _publish_process(
         )
     finally:
         freezer.os.replace = original_replace
-        freezer.artifact_content_hash = original_hash
+        freezer.dataset_artifact_key_hash = original_key_hash
 
 
 def test_freeze_is_idempotent_for_identical_input(tmp_path) -> None:
@@ -281,10 +291,14 @@ def test_concurrent_identical_publication_reuses_verified_bundle(tmp_path) -> No
     barrier = context.Barrier(2)
     queue = context.Queue()
     source = _source(tmp_path)
+    provenance = build_bound_test_source_provenance(
+        source, template=TEST_SOURCE_PROVENANCE
+    )
     processes = [
         context.Process(
             target=_publish_process,
             args=(str(source), str(tmp_path / "out"), barrier, queue),
+            kwargs={"source_provenance": provenance},
         )
         for _ in range(2)
     ]
@@ -305,11 +319,18 @@ def test_concurrent_conflicting_publication_fails(tmp_path) -> None:
     barrier = context.Barrier(2)
     queue = context.Queue()
     source = _source(tmp_path)
+    provenance = build_bound_test_source_provenance(
+        source, template=TEST_SOURCE_PROVENANCE
+    )
     processes = [
         context.Process(
             target=_publish_process,
             args=(str(source), str(tmp_path / "out"), barrier, queue),
-            kwargs={"end_ts": end, "force_collision": True},
+            kwargs={
+                "end_ts": end,
+                "force_collision": True,
+                "source_provenance": provenance,
+            },
         )
         for end in (2, 1)
     ]
@@ -368,15 +389,27 @@ def test_concurrent_tampered_winner_is_not_reused(tmp_path) -> None:
     queue = context.Queue()
     published = context.Event()
     source = _source(tmp_path)
+    provenance = build_bound_test_source_provenance(
+        source, template=TEST_SOURCE_PROVENANCE
+    )
     winner = context.Process(
         target=_publish_process,
         args=(str(source), str(tmp_path / "out"), barrier, queue),
-        kwargs={"winner_published": published, "role": "winner"},
+        kwargs={
+            "winner_published": published,
+            "role": "winner",
+            "source_provenance": provenance,
+        },
     )
     loser = context.Process(
         target=_publish_process,
         args=(str(source), str(tmp_path / "out"), barrier, queue),
-        kwargs={"wait_for_winner": published, "tamper_winner": True, "role": "reuser"},
+        kwargs={
+            "wait_for_winner": published,
+            "tamper_winner": True,
+            "role": "reuser",
+            "source_provenance": provenance,
+        },
     )
     winner.start()
     loser.start()

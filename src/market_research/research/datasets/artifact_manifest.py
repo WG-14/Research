@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +23,7 @@ from .source_provenance import (
     validate_source_coverage,
 )
 
-ARTIFACT_MANIFEST_SCHEMA_VERSION = 3
+ARTIFACT_MANIFEST_SCHEMA_VERSION = 4
 _TOP_LEVEL_FIELDS = frozenset(
     {
         "schema_version",
@@ -42,6 +45,20 @@ _SCOPE_FIELDS = frozenset(
 )
 _CANONICALIZATION_FIELDS = frozenset({"name", "version"})
 _CANONICALIZATION = ("ohlcv_pair_interval_rows", 1)
+PORTABLE_ARTIFACT_RESOLUTION_ENV = "RESEARCH_PORTABLE_ARTIFACT_RESOLUTION_PATH"
+_PORTABLE_RESOLUTION_FIELDS = frozenset(
+    {"schema_version", "artifact_type", "entries", "content_hash"}
+)
+_PORTABLE_RESOLUTION_ENTRY_FIELDS = frozenset(
+    {
+        "original_manifest_uri",
+        "artifact_manifest_hash",
+        "resolved_manifest_uri",
+        "original_artifact_uri",
+        "artifact_content_hash",
+        "resolved_artifact_uri",
+    }
+)
 
 
 class ArtifactManifestError(ValueError):
@@ -189,9 +206,15 @@ def parse_artifact_manifest(payload: dict[str, Any]) -> ArtifactManifest:
 def load_artifact_manifest(
     path: str | Path, expected_hash: str | None = None
 ) -> ArtifactManifest:
-    manifest_path = Path(path).expanduser()
-    if not manifest_path.is_absolute():
+    declared_path = Path(path).expanduser()
+    if not declared_path.is_absolute():
         raise ArtifactManifestError("artifact_manifest_uri_must_be_absolute")
+    resolution = _portable_resolution(declared_path, expected_hash)
+    manifest_path = (
+        Path(resolution["resolved_manifest_uri"])
+        if resolution is not None
+        else declared_path
+    )
     try:
         with manifest_path.open(encoding="utf-8") as handle:
             parsed = parse_artifact_manifest(json.load(handle))
@@ -203,15 +226,154 @@ def load_artifact_manifest(
         raise ArtifactManifestError("artifact_manifest_reference_hash_mismatch")
     # A local artifact sidecar is authoritative only for the committed bundle
     # which contains it.  An outside DB cannot be smuggled in via a valid hash.
-    if (
-        manifest_path.name != "artifact.manifest.json"
-        or manifest_path.parent.name.startswith(".")
+    if manifest_path.name != "artifact.manifest.json" or (
+        manifest_path.parent.name.startswith(".")
         and ".staging-" in manifest_path.parent.name
-        or parsed.locator.path
-        != str((manifest_path.parent / "candles.sqlite").resolve())
     ):
         raise ArtifactManifestError("artifact_manifest_locator_not_in_published_bundle")
-    return parsed
+    if resolution is None:
+        if parsed.locator.path != str(
+            (manifest_path.parent / "candles.sqlite").resolve()
+        ):
+            raise ArtifactManifestError(
+                "artifact_manifest_locator_not_in_published_bundle"
+            )
+        return parsed
+
+    original_artifact = str(
+        (Path(resolution["original_manifest_uri"]).parent / "candles.sqlite")
+        .expanduser()
+        .resolve(strict=False)
+    )
+    resolved_artifact = Path(resolution["resolved_artifact_uri"])
+    if (
+        parsed.locator.path != original_artifact
+        or resolution["original_artifact_uri"] != original_artifact
+        or parsed.content_hash != resolution["artifact_content_hash"]
+        or resolved_artifact.resolve()
+        != (manifest_path.parent / "candles.sqlite").resolve()
+    ):
+        raise ArtifactManifestError("portable_artifact_resolution_binding_mismatch")
+    return replace(
+        parsed,
+        locator=ContentAddressedLocal(
+            path=str(resolved_artifact.resolve()),
+            artifact_content_hash=parsed.content_hash,
+        ),
+    )
+
+
+def resolved_artifact_manifest_path(
+    path: str | Path, expected_hash: str | None = None
+) -> Path:
+    """Return the physical sidecar used for a hash-bound portable replay.
+
+    The declared URI remains part of the immutable experiment contract.  This
+    helper only relocates identical, package-verified bytes and therefore does
+    not rewrite or reinterpret the experiment manifest.
+    """
+
+    declared = Path(path).expanduser()
+    if not declared.is_absolute():
+        raise ArtifactManifestError("artifact_manifest_uri_must_be_absolute")
+    resolution = _portable_resolution(declared, expected_hash)
+    return (
+        Path(resolution["resolved_manifest_uri"]).resolve()
+        if resolution is not None
+        else declared.resolve()
+    )
+
+
+def _portable_resolution(
+    declared_path: Path, expected_hash: str | None
+) -> dict[str, str] | None:
+    raw_path = os.environ.get(PORTABLE_ARTIFACT_RESOLUTION_ENV)
+    if raw_path is None:
+        return None
+    resolution_path = Path(raw_path).expanduser()
+    if not resolution_path.is_absolute():
+        raise ArtifactManifestError("portable_artifact_resolution_path_must_be_absolute")
+    _require_regular_single_link(resolution_path, "portable_artifact_resolution")
+    try:
+        raw = resolution_path.read_bytes()
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArtifactManifestError("portable_artifact_resolution_invalid") from exc
+    if not isinstance(payload, dict) or set(payload) != _PORTABLE_RESOLUTION_FIELDS:
+        raise ArtifactManifestError("portable_artifact_resolution_fields_invalid")
+    if (
+        payload.get("schema_version") != 1
+        or payload.get("artifact_type") != "portable_artifact_resolution"
+    ):
+        raise ArtifactManifestError("portable_artifact_resolution_schema_unsupported")
+    recorded_hash = payload.get("content_hash")
+    if not isinstance(recorded_hash, str) or artifact_manifest_hash(
+        {key: value for key, value in payload.items() if key != "content_hash"}
+    ) != recorded_hash:
+        raise ArtifactManifestError("portable_artifact_resolution_hash_mismatch")
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise ArtifactManifestError("portable_artifact_resolution_entries_invalid")
+    declared = str(declared_path.resolve(strict=False))
+    matches: list[dict[str, str]] = []
+    for value in entries:
+        if (
+            not isinstance(value, dict)
+            or set(value) != _PORTABLE_RESOLUTION_ENTRY_FIELDS
+            or not all(isinstance(item, str) and item for item in value.values())
+        ):
+            raise ArtifactManifestError("portable_artifact_resolution_entry_invalid")
+        entry = {str(key): str(item) for key, item in value.items()}
+        if (
+            str(Path(entry["original_manifest_uri"]).resolve(strict=False))
+            == declared
+            and (expected_hash is None or entry["artifact_manifest_hash"] == expected_hash)
+        ):
+            matches.append(entry)
+    if len(matches) != 1:
+        raise ArtifactManifestError("portable_artifact_resolution_not_unique")
+    match = matches[0]
+    for key in ("resolved_manifest_uri", "resolved_artifact_uri"):
+        resolved = Path(match[key]).expanduser()
+        if not resolved.is_absolute():
+            raise ArtifactManifestError("portable_artifact_resolution_uri_not_absolute")
+        _require_regular_single_link(resolved, "portable_artifact_resolution_target")
+    return match
+
+
+def _require_regular_single_link(path: Path, label: str) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise ArtifactManifestError(f"{label}_unavailable") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ArtifactManifestError(f"{label}_symlink_rejected")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise ArtifactManifestError(f"{label}_unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ArtifactManifestError(f"{label}_file_invalid")
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ArtifactManifestError("portable_artifact_resolution_duplicate_key")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise ArtifactManifestError(f"portable_artifact_resolution_nonfinite:{value}")
 
 
 def _parse_values(

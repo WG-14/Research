@@ -815,6 +815,155 @@ class StatisticalSelectionContract:
         }
 
 
+VALIDATION_EXPERIMENTS_SCHEMA_VERSION = 1
+NESTED_SELECTION_METRIC_IDS = frozenset({"return_pct"})
+NESTED_SELECTION_DIRECTIONS = frozenset({"MAXIMIZE"})
+NESTED_TERMINAL_SELECTION_RULES = frozenset({"outer_mean_then_candidate_id"})
+FALSIFICATION_OBSERVATION_BUILDER_IDS = frozenset(
+    {"lagged_strategy_exposure_next_bar_return_v1"}
+)
+FACTOR_EXPOSURE_OBSERVATION_BUILDER_IDS = frozenset(
+    {"strategy_period_return_market_factor_v1"}
+)
+FACTOR_EXPOSURE_MODEL_IDS = frozenset({"ols_newey_west"})
+PROVIDER_SENSITIVITY_SEMANTIC_DEFINITION_IDS = frozenset(
+    {"selected_candidate_required_metrics_v1"}
+)
+PROVIDER_SENSITIVITY_METRIC_IDS = frozenset(
+    {"max_drawdown_pct", "profit_factor", "return_pct", "trade_count"}
+)
+
+
+@dataclass(frozen=True)
+class ValidationNestedSelectionContract:
+    metric_id: str
+    direction: str
+    minimum_inner_sample_count: int
+    minimum_outer_sample_count: int
+    terminal_selection_rule: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "metric_id": self.metric_id,
+            "direction": self.direction,
+            "minimum_inner_sample_count": self.minimum_inner_sample_count,
+            "minimum_outer_sample_count": self.minimum_outer_sample_count,
+            "terminal_selection_rule": self.terminal_selection_rule,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationFalsificationContract:
+    observation_builder_id: str
+    policy_id: str
+    version: str
+    seed: int
+    placebo_shift: int
+    minimum_sample_count: int
+    minimum_baseline_abs_effect: float
+    maximum_control_abs_effect: float
+    minimum_confounder_adjusted_retention: float
+    include_confounder_adjusted: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "observation_builder_id": self.observation_builder_id,
+            "policy_id": self.policy_id,
+            "version": self.version,
+            "seed": self.seed,
+            "placebo_shift": self.placebo_shift,
+            "minimum_sample_count": self.minimum_sample_count,
+            "minimum_baseline_abs_effect": self.minimum_baseline_abs_effect,
+            "maximum_control_abs_effect": self.maximum_control_abs_effect,
+            "minimum_confounder_adjusted_retention": (
+                self.minimum_confounder_adjusted_retention
+            ),
+            "include_confounder_adjusted": self.include_confounder_adjusted,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationFactorExposureContract:
+    observation_builder_id: str
+    model_id: str
+    model_version: str
+    hac_lags: int
+    confidence_z: float
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "observation_builder_id": self.observation_builder_id,
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "hac_lags": self.hac_lags,
+            "confidence_z": self.confidence_z,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationProviderDatasetRef:
+    provider_id: str
+    artifact_manifest_uri: str
+    artifact_manifest_hash: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "provider_id": self.provider_id,
+            "artifact_manifest_uri": self.artifact_manifest_uri,
+            "artifact_manifest_hash": self.artifact_manifest_hash,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationProviderMetricToleranceContract:
+    metric_id: str
+    absolute_tolerance: float
+    relative_tolerance: float
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "metric_id": self.metric_id,
+            "absolute_tolerance": self.absolute_tolerance,
+            "relative_tolerance": self.relative_tolerance,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationProviderSensitivityContract:
+    selected_provider_id: str
+    provider_datasets: tuple[ValidationProviderDatasetRef, ...]
+    semantic_definition_id: str
+    metrics: tuple[str, ...]
+    tolerances: tuple[ValidationProviderMetricToleranceContract, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "selected_provider_id": self.selected_provider_id,
+            "provider_datasets": [item.as_dict() for item in self.provider_datasets],
+            "semantic_definition_id": self.semantic_definition_id,
+            "metrics": list(self.metrics),
+            "tolerances": [item.as_dict() for item in self.tolerances],
+        }
+
+
+@dataclass(frozen=True)
+class ValidationExperimentExecutionContract:
+    schema_version: int
+    nested_selection: ValidationNestedSelectionContract
+    falsification: ValidationFalsificationContract
+    factor_exposure: ValidationFactorExposureContract
+    provider_sensitivity: ValidationProviderSensitivityContract
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "nested_selection": self.nested_selection.as_dict(),
+            "falsification": self.falsification.as_dict(),
+            "factor_exposure": self.factor_exposure.as_dict(),
+            "provider_sensitivity": self.provider_sensitivity.as_dict(),
+        }
+
+
 @dataclass(frozen=True)
 class StressTradeRemovalContract:
     top_n_by_net_pnl: tuple[int, ...]
@@ -1011,6 +1160,7 @@ class ExperimentManifest:
     acceptance_gate: AcceptanceGate
     benchmark_suite: BenchmarkSuiteContract | None
     statistical_validation: StatisticalSelectionContract | None
+    validation_experiments: ValidationExperimentExecutionContract | None
     stress_suite: StressSuiteContract | None
     final_selection: FinalSelectionContract | None
     walk_forward: WalkForwardConfig | None
@@ -1066,6 +1216,8 @@ class ExperimentManifest:
         }
         if self.hypothesis_spec is not None:
             payload["hypothesis_spec"] = self.hypothesis_spec.as_dict()
+        if self.validation_experiments is not None:
+            payload["validation_experiments"] = self.validation_experiments.as_dict()
         if self.research_standard_binding is not None:
             payload["research_standard_binding"] = (
                 self.research_standard_binding.as_dict()
@@ -1269,6 +1421,7 @@ def parse_manifest(
         "acceptance_gate",
         "benchmark_suite",
         "statistical_validation",
+        "validation_experiments",
         "stress_suite",
         "final_selection",
         "walk_forward",
@@ -1508,6 +1661,10 @@ def parse_manifest(
         payload.get("statistical_validation"),
         research_classification=research_classification,
     )
+    validation_experiments = _parse_validation_experiment_execution_contract(
+        payload.get("validation_experiments"),
+        dataset=dataset,
+    )
     stress_suite = _parse_stress_suite(
         payload.get("stress_suite"), research_classification=research_classification
     )
@@ -1573,6 +1730,7 @@ def parse_manifest(
         acceptance_gate=acceptance_gate,
         benchmark_suite=benchmark_suite,
         statistical_validation=statistical_validation,
+        validation_experiments=validation_experiments,
         stress_suite=stress_suite,
         final_selection=final_selection,
         walk_forward=walk_forward,
@@ -3227,6 +3385,494 @@ def _parse_statistical_gates(value: Any) -> StatisticalValidationGates:
             "statistical_validation.gates.max_attempt_index_without_new_hypothesis",
         ),
     )
+
+
+def _parse_validation_experiment_execution_contract(
+    value: Any,
+    *,
+    dataset: DatasetSpec,
+) -> ValidationExperimentExecutionContract | None:
+    if value is None:
+        return None
+    payload = _validation_contract_object(
+        value,
+        expected={
+            "schema_version",
+            "nested_selection",
+            "falsification",
+            "factor_exposure",
+            "provider_sensitivity",
+        },
+        context="validation_experiments",
+    )
+    schema_version = _validation_contract_int(
+        payload["schema_version"],
+        "validation_experiments.schema_version",
+    )
+    if schema_version != VALIDATION_EXPERIMENTS_SCHEMA_VERSION:
+        raise ManifestValidationError("validation_experiments.schema_version must be 1")
+    return ValidationExperimentExecutionContract(
+        schema_version=schema_version,
+        nested_selection=_parse_validation_nested_selection_contract(
+            payload["nested_selection"]
+        ),
+        falsification=_parse_validation_falsification_contract(
+            payload["falsification"]
+        ),
+        factor_exposure=_parse_validation_factor_exposure_contract(
+            payload["factor_exposure"]
+        ),
+        provider_sensitivity=_parse_validation_provider_sensitivity_contract(
+            payload["provider_sensitivity"],
+            dataset=dataset,
+        ),
+    )
+
+
+def _parse_validation_nested_selection_contract(
+    value: Any,
+) -> ValidationNestedSelectionContract:
+    context = "validation_experiments.nested_selection"
+    payload = _validation_contract_object(
+        value,
+        expected={
+            "metric_id",
+            "direction",
+            "minimum_inner_sample_count",
+            "minimum_outer_sample_count",
+            "terminal_selection_rule",
+        },
+        context=context,
+    )
+    metric_id = _validation_contract_choice(
+        payload["metric_id"],
+        f"{context}.metric_id",
+        NESTED_SELECTION_METRIC_IDS,
+    )
+    direction = _validation_contract_choice(
+        payload["direction"],
+        f"{context}.direction",
+        NESTED_SELECTION_DIRECTIONS,
+    )
+    terminal_rule = _validation_contract_choice(
+        payload["terminal_selection_rule"],
+        f"{context}.terminal_selection_rule",
+        NESTED_TERMINAL_SELECTION_RULES,
+    )
+    return ValidationNestedSelectionContract(
+        metric_id=metric_id,
+        direction=direction,
+        minimum_inner_sample_count=_validation_contract_positive_int(
+            payload["minimum_inner_sample_count"],
+            f"{context}.minimum_inner_sample_count",
+        ),
+        minimum_outer_sample_count=_validation_contract_positive_int(
+            payload["minimum_outer_sample_count"],
+            f"{context}.minimum_outer_sample_count",
+        ),
+        terminal_selection_rule=terminal_rule,
+    )
+
+
+def _parse_validation_falsification_contract(
+    value: Any,
+) -> ValidationFalsificationContract:
+    context = "validation_experiments.falsification"
+    payload = _validation_contract_object(
+        value,
+        expected={
+            "observation_builder_id",
+            "policy_id",
+            "version",
+            "seed",
+            "placebo_shift",
+            "minimum_sample_count",
+            "minimum_baseline_abs_effect",
+            "maximum_control_abs_effect",
+            "minimum_confounder_adjusted_retention",
+            "include_confounder_adjusted",
+        },
+        context=context,
+    )
+    return ValidationFalsificationContract(
+        observation_builder_id=_validation_contract_choice(
+            payload["observation_builder_id"],
+            f"{context}.observation_builder_id",
+            FALSIFICATION_OBSERVATION_BUILDER_IDS,
+        ),
+        policy_id=_validation_contract_identifier(
+            payload["policy_id"], f"{context}.policy_id"
+        ),
+        version=_validation_contract_identifier(
+            payload["version"], f"{context}.version"
+        ),
+        seed=_validation_contract_int(payload["seed"], f"{context}.seed"),
+        placebo_shift=_validation_contract_positive_int(
+            payload["placebo_shift"], f"{context}.placebo_shift"
+        ),
+        minimum_sample_count=_validation_contract_positive_int(
+            payload["minimum_sample_count"], f"{context}.minimum_sample_count"
+        ),
+        minimum_baseline_abs_effect=_validation_contract_non_negative_float(
+            payload["minimum_baseline_abs_effect"],
+            f"{context}.minimum_baseline_abs_effect",
+        ),
+        maximum_control_abs_effect=_validation_contract_non_negative_float(
+            payload["maximum_control_abs_effect"],
+            f"{context}.maximum_control_abs_effect",
+        ),
+        minimum_confounder_adjusted_retention=_validation_contract_probability(
+            payload["minimum_confounder_adjusted_retention"],
+            f"{context}.minimum_confounder_adjusted_retention",
+        ),
+        include_confounder_adjusted=_validation_contract_bool(
+            payload["include_confounder_adjusted"],
+            f"{context}.include_confounder_adjusted",
+        ),
+    )
+
+
+def _parse_validation_factor_exposure_contract(
+    value: Any,
+) -> ValidationFactorExposureContract:
+    context = "validation_experiments.factor_exposure"
+    payload = _validation_contract_object(
+        value,
+        expected={
+            "observation_builder_id",
+            "model_id",
+            "model_version",
+            "hac_lags",
+            "confidence_z",
+        },
+        context=context,
+    )
+    model_id = _validation_contract_choice(
+        payload["model_id"],
+        f"{context}.model_id",
+        FACTOR_EXPOSURE_MODEL_IDS,
+    )
+    model_version = _validation_contract_identifier(
+        payload["model_version"], f"{context}.model_version"
+    )
+    if model_version != "1":
+        raise ManifestValidationError(
+            "validation_experiments.factor_exposure.model_version must be 1"
+        )
+    return ValidationFactorExposureContract(
+        observation_builder_id=_validation_contract_choice(
+            payload["observation_builder_id"],
+            f"{context}.observation_builder_id",
+            FACTOR_EXPOSURE_OBSERVATION_BUILDER_IDS,
+        ),
+        model_id=model_id,
+        model_version=model_version,
+        hac_lags=_validation_contract_non_negative_int(
+            payload["hac_lags"], f"{context}.hac_lags"
+        ),
+        confidence_z=_validation_contract_positive_float(
+            payload["confidence_z"], f"{context}.confidence_z"
+        ),
+    )
+
+
+def _parse_validation_provider_sensitivity_contract(
+    value: Any,
+    *,
+    dataset: DatasetSpec,
+) -> ValidationProviderSensitivityContract:
+    context = "validation_experiments.provider_sensitivity"
+    payload = _validation_contract_object(
+        value,
+        expected={
+            "selected_provider_id",
+            "provider_datasets",
+            "semantic_definition_id",
+            "metrics",
+            "tolerances",
+        },
+        context=context,
+    )
+    selected_provider_id = _validation_contract_identifier(
+        payload["selected_provider_id"], f"{context}.selected_provider_id"
+    )
+    raw_datasets = payload["provider_datasets"]
+    if not isinstance(raw_datasets, list) or len(raw_datasets) < 2:
+        raise ManifestValidationError(
+            f"{context}.provider_datasets must contain at least two entries"
+        )
+    provider_datasets = tuple(
+        sorted(
+            (
+                _parse_validation_provider_dataset_ref(item, index=index)
+                for index, item in enumerate(raw_datasets)
+            ),
+            key=lambda item: item.provider_id,
+        )
+    )
+    provider_ids = tuple(item.provider_id for item in provider_datasets)
+    if len(provider_ids) != len(set(provider_ids)):
+        raise ManifestValidationError(
+            f"{context}.provider_datasets provider_id values must be unique"
+        )
+    artifact_refs = tuple(
+        (item.artifact_manifest_uri, item.artifact_manifest_hash)
+        for item in provider_datasets
+    )
+    if len(artifact_refs) != len(set(artifact_refs)):
+        raise ManifestValidationError(
+            f"{context}.provider_datasets artifact references must be unique"
+        )
+    if selected_provider_id not in provider_ids:
+        raise ManifestValidationError(
+            f"{context}.selected_provider_id must name a provider dataset"
+        )
+    if dataset.artifact_ref is None:
+        raise ManifestValidationError(
+            f"{context} requires dataset.artifact_manifest_uri and hash"
+        )
+    selected_dataset = next(
+        item for item in provider_datasets if item.provider_id == selected_provider_id
+    )
+    if (
+        selected_dataset.artifact_manifest_uri
+        != dataset.artifact_ref.artifact_manifest_uri
+        or selected_dataset.artifact_manifest_hash
+        != dataset.artifact_ref.artifact_manifest_hash
+    ):
+        raise ManifestValidationError(
+            f"{context}.selected_provider_id artifact must match manifest dataset"
+        )
+
+    metrics = _validation_contract_metric_ids(payload["metrics"], f"{context}.metrics")
+    raw_tolerances = payload["tolerances"]
+    if not isinstance(raw_tolerances, list) or not raw_tolerances:
+        raise ManifestValidationError(f"{context}.tolerances must be a non-empty array")
+    tolerances = tuple(
+        sorted(
+            (
+                _parse_validation_provider_metric_tolerance(item, index=index)
+                for index, item in enumerate(raw_tolerances)
+            ),
+            key=lambda item: item.metric_id,
+        )
+    )
+    tolerance_ids = tuple(item.metric_id for item in tolerances)
+    if len(tolerance_ids) != len(set(tolerance_ids)):
+        raise ManifestValidationError(
+            f"{context}.tolerances metric_id values must be unique"
+        )
+    if set(tolerance_ids) != set(metrics):
+        raise ManifestValidationError(
+            f"{context}.tolerances must cover exactly the declared metrics"
+        )
+    return ValidationProviderSensitivityContract(
+        selected_provider_id=selected_provider_id,
+        provider_datasets=provider_datasets,
+        semantic_definition_id=_validation_contract_choice(
+            payload["semantic_definition_id"],
+            f"{context}.semantic_definition_id",
+            PROVIDER_SENSITIVITY_SEMANTIC_DEFINITION_IDS,
+        ),
+        metrics=metrics,
+        tolerances=tolerances,
+    )
+
+
+def _parse_validation_provider_dataset_ref(
+    value: Any,
+    *,
+    index: int,
+) -> ValidationProviderDatasetRef:
+    context = f"validation_experiments.provider_sensitivity.provider_datasets[{index}]"
+    payload = _validation_contract_object(
+        value,
+        expected={
+            "provider_id",
+            "artifact_manifest_uri",
+            "artifact_manifest_hash",
+        },
+        context=context,
+    )
+    uri = _validation_contract_text(
+        payload["artifact_manifest_uri"], f"{context}.artifact_manifest_uri"
+    )
+    if not Path(uri).is_absolute():
+        raise ManifestValidationError(
+            f"{context}.artifact_manifest_uri must be absolute"
+        )
+    return ValidationProviderDatasetRef(
+        provider_id=_validation_contract_identifier(
+            payload["provider_id"], f"{context}.provider_id"
+        ),
+        artifact_manifest_uri=uri,
+        artifact_manifest_hash=_validation_contract_hash(
+            payload["artifact_manifest_hash"],
+            f"{context}.artifact_manifest_hash",
+        ),
+    )
+
+
+def _parse_validation_provider_metric_tolerance(
+    value: Any,
+    *,
+    index: int,
+) -> ValidationProviderMetricToleranceContract:
+    context = f"validation_experiments.provider_sensitivity.tolerances[{index}]"
+    payload = _validation_contract_object(
+        value,
+        expected={"metric_id", "absolute_tolerance", "relative_tolerance"},
+        context=context,
+    )
+    metric_id = _validation_contract_choice(
+        payload["metric_id"],
+        f"{context}.metric_id",
+        PROVIDER_SENSITIVITY_METRIC_IDS,
+    )
+    return ValidationProviderMetricToleranceContract(
+        metric_id=metric_id,
+        absolute_tolerance=_validation_contract_non_negative_float(
+            payload["absolute_tolerance"], f"{context}.absolute_tolerance"
+        ),
+        relative_tolerance=_validation_contract_non_negative_float(
+            payload["relative_tolerance"], f"{context}.relative_tolerance"
+        ),
+    )
+
+
+def _validation_contract_object(
+    value: Any,
+    *,
+    expected: set[str],
+    context: str,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ManifestValidationError(f"{context} must be an object")
+    unknown = sorted(set(value) - expected)
+    if unknown:
+        raise ManifestValidationError(
+            f"{context} unsupported fields: {','.join(unknown)}"
+        )
+    missing = sorted(expected - set(value))
+    if missing:
+        raise ManifestValidationError(
+            f"{context} missing required fields: {','.join(missing)}"
+        )
+    return value
+
+
+def _validation_contract_text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ManifestValidationError(f"{field} must be a non-empty trimmed string")
+    return value
+
+
+def _validation_contract_identifier(value: Any, field: str) -> str:
+    text = _validation_contract_text(value, field)
+    if (
+        len(text) > 255
+        or not text[0].isascii()
+        or not text[0].isalnum()
+        or any(
+            not char.isascii() or (not char.isalnum() and char not in "._:-")
+            for char in text
+        )
+    ):
+        raise ManifestValidationError(f"{field} must be a stable identifier")
+    return text
+
+
+def _validation_contract_choice(
+    value: Any,
+    field: str,
+    allowed: frozenset[str],
+) -> str:
+    text = _validation_contract_text(value, field)
+    if text not in allowed:
+        raise ManifestValidationError(
+            f"{field} must be one of: {','.join(sorted(allowed))}"
+        )
+    return text
+
+
+def _validation_contract_hash(value: Any, field: str) -> str:
+    text = _validation_contract_text(value, field)
+    digest = text.removeprefix("sha256:")
+    if (
+        not text.startswith("sha256:")
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise ManifestValidationError(f"{field} must be a sha256: hash")
+    return text
+
+
+def _validation_contract_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestValidationError(f"{field} must be an integer")
+    return value
+
+
+def _validation_contract_positive_int(value: Any, field: str) -> int:
+    parsed = _validation_contract_int(value, field)
+    if parsed <= 0:
+        raise ManifestValidationError(f"{field} must be > 0")
+    return parsed
+
+
+def _validation_contract_non_negative_int(value: Any, field: str) -> int:
+    parsed = _validation_contract_int(value, field)
+    if parsed < 0:
+        raise ManifestValidationError(f"{field} must be >= 0")
+    return parsed
+
+
+def _validation_contract_float(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ManifestValidationError(f"{field} must be a number")
+    parsed = float(value)
+    if parsed != parsed or parsed in {float("inf"), float("-inf")}:
+        raise ManifestValidationError(f"{field} must be finite")
+    return parsed
+
+
+def _validation_contract_non_negative_float(value: Any, field: str) -> float:
+    parsed = _validation_contract_float(value, field)
+    if parsed < 0:
+        raise ManifestValidationError(f"{field} must be >= 0")
+    return parsed
+
+
+def _validation_contract_positive_float(value: Any, field: str) -> float:
+    parsed = _validation_contract_float(value, field)
+    if parsed <= 0:
+        raise ManifestValidationError(f"{field} must be > 0")
+    return parsed
+
+
+def _validation_contract_probability(value: Any, field: str) -> float:
+    parsed = _validation_contract_non_negative_float(value, field)
+    if parsed > 1:
+        raise ManifestValidationError(f"{field} must be <= 1")
+    return parsed
+
+
+def _validation_contract_bool(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ManifestValidationError(f"{field} must be a boolean")
+    return value
+
+
+def _validation_contract_metric_ids(value: Any, field: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ManifestValidationError(f"{field} must be a non-empty array")
+    metrics = tuple(
+        _validation_contract_choice(item, field, PROVIDER_SENSITIVITY_METRIC_IDS)
+        for item in value
+    )
+    if len(metrics) != len(set(metrics)):
+        raise ManifestValidationError(f"{field} values must be unique")
+    return tuple(sorted(metrics))
 
 
 def _parse_stress_suite(

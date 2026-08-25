@@ -35,8 +35,15 @@ from market_research.research.study_lifecycle import (
     StudyLifecycleError,
     admit_study_validation,
     complete_study_validation,
+    preregister_study,
     preserve_study_validation_failure,
+    record_study_stage,
     register_posthoc_followup,
+)
+from market_research.research.research_standard import (
+    PreregisteredResearchDesign,
+    ResearchPhase,
+    ResearchPhaseWindow,
 )
 from market_research.research.validation_decision import query_validation_decisions
 from market_research.settings import ResearchSettings
@@ -90,7 +97,13 @@ class _ManifestStub:
 
 
 def _manifest(tmp_path: Path) -> _ManifestStub:
-    hypothesis = parse_hypothesis_spec(hypothesis_spec_v2())
+    hypothesis = parse_hypothesis_spec(
+        hypothesis_spec_v2(
+            registration_status="pre_registered",
+            pre_registered_at="2025-12-20T00:00:00+00:00",
+            registration_evidence_hash=_hash("e"),
+        )
+    )
     split = {
         "train": {"start": "2025-01-01", "end": "2025-06-30"},
         "validation": {"start": "2025-07-01", "end": "2025-09-30"},
@@ -168,6 +181,26 @@ def _freeze_and_admit(
         "market_research.research.validation_pipeline.validate_validated_research_result",
         lambda *_args, **_kwargs: [],
     )
+    for state, recorded_at, exploration_hash in (
+        ("IDEA", "2025-12-05T00:00:00+00:00", None),
+        ("STRUCTURED", "2025-12-06T00:00:00+00:00", None),
+        ("EXPLORATORY", "2025-12-07T00:00:00+00:00", _hash("d")),
+    ):
+        record_study_stage(
+            manager=manager,
+            hypothesis=manifest.hypothesis_spec,
+            to_state=state,
+            actor_id="researcher-a",
+            recorded_at=recorded_at,
+            reason=f"Record independent {state} work.",
+            exploration_evidence_hash=exploration_hash,
+        )
+    preregister_study(
+        manager=manager,
+        hypothesis=manifest.hypothesis_spec,
+        design=_design(manifest),
+        reason="Freeze the reviewed confirmatory design before validation access.",
+    )
     seed_confirmatory_data_governance(manager=manager, manifest=manifest)
     admission = freeze_validation_admission(
         manager=manager,
@@ -182,6 +215,53 @@ def _freeze_and_admit(
     )
     assert publication.state == "VALIDATING"
     return admission
+
+
+def _design(manifest: _ManifestStub) -> PreregisteredResearchDesign:
+    return PreregisteredResearchDesign(
+        registration_id=manifest.experiment_id,
+        version=1,
+        manifest_hash=manifest.manifest_hash(),
+        hypothesis_contract_hash=manifest.hypothesis_spec.contract_hash(),
+        registered_by="researcher-a",
+        registered_at="2025-12-20T00:00:00+00:00",
+        sample_starts_at="2025-01-01T00:00:00+00:00",
+        sample_ends_at="2026-01-01T00:00:00+00:00",
+        universe=("KRW-BTC",),
+        exclusion_criteria=("missing immutable candle",),
+        variable_definitions=("SMA crossover from closed candles",),
+        target_variable="next-candle net return",
+        portfolio_construction="single-asset long-or-cash",
+        rebalancing_policy="on a registered crossover only",
+        primary_metrics=("net return", "profit factor"),
+        cost_assumptions=("fee_rate=0.001", "fixed slippage"),
+        phase_windows=(
+            ResearchPhaseWindow(
+                ResearchPhase.EXPLORATION,
+                "2025-01-01T00:00:00+00:00",
+                "2025-04-01T00:00:00+00:00",
+            ),
+            ResearchPhaseWindow(
+                ResearchPhase.DEVELOPMENT,
+                "2025-04-01T00:00:00+00:00",
+                "2025-07-01T00:00:00+00:00",
+            ),
+            ResearchPhaseWindow(
+                ResearchPhase.VALIDATION,
+                "2025-07-01T00:00:00+00:00",
+                "2025-10-01T00:00:00+00:00",
+            ),
+            ResearchPhaseWindow(
+                ResearchPhase.FINAL_HOLDOUT,
+                "2025-10-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        ),
+        rejection_criteria=("net return is not positive",),
+        data_suitability_evidence_hash=_hash("c"),
+        signal_definition_hash=_hash("b"),
+        external_registration_evidence_hash=_hash("e"),
+    )
 
 
 def _report(
@@ -242,7 +322,7 @@ def test_admission_aligns_standard_states_with_evidence_decisions_and_cas(
     )
     assert (
         rows[-2]["evidence_hashes"]["preregistration_hash"]
-        == (admission["admission_record_hash"])
+        == _design(manifest).content_hash
     )
     original_counts = (
         validate_governance_registry(manager)["row_count"],

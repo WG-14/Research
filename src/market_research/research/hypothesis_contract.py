@@ -158,6 +158,10 @@ class HypothesisSpec:
     comparison_target: str
     falsification_criteria: tuple[str, ...]
     experiment_family_id: str
+    targets: tuple[str, ...] = ()
+    measurement_method: str | None = None
+    expected_direction: str | None = None
+    evaluation_period: str | None = None
     registration_status: str = "unregistered"
     pre_registered_at: str | None = None
     registration_evidence_hash: str | None = None
@@ -191,6 +195,10 @@ class HypothesisSpec:
                 or self.created_at is None
                 or self.research_question is None
                 or self.research_question_ref is None
+                or not self.targets
+                or self.measurement_method is None
+                or self.expected_direction is None
+                or self.evaluation_period is None
             ):
                 raise ValueError("hypothesis_spec schema 2 lineage is incomplete")
             payload.update(
@@ -204,6 +212,10 @@ class HypothesisSpec:
                     "observation_refs": [
                         item.as_dict() for item in self.observation_refs
                     ],
+                    "targets": list(self.targets),
+                    "measurement_method": self.measurement_method,
+                    "expected_direction": self.expected_direction,
+                    "evaluation_period": self.evaluation_period,
                     "lineage_hash": self.lineage_hash(),
                 }
             )
@@ -243,6 +255,15 @@ class HypothesisSpec:
                 normalize(item) for item in self.falsification_criteria
             ),
         }
+        if self.schema_version == HYPOTHESIS_LINEAGE_SCHEMA_VERSION:
+            material.update(
+                {
+                    "targets": sorted(normalize(item) for item in self.targets),
+                    "measurement_method": normalize(str(self.measurement_method)),
+                    "expected_direction": normalize(str(self.expected_direction)),
+                    "evaluation_period": normalize(str(self.evaluation_period)),
+                }
+            )
         if self.hypothesis_text is not None:
             material["hypothesis_text"] = normalize(self.hypothesis_text)
         return sha256_prefixed(material)
@@ -287,6 +308,10 @@ def parse_hypothesis_spec(value: object) -> HypothesisSpec:
         "research_question",
         "research_question_ref",
         "observation_refs",
+        "targets",
+        "measurement_method",
+        "expected_direction",
+        "evaluation_period",
         "lineage_hash",
     }
     allowed = common_allowed | (lineage_allowed if schema_version == 2 else set())
@@ -455,6 +480,33 @@ def _parse_lineage_hypothesis(
     hypothesis_text = _strict_text(
         value.get("hypothesis_text"), "hypothesis_spec.hypothesis_text"
     )
+    raw_targets = value.get("targets")
+    if not isinstance(raw_targets, list) or not raw_targets:
+        raise ValueError("hypothesis_spec.targets must be a non-empty array")
+    targets = tuple(
+        _strict_text(item, "hypothesis_spec.targets") for item in raw_targets
+    )
+    if len(set(targets)) != len(targets):
+        raise ValueError("hypothesis_spec.targets must contain unique strings")
+    measurement_method = _strict_text(
+        value.get("measurement_method"), "hypothesis_spec.measurement_method"
+    )
+    expected_direction = _strict_text(
+        value.get("expected_direction"), "hypothesis_spec.expected_direction"
+    )
+    if expected_direction not in {
+        "positive",
+        "negative",
+        "non_monotonic",
+        "different",
+    }:
+        raise ValueError(
+            "hypothesis_spec.expected_direction must be positive, negative, "
+            "non_monotonic, or different"
+        )
+    evaluation_period = _strict_text(
+        value.get("evaluation_period"), "hypothesis_spec.evaluation_period"
+    )
     hypothesis_id = str(common["hypothesis_id"])
     version = str(common["version"])
     matching_competitors = [
@@ -510,6 +562,10 @@ def _parse_lineage_hypothesis(
         research_question=research_question,
         research_question_ref=question_ref,
         observation_refs=observation_refs,
+        targets=targets,
+        measurement_method=measurement_method,
+        expected_direction=expected_direction,
+        evaluation_period=evaluation_period,
     )
     supplied_lineage_hash = value.get("lineage_hash")
     if supplied_lineage_hash is not None:

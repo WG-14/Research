@@ -23,6 +23,11 @@ from .instrument_contract import (
 
 
 CORPORATE_ACTION_SCHEMA_VERSION = 1
+CORPORATE_ACTION_ACCOUNTING_SCHEMA_VERSION = 1
+SUPPORTED_CORPORATE_ACTION_SCHEMA_VERSIONS = frozenset({1, 2})
+CORPORATE_ACTION_EMBEDDED_EVENT_MATERIAL_HASH_LABEL = (
+    "corporate_action_embedded_event_material"
+)
 _EVENT_ID = re.compile(r"^ca_[a-z0-9][a-z0-9_-]{7,63}$")
 _VERSION_ID = re.compile(r"^cav_[a-z0-9][a-z0-9_-]{7,63}$")
 _INSTRUMENT_ID = re.compile(r"^inst_[a-z0-9][a-z0-9_-]{7,63}$")
@@ -45,10 +50,273 @@ _EVENT_TYPES = frozenset(
         "etf_liquidation",
     }
 )
+_V2_EVENT_TYPES = _EVENT_TYPES | frozenset(
+    {
+        "special_dividend",
+        "rights_issue",
+        "ex_rights",
+        "spin_off",
+        "merger",
+    }
+)
+_V2_SETTLEMENT_POLICIES = frozenset(
+    {
+        "quantity_adjustment",
+        "cash_distribution",
+        "capital_reduction",
+        "rights_cash_entitlement",
+        "rights_subscription",
+        "ex_rights_marker",
+        "cash_settled_spin_off",
+        "stock_merger",
+        "mixed_merger",
+        "cash_exit",
+        "tradability_transition",
+        "identity_metadata",
+    }
+)
 
 
 class CorporateActionContractError(ValueError):
     """Corporate-action evidence is incomplete or contradictory."""
+
+
+def corporate_action_embedded_event_material_hash(
+    value: Mapping[str, object],
+) -> str:
+    """Bind canonical event material without claiming external-source proof.
+
+    This detects mutation of the embedded event and its declared external
+    ``source_content_hash``.  It deliberately does not claim that provider
+    bytes were fetched or authenticated; that needs a separate source-artifact
+    contract which schema-v2 does not currently possess.
+    """
+
+    material = dict(value)
+    material.pop("embedded_event_material_hash", None)
+    return sha256_prefixed(
+        material,
+        label=CORPORATE_ACTION_EMBEDDED_EVENT_MATERIAL_HASH_LABEL,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CorporateActionAccountingTerms:
+    """Reviewed, replayable economics for schema-v2 events.
+
+    Every field is explicit, including zero tax and no cash-in-lieu.  This is
+    intentionally not inferred from an event name: externally prepared terms
+    are the accounting authority and their canonical representation is part of
+    the event contract hash.
+    """
+
+    schema_version: int
+    settlement_policy: str
+    same_timestamp_sequence: int
+    entitlement_basis: str
+    position_effect: str
+    position_ratio: Decimal
+    cash_per_pre_event_unit: Decimal
+    cash_currency: str | None
+    tax_policy: str
+    tax_rate: Decimal
+    basis_policy: str
+    cash_basis_fraction: Decimal
+    fractional_policy: str
+    cash_in_lieu_price: Decimal | None
+    cash_in_lieu_tax_rate: Decimal
+    terminal: bool
+    continuation_price_policy: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != CORPORATE_ACTION_ACCOUNTING_SCHEMA_VERSION:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_schema_unsupported"
+            )
+        if self.settlement_policy not in _V2_SETTLEMENT_POLICIES:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_settlement_policy_unknown"
+            )
+        if (
+            isinstance(self.same_timestamp_sequence, bool)
+            or self.same_timestamp_sequence < 1
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_same_timestamp_sequence_invalid"
+            )
+        if self.entitlement_basis != "position_immediately_before_event":
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_entitlement_basis_unsupported"
+            )
+        if self.position_effect not in {"unchanged", "scale", "replace", "close"}:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_position_effect_unknown"
+            )
+        if (
+            not self.position_ratio.is_finite()
+            or self.position_ratio < 0
+            or (
+                self.position_effect in {"scale", "replace"}
+                and self.position_ratio <= 0
+            )
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_position_ratio_invalid"
+            )
+        expected_ratio = {
+            "unchanged": Decimal("1"),
+            "close": Decimal("0"),
+        }.get(self.position_effect)
+        if expected_ratio is not None and self.position_ratio != expected_ratio:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_position_ratio_mismatch"
+            )
+        if not self.cash_per_pre_event_unit.is_finite():
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_non_finite"
+            )
+        if self.cash_currency is not None and not _CURRENCY.fullmatch(
+            self.cash_currency
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_currency_invalid"
+            )
+        if self.tax_policy not in {
+            "none",
+            "gross_cash_rate",
+            "gain_over_allocated_basis_rate",
+        }:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_tax_policy_unknown"
+            )
+        if not self.tax_rate.is_finite() or not Decimal(
+            "0"
+        ) <= self.tax_rate <= Decimal("1"):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_tax_rate_invalid"
+            )
+        if self.tax_policy == "none" and self.tax_rate != 0:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_tax_rate_not_applicable"
+            )
+        if self.cash_per_pre_event_unit < 0 and self.tax_policy != "none":
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_outflow_cannot_be_taxed"
+            )
+        if self.cash_per_pre_event_unit == 0 and self.tax_policy != "none":
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_primary_tax_not_applicable"
+            )
+        if self.basis_policy not in {
+            "preserve",
+            "allocate_cash_fraction",
+            "add_cash_outflow",
+            "close",
+        }:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_basis_policy_unknown"
+            )
+        if not self.cash_basis_fraction.is_finite() or not Decimal(
+            "0"
+        ) <= self.cash_basis_fraction <= Decimal("1"):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_basis_fraction_invalid"
+            )
+        if self.basis_policy in {"preserve", "add_cash_outflow"} and (
+            self.cash_basis_fraction != 0
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_basis_not_applicable"
+            )
+        if self.basis_policy == "close" and self.cash_basis_fraction != 1:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_close_must_release_all_basis"
+            )
+        if self.fractional_policy not in {
+            "retain_exact",
+            "reject_non_step",
+            "round_down_cash_in_lieu",
+        }:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_fractional_policy_unknown"
+            )
+        if self.position_effect not in {"scale", "replace"} and (
+            self.fractional_policy != "retain_exact"
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_fractional_policy_not_applicable"
+            )
+        if not self.cash_in_lieu_tax_rate.is_finite() or not Decimal(
+            "0"
+        ) <= self.cash_in_lieu_tax_rate <= Decimal("1"):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_in_lieu_tax_rate_invalid"
+            )
+        if self.fractional_policy == "round_down_cash_in_lieu":
+            if (
+                self.cash_in_lieu_price is None
+                or not self.cash_in_lieu_price.is_finite()
+                or self.cash_in_lieu_price <= 0
+                or self.cash_currency is None
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.accounting_terms_cash_in_lieu_terms_required"
+                )
+        elif self.cash_in_lieu_price is not None or self.cash_in_lieu_tax_rate != 0:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_in_lieu_not_applicable"
+            )
+        if not isinstance(self.terminal, bool):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_terminal_must_be_boolean"
+            )
+        if self.terminal != (self.position_effect == "close"):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_terminal_position_mismatch"
+            )
+        if self.continuation_price_policy not in {
+            "not_applicable",
+            "prepared_raw_series_switches_to_replacement_at_effective",
+        }:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_continuation_policy_unknown"
+            )
+        if self.position_effect == "replace":
+            if self.continuation_price_policy != (
+                "prepared_raw_series_switches_to_replacement_at_effective"
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.accounting_terms_replacement_price_policy_required"
+                )
+        elif self.continuation_price_policy != "not_applicable":
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_continuation_policy_not_applicable"
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "settlement_policy": self.settlement_policy,
+            "same_timestamp_sequence": self.same_timestamp_sequence,
+            "entitlement_basis": self.entitlement_basis,
+            "position_effect": self.position_effect,
+            "position_ratio": decimal_text(self.position_ratio),
+            "cash_per_pre_event_unit": decimal_text(self.cash_per_pre_event_unit),
+            "cash_currency": self.cash_currency,
+            "tax_policy": self.tax_policy,
+            "tax_rate": decimal_text(self.tax_rate),
+            "basis_policy": self.basis_policy,
+            "cash_basis_fraction": decimal_text(self.cash_basis_fraction),
+            "fractional_policy": self.fractional_policy,
+            "cash_in_lieu_price": (
+                decimal_text(self.cash_in_lieu_price)
+                if self.cash_in_lieu_price is not None
+                else None
+            ),
+            "cash_in_lieu_tax_rate": decimal_text(self.cash_in_lieu_tax_rate),
+            "terminal": self.terminal,
+            "continuation_price_policy": self.continuation_price_policy,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,15 +331,17 @@ class CorporateActionEvent:
     published_at: str
     observed_at: str
     source_content_hash: str
+    embedded_event_material_hash: str | None = None
     ratio: Decimal | None = None
     cash_amount: Decimal | None = None
     cash_currency: str | None = None
     replacement_symbol: str | None = None
     replacement_instrument_id: str | None = None
     tradability: str | None = None
+    accounting_terms: CorporateActionAccountingTerms | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != CORPORATE_ACTION_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_CORPORATE_ACTION_SCHEMA_VERSIONS:
             raise CorporateActionContractError("corporate_action_schema_unsupported")
         if not _EVENT_ID.fullmatch(self.event_id):
             raise CorporateActionContractError("corporate_action.event_id_invalid")
@@ -83,14 +353,14 @@ class CorporateActionEvent:
             raise CorporateActionContractError("corporate_action.version_invalid")
         if not _INSTRUMENT_ID.fullmatch(self.instrument_id):
             raise CorporateActionContractError("corporate_action.instrument_id_invalid")
-        if self.event_type not in _EVENT_TYPES:
+        supported_types = _EVENT_TYPES if self.schema_version == 1 else _V2_EVENT_TYPES
+        if self.event_type not in supported_types:
             raise CorporateActionContractError("corporate_action.event_type_unknown")
         effective = _timestamp(self.effective_at, "corporate_action.effective_at")
         published = _timestamp(self.published_at, "corporate_action.published_at")
         observed = _timestamp(self.observed_at, "corporate_action.observed_at")
         if any(
-            value.microsecond % 1000 != 0
-            for value in (effective, published, observed)
+            value.microsecond % 1000 != 0 for value in (effective, published, observed)
         ):
             raise CorporateActionContractError(
                 "corporate_action_timestamp_millisecond_alignment_required"
@@ -105,6 +375,30 @@ class CorporateActionEvent:
             )
         except InstrumentContractError as exc:
             raise CorporateActionContractError(str(exc)) from exc
+        if self.schema_version == 2:
+            self._validate_v2_terms()
+            if self.embedded_event_material_hash is None or not _HASH.fullmatch(
+                self.embedded_event_material_hash
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.embedded_event_material_hash_required"
+                )
+            expected_material_hash = corporate_action_embedded_event_material_hash(
+                self.as_dict()
+            )
+            if self.embedded_event_material_hash != expected_material_hash:
+                raise CorporateActionContractError(
+                    "corporate_action.embedded_event_material_hash_content_mismatch"
+                )
+            return
+        if self.embedded_event_material_hash is not None:
+            raise CorporateActionContractError(
+                "corporate_action.embedded_event_material_hash_not_applicable"
+            )
+        if self.accounting_terms is not None:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_not_applicable_to_schema_v1"
+            )
         if self.event_type in {"split", "reverse_split", "stock_dividend"}:
             if self.ratio is None or not self.ratio.is_finite() or self.ratio <= 0:
                 raise CorporateActionContractError("corporate_action.ratio_required")
@@ -175,6 +469,226 @@ class CorporateActionEvent:
         # point; only observation time controls causal availability.
         del effective
 
+    def _validate_v2_terms(self) -> None:
+        terms = self.accounting_terms
+        if terms is None:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_required_for_schema_v2"
+            )
+        ratio_applies = terms.position_effect in {"scale", "replace"}
+        if ratio_applies:
+            if self.ratio != terms.position_ratio:
+                raise CorporateActionContractError(
+                    "corporate_action.accounting_terms_ratio_binding_mismatch"
+                )
+        elif self.ratio is not None:
+            raise CorporateActionContractError("corporate_action.ratio_not_applicable")
+        cash_terms_required = terms.settlement_policy in {
+            "cash_distribution",
+            "capital_reduction",
+            "rights_cash_entitlement",
+            "rights_subscription",
+            "cash_settled_spin_off",
+            "mixed_merger",
+            "cash_exit",
+        }
+        if cash_terms_required:
+            if (
+                self.cash_amount != terms.cash_per_pre_event_unit
+                or self.cash_currency != terms.cash_currency
+                or self.cash_currency is None
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.accounting_terms_cash_binding_mismatch"
+                )
+        elif self.cash_amount is not None:
+            raise CorporateActionContractError(
+                "corporate_action.cash_terms_not_applicable"
+            )
+        elif self.cash_currency != terms.cash_currency:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_currency_binding_mismatch"
+            )
+        if terms.cash_currency is None and (
+            terms.cash_per_pre_event_unit != 0 or terms.cash_in_lieu_price is not None
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_currency_required"
+            )
+        if terms.cash_currency is not None and (
+            terms.cash_per_pre_event_unit == 0
+            and terms.cash_in_lieu_price is None
+            and not cash_terms_required
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_currency_not_applicable"
+            )
+        if terms.position_effect == "replace":
+            if (
+                self.replacement_instrument_id is None
+                or self.replacement_instrument_id == self.instrument_id
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.replacement_instrument_id_required"
+                )
+        elif terms.settlement_policy == "cash_settled_spin_off":
+            if (
+                self.replacement_instrument_id is None
+                or self.replacement_instrument_id == self.instrument_id
+            ):
+                raise CorporateActionContractError(
+                    "corporate_action.spin_off_child_instrument_id_required"
+                )
+        elif self.replacement_instrument_id is not None and self.event_type != (
+            "ticker_change"
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.replacement_instrument_id_not_applicable"
+            )
+        if self.replacement_instrument_id is not None and not _INSTRUMENT_ID.fullmatch(
+            self.replacement_instrument_id
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.replacement_instrument_id_invalid"
+            )
+        expected_policy = {
+            "cash_dividend": {"cash_distribution"},
+            "special_dividend": {"cash_distribution"},
+            "etf_distribution": {"cash_distribution"},
+            "split": {"quantity_adjustment"},
+            "reverse_split": {"quantity_adjustment"},
+            "stock_dividend": {"quantity_adjustment"},
+            "capital_reduction": {"capital_reduction"},
+            "rights_issue": {"rights_cash_entitlement", "rights_subscription"},
+            "ex_rights": {"ex_rights_marker"},
+            "spin_off": {"cash_settled_spin_off"},
+            "merger": {"cash_exit", "stock_merger", "mixed_merger"},
+            "etf_merger": {"cash_exit", "stock_merger", "mixed_merger"},
+            "delisting": {"cash_exit"},
+            "etf_liquidation": {"cash_exit"},
+            "trading_halt": {"tradability_transition"},
+            "trading_resume": {"tradability_transition"},
+            "ticker_change": {"identity_metadata"},
+        }.get(self.event_type)
+        if expected_policy is None or terms.settlement_policy not in expected_policy:
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_event_type_mismatch"
+            )
+        self._validate_v2_settlement_shape(terms)
+        expected_tradability = {
+            "trading_halt": "halted",
+            "trading_resume": "tradable",
+            "delisting": "delisted",
+            "etf_liquidation": "delisted",
+        }.get(self.event_type)
+        if expected_tradability is not None:
+            if self.tradability != expected_tradability:
+                raise CorporateActionContractError(
+                    "corporate_action.tradability_transition_invalid"
+                )
+        elif self.tradability is not None:
+            raise CorporateActionContractError(
+                "corporate_action.tradability_not_applicable"
+            )
+
+    def _validate_v2_settlement_shape(
+        self, terms: CorporateActionAccountingTerms
+    ) -> None:
+        policy = terms.settlement_policy
+        no_economic_change = {
+            "ex_rights_marker",
+            "tradability_transition",
+            "identity_metadata",
+        }
+        if policy in no_economic_change and (
+            terms.position_effect != "unchanged"
+            or terms.cash_per_pre_event_unit != 0
+            or terms.basis_policy != "preserve"
+            or terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_noop_shape_invalid"
+            )
+        if policy == "quantity_adjustment" and (
+            terms.position_effect != "scale"
+            or terms.position_ratio == 1
+            or terms.cash_per_pre_event_unit != 0
+            or terms.basis_policy != "preserve"
+            or terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_quantity_shape_invalid"
+            )
+        if policy == "cash_distribution" and (
+            terms.position_effect != "unchanged"
+            or terms.cash_per_pre_event_unit <= 0
+            or terms.basis_policy != "preserve"
+            or terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_distribution_shape_invalid"
+            )
+        if policy == "capital_reduction" and (
+            terms.position_effect != "scale"
+            or not Decimal("0") < terms.position_ratio < Decimal("1")
+            or terms.cash_per_pre_event_unit < 0
+            or terms.terminal
+            or terms.basis_policy not in {"preserve", "allocate_cash_fraction"}
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_capital_reduction_shape_invalid"
+            )
+        if policy == "rights_cash_entitlement" and (
+            terms.position_effect != "unchanged"
+            or terms.cash_per_pre_event_unit <= 0
+            or terms.basis_policy != "preserve"
+            or terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_rights_cash_shape_invalid"
+            )
+        if policy == "rights_subscription" and (
+            terms.position_effect != "scale"
+            or terms.position_ratio <= 1
+            or terms.cash_per_pre_event_unit >= 0
+            or terms.basis_policy != "add_cash_outflow"
+            or terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_rights_subscription_shape_invalid"
+            )
+        if policy == "cash_settled_spin_off" and (
+            terms.position_effect != "unchanged"
+            or terms.cash_per_pre_event_unit <= 0
+            or terms.basis_policy != "allocate_cash_fraction"
+            or terms.cash_basis_fraction <= 0
+            or terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_spin_off_shape_invalid"
+            )
+        if policy in {"stock_merger", "mixed_merger"} and (
+            terms.position_effect != "replace"
+            or terms.basis_policy != "allocate_cash_fraction"
+            or terms.terminal
+            or (policy == "stock_merger" and terms.cash_per_pre_event_unit != 0)
+            or (policy == "stock_merger" and terms.cash_basis_fraction != 0)
+            or (policy == "mixed_merger" and terms.cash_per_pre_event_unit <= 0)
+            or (policy == "mixed_merger" and terms.cash_basis_fraction <= 0)
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_merger_shape_invalid"
+            )
+        if policy == "cash_exit" and (
+            terms.position_effect != "close"
+            or terms.cash_per_pre_event_unit < 0
+            or terms.basis_policy != "close"
+            or not terms.terminal
+        ):
+            raise CorporateActionContractError(
+                "corporate_action.accounting_terms_cash_exit_shape_invalid"
+            )
+
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -187,6 +701,11 @@ class CorporateActionEvent:
             "published_at": self.published_at,
             "observed_at": self.observed_at,
             "source_content_hash": self.source_content_hash,
+            **(
+                {"embedded_event_material_hash": (self.embedded_event_material_hash)}
+                if self.schema_version == 2
+                else {}
+            ),
             "ratio": decimal_text(self.ratio) if self.ratio is not None else None,
             "cash_amount": (
                 decimal_text(self.cash_amount) if self.cash_amount is not None else None
@@ -195,6 +714,11 @@ class CorporateActionEvent:
             "replacement_symbol": self.replacement_symbol,
             "replacement_instrument_id": self.replacement_instrument_id,
             "tradability": self.tradability,
+            **(
+                {"accounting_terms": self.accounting_terms.as_dict()}
+                if self.schema_version == 2 and self.accounting_terms is not None
+                else {}
+            ),
         }
 
     def contract_hash(self) -> str:
@@ -219,7 +743,7 @@ class CorporateActionSet:
     events: tuple[CorporateActionEvent, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != CORPORATE_ACTION_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_CORPORATE_ACTION_SCHEMA_VERSIONS:
             raise CorporateActionContractError(
                 "corporate_action_set_schema_unsupported"
             )
@@ -234,9 +758,20 @@ class CorporateActionSet:
         identities = [(item.event_id, item.event_version_id) for item in self.events]
         if len(identities) != len(set(identities)):
             raise CorporateActionContractError("corporate_action_set_duplicate_event")
-        if any(item.instrument_id != self.instrument_id for item in self.events):
+        if self.schema_version == 1 and any(
+            item.instrument_id != self.instrument_id for item in self.events
+        ):
             raise CorporateActionContractError(
                 "corporate_action_set_instrument_mismatch"
+            )
+        if any(item.schema_version != self.schema_version for item in self.events):
+            raise CorporateActionContractError(
+                "corporate_action_set_event_schema_mismatch"
+            )
+        version_ids = [item.event_version_id for item in self.events]
+        if len(version_ids) != len(set(version_ids)):
+            raise CorporateActionContractError(
+                "corporate_action_set_duplicate_event_version_id"
             )
         versions_by_event: dict[str, list[CorporateActionEvent]] = {}
         for item in self.events:
@@ -260,6 +795,10 @@ class CorporateActionSet:
                 raise CorporateActionContractError(
                     "corporate_action_correction_not_observed_later"
                 )
+            if len({item.event_type for item in canonical_versions}) != 1:
+                raise CorporateActionContractError(
+                    "corporate_action_correction_event_type_changed"
+                )
         ordered = tuple(
             sorted(
                 self.events,
@@ -273,6 +812,33 @@ class CorporateActionSet:
         )
         if ordered != self.events:
             raise CorporateActionContractError("corporate_action_set_not_canonical")
+        if self.schema_version == 2:
+            active_instruments = {self.instrument_id}
+            identity_ordered = sorted(
+                ordered,
+                key=lambda item: (
+                    item.effective_at,
+                    (
+                        item.accounting_terms.same_timestamp_sequence
+                        if item.accounting_terms is not None
+                        else 0
+                    ),
+                    item.event_id,
+                    item.version,
+                ),
+            )
+            for item in identity_ordered:
+                if item.instrument_id not in active_instruments:
+                    raise CorporateActionContractError(
+                        "corporate_action_set_identity_transition_unbound"
+                    )
+                terms = item.accounting_terms
+                if (
+                    terms is not None
+                    and terms.position_effect == "replace"
+                    and item.replacement_instrument_id is not None
+                ):
+                    active_instruments.add(item.replacement_instrument_id)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -332,7 +898,7 @@ class AdjustmentPolicy:
     action_set_hash: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != CORPORATE_ACTION_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_CORPORATE_ACTION_SCHEMA_VERSIONS:
             raise CorporateActionContractError("adjustment_policy_schema_unsupported")
         if not _POLICY_ID.fullmatch(self.policy_id):
             raise CorporateActionContractError("adjustment_policy.policy_id_invalid")
@@ -385,6 +951,10 @@ class AdjustmentPolicy:
         if not _HASH.fullmatch(self.action_set_hash):
             raise CorporateActionContractError(
                 "adjustment_policy.action_set_hash_invalid"
+            )
+        if self.schema_version == 2 and self.price_series != "raw":
+            raise CorporateActionContractError(
+                "adjustment_policy_schema_v2_requires_causal_raw_prices"
             )
 
     def as_dict(self) -> dict[str, object]:
@@ -493,6 +1063,7 @@ class CorporateActionApplicationEvidence:
 
 @dataclass(frozen=True, slots=True)
 class CorporateActionTransformationResult:
+    schema_version: int
     rows: tuple[CorporateActionOhlcv, ...]
     known_at: str
     input_rows_hash: str
@@ -505,7 +1076,7 @@ class CorporateActionTransformationResult:
 
     def as_dict(self) -> dict[str, object]:
         material: dict[str, object] = {
-            "schema_version": CORPORATE_ACTION_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "artifact_type": "corporate_action_transformation_evidence",
             "known_at": self.known_at,
             "input_series": self.input_series,
@@ -653,6 +1224,7 @@ def transform_raw_ohlcv(
             )
     output_hash = _ohlcv_rows_hash(adjusted)
     return CorporateActionTransformationResult(
+        schema_version=action_set.schema_version,
         rows=adjusted,
         known_at=known_at,
         input_rows_hash=input_hash,
@@ -770,7 +1342,17 @@ def parse_adjustment_policy(
         raise CorporateActionContractError(
             "corporate_action_policy_action_set_hash_mismatch"
         )
+    if result.schema_version != action_set.schema_version:
+        raise CorporateActionContractError(
+            "corporate_action_policy_action_set_schema_mismatch"
+        )
     return result
+
+
+def parse_corporate_action_event(value: object) -> CorporateActionEvent:
+    """Parse one complete event without applying action-set defaults."""
+
+    return _parse_event(value)
 
 
 def _parse_event(value: object) -> CorporateActionEvent:
@@ -788,12 +1370,14 @@ def _parse_event(value: object) -> CorporateActionEvent:
             "published_at",
             "observed_at",
             "source_content_hash",
+            "embedded_event_material_hash",
             "ratio",
             "cash_amount",
             "cash_currency",
             "replacement_symbol",
             "replacement_instrument_id",
             "tradability",
+            "accounting_terms",
         },
         "corporate_action_set.events[]",
     )
@@ -837,6 +1421,10 @@ def _parse_event(value: object) -> CorporateActionEvent:
                 payload.get("source_content_hash"),
                 "corporate_action_set.events[].source_content_hash",
             ),
+            embedded_event_material_hash=_optional_text(
+                payload.get("embedded_event_material_hash"),
+                "corporate_action_set.events[].embedded_event_material_hash",
+            ),
             ratio=(
                 decimal_value(
                     payload.get("ratio"), "corporate_action_set.events[].ratio"
@@ -868,9 +1456,118 @@ def _parse_event(value: object) -> CorporateActionEvent:
                 payload.get("tradability"),
                 "corporate_action_set.events[].tradability",
             ),
+            accounting_terms=(
+                _parse_accounting_terms(payload["accounting_terms"])
+                if payload.get("accounting_terms") is not None
+                else None
+            ),
         )
     except InstrumentContractError as exc:
         raise CorporateActionContractError(str(exc)) from exc
+
+
+def _parse_accounting_terms(value: object) -> CorporateActionAccountingTerms:
+    payload = _object(value, "corporate_action_set.events[].accounting_terms")
+    allowed = {
+        "schema_version",
+        "settlement_policy",
+        "same_timestamp_sequence",
+        "entitlement_basis",
+        "position_effect",
+        "position_ratio",
+        "cash_per_pre_event_unit",
+        "cash_currency",
+        "tax_policy",
+        "tax_rate",
+        "basis_policy",
+        "cash_basis_fraction",
+        "fractional_policy",
+        "cash_in_lieu_price",
+        "cash_in_lieu_tax_rate",
+        "terminal",
+        "continuation_price_policy",
+    }
+    _unknown(payload, allowed, "corporate_action_set.events[].accounting_terms")
+    missing = sorted(allowed - set(payload))
+    if missing:
+        raise CorporateActionContractError(
+            "corporate_action_set.events[].accounting_terms_missing_fields:"
+            + ",".join(missing)
+        )
+    return CorporateActionAccountingTerms(
+        schema_version=_integer(
+            payload["schema_version"],
+            "corporate_action_set.events[].accounting_terms.schema_version",
+        ),
+        settlement_policy=_text(
+            payload["settlement_policy"],
+            "corporate_action_set.events[].accounting_terms.settlement_policy",
+        ),
+        same_timestamp_sequence=_integer(
+            payload["same_timestamp_sequence"],
+            "corporate_action_set.events[].accounting_terms.same_timestamp_sequence",
+        ),
+        entitlement_basis=_text(
+            payload["entitlement_basis"],
+            "corporate_action_set.events[].accounting_terms.entitlement_basis",
+        ),
+        position_effect=_text(
+            payload["position_effect"],
+            "corporate_action_set.events[].accounting_terms.position_effect",
+        ),
+        position_ratio=decimal_value(
+            payload["position_ratio"],
+            "corporate_action_set.events[].accounting_terms.position_ratio",
+        ),
+        cash_per_pre_event_unit=decimal_value(
+            payload["cash_per_pre_event_unit"],
+            "corporate_action_set.events[].accounting_terms.cash_per_pre_event_unit",
+        ),
+        cash_currency=_optional_text(
+            payload["cash_currency"],
+            "corporate_action_set.events[].accounting_terms.cash_currency",
+        ),
+        tax_policy=_text(
+            payload["tax_policy"],
+            "corporate_action_set.events[].accounting_terms.tax_policy",
+        ),
+        tax_rate=decimal_value(
+            payload["tax_rate"],
+            "corporate_action_set.events[].accounting_terms.tax_rate",
+        ),
+        basis_policy=_text(
+            payload["basis_policy"],
+            "corporate_action_set.events[].accounting_terms.basis_policy",
+        ),
+        cash_basis_fraction=decimal_value(
+            payload["cash_basis_fraction"],
+            "corporate_action_set.events[].accounting_terms.cash_basis_fraction",
+        ),
+        fractional_policy=_text(
+            payload["fractional_policy"],
+            "corporate_action_set.events[].accounting_terms.fractional_policy",
+        ),
+        cash_in_lieu_price=(
+            decimal_value(
+                payload["cash_in_lieu_price"],
+                "corporate_action_set.events[].accounting_terms.cash_in_lieu_price",
+            )
+            if payload["cash_in_lieu_price"] is not None
+            else None
+        ),
+        cash_in_lieu_tax_rate=decimal_value(
+            payload["cash_in_lieu_tax_rate"],
+            "corporate_action_set.events[].accounting_terms.cash_in_lieu_tax_rate",
+        ),
+        terminal=_boolean(
+            payload["terminal"],
+            "corporate_action_set.events[].accounting_terms.terminal",
+        ),
+        continuation_price_policy=_text(
+            payload["continuation_price_policy"],
+            "corporate_action_set.events[].accounting_terms.continuation_price_policy",
+        ),
+    )
 
 
 def _timestamp(value: str, field: str) -> datetime:
@@ -904,6 +1601,12 @@ def _optional_text(value: object, field: str) -> str | None:
 def _integer(value: object, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise CorporateActionContractError(f"{field}_must_be_integer")
+    return value
+
+
+def _boolean(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise CorporateActionContractError(f"{field}_must_be_boolean")
     return value
 
 

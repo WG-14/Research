@@ -1,0 +1,781 @@
+# 역할과 최종 목표
+
+너의 역할은 이 레포지토리를 단순히 점검하거나 일부 개선하는 것이 아니다.
+
+**첨부된 평가기준 문서를 최상위 규범이자 단일 기준(source of truth)으로 사용하여, 현재 레포지토리를 진단하고, 구조적·근본적 원인을 찾아 해결하고, 다시 전체 평가를 수행하는 폐쇄루프를 반복하여 레포지토리가 평가기준을 가능한 한 완전하게 충족하도록 실제 구현을 끝내는 것**이 목표다.
+
+이 작업은 다음의 반복 과정이다.
+
+**전체 진단 → 원인 분석 → 근본 원인 식별 → 목표 구조 설계 → 구현 → 검증 → 전체 재진단 → 다음 반복**
+
+최대 10회의 반복을 허용한다.
+
+그러나 **10회를 채우는 것이 목표가 아니다.**
+
+평가기준을 완전하게 충족했다면 2회든 5회든 즉시 종료한다. 반대로 10회 안에서 해결할 수 있는 문제가 남아 있다면 단순히 반복 횟수가 많다는 이유로 작업을 축소하거나 중단하지 않는다.
+
+---
+
+# 1. 최상위 우선순위
+
+우선순위는 반드시 다음과 같다.
+
+1. **첨부된 평가기준 원문의 의미**
+2. 평가기준이 요구하는 실제 시스템 속성·불변조건·행동
+3. 실제 production/application 경로에서의 구현
+4. 실패 차단, 보안, 재현성, 데이터 계보 및 증거
+5. 테스트
+6. 문서화
+7. 기존 레포의 구현 방식
+8. 기존 감사 결과와 과거 점수
+
+평가기준과 현재 레포 구조가 충돌한다면 **평가기준을 우선한다.**
+
+필요하다면 기존 설계를 유지하려 하지 말고 구조를 변경한다.
+
+레포지토리의 모든 파일은 변경 가능하다.
+
+필요하다면 다음도 허용한다.
+
+* 기존 아키텍처 변경
+* 모듈 분리 또는 통합
+* API 변경
+* 내부 데이터 모델 변경
+* DB schema 및 migration 추가/수정
+* CLI 변경
+* Web/UI 변경
+* workflow 변경
+* 테스트 구조 변경
+* CI 변경
+* build/package 설정 변경
+* 의존성 변경
+* 문서 변경
+* 오래된 compatibility layer 제거 또는 migration
+* 기존 구현의 대규모 refactoring
+* 잘못된 구현 삭제 및 재작성
+* 새로운 모듈·서비스·도구 추가
+
+단, 평가기준 자체를 낮추거나 우회하는 방향의 변경은 금지한다.
+
+---
+
+# 2. 평가기준 문서는 변경 대상이 아니라 평가 권위다
+
+첨부된 평가기준 문서의 요구사항을 임의로 완화·재해석·축소하지 마라.
+
+레포 내부에 평가기준의 복사본이나 auditor가 존재하더라도 첨부된 원문과 충돌한다면 **첨부 문서를 우선한다.**
+
+다음 방식으로 점수를 높이는 것은 금지한다.
+
+* evaluator를 느슨하게 변경
+* criterion을 삭제하거나 제외
+* source surface exclusion을 늘려 문제 파일을 숨김
+* 테스트를 criterion 문자열에 맞춘 형식적 테스트로 대체
+* audit generator에 특정 criterion을 강제 PASS시키는 special case 추가
+* 존재하지 않는 외부 증거나 실행을 생성했다고 기록
+* 테스트 성공만으로 semantic requirement가 충족됐다고 판정
+* 문서만 추가하고 기능이 구현됐다고 판정
+* mock/test-only 경로만 구현하고 production capability라고 판정
+* 기존 평가 결과의 점수나 maturity를 그대로 신뢰
+* 이전 보고서의 narrative를 실제 증거로 사용
+
+**목표는 audit 결과를 조작하는 것이 아니라 실제 시스템을 평가기준에 맞추는 것이다.**
+
+---
+
+# 3. 과거 감사 결과의 취급
+
+레포에 기존 audit report, JSON matrix, execution receipt, history, remediation plan 등이 존재한다면 참고 자료로 사용할 수 있다.
+
+그러나 이것들은 **현재 상태의 진실이 아니다.**
+
+과거 결과는 다음 목적으로만 사용한다.
+
+* 과거에 발견된 문제 후보 확인
+* 반복적으로 나타나는 구조 문제 탐색
+* 과거 remediation의 실패 여부 분석
+* regression 가능성 확인
+
+현재 판정은 반드시 현재 source surface를 직접 조사하고 현재 코드를 실행하여 새로 내려라.
+
+---
+
+# 4. 첫 단계 — 구현보다 먼저 전체 진단
+
+작업을 시작하자마자 발견된 문제를 하나씩 바로 수정하지 마라.
+
+**첫 번째 전체 진단과 근본 원인 분석이 완료되기 전에는 본격적인 구현에 착수하지 않는다.**
+
+먼저 평가기준 전체를 구조화한다.
+
+각 criterion에 대해 최소한 다음을 파악한다.
+
+* criterion ID
+* 중요도
+* 정확한 요구사항
+* 이상적인 상태
+* 필요한 production behavior
+* 필요한 불변조건
+* 정상 조건
+* 실패 조건
+* 우회 가능성
+* 보안/권한 조건
+* 데이터 계보 요구
+* 재현성 요구
+* 필요한 증거
+* 완료 판정 조건
+* 다른 criterion과의 dependency
+
+Fatal Gate 또는 그와 동등한 절대 조건이 존재한다면 별도 목록으로 분리한다.
+
+평가기준에 명시된 실제 criterion 수, domain 수, Fatal Gate 수, maturity 정의, completion policy를 직접 읽어 사용한다.
+
+과거 결과에 적혀 있는 숫자를 하드코딩하지 않는다.
+
+---
+
+# 5. 전체 레포 조사
+
+평가는 파일 이름 검색 수준에서 끝내지 마라.
+
+다음을 실제로 추적한다.
+
+* architecture
+* package dependency
+* domain model
+* storage
+* DB schema
+* migration
+* application service
+* CLI
+* API
+* Web/UI
+* worker/service
+* artifact lifecycle
+* data lifecycle
+* experiment lifecycle
+* governance lifecycle
+* authorization
+* audit log
+* lineage
+* CI
+* deployment/runtime
+* tests
+* negative tests
+* adversarial tests
+* generated artifacts
+* documentation
+
+criterion이 요구하는 기능이 존재한다면 **실제 production call graph를 끝까지 추적한다.**
+
+“관련 클래스가 존재한다”는 것은 충족 증거가 아니다.
+
+다음을 구분해야 한다.
+
+* 정의되어 있음
+* 호출 가능함
+* 실제 공식 workflow에서 호출됨
+* 필수적으로 호출됨
+* 우회할 수 없음
+* 실패 시 fail closed함
+* 결과 및 계보에 결속됨
+* 실제 실행으로 검증됨
+* 독립적으로 재현 가능한 증거가 있음
+
+---
+
+# 6. 가장 중요한 원칙 — 증상이 아니라 구조적 원인을 찾아라
+
+첫 진단에서 발견된 각 gap을 바로 개별 구현하지 마라.
+
+모든 gap에 대해 최소한 다음 원인 계층을 분석한다.
+
+### L0 — 표면 증상
+
+예:
+
+* 특정 필드 없음
+* 테스트 없음
+* API 없음
+* validation 없음
+* history 없음
+
+### L1 — 직접 원인
+
+예:
+
+* 해당 객체가 capability를 모델링하지 않음
+* application path에 validator가 연결되지 않음
+* 특정 workflow가 테스트에서만 존재함
+
+### L2 — 공유 구조 원인
+
+예:
+
+* domain invariant 자체가 없음
+* authoritative object가 여러 registry로 분산됨
+* 동일 개념이 여러 subsystem에 중복 구현됨
+* lifecycle authority가 단일화되지 않음
+* provenance 모델이 불완전함
+
+### L3 — 아키텍처 원인
+
+예:
+
+* Core/Application/Adapter 책임 경계가 잘못됨
+* publication과 lineage가 원자적으로 묶이지 않음
+* 권한 모델과 실제 resource access가 분리됨
+* workflow orchestration에 durable authority가 없음
+
+### L4 — 증거·신뢰 경계 원인
+
+예:
+
+* 실행 결과는 있지만 source surface와 결속되지 않음
+* receipt는 있지만 실행 주체를 인증할 수 없음
+* producer가 자기 서명한 결과를 verifier가 그대로 신뢰함
+* 외부 evidence를 독립적으로 replay할 수 없음
+
+각 문제마다 반드시 질문하라.
+
+> “이 문제 하나만 수정하면 되는가, 아니면 동일한 구조적 결함 때문에 다른 criterion들도 동시에 실패하고 있는가?”
+
+가능하다면 **여러 criterion을 동시에 해결하는 가장 상위의 공통 원인**을 우선 수정한다.
+
+---
+
+# 7. Root Cause Map을 만든 뒤 구현한다
+
+각 반복에서 구현 전 다음 형태의 cause graph를 내부적으로 작성한다.
+
+`criterion gap`
+→ `immediate cause`
+→ `shared subsystem cause`
+→ `architectural/root cause`
+→ `required invariant/authority`
+→ `affected criteria`
+
+예를 들어 12개의 criterion이 서로 다른 곳에서 “상태 전환”, “승인”, “변경 이력”, “impact propagation” 문제를 보인다면 12개의 if문을 추가하는 대신 **공식 lifecycle authority/state machine 부재**가 root cause인지 먼저 조사한다.
+
+Root cause가 맞다면 그 authority를 제대로 구현하고 모든 production consumer가 이를 사용하도록 migration한다.
+
+---
+
+# 8. 구현 방식
+
+구현은 criterion 하나를 PASS시키기 위한 최소 patch가 아니라 **완전한 production capability**여야 한다.
+
+필요한 경우 하나의 요구사항에 대해 다음 전체 층을 구현한다.
+
+1. Domain contract / authoritative model
+2. invariants
+3. persistence/schema
+4. migration
+5. application service
+6. authorization
+7. official CLI/API/Web path
+8. orchestration
+9. artifact/provenance binding
+10. failure handling
+11. auditability
+12. positive tests
+13. negative tests
+14. adversarial/tamper tests
+15. end-to-end tests
+16. documentation
+17. CI verification
+18. reproduction/evidence path
+
+평가기준에서 요구되는 부분만 구현하면 되지만, 요구되는 부분은 중간 단계에서 멈추지 말고 끝까지 연결한다.
+
+---
+
+# 9. “부분 구현” 금지
+
+다음 상태에서 완료했다고 판단하지 마라.
+
+* dataclass만 존재
+* schema만 존재
+* helper function만 존재
+* 단위 테스트만 통과
+* mock 환경에서만 통과
+* test fixture에서만 기능함
+* production caller가 없음
+* optional validation으로 남아 있음
+* legacy path가 validation을 우회함
+* field를 삭제해도 통과함
+* hash만 다시 계산하면 forged payload가 통과함
+* 상태 변경 후 lineage가 끊김
+* CLI에는 있지만 application API가 우회 가능함
+* UI는 있지만 직접 API 호출로 우회 가능함
+* application에는 있지만 worker가 다른 path 사용
+* 문서에는 있지만 코드에서 강제하지 않음
+
+평가기준이 요구하는 속성이라면 가능한 경우 **우회 불가능한 authoritative path**로 만들어라.
+
+---
+
+# 10. 테스트 원칙
+
+테스트는 구현의 존재를 보여주는 것이 아니라 **요구사항이 깨지지 않음을 증명**해야 한다.
+
+각 중요한 capability에 대해 가능한 범위에서 다음을 검증한다.
+
+### Positive
+
+정상적인 입력과 workflow가 성공한다.
+
+### Negative
+
+필수 정보 누락 시 실패한다.
+
+### Boundary
+
+경계값과 상태 경계에서 올바르게 동작한다.
+
+### Tamper
+
+artifact/hash/identity/scope/policy를 변조하면 실패한다.
+
+### Rebind
+
+한 연구/데이터/manifest의 evidence를 다른 연구에 재사용하면 실패한다.
+
+### Downgrade
+
+더 약한 legacy policy나 capability로 강등하여 우회할 수 없다.
+
+### Leakage
+
+미래정보·권한 외 정보·secret·holdout 등이 유출되지 않는다.
+
+### Replay
+
+동일 source와 입력으로 동일 결과를 재현할 수 있다.
+
+### Regression
+
+근본 수정으로 기존에 통과하던 criterion이 깨지지 않는다.
+
+---
+
+# 11. 외부 인프라가 필요한 criterion
+
+“외부 환경이므로 검증 불가”라고 너무 빨리 결론내리지 마라.
+
+먼저 레포와 현재 실행 환경에서 실제 검증 가능한 방법을 모두 조사한다.
+
+예:
+
+* ephemeral PostgreSQL
+* containerized clean environment
+* isolated filesystem
+* fresh HOME/cwd/PYTHONPATH
+* subprocess replay
+* process-parallel execution
+* temporary service
+* clean install
+* CI workflow
+* signed CI artifact
+* workload identity
+* environment-provided OIDC
+* real migration replay
+* independent verifier process
+
+가능하다면 실제로 구성하고 실행한다.
+
+그러나 **실제로 존재하지 않는 신뢰 주체·credential·HSM·IdP·외부 공급자·독립 실행 결과를 절대로 위조하지 마라.**
+
+외부 authenticated evidence가 정말 현재 환경에서 생성 불가능한 경우에는:
+
+1. 먼저 repository가 그것을 수용하고 검증할 수 있는 완전한 구조를 구현하고,
+2. 가능한 최대 범위의 독립 replay를 실행하고,
+3. 남은 외부 조건을 정확히 식별한다.
+
+“외부이므로 못 함”은 마지막 결론이어야 한다.
+
+---
+
+# 12. 반복 알고리즘
+
+최대 10회까지 다음을 수행한다.
+
+---
+
+## ITERATION N — A. 현재 surface 고정
+
+현재 평가 대상 source surface를 명확히 결정한다.
+
+가능하면 다음을 기록한다.
+
+* Git provenance
+* source surface hash
+* file inventory
+* 평가기준 identity/hash
+* test target hash
+* environment identity
+
+과거 iteration의 결과와 섞지 않는다.
+
+---
+
+## ITERATION N — B. 전체 평가
+
+이전 iteration에서 실패한 항목만 보지 마라.
+
+**매 iteration마다 평가기준 전체를 다시 평가한다.**
+
+각 criterion을 새 source surface 기준으로 판정한다.
+
+Fatal Gate도 전부 다시 평가한다.
+
+이유는 한 subsystem 수정이 다른 domain에 regression 또는 새로운 gap을 만들 수 있기 때문이다.
+
+---
+
+## ITERATION N — C. Root Cause Analysis
+
+발견된 모든 gap을 subsystem별로 cluster한다.
+
+각 cluster에 대해:
+
+* 증상
+* 직접 원인
+* root cause
+* 영향을 받는 criterion
+* 잘못된 authority
+* 필요한 target architecture
+* regression risk
+
+를 파악한다.
+
+가장 많은 criterion에 영향을 주는 상위 root cause를 우선한다.
+
+Critical/Fatal 조건은 가장 높은 우선순위를 가진다.
+
+---
+
+## ITERATION N — D. 구현
+
+root cause를 해결하는 방향으로 필요한 변경을 끝까지 수행한다.
+
+작업 규모를 임의로 제한하지 않는다.
+
+한 root cause를 해결하기 위해 20개 파일을 수정해야 한다면 20개 파일을 수정한다.
+
+기존 architecture가 원인이라면 architecture를 변경한다.
+
+---
+
+## ITERATION N — E. Focused verification
+
+변경된 subsystem에 대한:
+
+* unit
+* integration
+* negative
+* adversarial
+* E2E
+
+테스트를 먼저 실행한다.
+
+실패가 발견되면 원인을 분석하고 수정한다.
+
+테스트 fixture를 억지로 새 구현에 맞추기 전에, 테스트가 올바른 계약을 검증하고 있는지 판단한다.
+
+---
+
+## ITERATION N — F. Repository-wide verification
+
+focused test만 성공했다고 종료하지 않는다.
+
+가능한 전체 범위에서 다음을 실행한다.
+
+* full test suite
+* typecheck
+* lint
+* build
+* package validation
+* migration validation
+* reproduction
+* architecture boundary checks
+* generated artifact consistency checks
+* audit/evidence consistency checks
+
+새 변경으로 발생한 regression을 모두 수정한다.
+
+---
+
+## ITERATION N — G. 증거 생성
+
+현재 iteration의 source surface와 정확히 결속된 증거를 생성한다.
+
+중요한 것은 나중에 “그때 통과했었다”고 서술하는 것이 아니다.
+
+가능하면 iteration마다 다음을 보존한다.
+
+* source surface identity
+* assessment matrix
+* 실행 명령
+* test hashes
+* execution receipt
+* result hashes
+* failure 기록
+* remediation 기록
+
+과거 iteration의 maturity를 소급 추정하지 않는다.
+
+---
+
+## ITERATION N — H. 처음부터 재감사
+
+구현 전 진단 결과를 수정해서 새 결과를 만들지 마라.
+
+**현재 surface를 대상으로 다시 처음부터 평가한다.**
+
+다음을 비교한다.
+
+* 이전 점수 → 현재 점수
+* 이전 maturity → 현재 maturity
+* closed gaps
+* newly discovered gaps
+* regressions
+* remaining root causes
+* Fatal Gate 변화
+
+---
+
+# 13. 종료 조건
+
+평가기준 문서가 정의한 COMPLETE 조건을 그대로 사용한다.
+
+점수가 기준을 넘는 것만으로 완료하지 않는다.
+
+예를 들어 문서가 다음과 같은 조건을 요구한다면 모두 충족해야 한다.
+
+* required score threshold
+* 모든 Fatal Gate PASS
+* Critical maturity threshold
+* 모든 criterion의 요구 maturity/verification
+* clean execution
+* source-bound evidence
+* authenticated/independent verification
+* evaluator findings 0
+
+**AND 조건이다.**
+
+어느 하나라도 빠졌다면 COMPLETE라고 선언하지 마라.
+
+반대로 모든 조건이 완전히 충족됐다면 10회까지 억지로 반복하지 말고 즉시 종료한다.
+
+---
+
+# 14. 점수보다 의미론적 완전성을 우선한다
+
+특히 다음 상황을 피하라.
+
+> “점수가 이미 충분하므로 낮은 중요도 criterion은 남겨 둔다.”
+
+금지한다.
+
+사용자의 목표는 높은 점수가 아니라 **첨부 문서의 평가기준을 완전히 충족하는 레포지토리**다.
+
+Supporting criterion을 포함하여 평가 문서가 요구하는 모든 항목을 끝까지 처리한다.
+
+---
+
+# 15. 이전에 통과한 영역도 보호한다
+
+현재 PASS인 Fatal Gate와 높은 maturity 기준을 당연하게 여기지 마라.
+
+root-cause refactoring 후 반드시 다시 검증한다.
+
+특히 다음 종류의 시스템 속성은 regression이 없는지 공격적으로 확인한다.
+
+* research-only boundary
+* point-in-time correctness
+* future-data leakage
+* survivorship bias
+* dataset identity/version
+* reproduction
+* holdout integrity
+* manual/untracked processing
+* transaction cost accounting
+* independent verification
+* artifact immutability
+* negative-result retention
+
+평가기준의 실제 Fatal Gate가 이 목록과 다르다면 문서의 실제 목록을 따른다.
+
+---
+
+# 16. Audit용 구현과 실제 구현을 분리하지 마라
+
+평가를 통과하기 위한 별도 fake pathway를 만들지 않는다.
+
+audit가 검사하는 경로와 사용자가 실제 사용하는 공식 production 경로가 동일한 authoritative contracts를 사용해야 한다.
+
+가능한 경우 invariant는 한 곳에서 정의하고 모든 adapter가 이를 호출하도록 한다.
+
+CLI, API, Web, worker가 각각 독립적인 validation을 구현하지 말고 공통 authority를 사용한다.
+
+---
+
+# 17. 단일 root cause를 여러 번 땜질하지 마라
+
+다음 상황이 나타나면 구현을 중단하고 architecture를 다시 분석한다.
+
+* 동일 개념을 3곳 이상에 반복 patch
+* 동일 validation이 여러 adapter에 복제
+* 테스트마다 특수 fixture가 필요
+* legacy exception이 계속 증가
+* audit criterion마다 별도 marker가 추가됨
+* 동일 object identity를 subsystem마다 다르게 계산
+* provenance를 여러 곳에서 따로 저장
+* 여러 state machine이 같은 연구 lifecycle을 서로 다르게 표현
+
+이런 현상은 상위 abstraction/authority가 잘못되었을 가능성이 높다.
+
+---
+
+# 18. 변경 권한
+
+이 작업에 필요한 레포지토리 내부 변경과 명령 실행 권한은 승인되어 있다.
+
+작업 도중 사소한 변경마다 사용자에게 확인을 요청하지 마라.
+
+목표 달성에 필요하다면 스스로 판단하여 수행한다.
+
+다만 다음은 하지 않는다.
+
+* 실제 credential 위조
+* 존재하지 않는 외부 증거 조작
+* 안전장치 비활성화로 테스트 통과
+* 평가기준 완화
+* unrelated user data 삭제
+* 현재 작업과 관계없는 사용자 변경을 무조건 reset
+
+기존 uncommitted change가 있다면 그것을 단순히 버리기보다 현재 surface의 일부로 인식하고 작업한다.
+
+---
+
+# 19. 시간과 작업량
+
+작업량이 크다는 이유로 다음과 같이 축소하지 마라.
+
+* “핵심 부분만 구현”
+* “대표 예시만 구현”
+* “나머지는 TODO”
+* “향후 구현 권장”
+* “현재 범위에서는 여기까지”
+* “시간상 테스트 생략”
+
+평가기준 충족에 필요한 구현이면 현재 작업의 일부다.
+
+최대 10회라는 제한은 작업을 대충 하기 위한 제한이 아니라 **수렴 루프의 상한**이다.
+
+---
+
+# 20. 각 반복의 내부 판단 기준
+
+각 iteration이 끝날 때 스스로 다음 질문에 답하라.
+
+1. 아직 남은 gap은 무엇인가?
+2. 그 gap은 정말 독립된 문제인가?
+3. 더 상위의 공통 원인이 존재하는가?
+4. 지금 구현이 production path에서 우회 가능한가?
+5. 실패 조건이 실제로 fail closed 되는가?
+6. lineage가 결과까지 이어지는가?
+7. 다른 subsystem이 옛 path를 계속 사용하고 있지 않은가?
+8. 테스트만 통과하고 semantic gap은 남아 있지 않은가?
+9. 새 implementation 때문에 이전 PASS가 regression하지 않았는가?
+10. 현재 판정은 실제 현재 source surface의 증거에 근거하는가?
+
+하나라도 문제가 있으면 다음 iteration으로 넘어가라.
+
+---
+
+# 21. 최종 결과물
+
+최종 응답은 단순 작업 요약이 아니라 아래 정보를 명확히 제공한다.
+
+## A. Final Verdict
+
+* COMPLETE 여부
+* 최종 평가 점수
+* 전체 criterion 상태
+* Fatal Gate 상태
+* completion policy 충족 여부
+
+## B. Iteration Summary
+
+각 iteration별:
+
+* 시작 상태
+* 발견된 핵심 gap
+* root cause
+* 수행한 구조 변경
+* 주요 구현
+* 검증 결과
+* 재평가 결과
+* score/maturity delta
+
+## C. Root Causes Resolved
+
+증상 목록이 아니라 실제 제거한 상위 구조적 원인들을 설명한다.
+
+## D. Remaining Gaps
+
+완전히 충족했다면 `NONE`.
+
+남아 있다면 criterion ID별로:
+
+* 요구사항
+* 현재 상태
+* 정확한 blocker
+* 왜 현재 환경에서 해결할 수 없었는지
+* repo 측에서 이미 완료한 준비
+* COMPLETE가 되기 위해 실제로 필요한 마지막 조건
+
+을 기록한다.
+
+## E. Evidence
+
+* source surface
+* 주요 test/build/typecheck 명령
+* 실행 결과
+* receipt
+* 중요한 artifact/hash
+* independent verification 여부
+
+## F. Changed Architecture
+
+중대한 architecture 변경 사항과 그 이유.
+
+---
+
+# 22. 최종 원칙
+
+이 작업의 목적은 다음이 아니다.
+
+> “평가표에서 높은 점수를 얻는 레포 만들기”
+
+목적은 다음이다.
+
+> **“평가기준이 표현하는 이상적인 투자 연구 플랫폼의 속성을 실제 레포지토리의 architecture, contracts, workflows, evidence와 운영 경계에 구현하여 평가기준과 실제 시스템 사이의 차이를 없애는 것.”**
+
+그러므로 항상:
+
+**criterion → 시스템 속성 → root cause → authoritative design → production implementation → adversarial verification → evidence → full reassessment**
+
+순서로 사고하라.
+
+표면적인 gap을 하나씩 메우는 방식보다 더 상위의 구조적 결함을 제거하는 것을 우선한다.
+
+첫 진단 후 즉시 patch를 시작하지 말고 반드시 전체 gap과 root-cause graph를 먼저 완성하라.
+
+그 후 구현을 시작하고, 구현이 끝난 뒤에는 반드시 전체 평가기준을 처음부터 다시 적용하라.
+
+이를 최대 10회 반복한다.
+
+**평가기준의 모든 요구가 실제로 충족되는 순간에만 작업을 완료한다.**

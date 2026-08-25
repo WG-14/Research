@@ -28,11 +28,18 @@ from .data_governance import (
 )
 from .experiment_manifest import ExperimentManifest
 from .experiment_registry import (
+    abort_final_holdout_reservation,
     experiment_registry_path,
+    final_holdout_authority_scope_hash,
+    pre_holdout_gate_artifact_path,
+    publish_pre_holdout_gate_artifact,
+    reserve_final_holdout_authority,
     research_identity_from_manifest,
+    validate_final_holdout_reservation_transport,
     validate_experiment_registry_binding,
 )
 from .final_selection import (
+    build_selection_artifact,
     selection_candidate_binding_summary,
     validate_confirmation_artifact,
     validate_selection_artifact_binding,
@@ -63,6 +70,7 @@ from .reproduction import (
     ReproductionContractError,
     build_reproduction_receipt_from_fingerprint,
     load_reproduction_receipt,
+    validate_reproduction_receipt_report_binding,
 )
 from .research_standard import (
     ResearchStandardError,
@@ -84,6 +92,13 @@ from .validation_experiment_bundle import (
     parse_validation_experiment_capability,
     parse_validation_experiment_policy,
     validate_validation_experiment_bundle,
+)
+from .validation_experiment_execution import (
+    NativeValidationExperimentExecution,
+    NativeValidationExperimentExecutionError,
+    execute_manifest_validation_experiments,
+    native_candidate_definition_hash,
+    validate_native_validation_computation_receipt,
 )
 
 
@@ -289,6 +304,193 @@ def _terminal_candidate_projections(
     return projections
 
 
+def _freeze_native_nested_selection_artifact(
+    *,
+    manifest: ExperimentManifest,
+    selection_report: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    preliminary_selection_artifact: dict[str, Any],
+    execution: NativeValidationExperimentExecution,
+) -> dict[str, Any]:
+    """Freeze nested selection as the sole pre-holdout candidate authority."""
+
+    selection_result = _native_nested_final_selection_result(
+        manifest=manifest,
+        execution=execution,
+    )
+    base = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=selection_result,
+        candidates=candidates,
+    )
+    if not isinstance(base, dict):
+        raise ValidationRunError("native_nested_selection_artifact_missing")
+    authority_material = {
+        "schema_version": 1,
+        "authority": "manifest_native_nested_selection",
+        "manifest_hash": manifest.manifest_hash(),
+        "preliminary_selection_artifact_hash": preliminary_selection_artifact.get(
+            "content_hash"
+        ),
+        "manifest_candidate_universe_hash": (
+            execution.manifest_candidate_universe_hash
+        ),
+        "pre_holdout_eligibility_hash": execution.pre_holdout_eligibility_hash,
+        "nested_selection_result_hash": execution.nested_selection_result_hash,
+        "terminal_selection_rule": "outer_mean_then_candidate_id",
+        "terminal_selection_scores": list(execution.terminal_selection_scores),
+        "terminal_selection_scores_hash": (execution.terminal_selection_scores_hash),
+        "native_validation_computation_receipt_hash": (
+            execution.computation_receipt_hash
+        ),
+        "selected_candidate_id": execution.selected_candidate_id,
+        "selected_candidate_hash": execution.selected_candidate_hash,
+    }
+    authority = {
+        **authority_material,
+        "content_hash": sha256_prefixed(
+            authority_material,
+            label="manifest_native_nested_selection_authority",
+        ),
+    }
+    material = {
+        **{key: value for key, value in base.items() if key != "content_hash"},
+        "selection_authority": "manifest_native_nested_selection",
+        "selection_authority_binding": authority,
+        "selection_authority_binding_hash": authority["content_hash"],
+    }
+    return {
+        **material,
+        "content_hash": sha256_prefixed(material, label="selection_artifact"),
+    }
+
+
+def _native_nested_final_selection_result(
+    *,
+    manifest: ExperimentManifest,
+    execution: NativeValidationExperimentExecution,
+) -> dict[str, Any]:
+    """Project native nested evidence into the authoritative selection fields."""
+
+    spec = manifest.validation_experiments
+    if spec is None:
+        raise ValidationRunError("native_nested_selection_contract_missing")
+    nested_contract = spec.nested_selection.as_dict()
+    contract = {
+        "schema_version": 1,
+        "authority": "manifest_native_nested_selection",
+        "manifest_hash": manifest.manifest_hash(),
+        "nested_selection_contract": nested_contract,
+        "nested_selection_contract_hash": sha256_prefixed(
+            nested_contract,
+            label="manifest_native_nested_selection_contract",
+        ),
+        "manifest_candidate_universe_hash": (
+            execution.manifest_candidate_universe_hash
+        ),
+        "pre_holdout_eligibility_hash": execution.pre_holdout_eligibility_hash,
+        "nested_selection_result_hash": execution.nested_selection_result_hash,
+        "terminal_selection_rule": spec.nested_selection.terminal_selection_rule,
+        "terminal_selection_scores_hash": execution.terminal_selection_scores_hash,
+        "native_validation_computation_receipt_hash": (
+            execution.computation_receipt_hash
+        ),
+    }
+    scores = [dict(item) for item in execution.terminal_selection_scores]
+    selected_scores = [
+        item
+        for item in scores
+        if item.get("candidate_id") == execution.selected_candidate_id
+        and item.get("selected") is True
+    ]
+    if len(selected_scores) != 1:
+        raise ValidationRunError("native_nested_selected_score_missing")
+    return {
+        "final_selection_contract": contract,
+        "final_selection_contract_hash": sha256_prefixed(contract),
+        "selected_candidate_id": execution.selected_candidate_id,
+        "best_candidate_id": execution.selected_candidate_id,
+        "selected_candidate_score_hash": selected_scores[0]["content_hash"],
+        "candidate_final_scores": scores,
+        "candidate_final_scores_hash": sha256_prefixed(scores),
+        "final_selection_gate_result": "PASS",
+        "final_selection_fail_reasons": [],
+        "final_selection_authority": "manifest_native_nested_selection",
+    }
+
+
+def _native_nested_selection_artifact_reasons(
+    *,
+    artifact: dict[str, Any],
+    execution: NativeValidationExperimentExecution,
+) -> list[str]:
+    authority = artifact.get("selection_authority_binding")
+    if artifact.get(
+        "selection_authority"
+    ) != "manifest_native_nested_selection" or not isinstance(authority, dict):
+        return ["native_nested_selection_authority_missing"]
+    material = {key: value for key, value in authority.items() if key != "content_hash"}
+    reasons: list[str] = []
+    authority_fields = {
+        "schema_version",
+        "authority",
+        "manifest_hash",
+        "preliminary_selection_artifact_hash",
+        "manifest_candidate_universe_hash",
+        "pre_holdout_eligibility_hash",
+        "nested_selection_result_hash",
+        "terminal_selection_rule",
+        "terminal_selection_scores",
+        "terminal_selection_scores_hash",
+        "native_validation_computation_receipt_hash",
+        "selected_candidate_id",
+        "selected_candidate_hash",
+        "content_hash",
+    }
+    if set(authority) != authority_fields or authority.get("schema_version") != 1:
+        reasons.append("native_nested_selection_authority_fields_invalid")
+    if authority.get("content_hash") != sha256_prefixed(
+        material,
+        label="manifest_native_nested_selection_authority",
+    ):
+        reasons.append("native_nested_selection_authority_hash_mismatch")
+    expected = {
+        "authority": "manifest_native_nested_selection",
+        "manifest_hash": execution.computation_receipt.get("manifest_hash"),
+        "preliminary_selection_artifact_hash": (
+            execution.computation_receipt.get("preliminary_selection_artifact_hash")
+        ),
+        "manifest_candidate_universe_hash": (
+            execution.manifest_candidate_universe_hash
+        ),
+        "pre_holdout_eligibility_hash": execution.pre_holdout_eligibility_hash,
+        "nested_selection_result_hash": execution.nested_selection_result_hash,
+        "terminal_selection_rule": "outer_mean_then_candidate_id",
+        "terminal_selection_scores": list(execution.terminal_selection_scores),
+        "terminal_selection_scores_hash": (execution.terminal_selection_scores_hash),
+        "native_validation_computation_receipt_hash": (
+            execution.computation_receipt_hash
+        ),
+        "selected_candidate_id": execution.selected_candidate_id,
+        "selected_candidate_hash": execution.selected_candidate_hash,
+    }
+    for field, value in expected.items():
+        if authority.get(field) != value:
+            reasons.append("native_nested_selection_authority_" + field + "_mismatch")
+    if artifact.get("selection_authority_binding_hash") != authority.get(
+        "content_hash"
+    ):
+        reasons.append("native_nested_selection_authority_binding_hash_mismatch")
+    if artifact.get("selected_candidate_id") != execution.selected_candidate_id:
+        reasons.append("native_nested_selection_artifact_candidate_mismatch")
+    if artifact.get("content_hash") != sha256_prefixed(
+        {key: value for key, value in artifact.items() if key != "content_hash"},
+        label="selection_artifact",
+    ):
+        reasons.append("native_nested_selection_artifact_hash_mismatch")
+    return sorted(set(reasons))
+
+
 def _terminal_json_bytes(payload: dict[str, Any]) -> bytes:
     serialized = (
         json.dumps(
@@ -348,6 +550,7 @@ def _publish_terminal_validation_artifacts(
     decision_report: dict[str, Any],
     selected_target: Path,
     selected_candidate: dict[str, Any],
+    canonical_summary_target: Path | None = None,
     reproduction_receipt_target: Path | None = None,
     reproduction_receipt: dict[str, object] | None = None,
 ) -> None:
@@ -358,6 +561,10 @@ def _publish_terminal_validation_artifacts(
         (candidate_target, decision_report),
         (summary_target, summary),
     )
+    if canonical_summary_target is not None and _lexical_absolute(
+        canonical_summary_target
+    ) != _lexical_absolute(summary_target):
+        targets = (*targets, (canonical_summary_target, summary))
     if reproduction_receipt_target is not None:
         if reproduction_receipt is None:
             raise ValidationRunError("terminal_validation_reproduction_receipt_missing")
@@ -475,9 +682,27 @@ def validate_validated_research_result(
                     reasons.append(
                         "validated_research_result_reproduction_receipt_mismatch"
                     )
+                elif report_hash_valid:
+                    try:
+                        validate_reproduction_receipt_report_binding(
+                            report=report,
+                            receipt=receipt,
+                        )
+                    except ReproductionContractError:
+                        reasons.append(
+                            "validated_research_result_reproduction_receipt_mismatch"
+                        )
     reasons.extend(_validated_hypothesis_lineage_reasons(report))
     reasons.extend(_validated_research_standard_binding_reasons(report))
-    reasons.extend(_validated_validation_experiment_reasons(report))
+    reasons.extend(_validated_validation_experiment_reasons(report, manager=manager))
+    if validation_bound and report.get("validation_experiment_gate_result") == "PASS":
+        if report.get("native_validation_execution_authority") != (
+            "manifest_native_production_engine"
+        ):
+            reasons.append(
+                "validated_research_result_native_validation_authority_missing"
+            )
+    reasons.extend(_validated_pre_holdout_gate_reasons(report, manager=manager))
     # A terminal schema-3 result always requires schema-2 hypothesis lineage,
     # so its pre-validation admission is part of the same non-optional
     # authority contract.  Treating an absent marker as legacy would permit a
@@ -749,6 +974,8 @@ def _validated_research_standard_binding_reasons(
 
 def _validated_validation_experiment_reasons(
     report: dict[str, Any],
+    *,
+    manager: ResearchPathManager | None = None,
 ) -> list[str]:
     fields = {
         "validation_experiment_capability",
@@ -761,13 +988,28 @@ def _validated_validation_experiment_reasons(
         "validation_experiment_gate_result",
         "validation_experiment_gate_reasons",
     }
+    native_fields = {
+        "native_validation_execution_authority",
+        "native_validation_computation_receipt",
+        "native_validation_computation_receipt_path",
+        "native_validation_computation_receipt_hash",
+        "preliminary_best_candidate_id",
+        "preliminary_selected_candidate_id",
+        "preliminary_selection_artifact_hash",
+        "native_nested_selection_authority",
+        "native_nested_selection_authority_hash",
+        "native_pre_holdout_eligibility",
+        "native_pre_holdout_eligibility_hash",
+        "native_validation_execution_error",
+    }
     present = fields.intersection(report)
     if not present:
-        return [
-            "validated_research_result_validation_experiment_capability_missing"
-        ]
+        return ["validated_research_result_validation_experiment_capability_missing"]
     if present != fields:
         return ["validated_research_result_validation_experiment_binding_incomplete"]
+    native_present = native_fields.intersection(report)
+    if native_present and native_present != native_fields:
+        return ["validated_research_result_native_validation_binding_incomplete"]
     reasons: list[str] = []
     capability: ValidationExperimentCapability | None = None
     try:
@@ -779,9 +1021,10 @@ def _validated_validation_experiment_reasons(
             "validated_research_result_validation_experiment_capability_invalid"
         )
     if capability is not None:
-        if report.get(
-            "validation_experiment_capability_hash"
-        ) != capability.content_hash:
+        if (
+            report.get("validation_experiment_capability_hash")
+            != capability.content_hash
+        ):
             reasons.append(
                 "validated_research_result_validation_experiment_capability_hash_mismatch"
             )
@@ -812,12 +1055,11 @@ def _validated_validation_experiment_reasons(
             report.get("validation_experiment_policy")
         )
     except ValidationExperimentBundleError:
-        reasons.append(
-            "validated_research_result_validation_experiment_policy_invalid"
-        )
-    if policy is not None and report.get(
-        "validation_experiment_policy_hash"
-    ) != policy.contract_hash():
+        reasons.append("validated_research_result_validation_experiment_policy_invalid")
+    if (
+        policy is not None
+        and report.get("validation_experiment_policy_hash") != policy.contract_hash()
+    ):
         reasons.append(
             "validated_research_result_validation_experiment_policy_hash_mismatch"
         )
@@ -855,11 +1097,25 @@ def _validated_validation_experiment_reasons(
             )
         return sorted(set(reasons))
     selected = report.get("selected_candidate")
-    selected_hash = (
-        selected.get("candidate_payload_hash")
-        if isinstance(selected, dict)
-        else None
+    selected_hash: str | None = (
+        selected.get("candidate_payload_hash") if isinstance(selected, dict) else None
     )
+    if isinstance(selected, dict) and native_present == native_fields:
+        try:
+            selected_hash = native_candidate_definition_hash(
+                manifest_hash=str(report.get("manifest_hash") or ""),
+                strategy_name=str(report.get("strategy_name") or ""),
+                strategy_version=(
+                    str(report.get("strategy_version"))
+                    if report.get("strategy_version") is not None
+                    else None
+                ),
+                candidate=selected,
+            )
+        except NativeValidationExperimentExecutionError:
+            reasons.append(
+                "validated_research_result_selected_candidate_definition_invalid"
+            )
     reasons.extend(
         "validated_research_result_" + item
         for item in validate_validation_experiment_bundle(
@@ -881,9 +1137,7 @@ def _validated_validation_experiment_reasons(
             expected_selected_candidate_hash=str(selected_hash or ""),
         )
     )
-    if report.get("validation_experiment_bundle_hash") != bundle.get(
-        "content_hash"
-    ):
+    if report.get("validation_experiment_bundle_hash") != bundle.get("content_hash"):
         reasons.append(
             "validated_research_result_validation_experiment_bundle_hash_mismatch"
         )
@@ -891,9 +1145,7 @@ def _validated_validation_experiment_reasons(
         reasons.append(
             "validated_research_result_validation_experiment_gate_result_mismatch"
         )
-    if report.get("validation_experiment_gate_reasons") != bundle.get(
-        "gate_reasons"
-    ):
+    if report.get("validation_experiment_gate_reasons") != bundle.get("gate_reasons"):
         reasons.append(
             "validated_research_result_validation_experiment_gate_reasons_mismatch"
         )
@@ -904,6 +1156,252 @@ def _validated_validation_experiment_reasons(
     ):
         reasons.append(
             "validated_research_result_validation_experiment_gate_not_passed"
+        )
+    if (
+        policy is not None
+        and policy.required_components
+        and native_present != native_fields
+    ):
+        reasons.append("validated_research_result_native_validation_binding_missing")
+    native_receipt = report.get("native_validation_computation_receipt")
+    native_receipt_hash = report.get("native_validation_computation_receipt_hash")
+    native_receipt_path = report.get("native_validation_computation_receipt_path")
+    if (
+        native_present == native_fields
+        and policy is not None
+        and policy.required_components
+        and bundle.get("gate_result") == "PASS"
+    ):
+        if (
+            report.get("native_validation_execution_authority")
+            != ("manifest_native_production_engine")
+            or report.get("native_validation_execution_error") is not None
+        ):
+            reasons.append(
+                "validated_research_result_native_validation_authority_invalid"
+            )
+        reasons.extend(
+            "validated_research_result_" + item
+            for item in validate_native_validation_computation_receipt(
+                native_receipt,
+                expected_manifest_hash=str(report.get("manifest_hash") or ""),
+                expected_bundle_hash=str(bundle.get("content_hash") or ""),
+                expected_bundle=bundle,
+                expected_selected_candidate_id=str(
+                    report.get("selected_candidate_id") or ""
+                ),
+                expected_selected_candidate_hash=selected_hash,
+            )
+        )
+        if (
+            not isinstance(native_receipt, dict)
+            or native_receipt.get("content_hash") != native_receipt_hash
+            or not isinstance(native_receipt_path, str)
+            or not Path(native_receipt_path).is_absolute()
+        ):
+            reasons.append(
+                "validated_research_result_native_validation_receipt_binding_invalid"
+            )
+        elif manager is not None and isinstance(native_receipt_hash, str):
+            expected_path = manager.research_artifact_path(
+                str(report.get("experiment_id") or ""),
+                "validation_experiments",
+                native_receipt_hash.removeprefix("sha256:") + ".json",
+            ).resolve()
+            try:
+                persisted = json.loads(Path(native_receipt_path).read_text("utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                reasons.append(
+                    "validated_research_result_native_validation_receipt_unreadable"
+                )
+            else:
+                if (
+                    Path(native_receipt_path).is_symlink()
+                    or Path(native_receipt_path).resolve() != expected_path
+                    or persisted != native_receipt
+                ):
+                    reasons.append(
+                        "validated_research_result_native_validation_receipt_mismatch"
+                    )
+        authority = report.get("native_nested_selection_authority")
+        selection_artifact = report.get("selection_artifact")
+        eligibility = report.get("native_pre_holdout_eligibility")
+        if not isinstance(authority, dict) or not isinstance(selection_artifact, dict):
+            reasons.append(
+                "validated_research_result_native_nested_selection_authority_missing"
+            )
+        elif not isinstance(native_receipt, dict):
+            reasons.append(
+                "validated_research_result_native_nested_selection_receipt_missing"
+            )
+        else:
+            authority_material = {
+                key: value for key, value in authority.items() if key != "content_hash"
+            }
+            authority_fields = {
+                "schema_version",
+                "authority",
+                "manifest_hash",
+                "preliminary_selection_artifact_hash",
+                "manifest_candidate_universe_hash",
+                "pre_holdout_eligibility_hash",
+                "nested_selection_result_hash",
+                "terminal_selection_rule",
+                "terminal_selection_scores",
+                "terminal_selection_scores_hash",
+                "native_validation_computation_receipt_hash",
+                "selected_candidate_id",
+                "selected_candidate_hash",
+                "content_hash",
+            }
+            expected_authority_hash = sha256_prefixed(
+                authority_material,
+                label="manifest_native_nested_selection_authority",
+            )
+            expected = {
+                "authority": "manifest_native_nested_selection",
+                "manifest_hash": report.get("manifest_hash"),
+                "preliminary_selection_artifact_hash": report.get(
+                    "preliminary_selection_artifact_hash"
+                ),
+                "manifest_candidate_universe_hash": native_receipt.get(
+                    "manifest_candidate_universe_hash"
+                ),
+                "pre_holdout_eligibility_hash": native_receipt.get(
+                    "pre_holdout_eligibility_hash"
+                ),
+                "nested_selection_result_hash": native_receipt.get(
+                    "nested_selection_result_hash"
+                ),
+                "terminal_selection_rule": native_receipt.get(
+                    "terminal_selection_rule"
+                ),
+                "terminal_selection_scores": native_receipt.get(
+                    "terminal_selection_scores"
+                ),
+                "terminal_selection_scores_hash": native_receipt.get(
+                    "terminal_selection_scores_hash"
+                ),
+                "native_validation_computation_receipt_hash": native_receipt_hash,
+                "selected_candidate_id": report.get("selected_candidate_id"),
+                "selected_candidate_hash": selected_hash,
+            }
+            if (
+                set(authority) != authority_fields
+                or authority.get("schema_version") != 1
+                or authority.get("content_hash") != expected_authority_hash
+                or report.get("native_nested_selection_authority_hash")
+                != expected_authority_hash
+                or selection_artifact.get("selection_authority_binding") != authority
+                or selection_artifact.get("selection_authority_binding_hash")
+                != expected_authority_hash
+                or any(
+                    authority.get(field) != value for field, value in expected.items()
+                )
+            ):
+                reasons.append(
+                    "validated_research_result_native_nested_selection_authority_mismatch"
+                )
+        if (
+            not isinstance(eligibility, list)
+            or report.get("native_pre_holdout_eligibility_hash")
+            != sha256_prefixed(
+                eligibility,
+                label="native_validation_pre_holdout_eligibility",
+            )
+            or not isinstance(native_receipt, dict)
+            or native_receipt.get("pre_holdout_eligibility") != eligibility
+        ):
+            reasons.append(
+                "validated_research_result_native_pre_holdout_eligibility_mismatch"
+            )
+    return sorted(set(reasons))
+
+
+def _validated_pre_holdout_gate_reasons(
+    report: dict[str, Any], *, manager: ResearchPathManager | None = None
+) -> list[str]:
+    gate = report.get("pre_holdout_gate")
+    if not isinstance(gate, dict):
+        return ["validated_research_result_pre_holdout_gate_missing"]
+    material = dict(gate)
+    recorded = material.pop("content_hash", None)
+    calculated = sha256_prefixed(
+        material,
+        label="pre_holdout_validation_gate",
+    )
+    reasons: list[str] = []
+    expected_fields = {
+        "schema_version",
+        "artifact_type",
+        "final_holdout_authority_scope_hash",
+        "manifest_hash",
+        "selection_report_hash",
+        "selection_artifact_hash",
+        "selected_candidate_id",
+        "validation_experiment_bundle_hash",
+        "native_validation_computation_receipt_hash",
+        "gate_result",
+        "gate_reasons",
+    }
+    if (
+        set(material) != expected_fields
+        or material.get("schema_version") != 1
+        or material.get("artifact_type") != "pre_holdout_validation_gate"
+    ):
+        reasons.append("validated_research_result_pre_holdout_gate_fields_invalid")
+    if recorded != calculated or report.get("pre_holdout_gate_hash") != calculated:
+        reasons.append("validated_research_result_pre_holdout_gate_hash_mismatch")
+    expected = {
+        "manifest_hash": report.get("manifest_hash"),
+        "selection_report_hash": report.get("selection_report_hash"),
+        "selection_artifact_hash": report.get("selection_artifact_hash"),
+        "selected_candidate_id": report.get("selected_candidate_id"),
+        "validation_experiment_bundle_hash": report.get(
+            "validation_experiment_bundle_hash"
+        ),
+        "native_validation_computation_receipt_hash": report.get(
+            "native_validation_computation_receipt_hash"
+        ),
+    }
+    for name, value in expected.items():
+        if material.get(name) != value:
+            reasons.append(
+                "validated_research_result_pre_holdout_gate_binding_mismatch:" + name
+            )
+    if report.get("end_to_end_validation_result") == "PASS" and (
+        material.get("gate_result") != "PASS" or material.get("gate_reasons") != []
+    ):
+        reasons.append("validated_research_result_pre_holdout_gate_not_passed")
+    if manager is not None and report.get("end_to_end_validation_result") == "PASS":
+        expected_path = pre_holdout_gate_artifact_path(
+            manager=manager,
+            experiment_id=str(report.get("experiment_id") or ""),
+            gate_hash=calculated,
+        )
+        declared_path = report.get("pre_holdout_gate_artifact_path")
+        try:
+            persisted = json.loads(expected_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            reasons.append(
+                "validated_research_result_pre_holdout_gate_artifact_missing"
+            )
+        else:
+            if (
+                expected_path.is_symlink()
+                or str(expected_path) != declared_path
+                or persisted != gate
+            ):
+                reasons.append(
+                    "validated_research_result_pre_holdout_gate_artifact_mismatch"
+                )
+    confirmation = report.get("final_holdout_confirmation")
+    if (
+        isinstance(confirmation, dict)
+        and confirmation.get("pre_holdout_gate_hash") != calculated
+    ):
+        reasons.append(
+            "validated_research_result_confirmation_pre_holdout_gate_mismatch"
         )
     return sorted(set(reasons))
 
@@ -949,9 +1447,7 @@ def _validation_experiment_temporal_plan_hash(
     )
     return sha256_prefixed(
         {
-            "manifest_hash": _manifest_hash_for_validation(
-                manifest, selection_report
-            ),
+            "manifest_hash": _manifest_hash_for_validation(manifest, selection_report),
             "dataset_split": split_payload,
         },
         label="validation_experiment_temporal_scope",
@@ -1074,14 +1570,26 @@ def aggregate_validation_gates(
                 if isinstance(selected_candidate, dict)
                 else None
             )
-            expected_candidate_hash = (
-                sha256_prefixed(
-                    candidate_evidence_hash_inputs(selected_candidate),
-                    label="candidate_evidence_hash",
+            expected_candidate_hash: str | None = None
+            if isinstance(selected_candidate, dict):
+                native_selection_authoritative = bool(
+                    isinstance(selection_artifact, dict)
+                    and selection_artifact.get("selection_authority")
+                    == "manifest_native_nested_selection"
                 )
-                if isinstance(selected_candidate, dict)
-                else None
-            )
+                expected_candidate_hash = (
+                    native_candidate_definition_hash(
+                        manifest_hash=manifest.manifest_hash(),
+                        strategy_name=manifest.strategy_name,
+                        strategy_version=manifest.strategy_version,
+                        candidate=selected_candidate,
+                    )
+                    if native_selection_authoritative
+                    else sha256_prefixed(
+                        candidate_evidence_hash_inputs(selected_candidate),
+                        label="candidate_evidence_hash",
+                    )
+                )
             experiment_reasons = validate_validation_experiment_bundle(
                 bundle_payload,
                 expected_policy=validation_experiment_policy,
@@ -1216,6 +1724,250 @@ def aggregate_validation_gates(
     return result, stage_status, sorted(set(reasons))
 
 
+def _pre_holdout_gate_reasons(
+    *,
+    manifest: ExperimentManifest,
+    selection_report: dict[str, Any],
+    selection_artifact: dict[str, Any] | None,
+    selected_candidate: dict[str, Any] | None,
+    validation_experiment_capability: ValidationExperimentCapability,
+    validation_experiment_bundle: ValidationExperimentBundle | None,
+    native_validation_execution: NativeValidationExperimentExecution | None = None,
+    manager: ResearchPathManager | None = None,
+) -> list[str]:
+    """Return every blocker that must be resolved before holdout exposure."""
+
+    reasons: list[str] = []
+    if not isinstance(selection_artifact, dict):
+        reasons.append("selection_artifact_missing")
+    else:
+        reasons.extend(
+            validate_selection_artifact_binding(
+                report=selection_report,
+                selection_artifact=selection_artifact,
+                selected_candidate=selected_candidate,
+            )
+        )
+    if selected_candidate is None:
+        reasons.append("selected_candidate_missing")
+    expected_stages = {
+        "gate_result": True,
+        "validation_eligibility_gate_result": True,
+        "dataset_quality_gate_status": True,
+        "final_selection_gate_result": bool(
+            manifest.final_selection
+            and manifest.final_selection.required_for_validation
+        ),
+        "stress_suite_gate_result": bool(
+            manifest.stress_suite and manifest.stress_suite.required_for_validation
+        ),
+        "statistical_gate_result": bool(
+            manifest.statistical_validation
+            and manifest.statistical_validation.required_for_validation
+        ),
+        "walk_forward_gate_result": bool(
+            manifest.acceptance_gate.walk_forward_required
+        ),
+    }
+    for field_name, required in expected_stages.items():
+        if required and selection_report.get(field_name) != "PASS":
+            reasons.append("pre_holdout_" + field_name + "_not_passed")
+
+    policy = validation_experiment_capability.policy
+    if policy.required_components:
+        if not isinstance(validation_experiment_bundle, ValidationExperimentBundle):
+            reasons.append("pre_holdout_validation_experiment_bundle_missing")
+        else:
+            bundle_payload = validation_experiment_bundle.as_dict()
+            expected_candidate_id = (
+                _candidate_identity(selected_candidate)
+                if isinstance(selected_candidate, dict)
+                else None
+            )
+            expected_candidate_hash = (
+                native_candidate_definition_hash(
+                    manifest_hash=manifest.manifest_hash(),
+                    strategy_name=manifest.strategy_name,
+                    strategy_version=manifest.strategy_version,
+                    candidate=selected_candidate,
+                )
+                if isinstance(selected_candidate, dict)
+                else None
+            )
+            reasons.extend(
+                validate_validation_experiment_bundle(
+                    bundle_payload,
+                    expected_policy=policy,
+                    expected_manifest_hash=manifest.manifest_hash(),
+                    expected_capability_hash=(
+                        validation_experiment_capability.content_hash
+                    ),
+                    expected_dataset_snapshot_hash=str(
+                        selection_report.get("dataset_content_hash") or ""
+                    ),
+                    expected_temporal_plan_hash=(
+                        _validation_experiment_temporal_plan_hash(
+                            manifest=manifest,
+                            selection_report=selection_report,
+                        )
+                    ),
+                    expected_selected_candidate_id=expected_candidate_id,
+                    expected_selected_candidate_hash=expected_candidate_hash,
+                )
+            )
+            if bundle_payload.get("gate_result") != "PASS":
+                reasons.append("pre_holdout_validation_experiment_gate_not_passed")
+        if native_validation_execution is None:
+            reasons.append("pre_holdout_native_validation_execution_missing")
+        else:
+            expected_candidate_id = (
+                _candidate_identity(selected_candidate)
+                if isinstance(selected_candidate, dict)
+                else None
+            )
+            expected_candidate_hash = (
+                native_candidate_definition_hash(
+                    manifest_hash=manifest.manifest_hash(),
+                    strategy_name=manifest.strategy_name,
+                    strategy_version=manifest.strategy_version,
+                    candidate=selected_candidate,
+                )
+                if isinstance(selected_candidate, dict)
+                else None
+            )
+            reasons.extend(
+                "pre_holdout_" + item
+                for item in validate_native_validation_computation_receipt(
+                    native_validation_execution.computation_receipt,
+                    expected_manifest_hash=manifest.manifest_hash(),
+                    expected_bundle_hash=(
+                        validation_experiment_bundle.content_hash
+                        if isinstance(
+                            validation_experiment_bundle,
+                            ValidationExperimentBundle,
+                        )
+                        else None
+                    ),
+                    expected_bundle=(
+                        validation_experiment_bundle.as_dict()
+                        if isinstance(
+                            validation_experiment_bundle,
+                            ValidationExperimentBundle,
+                        )
+                        else None
+                    ),
+                    expected_selected_candidate_id=expected_candidate_id,
+                    expected_selected_candidate_hash=expected_candidate_hash,
+                )
+            )
+            receipt = native_validation_execution.computation_receipt
+            execution_bindings = {
+                "content_hash": native_validation_execution.computation_receipt_hash,
+                "manifest_candidate_universe_hash": (
+                    native_validation_execution.manifest_candidate_universe_hash
+                ),
+                "pre_holdout_eligibility_hash": (
+                    native_validation_execution.pre_holdout_eligibility_hash
+                ),
+                "nested_selection_result_hash": (
+                    native_validation_execution.nested_selection_result_hash
+                ),
+                "terminal_selection_scores_hash": (
+                    native_validation_execution.terminal_selection_scores_hash
+                ),
+                "selected_candidate_id": (
+                    native_validation_execution.selected_candidate_id
+                ),
+                "selected_candidate_hash": (
+                    native_validation_execution.selected_candidate_hash
+                ),
+            }
+            if any(
+                receipt.get(field_name) != expected_value
+                for field_name, expected_value in execution_bindings.items()
+            ) or receipt.get("terminal_selection_scores") != list(
+                native_validation_execution.terminal_selection_scores
+            ):
+                reasons.append("pre_holdout_native_validation_execution_rebound")
+            if manager is not None:
+                receipt_path = Path(
+                    native_validation_execution.computation_receipt_path
+                )
+                expected_path = manager.research_artifact_path(
+                    manifest.experiment_id,
+                    "validation_experiments",
+                    native_validation_execution.computation_receipt_hash.removeprefix(
+                        "sha256:"
+                    )
+                    + ".json",
+                ).resolve()
+                try:
+                    persisted = json.loads(receipt_path.read_text("utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    reasons.append("pre_holdout_native_validation_receipt_unreadable")
+                else:
+                    if (
+                        receipt_path.is_symlink()
+                        or receipt_path.resolve() != expected_path
+                        or persisted != native_validation_execution.computation_receipt
+                    ):
+                        reasons.append("pre_holdout_native_validation_receipt_mismatch")
+    return sorted(set(reasons))
+
+
+def _preflight_validation_experiment_inputs(
+    *,
+    manifest: ExperimentManifest,
+    manager: ResearchPathManager,
+    mode: str,
+    requested_policy: ValidationExperimentPolicy | None,
+    supplied_outputs: ValidationExperimentOutputs | None,
+    supplied_bundle_path: str | Path | None,
+) -> tuple[
+    ValidationExperimentCapability,
+    ValidationExperimentPolicy,
+    dict[str, Any] | None,
+]:
+    """Reject invalid/detached evidence before consuming a holdout attempt."""
+
+    if mode != "strict":
+        raise ValidationRunError("validation_run_mode_unsupported")
+    capability = derive_validation_experiment_capability(
+        manifest_hash=manifest.manifest_hash(),
+        research_classification=manifest.research_classification,
+    )
+    authoritative_policy = capability.policy
+    if requires_candidate_validation(manifest.research_classification) and (
+        supplied_outputs is not None
+    ):
+        raise ValidationRunError(
+            "external_validation_experiment_evidence_not_authenticated"
+        )
+    if requested_policy is not None and requested_policy != authoritative_policy:
+        raise ValidationRunError("validation_experiment_policy_not_authoritative")
+    precomputed_bundle: dict[str, Any] | None = None
+    if supplied_bundle_path is not None:
+        if requested_policy is not None or supplied_outputs is not None:
+            raise ValidationRunError(
+                "validation_experiment_bundle_input_conflicts_with_inline_outputs"
+            )
+        precomputed_bundle, declared_policy = (
+            _load_precomputed_validation_experiment_bundle(
+                manager=manager,
+                path=supplied_bundle_path,
+            )
+        )
+        if declared_policy != authoritative_policy:
+            raise ValidationRunError(
+                "validation_experiment_bundle_policy_not_authoritative"
+            )
+        if requires_candidate_validation(manifest.research_classification):
+            raise ValidationRunError(
+                "external_validation_experiment_evidence_not_authenticated"
+            )
+    return capability, authoritative_policy, precomputed_bundle
+
+
 def run_research_validation(
     *,
     manifest: ExperimentManifest,
@@ -1234,48 +1986,195 @@ def run_research_validation(
     validation_experiment_policy: ValidationExperimentPolicy | None = None,
     validation_experiment_outputs: ValidationExperimentOutputs | None = None,
     validation_experiment_bundle_path: str | Path | None = None,
+    final_holdout_reservation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if mode != "strict":
-        raise ValidationRunError("validation_run_mode_unsupported")
-    validation_experiment_capability = derive_validation_experiment_capability(
-        manifest_hash=manifest.manifest_hash(),
-        research_classification=manifest.research_classification,
+    """Run validation behind one pre-selection final-holdout fence.
+
+    The terminal reader cannot mint its own authority.  A direct library/CLI
+    invocation receives a PRIMARY reservation here before selection starts;
+    operated adapters may supply the already reserved transport.  Any path
+    that returns without a terminal confirmation or raises before completion
+    append-only aborts the pending fence.
+    """
+
+    (
+        validation_experiment_capability,
+        authoritative_validation_experiment_policy,
+        precomputed_validation_experiment_bundle,
+    ) = _preflight_validation_experiment_inputs(
+        manifest=manifest,
+        manager=manager,
+        mode=mode,
+        requested_policy=validation_experiment_policy,
+        supplied_outputs=validation_experiment_outputs,
+        supplied_bundle_path=validation_experiment_bundle_path,
     )
-    authoritative_validation_experiment_policy = (
-        validation_experiment_capability.policy
+    reservation = _prepare_validation_holdout_reservation(
+        manifest=manifest,
+        manager=manager,
+        supplied=final_holdout_reservation,
+        run_id=run_id,
+        mode=mode,
+        candidate_id=candidate_id,
     )
-    if (
-        validation_experiment_policy is not None
-        and validation_experiment_policy
-        != authoritative_validation_experiment_policy
-    ):
-        raise ValidationRunError(
-            "validation_experiment_policy_not_authoritative"
-        )
-    precomputed_validation_experiment_bundle: dict[str, Any] | None = None
-    if validation_experiment_bundle_path is not None:
-        if (
-            validation_experiment_policy is not None
-            or validation_experiment_outputs is not None
-        ):
-            raise ValidationRunError(
-                "validation_experiment_bundle_input_conflicts_with_inline_outputs"
-            )
-        (
-            precomputed_validation_experiment_bundle,
-            declared_validation_experiment_policy,
-        ) = _load_precomputed_validation_experiment_bundle(
+    try:
+        result = _run_research_validation_reserved(
+            manifest=manifest,
+            db_path=db_path,
             manager=manager,
-            path=validation_experiment_bundle_path,
+            manifest_path=manifest_path,
+            mode=mode,
+            execution_calibration=execution_calibration,
+            execution_calibration_path=execution_calibration_path,
+            candidate_id=candidate_id,
+            out_path=out_path,
+            generated_at=generated_at,
+            progress_callback=progress_callback,
+            strategy_registry=strategy_registry,
+            run_id=run_id,
+            validation_experiment_policy=(authoritative_validation_experiment_policy),
+            validation_experiment_outputs=validation_experiment_outputs,
+            validation_experiment_capability=validation_experiment_capability,
+            precomputed_validation_experiment_bundle=(
+                precomputed_validation_experiment_bundle
+            ),
+            final_holdout_reservation=reservation,
         )
+    except Exception:
+        _abort_validation_holdout_reservation(
+            manager=manager,
+            reservation=reservation,
+            reason="validation_pipeline_failed_before_terminal_completion",
+        )
+        raise
+    if not isinstance(result.get("final_holdout_confirmation"), dict):
+        _abort_validation_holdout_reservation(
+            manager=manager,
+            reservation=reservation,
+            reason="validation_pre_holdout_gate_not_passed",
+        )
+    return result
+
+
+def _prepare_validation_holdout_reservation(
+    *,
+    manifest: ExperimentManifest,
+    manager: ResearchPathManager,
+    supplied: dict[str, Any] | None,
+    run_id: str | None,
+    mode: str,
+    candidate_id: str | None,
+) -> dict[str, Any] | None:
+    has_final_holdout = manifest.dataset.split.final_holdout is not None
+    if not has_final_holdout:
+        if supplied is not None:
+            raise ValidationRunError(
+                "final_holdout_reservation_for_manifest_without_holdout"
+            )
+        return None
+    if supplied is not None:
+        try:
+            row = validate_final_holdout_reservation_transport(
+                manager=manager,
+                reservation=supplied,
+            )
+        except ValueError as exc:
+            raise ValidationRunError(
+                f"final_holdout_reservation_invalid:{exc}"
+            ) from exc
         if (
-            declared_validation_experiment_policy
-            != authoritative_validation_experiment_policy
+            row.get("manifest_hash") != manifest.manifest_hash()
+            or supplied.get("access_purpose") != "PRIMARY_CONFIRMATION"
         ):
             raise ValidationRunError(
-                "validation_experiment_bundle_policy_not_authoritative"
+                "final_holdout_primary_reservation_binding_mismatch"
             )
-    validation_experiment_policy = authoritative_validation_experiment_policy
+        return dict(supplied)
+
+    logical_run_id = str(run_id or "").strip() or (
+        "direct-validation:"
+        + manifest.experiment_id
+        + ":"
+        + manifest.manifest_hash().removeprefix("sha256:")[:16]
+    )
+    request_hash = sha256_prefixed(
+        {
+            "schema_version": 1,
+            "authority": "research_validation_pipeline",
+            "manifest_hash": manifest.manifest_hash(),
+            "run_id": logical_run_id,
+            "mode": mode,
+            "candidate_id": candidate_id,
+        },
+        label="validation_pipeline_final_holdout_reservation_request",
+    )
+    try:
+        result = reserve_final_holdout_authority(
+            manager=manager,
+            manifest=manifest,
+            request_id=logical_run_id,
+            request_hash=request_hash,
+            actor_binding_hash=sha256_prefixed(
+                {
+                    "authority": "research_validation_pipeline",
+                    "run_id": logical_run_id,
+                },
+                label="validation_pipeline_actor_binding",
+            ),
+        )
+    except ValueError as exc:
+        raise ValidationRunError(f"final_holdout_reservation_failed:{exc}") from exc
+    transport = result.get("transport")
+    if result.get("accepted") is not True or not isinstance(transport, dict):
+        reasons = ",".join(str(item) for item in result.get("reasons") or [])
+        raise ValidationRunError(
+            "final_holdout_reservation_not_accepted"
+            + (":" + reasons if reasons else "")
+        )
+    return dict(transport)
+
+
+def _abort_validation_holdout_reservation(
+    *,
+    manager: ResearchPathManager,
+    reservation: dict[str, Any] | None,
+    reason: str,
+) -> None:
+    if reservation is None:
+        return
+    try:
+        abort_final_holdout_reservation(
+            manager=manager,
+            reservation=reservation,
+            reason=reason,
+        )
+    except (OSError, ValueError):
+        # A completed or externally finalized reservation is already terminal;
+        # never replace the validation result/exception with an abort retry.
+        return
+
+
+def _run_research_validation_reserved(
+    *,
+    manifest: ExperimentManifest,
+    db_path: str | Path | None,
+    manager: Any,
+    manifest_path: str,
+    mode: str = "strict",
+    execution_calibration: dict[str, Any] | None = None,
+    execution_calibration_path: str | None = None,
+    candidate_id: str | None = None,
+    out_path: str | Path | None = None,
+    generated_at: str | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    strategy_registry: StrategyRegistry,
+    run_id: str | None = None,
+    validation_experiment_policy: ValidationExperimentPolicy,
+    validation_experiment_outputs: ValidationExperimentOutputs | None = None,
+    validation_experiment_capability: ValidationExperimentCapability,
+    precomputed_validation_experiment_bundle: dict[str, Any] | None,
+    final_holdout_reservation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     validation_admission: dict[str, Any] | None = None
     if (
         manifest.hypothesis_spec is not None
@@ -1333,12 +2232,22 @@ def run_research_validation(
         )
     )
     artifact = selection_report.get("selection_artifact")
+    preliminary_selection_artifact = artifact
+    preliminary_selected_id = (
+        str(artifact.get("selected_candidate_id") or "")
+        if isinstance(artifact, dict)
+        else ""
+    )
     selected_id = (
         str(artifact.get("selected_candidate_id") or "")
         if isinstance(artifact, dict)
         else ""
     )
-    if candidate_id is not None and str(candidate_id) != selected_id:
+    if (
+        candidate_id is not None
+        and not requires_candidate_validation(manifest.research_classification)
+        and str(candidate_id) != selected_id
+    ):
         raise ValidationRunError("candidate_id_does_not_match_frozen_selection")
     selection_candidates = [
         item
@@ -1390,11 +2299,16 @@ def run_research_validation(
     )
     if selected is not None and compact_selected is None:
         raise ValidationRunError("terminal_selected_candidate_projection_missing")
-    if validation_experiment_outputs is not None and validation_experiment_policy is None:
+    if (
+        validation_experiment_outputs is not None
+        and validation_experiment_policy is None
+    ):
         raise ValidationRunError("validation_experiment_policy_required")
     validation_experiment_bundle: ValidationExperimentBundle | dict[str, Any] | None = (
         precomputed_validation_experiment_bundle
     )
+    native_validation_execution: NativeValidationExperimentExecution | None = None
+    native_validation_execution_error: str | None = None
     validation_experiment_temporal_plan_hash: str | None = None
     if validation_experiment_policy is not None:
         validation_experiment_temporal_plan_hash = (
@@ -1403,14 +2317,65 @@ def run_research_validation(
                 selection_report=selection_report,
             )
         )
-        if (
+        if requires_candidate_validation(manifest.research_classification):
+            if (
+                candidates
+                and manifest.validation_experiments is not None
+                and isinstance(preliminary_selection_artifact, dict)
+            ):
+                try:
+                    native_validation_execution = (
+                        execute_manifest_validation_experiments(
+                            manifest=manifest,
+                            db_path=db_path,
+                            manager=manager,
+                            candidates=candidates,
+                            preliminary_selection_artifact_hash=str(
+                                preliminary_selection_artifact.get("content_hash")
+                                if isinstance(preliminary_selection_artifact, dict)
+                                else ""
+                            ),
+                            dataset_snapshot_hash=str(
+                                selection_report.get("dataset_content_hash") or ""
+                            ),
+                            capability=validation_experiment_capability,
+                            strategy_registry=strategy_registry,
+                            progress_callback=progress_callback,
+                        )
+                    )
+                    validation_experiment_bundle = native_validation_execution.bundle
+                    artifact = _freeze_native_nested_selection_artifact(
+                        manifest=manifest,
+                        selection_report=selection_report,
+                        candidates=candidates,
+                        preliminary_selection_artifact=(preliminary_selection_artifact),
+                        execution=native_validation_execution,
+                    )
+                    selected_id = native_validation_execution.selected_candidate_id
+                    selected = next(
+                        (
+                            item
+                            for item in candidates
+                            if str(item.get("parameter_candidate_id") or "")
+                            == selected_id
+                        ),
+                        None,
+                    )
+                    if selected is None:
+                        raise ValidationRunError(
+                            "native_nested_selected_candidate_missing"
+                        )
+                except (NativeValidationExperimentExecutionError, ValueError) as exc:
+                    # Preserve a terminal rejected-study record without exposing
+                    # host paths or exception detail as evidence semantics.
+                    code = str(exc).split(":", 1)[0].strip()
+                    native_validation_execution_error = code or type(exc).__name__
+                    validation_experiment_bundle = None
+        elif (
             precomputed_validation_experiment_bundle is None
             and selected is not None
             and compact_selected is not None
-            and (
-                bool(validation_experiment_policy.required_components)
-                or validation_experiment_outputs is not None
-            )
+            and validation_experiment_outputs is not None
         ):
             try:
                 validation_experiment_bundle = build_validation_experiment_bundle(
@@ -1425,19 +2390,154 @@ def run_research_validation(
                     ),
                     capability=validation_experiment_capability,
                     policy=validation_experiment_policy,
-                    outputs=(
-                        validation_experiment_outputs
-                        or ValidationExperimentOutputs()
-                    ),
+                    outputs=validation_experiment_outputs,
                 )
             except ValidationExperimentBundleError as exc:
                 raise ValidationRunError(
                     f"validation_experiment_bundle_invalid:{exc}"
                 ) from exc
-    selection_evidence_report = dict(selection_report)
+    authoritative_selection_report = dict(selection_report)
+    if native_validation_execution is not None and isinstance(artifact, dict):
+        native_selection_result = _native_nested_final_selection_result(
+            manifest=manifest,
+            execution=native_validation_execution,
+        )
+        authoritative_selection_report.update(
+            {
+                "preliminary_best_candidate_id": selection_report.get(
+                    "best_candidate_id"
+                ),
+                "preliminary_selected_candidate_id": preliminary_selected_id,
+                "preliminary_selection_artifact_hash": (
+                    preliminary_selection_artifact.get("content_hash")
+                    if isinstance(preliminary_selection_artifact, dict)
+                    else None
+                ),
+                "preliminary_final_selection_contract": selection_report.get(
+                    "final_selection_contract"
+                ),
+                "preliminary_final_selection_contract_hash": selection_report.get(
+                    "final_selection_contract_hash"
+                ),
+                "preliminary_candidate_final_scores": selection_report.get(
+                    "candidate_final_scores"
+                ),
+                "preliminary_candidate_final_scores_hash": selection_report.get(
+                    "candidate_final_scores_hash"
+                ),
+                "preliminary_selected_candidate_score_hash": selection_report.get(
+                    "selected_candidate_score_hash"
+                ),
+                **native_selection_result,
+                "selection_artifact": artifact,
+                "selection_artifact_hash": artifact["content_hash"],
+                "native_nested_selection_authority": artifact[
+                    "selection_authority_binding"
+                ],
+                "native_nested_selection_authority_hash": artifact[
+                    "selection_authority_binding_hash"
+                ],
+            }
+        )
+    if candidate_id is not None and str(candidate_id) != selected_id:
+        raise ValidationRunError("candidate_id_does_not_match_frozen_selection")
+    terminal_candidates = _terminal_candidate_projections(
+        selection_report=authoritative_selection_report,
+        authoritative_candidates=candidates,
+    )
+    compact_selected = next(
+        (
+            item
+            for item in terminal_candidates
+            if str(item.get("parameter_candidate_id") or item.get("candidate_id") or "")
+            == selected_id
+        ),
+        None,
+    )
+    if selected is not None and compact_selected is None:
+        raise ValidationRunError("terminal_selected_candidate_projection_missing")
+    selection_evidence_report = dict(authoritative_selection_report)
     selection_evidence_report["candidates"] = candidates
-    confirmation = (
-        run_final_holdout_confirmation(
+    pre_holdout_reasons = _pre_holdout_gate_reasons(
+        manifest=manifest,
+        selection_report=authoritative_selection_report,
+        selection_artifact=artifact if isinstance(artifact, dict) else None,
+        selected_candidate=selected,
+        validation_experiment_capability=validation_experiment_capability,
+        validation_experiment_bundle=(
+            validation_experiment_bundle
+            if isinstance(validation_experiment_bundle, ValidationExperimentBundle)
+            else None
+        ),
+        native_validation_execution=native_validation_execution,
+        manager=manager,
+    )
+    if native_validation_execution_error is not None:
+        pre_holdout_reasons = sorted(
+            set(pre_holdout_reasons)
+            | {
+                "native_validation_experiment_execution_failed:"
+                + native_validation_execution_error
+            }
+        )
+    if native_validation_execution is not None and isinstance(artifact, dict):
+        pre_holdout_reasons = sorted(
+            set(pre_holdout_reasons)
+            | set(
+                _native_nested_selection_artifact_reasons(
+                    artifact=artifact,
+                    execution=native_validation_execution,
+                )
+            )
+        )
+    pre_holdout_gate_material = {
+        "schema_version": 1,
+        "artifact_type": "pre_holdout_validation_gate",
+        "final_holdout_authority_scope_hash": (
+            final_holdout_authority_scope_hash(manifest)
+            if manifest.dataset.split.final_holdout is not None
+            else None
+        ),
+        "manifest_hash": manifest.manifest_hash(),
+        "selection_report_hash": selection_report.get("content_hash"),
+        "selection_artifact_hash": (
+            artifact.get("content_hash") if isinstance(artifact, dict) else None
+        ),
+        "validation_experiment_bundle_hash": (
+            validation_experiment_bundle.content_hash
+            if isinstance(validation_experiment_bundle, ValidationExperimentBundle)
+            else None
+        ),
+        "native_validation_computation_receipt_hash": (
+            native_validation_execution.computation_receipt_hash
+            if native_validation_execution is not None
+            else None
+        ),
+        "selected_candidate_id": selected_id or None,
+        "gate_result": "PASS" if not pre_holdout_reasons else "FAIL",
+        "gate_reasons": pre_holdout_reasons,
+    }
+    pre_holdout_gate_artifact = None
+    pre_holdout_gate_hash = sha256_prefixed(
+        pre_holdout_gate_material, label="pre_holdout_validation_gate"
+    )
+    confirmation = None
+    if (
+        selected is not None
+        and manifest.dataset.split.final_holdout is not None
+        and not pre_holdout_reasons
+    ):
+        if final_holdout_reservation is None:
+            raise ValidationRunError(
+                "final_holdout_reservation_missing_before_terminal_access"
+            )
+        pre_holdout_gate_artifact = publish_pre_holdout_gate_artifact(
+            manager=manager,
+            experiment_id=manifest.experiment_id,
+            material=pre_holdout_gate_material,
+        )
+        pre_holdout_gate_hash = str(pre_holdout_gate_artifact["content_hash"])
+        confirmation = run_final_holdout_confirmation(
             manifest=manifest,
             selection_report=selection_evidence_report,
             db_path=db_path,
@@ -1445,13 +2545,12 @@ def run_research_validation(
             generated_at=generated_at,
             progress_callback=progress_callback,
             strategy_registry=strategy_registry,
+            final_holdout_reservation=final_holdout_reservation,
+            pre_holdout_gate_hash=pre_holdout_gate_hash,
         )
-        if selected is not None and manifest.dataset.split.final_holdout is not None
-        else None
-    )
     status, stage_status, blocking_reasons = aggregate_validation_gates(
         manifest=manifest,
-        selection_report=selection_report,
+        selection_report=authoritative_selection_report,
         selection_artifact=artifact if isinstance(artifact, dict) else None,
         selected_candidate=selected,
         final_holdout_confirmation=confirmation,
@@ -1459,6 +2558,11 @@ def run_research_validation(
         validation_experiment_policy=validation_experiment_policy,
         validation_experiment_bundle=validation_experiment_bundle,
     )
+    if pre_holdout_reasons:
+        blocking_reasons = sorted(set(blocking_reasons) | set(pre_holdout_reasons))
+        if requires_candidate_validation(manifest.research_classification):
+            status = "FAIL"
+            stage_status["research_candidate_report"] = "FAIL"
     stages = [
         {"name": name, "status": stage_status.get(name, "INSUFFICIENT_EVIDENCE")}
         for name in VALIDATION_STAGE_ORDER
@@ -1468,6 +2572,17 @@ def run_research_validation(
         "selection_artifact_hash": artifact.get("content_hash")
         if isinstance(artifact, dict)
         else None,
+        "pre_holdout_gate_hash": pre_holdout_gate_hash,
+        "validation_experiment_bundle_hash": (
+            validation_experiment_bundle.content_hash
+            if isinstance(validation_experiment_bundle, ValidationExperimentBundle)
+            else None
+        ),
+        "native_validation_computation_receipt_hash": (
+            native_validation_execution.computation_receipt_hash
+            if native_validation_execution is not None
+            else None
+        ),
         "final_holdout_confirmation_hash": confirmation.get("content_hash")
         if confirmation
         else None,
@@ -1516,7 +2631,7 @@ def run_research_validation(
     summary = {
         **{
             key: value
-            for key, value in selection_report.items()
+            for key, value in authoritative_selection_report.items()
             if key != "content_hash"
         },
         "schema_version": 3,
@@ -1568,11 +2683,27 @@ def run_research_validation(
         "selection_artifact_hash": artifact.get("content_hash")
         if isinstance(artifact, dict)
         else None,
+        "pre_holdout_gate": {
+            **pre_holdout_gate_material,
+            "content_hash": pre_holdout_gate_hash,
+        },
+        "pre_holdout_gate_hash": pre_holdout_gate_hash,
+        "pre_holdout_gate_artifact_path": (
+            str(
+                pre_holdout_gate_artifact_path(
+                    manager=manager,
+                    experiment_id=manifest.experiment_id,
+                    gate_hash=pre_holdout_gate_hash,
+                )
+            )
+            if pre_holdout_gate_artifact is not None
+            else None
+        ),
         "final_holdout_confirmation_hash": confirmation.get("content_hash")
         if confirmation
         else None,
         "final_holdout_confirmation": confirmation,
-        "final_selection_gate_result": selection_report.get(
+        "final_selection_gate_result": authoritative_selection_report.get(
             "final_selection_gate_result"
         ),
         "selected_candidate_id": selected_id or None,
@@ -1634,6 +2765,60 @@ def run_research_validation(
                     bundle_payload.get("gate_reasons")
                     if bundle_payload is not None
                     else experiment_reasons
+                ),
+                "native_validation_execution_authority": (
+                    "manifest_native_production_engine"
+                    if native_validation_execution is not None
+                    else None
+                ),
+                "native_validation_computation_receipt": (
+                    native_validation_execution.computation_receipt
+                    if native_validation_execution is not None
+                    else None
+                ),
+                "native_validation_computation_receipt_path": (
+                    native_validation_execution.computation_receipt_path
+                    if native_validation_execution is not None
+                    else None
+                ),
+                "native_validation_computation_receipt_hash": (
+                    native_validation_execution.computation_receipt_hash
+                    if native_validation_execution is not None
+                    else None
+                ),
+                "preliminary_best_candidate_id": selection_report.get(
+                    "best_candidate_id"
+                ),
+                "preliminary_selected_candidate_id": preliminary_selected_id or None,
+                "preliminary_selection_artifact_hash": (
+                    preliminary_selection_artifact.get("content_hash")
+                    if isinstance(preliminary_selection_artifact, dict)
+                    else None
+                ),
+                "native_nested_selection_authority": (
+                    artifact.get("selection_authority_binding")
+                    if native_validation_execution is not None
+                    and isinstance(artifact, dict)
+                    else None
+                ),
+                "native_nested_selection_authority_hash": (
+                    artifact.get("selection_authority_binding_hash")
+                    if native_validation_execution is not None
+                    and isinstance(artifact, dict)
+                    else None
+                ),
+                "native_pre_holdout_eligibility": (
+                    list(native_validation_execution.pre_holdout_eligibility)
+                    if native_validation_execution is not None
+                    else None
+                ),
+                "native_pre_holdout_eligibility_hash": (
+                    native_validation_execution.pre_holdout_eligibility_hash
+                    if native_validation_execution is not None
+                    else None
+                ),
+                "native_validation_execution_error": (
+                    native_validation_execution_error
                 ),
             }
         )
@@ -1698,7 +2883,7 @@ def run_research_validation(
         )
     decision_report = build_research_decision_report(
         manifest=manifest,
-        selection_report=selection_report,
+        selection_report=authoritative_selection_report,
         selected_candidate=selected,
         final_holdout_confirmation=confirmation,
         validation_result=status,
@@ -1708,14 +2893,18 @@ def run_research_validation(
     )
     summary["research_candidate_report_hash"] = decision_report["content_hash"]
     report_root = manager.report_path("research", manifest.experiment_id)
+    canonical_summary_target = report_root / "validation_summary.json"
     target = (
         manager.external_output_path(out_path, label="research validation output")
         if out_path
-        else report_root / "validation_summary.json"
+        else canonical_summary_target
+    )
+    authoritative_summary_target = (
+        canonical_summary_target if native_validation_execution is not None else target
     )
     candidate_target = report_root / "research_candidate_report.json"
     selected_target = report_root / "selected_candidate.json"
-    summary["validation_run_path"] = str(target.resolve())
+    summary["validation_run_path"] = str(authoritative_summary_target.resolve())
     summary["research_candidate_report_path"] = str(candidate_target.resolve())
     summary["selected_candidate_path"] = str(selected_target.resolve())
     summary["selected_candidate_binding_schema_version"] = 1
@@ -1730,6 +2919,37 @@ def run_research_validation(
     # fingerprint projection and full candidate evidence.
     summary.pop("reproduction_receipt_path", None)
     summary.pop("reproduction_receipt_hash", None)
+    terminal_reproduction_blockers: list[str] = []
+    if status != "PASS":
+        terminal_reproduction_blockers.append("terminal_validation_gate_not_passed")
+    if pre_holdout_reasons:
+        terminal_reproduction_blockers.append("pre_holdout_gate_not_passed")
+    if (
+        not isinstance(confirmation, dict)
+        or confirmation.get("confirmation_gate_result") != "PASS"
+    ):
+        terminal_reproduction_blockers.append("final_holdout_confirmation_not_passed")
+    if (
+        validation_experiment_policy is not None
+        and validation_experiment_policy.required_components
+        and native_validation_execution is None
+    ):
+        terminal_reproduction_blockers.append(
+            "native_validation_execution_not_available"
+        )
+    if (
+        summary.get("reproduction_receipt_status") == "AVAILABLE"
+        and terminal_reproduction_blockers
+    ):
+        # The selection receipt remains a valid record of the pre-terminal
+        # run, but it cannot be relabelled as a terminal reproduction receipt
+        # when a native pre-holdout gate or the holdout itself did not pass.
+        # Retain the rejected terminal study instead of raising while trying
+        # to construct a receipt whose required hashes do not exist.
+        summary["reproduction_receipt_status"] = "UNAVAILABLE_TERMINAL_GATES_NOT_PASSED"
+        summary["reproduction_receipt_unavailable_reasons"] = sorted(
+            set(terminal_reproduction_blockers)
+        )
     if summary.get("reproduction_receipt_status") == "AVAILABLE":
         summary["reproduction_receipt_scope"] = "validated_research_result"
     else:
@@ -1771,16 +2991,25 @@ def run_research_validation(
                 confirmation if isinstance(confirmation, dict) else {}
             )
             source_binding_material = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "artifact_type": "validated_research_reproduction_binding",
                 "terminal_source_report_hash": summary["content_hash"],
-                "terminal_source_report_path": str(target.resolve()),
+                "terminal_source_report_path": str(
+                    authoritative_summary_target.resolve()
+                ),
                 "manifest_hash": manifest.manifest_hash(),
                 "selection_report_hash": selection_report.get("content_hash"),
                 "selection_reproduction_receipt_hash": selection_receipt.get(
                     "receipt_content_hash"
                 ),
                 "selection_artifact_hash": summary.get("selection_artifact_hash"),
+                "pre_holdout_gate_hash": summary.get("pre_holdout_gate_hash"),
+                "validation_experiment_bundle_hash": summary.get(
+                    "validation_experiment_bundle_hash"
+                ),
+                "native_validation_computation_receipt_hash": summary.get(
+                    "native_validation_computation_receipt_hash"
+                ),
                 "final_holdout_confirmation_hash": summary.get(
                     "final_holdout_confirmation_hash"
                 ),
@@ -1824,6 +3053,11 @@ def run_research_validation(
         summary["reproduction_receipt_hash"] = terminal_receipt["receipt_content_hash"]
     _publish_terminal_validation_artifacts(
         summary_target=target,
+        canonical_summary_target=(
+            canonical_summary_target
+            if native_validation_execution is not None
+            else None
+        ),
         summary=summary,
         candidate_target=candidate_target,
         decision_report=decision_report,

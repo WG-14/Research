@@ -126,7 +126,9 @@ from .family_registry import (
 )
 from .experiment_registry import (
     EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+    activate_final_holdout_reservation,
     append_attempt_completion,
+    final_holdout_authority_scope_hash,
     final_holdout_identity_hash_from_parts,
     final_holdout_hashes_from_manifest,
     objective_metric_from_manifest,
@@ -134,6 +136,7 @@ from .experiment_registry import (
     reserve_research_attempt_checked,
     research_freedom_hash,
     research_identity_from_manifest,
+    validate_final_holdout_reservation_transport,
 )
 from .lineage import build_research_lineage, compute_lineage_hash
 from .metrics_gate_policy import (
@@ -214,7 +217,22 @@ PARENT_SERIAL_TIMING_STAGES = {
     "parallel_worker_pool_start",
     "report_write",
 }
-_WORKER_LOCAL_SNAPSHOT_CACHE: dict[str, dict[str, DatasetSnapshot]] = {}
+
+
+@dataclass(frozen=True)
+class _WorkerSnapshotCacheEntry:
+    """One cache value bound to the physical immutable input identity.
+
+    The logical cache key protects against reusing rows for another manifest.
+    The source token separately prevents a process-local hit from masking a
+    replaced or modified external dataset after the first verified load.
+    """
+
+    source_token: tuple[tuple[str, int, int, int, int, int], ...]
+    snapshots: dict[str, DatasetSnapshot]
+
+
+_WORKER_LOCAL_SNAPSHOT_CACHE: dict[str, _WorkerSnapshotCacheEntry] = {}
 
 
 @dataclass(frozen=True)
@@ -251,6 +269,26 @@ class CandidateEvaluationResult:
 class StatisticalSelectionAttachmentObservability:
     substage_timings: list[dict[str, Any]]
     candidate_profile_hash_observability: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ManifestCandidateRangeEvaluation:
+    """One native strategy execution over a manifest-authorized date range.
+
+    This is the narrow reusable primitive used by nested validation and
+    provider sensitivity.  It deliberately returns the typed engine result and
+    verified snapshot rather than accepting projected/precomputed metrics.
+    """
+
+    split_name: str
+    candidate_id: str
+    parameter_values: dict[str, Any]
+    snapshot: DatasetSnapshot
+    run: BacktestRun
+    scenario_id: str
+    scenario_index: int
+    compiled_strategy_contract_hash: str
+    evidence_hash: str
 
 
 class CandidateScenarioEvaluator(Protocol):
@@ -577,22 +615,43 @@ def _load_worker_task_snapshots(
             split_names=split_names,
             manifest=manifest,
         )
+        source_token = _worker_snapshot_cache_source_token(
+            db_path=db_path,
+            manifest=manifest,
+        )
         cached = _WORKER_LOCAL_SNAPSHOT_CACHE.get(cache_key)
-        if cached is not None:
+        if cached is not None and cached.source_token == source_token:
             data_plane_policy["applied_snapshot_load_policy"] = (
                 "worker_local_lazy_cache"
             )
             data_plane_policy["worker_local_lazy_cache_status"] = "hit"
             task["data_plane_policy"] = data_plane_policy
-            return dict(cached)
+            return dict(cached.snapshots)
+        if cached is not None:
+            _WORKER_LOCAL_SNAPSHOT_CACHE.pop(cache_key, None)
+            data_plane_policy["worker_local_lazy_cache_status"] = (
+                "invalidated_source_changed"
+            )
+            task["data_plane_policy"] = data_plane_policy
         snapshots = _load_worker_task_snapshots_from_db(
             db_path=db_path,
             manifest=manifest,
             split_names=split_names,
         )
-        _WORKER_LOCAL_SNAPSHOT_CACHE[cache_key] = dict(snapshots)
+        post_load_source_token = _worker_snapshot_cache_source_token(
+            db_path=db_path,
+            manifest=manifest,
+        )
+        if post_load_source_token != source_token:
+            raise ResearchValidationError(
+                "worker_local_lazy_cache_source_changed_during_load"
+            )
+        _WORKER_LOCAL_SNAPSHOT_CACHE[cache_key] = _WorkerSnapshotCacheEntry(
+            source_token=source_token,
+            snapshots=dict(snapshots),
+        )
         data_plane_policy["applied_snapshot_load_policy"] = "worker_local_lazy_cache"
-        data_plane_policy["worker_local_lazy_cache_status"] = "miss_stored"
+        data_plane_policy.setdefault("worker_local_lazy_cache_status", "miss_stored")
         task["data_plane_policy"] = data_plane_policy
         return snapshots
     elif requested_policy == "memory_mapped_readonly":
@@ -657,6 +716,67 @@ def _worker_local_snapshot_cache_key(
             ),
         }
     )
+
+
+def _worker_snapshot_cache_source_token(
+    *,
+    db_path: str | Path | None,
+    manifest: ExperimentManifest,
+) -> tuple[tuple[str, int, int, int, int, int], ...]:
+    """Return a cheap invalidation token for the external physical inputs.
+
+    Content hashes remain the semantic authority.  Device/inode/size and both
+    change clocks form the cache fence, while parsing the artifact sidecar
+    again proves that its exact declared hash still resolves before a cached
+    value can be returned.
+    """
+
+    paths: list[Path] = []
+    if db_path is not None:
+        paths.append(Path(db_path).expanduser())
+    artifact_ref = manifest.dataset.artifact_ref
+    if artifact_ref is not None:
+        try:
+            artifact = load_artifact_manifest(
+                artifact_ref.artifact_manifest_uri,
+                artifact_ref.artifact_manifest_hash,
+            )
+        except (ArtifactManifestError, OSError, ValueError) as exc:
+            raise ResearchValidationError(
+                "worker_local_lazy_cache_artifact_manifest_invalid"
+            ) from exc
+        paths.extend(
+            (
+                Path(artifact_ref.artifact_manifest_uri),
+                Path(artifact.locator.path),
+            )
+        )
+    if not paths:
+        raise ResearchValidationError("worker_local_lazy_cache_physical_source_missing")
+    token: list[tuple[str, int, int, int, int, int]] = []
+    for path in paths:
+        try:
+            resolved = path.resolve(strict=True)
+            metadata = resolved.stat()
+        except OSError as exc:
+            raise ResearchValidationError(
+                "worker_local_lazy_cache_source_unavailable"
+            ) from exc
+        if not resolved.is_file():
+            raise ResearchValidationError(
+                "worker_local_lazy_cache_source_not_regular_file"
+            )
+        token.append(
+            (
+                str(resolved),
+                int(metadata.st_dev),
+                int(metadata.st_ino),
+                int(metadata.st_size),
+                int(metadata.st_mtime_ns),
+                int(metadata.st_ctime_ns),
+            )
+        )
+    return tuple(token)
 
 
 def _load_worker_task_snapshots_from_db(
@@ -2300,6 +2420,179 @@ def _record_candidate_artifact_publication(
     )
 
 
+def run_manifest_candidate_range(
+    *,
+    manifest: ExperimentManifest,
+    db_path: str | Path | None,
+    manager: ResearchPathManager,
+    date_range: DateRange,
+    split_name: str,
+    candidate_id: str,
+    parameter_values: dict[str, Any],
+    strategy_registry: StrategyRegistry,
+    progress_callback: ProgressCallback | None = None,
+    retain_observation_streams: bool = False,
+) -> ManifestCandidateRangeEvaluation:
+    """Execute one candidate on one immutable, non-holdout date range.
+
+    The caller owns temporal admission (nested plans and provider validation
+    scopes).  This function owns the production engine path: verified dataset
+    resolution, the manifest base execution scenario, strategy compilation,
+    simulation, and execution-lineage checks.  It never accepts a metric or a
+    result object from the caller.
+    """
+
+    if not split_name or Path(split_name).name != split_name:
+        raise ResearchValidationError("candidate_range_split_name_invalid")
+    if not candidate_id:
+        raise ResearchValidationError("candidate_range_candidate_id_invalid")
+    require_authoritative_source_eligibility(manifest)
+    if not strategy_registry.accepts_execution_hash(
+        manifest.strategy_name,
+        str(manifest.validated_strategy_registry_hash or ""),
+    ):
+        raise ResearchValidationError(
+            "manifest_runtime_strategy_registry_hash_mismatch"
+        )
+    plugin = strategy_registry.resolve(manifest.strategy_name)
+    snapshot = load_dataset_range(
+        db_path=db_path,
+        manifest=manifest,
+        split_name=split_name,
+        date_range=date_range,
+    )
+    _require_enough_candles((snapshot,))
+    quality = _quality_reports(db_path=db_path, snapshots={split_name: snapshot})[
+        split_name
+    ]
+    _validate_dataset_adapter_provenance(
+        manifest=manifest,
+        quality_reports={split_name: quality},
+    )
+    if quality.quality_gate_status != "PASS":
+        raise ResearchValidationError("candidate_range_dataset_quality_gate_not_passed")
+
+    scenario = _base_report_scenario(manifest)
+    scenario_index = next(
+        (
+            index
+            for index, item in enumerate(manifest.execution_model.scenarios)
+            if item is scenario
+        ),
+        0,
+    )
+    scenario_id = _scenario_id(scenario, scenario_index)
+    compiled_contract = StrategyCompiler(strategy_registry).compile(
+        strategy_name=manifest.strategy_name,
+        raw_parameters=dict(parameter_values),
+        fee_rate=scenario.fee_rate,
+        slippage_bps=float(scenario.slippage_bps),
+        context=BacktestRunContext(policy_materialization_mode="research_validation"),
+    )
+    context = _backtest_context(
+        manifest=manifest,
+        manager=manager,
+        candidate_id=candidate_id,
+        scenario_id=scenario_id,
+        scenario_index=scenario_index,
+        split_name=split_name,
+        dataset_content_hash=snapshot.snapshot_fingerprint_hash(),
+        parameter_values=dict(parameter_values),
+        progress_callback=progress_callback,
+        artifact_context=ResearchArtifactContext(
+            manager=manager,
+            experiment_id=manifest.experiment_id,
+            budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+        ),
+    )
+    if retain_observation_streams:
+        # Falsification and factor builders consume the typed equity stream,
+        # while ordinary report projections intentionally retain zero points
+        # by default.  This execution-local retention override changes no
+        # strategy, fill, fee, risk, or metric semantics.  The immutable input
+        # range remains the deterministic memory bound for the stream.
+        context = replace(
+            context,
+            resource_limits=replace(
+                context.resource_limits,
+                max_equity_points_retained=None,
+            ),
+        )
+    execution_model = _execution_model_from_scenario(
+        scenario,
+        seed_context=_seed_context(
+            causal_execution_seed_scope_hash=(
+                manifest.causal_execution_seed_scope_hash()
+            ),
+            scenario=scenario,
+            scenario_id=scenario_id,
+            parameter_candidate_id=candidate_id,
+            split_name=split_name,
+        ),
+    )
+    run = run_common_simulation_backtest(
+        plugin=plugin,
+        dataset=snapshot,
+        parameter_values=dict(parameter_values),
+        fee_rate=scenario.fee_rate,
+        slippage_bps=float(scenario.slippage_bps),
+        parameter_stability_score=None,
+        execution_model=execution_model,
+        execution_timing_policy=manifest.execution_timing,
+        portfolio_policy=manifest.portfolio_policy,
+        risk_policy=manifest.risk_policy,
+        context=context,
+        compiled_contract=compiled_contract,
+    )
+    validate_execution_evidence(
+        run=run,
+        timing=manifest.execution_timing,
+        model=execution_model,
+        validation_bound=requires_candidate_validation(
+            manifest.research_classification
+        ),
+    )
+    metrics_v2 = _metrics_v2_payload(run)
+    evidence_hash = sha256_prefixed(
+        {
+            "schema_version": 1,
+            "manifest_hash": manifest.manifest_hash(),
+            "candidate_id": candidate_id,
+            "parameter_values": dict(parameter_values),
+            "split_name": split_name,
+            "requested_range": date_range.as_dict(),
+            "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+            "snapshot_query_hash": snapshot.snapshot_query_hash(),
+            "snapshot_data_hash": snapshot.snapshot_data_hash(),
+            "scenario_id": scenario_id,
+            "compiled_strategy_contract_hash": (
+                compiled_contract.compiled_contract_hash
+            ),
+            "metrics": run.metrics.as_dict(),
+            "metrics_v2": metrics_v2,
+            "metrics_hash": run.metrics_hash,
+            "decision_stream_hash": run.decision_stream_hash,
+            "observation_streams_retained": bool(retain_observation_streams),
+            "equity_curve_hash": sha256_prefixed(
+                [item.as_dict() for item in run.equity_curve],
+                label="manifest_candidate_range_equity_curve",
+            ),
+        },
+        label="manifest_candidate_range_evaluation",
+    )
+    return ManifestCandidateRangeEvaluation(
+        split_name=split_name,
+        candidate_id=candidate_id,
+        parameter_values=dict(parameter_values),
+        snapshot=snapshot,
+        run=run,
+        scenario_id=scenario_id,
+        scenario_index=scenario_index,
+        compiled_strategy_contract_hash=(compiled_contract.compiled_contract_hash),
+        evidence_hash=evidence_hash,
+    )
+
+
 def run_research_backtest(
     *,
     manifest: ExperimentManifest,
@@ -2873,6 +3166,8 @@ def run_final_holdout_confirmation(
     generated_at: str | None = None,
     progress_callback: ProgressCallback | None = None,
     strategy_registry: StrategyRegistry,
+    final_holdout_reservation: dict[str, Any],
+    pre_holdout_gate_hash: str,
 ) -> dict[str, Any]:
     """Evaluate exactly the candidate frozen by a verified pre-holdout selection."""
     if manifest.dataset.split.final_holdout is None:
@@ -2943,19 +3238,78 @@ def run_final_holdout_confirmation(
         expected_compiled_hash=str(artifact["compiled_strategy_contract_hash"]),
     )
 
-    authorization = _reserve_final_holdout_authorization(
-        manifest=manifest,
-        selection_report=selection_report,
-        selection_artifact=artifact,
-        manager=manager,
-        generated_at=generated_at,
+    reservation_transport = final_holdout_reservation
+    if reservation_transport.get("authority_scope_hash") != (
+        final_holdout_authority_scope_hash(manifest)
+    ):
+        raise ResearchValidationError("final_holdout_authority_scope_mismatch")
+    try:
+        authoritative_reservation = validate_final_holdout_reservation_transport(
+            manager=manager,
+            reservation=reservation_transport,
+        )
+    except ValueError as exc:
+        raise ResearchValidationError(
+            f"final_holdout_reservation_invalid:{exc}"
+        ) from exc
+    computed_attempt_index = _optional_int(
+        authoritative_reservation.get("computed_attempt_index")
     )
+    computed_holdout_reuse_count = _optional_int(
+        authoritative_reservation.get("computed_holdout_reuse_count")
+    )
+    selection_attempt_index = _optional_int(selection_report.get("attempt_index"))
+    selection_holdout_reuse_count = _optional_int(
+        selection_report.get("holdout_reuse_count")
+    )
+    if selection_attempt_index is None:
+        selection_attempt_index = computed_attempt_index
+    if selection_holdout_reuse_count is None:
+        selection_holdout_reuse_count = computed_holdout_reuse_count
+    if (
+        selection_attempt_index is None
+        or selection_holdout_reuse_count is None
+        or selection_attempt_index != computed_attempt_index
+        or selection_holdout_reuse_count != computed_holdout_reuse_count
+    ):
+        raise ResearchValidationError("final_holdout_selection_counter_mismatch")
+    gate_hash = pre_holdout_gate_hash
+    try:
+        activation = activate_final_holdout_reservation(
+            manager=manager,
+            reservation=reservation_transport,
+            manifest_hash=manifest.manifest_hash(),
+            selection_artifact_hash=str(artifact["content_hash"]),
+            selected_candidate_id=selected_id,
+            selection_attempt_index=selection_attempt_index,
+            selection_holdout_reuse_count=selection_holdout_reuse_count,
+            pre_holdout_gate_hash=gate_hash,
+            created_at=generated_at,
+        )
+    except ValueError as exc:
+        raise ResearchValidationError(f"final_holdout_activation_failed:{exc}") from exc
+    authorization = {
+        "path": str(reservation_transport["registry_path"]),
+        "prior_hash": str(
+            activation["reservation_row"].get("prior_registry_hash") or ""
+        ),
+        "row_hash": str(reservation_transport["reservation_row_hash"]),
+        "row": dict(activation["reservation_row"]),
+        "computed_attempt_index": activation["reservation_row"].get(
+            "computed_attempt_index"
+        ),
+        "computed_holdout_reuse_count": activation["reservation_row"].get(
+            "computed_holdout_reuse_count"
+        ),
+    }
     run_context = DatasetRunContext()
     snapshot = load_dataset_split(
         db_path=db_path,
         manifest=manifest,
         split_name="final_holdout",
         run_context=run_context,
+        manager=manager,
+        holdout_read_capability=activation["holdout_read_capability"],
     )
     _require_enough_candles((snapshot,))
     quality = _quality_reports(db_path=db_path, snapshots={"final_holdout": snapshot})[
@@ -3084,6 +3438,8 @@ def run_final_holdout_confirmation(
             **holdout_hashes,
             "selection_artifact_hash": artifact["content_hash"],
             "selected_candidate_id": selected_id,
+            "selection_attempt_index": selection_attempt_index,
+            "selection_holdout_reuse_count": selection_holdout_reuse_count,
             "candidate_count": 1,
             "confirmation_gate_result": gate_result,
             "final_holdout_result_hash_schema_version": (
@@ -3112,19 +3468,36 @@ def run_final_holdout_confirmation(
         "experiment_registry_prior_hash": authorization["prior_hash"],
         "experiment_registry_row_hash": authorization["row_hash"],
         "experiment_registry_completion_row_hash": completion["row_hash"],
+        "hypothesis_identity_source": authorization["row"].get(
+            "hypothesis_identity_source"
+        ),
+        "experiment_family_identity_source": authorization["row"].get(
+            "experiment_family_identity_source"
+        ),
+        "final_holdout_reservation_hash": reservation_transport["content_hash"],
+        "final_holdout_authority_scope_hash": reservation_transport[
+            "authority_scope_hash"
+        ],
+        "final_holdout_fence_generation": reservation_transport["fence_generation"],
+        "final_holdout_activation_row_hash": activation["row_hash"],
+        "pre_holdout_gate_hash": gate_hash,
         "declared_attempt_index": authorization["row"].get("declared_attempt_index"),
         "declared_holdout_reuse_count": authorization["row"].get(
             "declared_holdout_reuse_count"
         ),
-        "selection_attempt_index": authorization["row"].get("selection_attempt_index"),
-        "selection_holdout_reuse_count": authorization["row"].get(
-            "selection_holdout_reuse_count"
-        ),
+        "selection_attempt_index": selection_attempt_index,
+        "selection_holdout_reuse_count": selection_holdout_reuse_count,
         "computed_attempt_index": authorization.get("computed_attempt_index"),
-        "computed_holdout_reuse_count": completion["row"].get(
+        # This counter is the pre-exposure value against which the frozen
+        # selection was admitted.  The append-only completion row retains the
+        # post-exposure aggregate (which increases for the one authorized
+        # independent replay); substituting that later value here would make
+        # the confirmation contradict its own selection counter.
+        "computed_holdout_reuse_count": authorization.get(
             "computed_holdout_reuse_count"
         ),
         "authorization_row_hash": authorization["row_hash"],
+        "activation_row_hash": activation["row_hash"],
         "completion_row_hash": completion["row_hash"],
         "confirmation_gate_result": gate_result,
         "confirmation_gate_fail_reasons": gate_reasons,

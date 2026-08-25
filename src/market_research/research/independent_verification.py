@@ -33,6 +33,7 @@ from .experiment_registry import (
 from .final_selection import (
     compute_final_holdout_result_hash,
     validate_confirmation_artifact,
+    validate_selection_artifact,
 )
 from .reproduction import (
     ReproductionContractError,
@@ -63,6 +64,9 @@ _REPRODUCED_REPORT_ARTIFACT_HASH_LABEL = (
 )
 _REPRODUCED_TERMINAL_ARTIFACT_HASH_LABEL = (
     "independent_verification_reproduced_terminal_artifact"
+)
+_REPRODUCED_TERMINAL_SELECTION_ARTIFACT_HASH_LABEL = (
+    "independent_verification_reproduced_terminal_selection_artifact"
 )
 
 
@@ -510,6 +514,20 @@ def independent_reproduction_result_path(
     )
 
 
+def reproduced_terminal_selection_artifact_path(
+    *,
+    manager: ResearchPathManager,
+    experiment_id: str,
+) -> Path:
+    """Return the canonical immutable terminal-selection path for a replay."""
+
+    return manager.report_path(
+        "research",
+        experiment_id,
+        "terminal_selection_artifact.json",
+    ).resolve()
+
+
 def bind_reproduction_result_snapshot(
     *,
     manager: ResearchPathManager,
@@ -694,19 +712,36 @@ def independent_reproduction_evidence(
         }
     )
     if baseline.get("evidence_scope") == "validated_research_result":
+        terminal_selection_path = reproduced_terminal_selection_artifact_path(
+            manager=reproduction_manager,
+            experiment_id=experiment_id,
+        )
+        terminal_selection = _load_reproduced_terminal_selection_artifact(
+            path=terminal_selection_path,
+            expected_manifest_hash=manifest_hash,
+        )
         confirmation_path = (
             expected_report_path.parent / "final_holdout_confirmation.json"
         )
         confirmation = _load_reproduced_terminal_confirmation(
             path=confirmation_path,
             expected_manifest_hash=manifest_hash,
-            selection_artifact=report["payload"].get("selection_artifact"),
+            selection_artifact=terminal_selection["payload"],
             expected_registry_path=experiment_registry_path(
                 manager=reproduction_manager
             ),
         )
         evidence.update(
             {
+                "reproduced_terminal_selection_artifact_path": str(
+                    terminal_selection_path
+                ),
+                "reproduced_terminal_selection_artifact_content_hash": (
+                    terminal_selection["content_hash"]
+                ),
+                "reproduced_terminal_selection_artifact_hash": (
+                    terminal_selection["artifact_hash"]
+                ),
                 "reproduced_final_holdout_confirmation_path": str(confirmation_path),
                 "reproduced_final_holdout_confirmation_hash": confirmation[
                     "content_hash"
@@ -1280,10 +1315,18 @@ def _validate_completed_reproduction_evidence(
             result.experiment_id,
             "final_holdout_confirmation.json",
         ).resolve()
+        terminal_selection_path = reproduced_terminal_selection_artifact_path(
+            manager=reproduction_manager,
+            experiment_id=result.experiment_id,
+        )
+        terminal_selection = _load_reproduced_terminal_selection_artifact(
+            path=terminal_selection_path,
+            expected_manifest_hash=result.manifest_hash,
+        )
         terminal = _load_reproduced_terminal_confirmation(
             path=confirmation_path,
             expected_manifest_hash=result.manifest_hash,
-            selection_artifact=reproduced_report["payload"].get("selection_artifact"),
+            selection_artifact=terminal_selection["payload"],
             expected_registry_path=experiment_registry_path(
                 manager=reproduction_manager
             ),
@@ -1584,6 +1627,48 @@ def _load_reproduced_terminal_confirmation(
     }
 
 
+def _load_reproduced_terminal_selection_artifact(
+    *,
+    path: Path,
+    expected_manifest_hash: str,
+) -> dict[str, Any]:
+    """Load a replay's independently persisted terminal selection authority."""
+
+    if path.is_symlink():
+        raise IndependentVerificationError(
+            "independent_verification_terminal_selection_path_mismatch"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IndependentVerificationError(
+            "independent_verification_terminal_selection_invalid"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise IndependentVerificationError(
+            "independent_verification_terminal_selection_invalid"
+        )
+    reasons = validate_selection_artifact(payload)
+    content_hash = payload.get("content_hash")
+    if (
+        payload.get("manifest_hash") != expected_manifest_hash
+        or not isinstance(content_hash, str)
+        or _SHA256.fullmatch(content_hash) is None
+        or reasons
+    ):
+        raise IndependentVerificationError(
+            "independent_verification_terminal_selection_binding_mismatch"
+        )
+    return {
+        "payload": payload,
+        "content_hash": content_hash,
+        "artifact_hash": sha256_prefixed(
+            payload,
+            label=_REPRODUCED_TERMINAL_SELECTION_ARTIFACT_HASH_LABEL,
+        ),
+    }
+
+
 def _isolated_reproduction_manager(
     *,
     manager: ResearchPathManager,
@@ -1595,6 +1680,7 @@ def _isolated_reproduction_manager(
         artifact_root=manager.artifact_root / "reproductions" / experiment_id / prefix,
         report_root=manager.report_root / "reproductions" / experiment_id / prefix,
         cache_root=manager.cache_root / "reproductions" / experiment_id / prefix,
+        final_holdout_registry_path=manager.final_holdout_registry_path(),
     )
     return ResearchPathManager.from_settings(
         settings,

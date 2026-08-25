@@ -42,7 +42,8 @@ def _validate(parser: argparse.ArgumentParser) -> None:
         "--validation-experiment-bundle",
         help=(
             "absolute repository-external path to a precomputed, hash-bound "
-            "validation experiment bundle"
+            "diagnostic bundle; never promotable for validation-bound research, "
+            "which executes the manifest-native experiment contract"
         ),
     )
     parser.add_argument("--out")
@@ -155,6 +156,34 @@ def _export_strategy_package(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--result", required=True)
     parser.add_argument("--approval", required=True)
     parser.add_argument("--out", required=True)
+
+
+def _build_portable_research_package(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--result", required=True)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--receipt", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--dataset-mode",
+        required=True,
+        choices=("included", "external_content_addressed"),
+    )
+    parser.add_argument("--independent-reproduction")
+
+
+def _portable_research_package(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--package", required=True)
+    parser.add_argument("--external-artifact-manifest")
+    parser.add_argument("--external-dataset")
+    parser.add_argument("--out")
+
+
+def _reproduce_portable_research_package(parser: argparse.ArgumentParser) -> None:
+    _portable_research_package(parser)
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--verification-id")
+    parser.add_argument("--verification-version")
+    parser.add_argument("--verifier-assertion")
 
 
 def _compare_reports(parser: argparse.ArgumentParser) -> None:
@@ -345,6 +374,21 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
         "research-export-strategy-package",
         _export_strategy_package,
         "export a deterministic offline Strategy Research Package",
+    ),
+    (
+        "research-build-portable-package",
+        _build_portable_research_package,
+        "build a complete content-addressed classic research package archive",
+    ),
+    (
+        "research-verify-portable-package",
+        _portable_research_package,
+        "verify every classic research package artifact without a checkout",
+    ),
+    (
+        "research-reproduce-portable-package",
+        _reproduce_portable_research_package,
+        "replay a classic package from installed wheels in an isolated workspace",
     ),
     (
         "research-compare",

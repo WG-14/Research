@@ -22,6 +22,15 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from tools.reference_audit_authority import (
+        AUDIT_SESSION_HISTORY_RELATIVE_ROOT,
+        AUDIT_SESSION_ID,
+        INSTRUCTION_RELATIVE_PATH,
+        INSTRUCTION_SHA256,
+        RUBRIC_RELATIVE_PATH,
+        RUBRIC_SHA256,
+        validate_audit_authority,
+    )
     from tools.reference_audit_receipt import (
         DEFAULT_RECEIPT,
         ReceiptValidation,
@@ -33,6 +42,15 @@ try:
     )
     from tools.update_reference_audit import REPOSITORY_COMMIT_ROLE, build_matrix
 except ModuleNotFoundError:  # direct ``python tools/...`` execution
+    from reference_audit_authority import (  # type: ignore[import-not-found,no-redef]
+        AUDIT_SESSION_HISTORY_RELATIVE_ROOT,
+        AUDIT_SESSION_ID,
+        INSTRUCTION_RELATIVE_PATH,
+        INSTRUCTION_SHA256,
+        RUBRIC_RELATIVE_PATH,
+        RUBRIC_SHA256,
+        validate_audit_authority,
+    )
     from reference_audit_receipt import (  # type: ignore[import-not-found,no-redef]
         DEFAULT_RECEIPT,
         ReceiptValidation,
@@ -50,16 +68,10 @@ except ModuleNotFoundError:  # direct ``python tools/...`` execution
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = PROJECT_ROOT / "docs" / "investment-research-platform-audit.json"
-REFERENCE_RUBRIC_SHA256 = (
-    "ce507e16b37a8915ba34f12907aac3145dd512859951d391781e5a390fb675a5"
-)
-REFERENCE_INSTRUCTION_SHA256 = (
-    "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
-)
-RUBRIC_COPY_SHA256 = "28cd21646427b5205423eb0deb6df05aed752321e1be455b5ce77fe72eba8787"
-INSTRUCTION_COPY_SHA256 = (
-    "2e6d7b9719ab685af60743240278d1fcba82409fc51396673dedb4ea56a328bc"
-)
+REFERENCE_RUBRIC_SHA256 = RUBRIC_SHA256
+REFERENCE_INSTRUCTION_SHA256 = INSTRUCTION_SHA256
+RUBRIC_COPY_SHA256 = RUBRIC_SHA256
+INSTRUCTION_COPY_SHA256 = INSTRUCTION_SHA256
 EXPECTED_CRITERIA = 184
 EXPECTED_FATAL_GATES = 12
 DOMAIN_POINTS = {
@@ -167,7 +179,7 @@ _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RETAINED_HISTORY_SCOPE = re.compile(
     r"^retained_snapshot:"
-    r"(?P<path>docs/investment-research-platform-audit-history/"
+    rf"(?P<path>{re.escape(AUDIT_SESSION_HISTORY_RELATIVE_ROOT.as_posix())}/"
     r"iteration-(?P<iteration>[0-9]{3})-(?P<surface>[0-9a-f]{64})\.json);"
     r"assessment_surface:(?P=surface)$"
 )
@@ -517,6 +529,11 @@ def _validate_execution_receipt(
 def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
     matrix = load_matrix(path)
     findings: list[str] = []
+    matrix_root = path.resolve().parent.parent
+    try:
+        validate_audit_authority(project_root=matrix_root)
+    except ValueError as exc:
+        findings.append(str(exc))
     if set(matrix) != _EXPECTED_MATRIX_FIELDS:
         findings.append("matrix_fields_invalid")
     if matrix.get("schema_version") != 1:
@@ -537,18 +554,19 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
         "title": "Codex용 투자 연구 전용 플랫폼 레포지토리 완전성 감사 프롬프트",
         "sha256": REFERENCE_RUBRIC_SHA256,
         "instruction_sha256": REFERENCE_INSTRUCTION_SHA256,
+        "audit_session_id": AUDIT_SESSION_ID,
         "criterion_count": EXPECTED_CRITERIA,
         "fatal_gate_count": EXPECTED_FATAL_GATES,
         "domain_count": len(DOMAIN_POINTS),
         "repository_copy": {
-            "rubric_path": "docs/investment-research-platform-audit-rubric.md",
+            "rubric_path": RUBRIC_RELATIVE_PATH.as_posix(),
             "rubric_repository_inventory_sha256": RUBRIC_COPY_SHA256,
-            "instruction_path": "docs/investment-research-platform-audit-instructions.md",
+            "instruction_path": INSTRUCTION_RELATIVE_PATH.as_posix(),
             "instruction_repository_copy_sha256": INSTRUCTION_COPY_SHA256,
             "copy_role": (
-                "reviewed semantic inventory used to parse all 184 headings; "
-                "not claimed to be a byte-normalization of the canonical "
-                "attachment authorities above"
+                "byte-for-byte immutable copies of the two current user "
+                "attachments; the rubric copy is parsed directly for all "
+                "184 criteria and both hashes define this audit session"
             ),
         },
     }
@@ -575,16 +593,15 @@ def evaluate_matrix(path: Path = DEFAULT_MATRIX) -> AuditEvaluation:
     elif scoring != expected_scoring:
         findings.append("scoring_contract_mismatch")
 
-    matrix_root = path.resolve().parent.parent
     for label, relative, expected_hash in (
         (
             "rubric",
-            "docs/investment-research-platform-audit-rubric.md",
+            RUBRIC_RELATIVE_PATH.as_posix(),
             RUBRIC_COPY_SHA256,
         ),
         (
             "instruction",
-            "docs/investment-research-platform-audit-instructions.md",
+            INSTRUCTION_RELATIVE_PATH.as_posix(),
             INSTRUCTION_COPY_SHA256,
         ),
     ):

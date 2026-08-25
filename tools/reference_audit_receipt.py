@@ -25,8 +25,18 @@ from typing import Any, Mapping
 from xml.etree import ElementTree
 
 try:
+    from tools.reference_audit_authority import (
+        INSTRUCTION_SHA256,
+        RUBRIC_SHA256,
+        validate_audit_authority,
+    )
     from tools.reference_audit_surface import audit_surface
 except ModuleNotFoundError:  # direct ``python tools/...`` execution
+    from reference_audit_authority import (  # type: ignore[import-not-found,no-redef]
+        INSTRUCTION_SHA256,
+        RUBRIC_SHA256,
+        validate_audit_authority,
+    )
     from reference_audit_surface import audit_surface  # type: ignore[import-not-found,no-redef]
 
 
@@ -92,8 +102,6 @@ def _normalized_python_executable(
 
 
 PYTHON_EXECUTABLE = _normalized_python_executable(sys.executable)
-RUBRIC_SHA256 = "ce507e16b37a8915ba34f12907aac3145dd512859951d391781e5a390fb675a5"
-INSTRUCTION_SHA256 = "26871e2de2deb4a86b8bee87bdbb30b731eb19e82e61ee0a64bbf0c2cebfc8de"
 _DETERMINISTIC_ENVIRONMENT = {
     "PYTHONHASHSEED": "0",
     "OMP_NUM_THREADS": "1",
@@ -249,6 +257,7 @@ def build_receipt_document(
 ) -> dict[str, object]:
     """Build a hash-addressed receipt from an observed successful run."""
 
+    validate_audit_authority()
     if tests_passed < 1:
         raise ValueError("receipt_tests_passed_invalid")
     payload: dict[str, object] = {

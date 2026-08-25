@@ -141,6 +141,108 @@ def _load_preflight():
     return module
 
 
+def _dataset_transformation_trust_fixture(
+    directory: Path,
+) -> tuple[dict[str, str], Path, Path, dict[str, object]]:
+    key_root = directory / "dataset-transformation-keys"
+    key_root.mkdir()
+    key_path = key_root / "steward.ed25519.pub"
+    key_path.write_bytes(b"ed25519:" + base64.b64encode(os.urandom(32)) + b"\n")
+    key_hash = "sha256:" + hashlib.sha256(key_path.read_bytes()).hexdigest()
+    current = datetime.now(UTC)
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "artifact_type": "dataset_transformation_trust_store",
+        "authority_id": "test-data-steward-authority",
+        "issued_at": (current - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        "expires_at": (current + timedelta(days=30))
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "keys": [
+            {
+                "key_id": "test-steward-key",
+                "algorithm": "ed25519",
+                "public_key_path": str(key_path),
+                "public_key_content_hash": key_hash,
+                "valid_from": (current - timedelta(days=2))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "valid_until": (current + timedelta(days=20))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "revoked_at": None,
+                "revocation_reason": "",
+            }
+        ],
+    }
+    trust_path = directory / "dataset-transformation-trust.json"
+    trust_path.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env = {
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH": str(trust_path),
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH": (
+            "sha256:" + hashlib.sha256(trust_path.read_bytes()).hexdigest()
+        ),
+    }
+    return env, trust_path, key_root, payload
+
+
+def _independent_verifier_trust_fixture(
+    directory: Path,
+) -> tuple[dict[str, str], Path, Path, dict[str, object]]:
+    key_root = directory / "independent-verifier-keys"
+    key_root.mkdir(parents=True)
+    key_path = key_root / "verifier.ed25519.pub"
+    key_path.write_bytes(b"ed25519:" + base64.b64encode(os.urandom(32)) + b"\n")
+    key_hash = "sha256:" + hashlib.sha256(key_path.read_bytes()).hexdigest()
+    current = datetime.now(UTC)
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "artifact_type": "independent_verifier_trust_store",
+        "authority_id": "test-independent-identity-authority",
+        "issued_at": (current - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        "expires_at": (current + timedelta(days=30))
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "keys": [
+            {
+                "key_id": "test-verifier-key",
+                "algorithm": "ed25519",
+                "public_key_path": str(key_path),
+                "public_key_content_hash": key_hash,
+                "valid_from": (current - timedelta(days=2))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "valid_until": (current + timedelta(days=20))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "revoked_at": None,
+                "revocation_reason": "",
+            }
+        ],
+    }
+    trust_path = directory / "independent-verifier-trust.json"
+    trust_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    env = {
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH": str(trust_path),
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH": (
+            "sha256:" + hashlib.sha256(trust_path.read_bytes()).hexdigest()
+        ),
+    }
+    return env, trust_path, key_root, payload
+
+
 def test_native_systemd_is_the_single_official_deployment() -> None:
     assert (ROOT / "deploy" / "OFFICIAL_DEPLOYMENT").read_text().strip() == (
         "native-systemd"
@@ -150,6 +252,15 @@ def test_native_systemd_is_the_single_official_deployment() -> None:
     assert "research-operations-reference" in compose
     reference = (ROOT / "deploy" / "compose-reference.md").read_text()
     assert "not the supported production deployment" in reference
+
+
+def test_preflight_requires_every_child_sandbox_runtime_tool() -> None:
+    module = _load_preflight()
+    assert {
+        "/usr/bin/bwrap",
+        "/usr/bin/prlimit",
+        "/usr/bin/timeout",
+    }.issubset(module._REQUIRED_NATIVE_TOOLS)
 
 
 def test_native_unit_inventory_and_target_membership() -> None:
@@ -216,6 +327,16 @@ def test_long_running_units_are_supervised_and_hardened(
         "research-operations-web.service": "Group=research-web-proxy",
         "research-operations-ops-api.service": "Group=research-ops-proxy",
     }.get(name, "Group=research-ops")
+    namespace_contract = (
+        "RestrictNamespaces=mnt user ipc pid uts net"
+        if name == "research-operations-job-worker.service"
+        else "RestrictNamespaces=true"
+    )
+    tunables_contract = (
+        "ProtectKernelTunables=false"
+        if name == "research-operations-job-worker.service"
+        else "ProtectKernelTunables=true"
+    )
     contracts = (
         expected_user,
         expected_group,
@@ -231,8 +352,9 @@ def test_long_running_units_are_supervised_and_hardened(
         "ProtectSystem=strict",
         "ProtectHome=true",
         "ProtectProc=invisible",
+        tunables_contract,
         "InaccessiblePaths=/etc/research-ops/secrets",
-        "RestrictNamespaces=true",
+        namespace_contract,
         "MemoryDenyWriteExecute=true",
         "TasksMax=",
         "MemoryMax=",
@@ -259,6 +381,17 @@ def test_workers_and_validator_use_durable_process_contracts() -> None:
         "LoadCredential=operated-execution.key:"
         "/etc/research-ops/secrets/operated-execution.key"
     ) in job
+    assert "RestrictNamespaces=mnt user ipc pid uts net" in job
+    assert "RestrictNamespaces=true" not in job
+    assert "ProtectKernelTunables=false" in job
+    assert (
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in job
+    )
+    assert (
+        "ReadWritePaths=/srv/research/registry/final_holdout_authority.jsonl "
+        "/srv/research/registry/final_holdout_authority.jsonl.lock" in job
+    )
+    assert "ReadWritePaths=/srv/research/registry\n" not in job
     alert_worker = (SYSTEMD / "research-operations-alert-worker.service").read_text()
     assert "research-ops alert-worker" in alert_worker
     assert "RESEARCH_OPS_DATABASE_ROLE=runtime" in alert_worker
@@ -899,6 +1032,209 @@ def test_preflight_accepts_exact_root_public_verification_key(
     module._root_public_file(Path("/root-public"), "test")
 
 
+def test_preflight_dataset_transformation_trust_is_fixed_and_byte_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    env, trust_path, key_root, _payload = _dataset_transformation_trust_fixture(
+        tmp_path
+    )
+    with pytest.raises(
+        module.PreflightError,
+        match="dataset_transformation_trust_path_invalid",
+    ):
+        module._validate_dataset_transformation_trust(env)
+
+    monkeypatch.setattr(module, "_DATASET_TRANSFORMATION_TRUST_STORE", trust_path)
+    monkeypatch.setattr(module, "_DATASET_TRANSFORMATION_KEY_ROOT", key_root)
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda path, _code: path.stat(),
+    )
+    monkeypatch.setattr(module, "_exact_directory", lambda *_args, **_kwargs: None)
+    module._validate_dataset_transformation_trust(env)
+
+    env["RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH"] = "sha256:" + "0" * 64
+    with pytest.raises(
+        module.PreflightError,
+        match="dataset_transformation_trust_store_hash_mismatch",
+    ):
+        module._validate_dataset_transformation_trust(env)
+
+
+def test_preflight_dataset_transformation_trust_rejects_revoked_only_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    env, trust_path, key_root, payload = _dataset_transformation_trust_fixture(
+        tmp_path
+    )
+    current = datetime.now(UTC)
+    payload["keys"][0]["revoked_at"] = (
+        (current - timedelta(minutes=1))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    payload["keys"][0]["revocation_reason"] = "test compromise"
+    trust_path.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env["RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH"] = (
+        "sha256:" + hashlib.sha256(trust_path.read_bytes()).hexdigest()
+    )
+    monkeypatch.setattr(module, "_DATASET_TRANSFORMATION_TRUST_STORE", trust_path)
+    monkeypatch.setattr(module, "_DATASET_TRANSFORMATION_KEY_ROOT", key_root)
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda path, _code: path.stat(),
+    )
+    monkeypatch.setattr(module, "_exact_directory", lambda *_args, **_kwargs: None)
+    with pytest.raises(
+        module.PreflightError,
+        match="dataset_transformation_trust_active_key_required",
+    ):
+        module._validate_dataset_transformation_trust(env)
+
+
+def test_preflight_dataset_transformation_trust_rejects_key_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    env, trust_path, key_root, payload = _dataset_transformation_trust_fixture(
+        tmp_path
+    )
+    key_path = Path(payload["keys"][0]["public_key_path"])
+    key_path.write_bytes(b"ed25519:" + base64.b64encode(os.urandom(32)) + b"\n")
+    monkeypatch.setattr(module, "_DATASET_TRANSFORMATION_TRUST_STORE", trust_path)
+    monkeypatch.setattr(module, "_DATASET_TRANSFORMATION_KEY_ROOT", key_root)
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda path, _code: path.stat(),
+    )
+    monkeypatch.setattr(module, "_exact_directory", lambda *_args, **_kwargs: None)
+    with pytest.raises(
+        module.PreflightError,
+        match="dataset_transformation_trust_key_hash_mismatch",
+    ):
+        module._validate_dataset_transformation_trust(env)
+
+
+def test_preflight_independent_verifier_trust_is_fixed_and_byte_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    env, trust_path, key_root, _payload = _independent_verifier_trust_fixture(
+        tmp_path
+    )
+    with pytest.raises(
+        module.PreflightError,
+        match="independent_verifier_trust_path_invalid",
+    ):
+        module._validate_independent_verifier_trust(env)
+
+    monkeypatch.setattr(module, "_INDEPENDENT_VERIFIER_TRUST_STORE", trust_path)
+    monkeypatch.setattr(module, "_INDEPENDENT_VERIFIER_KEY_ROOT", key_root)
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda path, _code: path.stat(),
+    )
+    monkeypatch.setattr(module, "_exact_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_root_owned_nonwritable_parent_chain",
+        lambda *_args, **_kwargs: None,
+    )
+    module._validate_independent_verifier_trust(env)
+
+    env["RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH"] = "sha256:" + "0" * 64
+    with pytest.raises(
+        module.PreflightError,
+        match="independent_verifier_trust_store_hash_mismatch",
+    ):
+        module._validate_independent_verifier_trust(env)
+
+
+def test_preflight_independent_verifier_trust_rejects_revoked_only_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    env, trust_path, key_root, payload = _independent_verifier_trust_fixture(tmp_path)
+    current = datetime.now(UTC)
+    payload["keys"][0]["revoked_at"] = (
+        (current - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+    )
+    payload["keys"][0]["revocation_reason"] = "issuer compromise"
+    trust_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    env["RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH"] = (
+        "sha256:" + hashlib.sha256(trust_path.read_bytes()).hexdigest()
+    )
+    monkeypatch.setattr(module, "_INDEPENDENT_VERIFIER_TRUST_STORE", trust_path)
+    monkeypatch.setattr(module, "_INDEPENDENT_VERIFIER_KEY_ROOT", key_root)
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda path, _code: path.stat(),
+    )
+    monkeypatch.setattr(module, "_exact_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_root_owned_nonwritable_parent_chain",
+        lambda *_args, **_kwargs: None,
+    )
+    with pytest.raises(
+        module.PreflightError,
+        match="independent_verifier_trust_active_key_required",
+    ):
+        module._validate_independent_verifier_trust(env)
+
+
+def test_preflight_independent_verifier_trust_rejects_key_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    env, trust_path, key_root, payload = _independent_verifier_trust_fixture(tmp_path)
+    key_path = Path(payload["keys"][0]["public_key_path"])
+    key_path.write_bytes(b"ed25519:" + base64.b64encode(os.urandom(32)) + b"\n")
+    monkeypatch.setattr(module, "_INDEPENDENT_VERIFIER_TRUST_STORE", trust_path)
+    monkeypatch.setattr(module, "_INDEPENDENT_VERIFIER_KEY_ROOT", key_root)
+    monkeypatch.setattr(
+        module,
+        "_root_public_file",
+        lambda path, _code: path.stat(),
+    )
+    monkeypatch.setattr(module, "_exact_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_root_owned_nonwritable_parent_chain",
+        lambda *_args, **_kwargs: None,
+    )
+    with pytest.raises(
+        module.PreflightError,
+        match="independent_verifier_trust_key_hash_mismatch",
+    ):
+        module._validate_independent_verifier_trust(env)
+
+
 def test_preflight_requires_setgid_shared_research_root(
     tmp_path: Path,
 ) -> None:
@@ -921,6 +1257,105 @@ def test_preflight_requires_setgid_shared_research_root(
             owner_uid=os.getuid(),
             group_gid=os.getgid(),
             mode=0o2770,
+        )
+
+
+def test_preflight_requires_exact_shared_holdout_authority_inodes(
+    tmp_path: Path,
+) -> None:
+    module = _load_preflight()
+    target = tmp_path / "final_holdout_authority.jsonl"
+    target.write_bytes(b"")
+    target.chmod(0o660)
+
+    module._exact_shared_authority_file(
+        target,
+        "authority",
+        owner_uid=os.getuid(),
+        group_gid=os.getgid(),
+    )
+
+    target.chmod(0o640)
+    with pytest.raises(
+        module.PreflightError,
+        match="authority_file_contract_invalid",
+    ):
+        module._exact_shared_authority_file(
+            target,
+            "authority",
+            owner_uid=os.getuid(),
+            group_gid=os.getgid(),
+        )
+
+
+def test_preflight_requires_kernel_append_only_holdout_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_preflight()
+    target = tmp_path / "final_holdout_authority.jsonl"
+    target.write_bytes(b"")
+    target.chmod(0o660)
+
+    monkeypatch.setattr(module, "_linux_file_flags", lambda _fd, _code: 0)
+    with pytest.raises(
+        module.PreflightError,
+        match="authority_file_append_only_missing:final_holdout_authority",
+    ):
+        module._exact_shared_authority_file(
+            target,
+            "final_holdout_authority",
+            owner_uid=os.getuid(),
+            group_gid=os.getgid(),
+            require_append_only=True,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_linux_file_flags",
+        lambda _fd, _code: module._LINUX_FS_APPEND_FL,
+    )
+    module._exact_shared_authority_file(
+        target,
+        "final_holdout_authority",
+        owner_uid=os.getuid(),
+        group_gid=os.getgid(),
+        require_append_only=True,
+    )
+
+
+def test_preflight_rejects_symlinked_or_hardlinked_holdout_authority(
+    tmp_path: Path,
+) -> None:
+    module = _load_preflight()
+    target = tmp_path / "authority-target.jsonl"
+    target.write_bytes(b"")
+    target.chmod(0o660)
+    symlink = tmp_path / "authority-symlink.jsonl"
+    symlink.symlink_to(target)
+
+    with pytest.raises(
+        module.PreflightError,
+        match="authority_file_contract_invalid",
+    ):
+        module._exact_shared_authority_file(
+            symlink,
+            "authority",
+            owner_uid=os.getuid(),
+            group_gid=os.getgid(),
+        )
+
+    hardlink = tmp_path / "authority-hardlink.jsonl"
+    hardlink.hardlink_to(target)
+    with pytest.raises(
+        module.PreflightError,
+        match="authority_file_contract_invalid",
+    ):
+        module._exact_shared_authority_file(
+            target,
+            "authority",
+            owner_uid=os.getuid(),
+            group_gid=os.getgid(),
         )
 
 
@@ -1072,6 +1507,11 @@ def test_runtime_example_requires_owners_release_pki_and_offsite_policy() -> Non
         "RESEARCH_OPS_ALERT_MAXIMUM_EVALUATED_PER_CYCLE",
         "RESEARCH_OPS_ALERT_MAXIMUM_DELIVERIES_PER_CYCLE",
         "RESEARCH_OPS_ALERT_MAXIMUM_ESCALATIONS_PER_CYCLE",
+        "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH",
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
+        "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_HASH",
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_PATH",
+        "RESEARCH_DATASET_TRANSFORMATION_TRUST_STORE_HASH",
     ):
         assert f"{key}=" in example
     assert "RESEARCH_OPS_OFFSITE_REQUIRED=true" in example

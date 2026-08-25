@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 
 
 PRICES = (10.0, 9.0, 8.0, 9.0, 11.0, 12.0, 10.0, 8.0, 7.0, 8.0, 10.0, 12.0)

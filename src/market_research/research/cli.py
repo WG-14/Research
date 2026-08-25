@@ -13,13 +13,8 @@ from market_research.storage_io import (
     write_json_atomic_create_or_verify,
 )
 from market_research.application import (
-    ActorContext,
-    GovernanceSubjectRef,
-    HumanReviewRequest,
-    IndependentVerificationReference,
-    ResearchGovernanceApplicationService,
-    RequestedChange,
-    StrategyApprovalRequest,
+    abort_operated_final_holdout,
+    reserve_trusted_independent_reproduction_holdout,
 )
 
 from .artifact_store import ArtifactBudgetExceeded
@@ -33,7 +28,9 @@ from .experiment_registry import (
     compute_row_hash,
     experiment_registry_chain_reasons,
     experiment_registry_path,
+    final_holdout_authority_scope_hash,
     load_experiment_registry_rows,
+    publish_pre_holdout_gate_artifact,
     validate_experiment_registry_binding,
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
@@ -45,6 +42,7 @@ from .independent_verification import (
     independent_code_binding_hash,
     independent_reproduction_evidence,
     publish_independent_verification,
+    reproduced_terminal_selection_artifact_path,
 )
 from .principal_assertion import (
     INDEPENDENT_VERIFIER_ROLE,
@@ -57,12 +55,7 @@ from .principal_assertion import (
 from .final_selection import (
     validate_confirmation_artifact,
     validate_final_selection_report,
-)
-from .governance import (
-    GovernanceError,
-    GovernanceSubject,
-    GovernanceSubjectType,
-    append_lifecycle_transition,
+    validate_selection_artifact,
 )
 from .reproduction import (
     ReproductionContractError,
@@ -77,7 +70,15 @@ from .research_classification import requires_candidate_validation
 from .run_summary import ResearchRunSummary, build_research_run_summary
 from .validation_pipeline import (
     ValidationRunError,
+    _freeze_native_nested_selection_artifact,
+    _native_nested_final_selection_result,
+    validate_validated_research_result,
     validation_next_action_payload,
+)
+from .validation_experiment_bundle import derive_validation_experiment_capability
+from .validation_experiment_execution import (
+    NativeValidationExperimentExecution,
+    execute_manifest_validation_experiments,
 )
 from .validation_protocol import (
     ResearchValidationError,
@@ -94,29 +95,21 @@ from .application import ResearchApplicationService
 from market_research.research_composition import builtin_strategy_registry
 
 
-def _governance_subject(
-    subject_type: str, subject_id: str, subject_version: str
-) -> GovernanceSubject:
-    return GovernanceSubject(
-        GovernanceSubjectType(subject_type),
-        subject_id,
-        subject_version,
+_CLI_GOVERNANCE_DISABLED_ERROR = "authenticated_internal_web_governance_required"
+
+
+def _deny_cli_governance_mutation(
+    context: "ResearchAppContext",
+    *,
+    command: str,
+) -> int:
+    """Keep material governance outside the unauthenticated CLI boundary."""
+
+    context.printer(
+        "[RESEARCH-GOVERNANCE-CLI-DISABLED] "
+        f"command={command} error={_CLI_GOVERNANCE_DISABLED_ERROR}"
     )
-
-
-def _parse_evidence_assignments(values: tuple[str, ...]) -> dict[str, str]:
-    evidence: dict[str, str] = {}
-    for value in values:
-        key, separator, digest = value.partition("=")
-        if (
-            not separator
-            or not key.strip()
-            or not digest.strip()
-            or key.strip() in evidence
-        ):
-            raise GovernanceError("governance_evidence_assignment_invalid")
-        evidence[key.strip()] = digest.strip()
-    return evidence
+    return 1
 
 
 def cmd_research_governance_transition(
@@ -131,21 +124,10 @@ def cmd_research_governance_transition(
     reason: str,
     evidence: tuple[str, ...],
 ) -> int:
-    try:
-        row = append_lifecycle_transition(
-            manager=context.paths,
-            subject=_governance_subject(subject_type, subject_id, subject_version),
-            from_state=from_state,
-            to_state=to_state,
-            actor_id=actor_id,
-            reason=reason,
-            evidence_hashes=_parse_evidence_assignments(evidence),
-        )
-    except (GovernanceError, ValueError) as exc:
-        context.printer(f"[RESEARCH-GOVERNANCE-TRANSITION] error={exc}")
-        return 1
-    context.printer(f"[RESEARCH-GOVERNANCE-TRANSITION] row_hash={row['row_hash']}")
-    return 0
+    return _deny_cli_governance_mutation(
+        context,
+        command="research-governance-transition",
+    )
 
 
 def cmd_research_record_human_review(
@@ -162,49 +144,10 @@ def cmd_research_record_human_review(
     requested_changes_path: str | None,
     resolved_requirement_ids: tuple[str, ...],
 ) -> int:
-    try:
-        requested: tuple[RequestedChange, ...] = ()
-        if requested_changes_path:
-            payload = json.loads(
-                Path(requested_changes_path).read_text(encoding="utf-8")
-            )
-            if not isinstance(payload, list) or not all(
-                isinstance(item, dict) for item in payload
-            ):
-                raise GovernanceError(
-                    "human_review_requested_changes_file_must_be_array"
-                )
-            requested = tuple(RequestedChange.model_validate(item) for item in payload)
-        subject = GovernanceSubjectRef.model_validate(
-            {
-                "subject_type": subject_type,
-                "subject_id": subject_id,
-                "subject_version": subject_version,
-            }
-        )
-        result = ResearchGovernanceApplicationService(context.paths).record_review(
-            HumanReviewRequest.model_validate(
-                {
-                    "subject": subject,
-                    "decision": decision,
-                    "actor": ActorContext(
-                        actor_id=reviewer_id,
-                        roles=(reviewer_role,),
-                        permissions=frozenset({"*"}),
-                        source="cli",
-                    ),
-                    "rationale": rationale,
-                    "reviewed_artifact_hash": reviewed_artifact_hash,
-                    "requested_changes": requested,
-                    "resolved_requirement_ids": resolved_requirement_ids,
-                }
-            )
-        )
-    except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
-        context.printer(f"[RESEARCH-HUMAN-REVIEW] error={exc}")
-        return 1
-    context.printer(f"[RESEARCH-HUMAN-REVIEW] row_hash={result.row_hash}")
-    return 0
+    return _deny_cli_governance_mutation(
+        context,
+        command="research-record-human-review",
+    )
 
 
 def cmd_research_approve_strategy_candidate(
@@ -221,36 +164,10 @@ def cmd_research_approve_strategy_candidate(
     originator_ids: tuple[str, ...],
     out_path: str,
 ) -> int:
-    try:
-        result = ResearchGovernanceApplicationService(context.paths).approve_candidate(
-            StrategyApprovalRequest(
-                source_report_path=result_path,
-                subject_version=subject_version,
-                actor=ActorContext(
-                    actor_id=reviewer_id,
-                    roles=("research_approver",),
-                    permissions=frozenset({"*"}),
-                    source="cli",
-                ),
-                rationale=rationale,
-                resolved_requirement_ids=resolved_requirement_ids,
-                independent_verification=IndependentVerificationReference(
-                    verification_id=verification_id,
-                    version=verification_version,
-                    content_hash=verification_hash,
-                ),
-                originator_actor_ids=frozenset(originator_ids),
-                prohibited_actor_ids=frozenset(originator_ids),
-                output_path=out_path,
-            )
-        )
-    except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
-        context.printer(f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] error={exc}")
-        return 1
-    context.printer(
-        f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] content_hash={result.content_hash}"
+    return _deny_cli_governance_mutation(
+        context,
+        command="research-approve-strategy-candidate",
     )
-    return 0
 
 
 def _required_runtime_db_path(
@@ -868,6 +785,9 @@ def cmd_research_reproduce_run(
     status = "REPRODUCTION_FAILED"
     payload: dict[str, object] = {}
     terminal_confirmation: dict[str, Any] | None = None
+    terminal_validation_execution: NativeValidationExperimentExecution | None = None
+    reproduced_pre_holdout_gate_hash: str | None = None
+    reproduced_terminal_selection_report: dict[str, Any] | None = None
     manifest = None
     receipt: dict[str, object]
     assertion: PrincipalAssertion | None = None
@@ -925,6 +845,14 @@ def cmd_research_reproduce_run(
             if receipt["experiment_id"] != manifest.experiment_id:
                 raise ReproductionContractError(
                     "receipt experiment_id does not match manifest"
+                )
+            if (
+                receipt.get("evidence_scope") == "validated_research_result"
+                and not publish_verification
+            ):
+                raise ReproductionContractError(
+                    "validated terminal reproduction requires a signed verifier "
+                    "assertion"
                 )
             independent_reproduction_evidence(
                 manager=context.paths,
@@ -1000,6 +928,12 @@ def cmd_research_reproduce_run(
                 / "reproductions"
                 / manifest.experiment_id
                 / prefix,
+                # A reproduction may isolate derived output roots, but terminal
+                # holdout exposure remains governed by the same durable,
+                # cross-run authority as the primary confirmation.
+                final_holdout_registry_path=(
+                    context.paths.final_holdout_registry_path()
+                ),
             )
             isolated_paths = type(context.paths).from_settings(
                 isolated_settings, project_root=context.paths.project_root
@@ -1054,14 +988,86 @@ def cmd_research_reproduce_run(
                     "reproduced_receipt_invalid", exc
                 ) from exc
             if receipt.get("evidence_scope") == "validated_research_result":
-                terminal_confirmation = _run_terminal_holdout_reproduction(
+                (
+                    terminal_validation_execution,
+                    reproduced_pre_holdout_gate_hash,
+                    reproduced_terminal_selection_report,
+                ) = _run_terminal_validation_experiment_reproduction(
                     manifest=manifest,
                     reproduced_report=reproduced_report,
+                    baseline_receipt=receipt,
                     db_path=db_path,
                     manager=isolated_paths,
                     strategy_registry=strategy_registry,
                     progress_callback=progress_callback,
                 )
+                primary_completion_row_hash = (
+                    _primary_completion_row_hash_for_reproduction(
+                        context=context,
+                        manifest=manifest,
+                        receipt=receipt,
+                    )
+                )
+                final_holdout_reservation = (
+                    reserve_trusted_independent_reproduction_holdout(
+                        paths=context.paths,
+                        strategy_registry=strategy_registry,
+                        manifest_path=manifest_path,
+                        request_id=(
+                            "independent-reproduction:"
+                            + str(verification_id)
+                            + ":"
+                            + str(verification_version)
+                        ),
+                        request_hash=sha256_prefixed(
+                            {
+                                "schema_version": 1,
+                                "baseline_receipt_hash": receipt_hash,
+                                "manifest_hash": manifest.manifest_hash(),
+                                "verification_id": verification_id,
+                                "verification_version": verification_version,
+                                "principal_assertion_hash": (
+                                    _required_principal_assertion(
+                                        assertion
+                                    ).content_hash
+                                ),
+                                "pre_holdout_gate_hash": (
+                                    reproduced_pre_holdout_gate_hash
+                                ),
+                            },
+                            label=("independent_terminal_reproduction_request"),
+                        ),
+                        primary_completion_row_hash=(primary_completion_row_hash),
+                        baseline_receipt_path=receipt_path,
+                        principal_assertion_path=str(verifier_assertion_path),
+                    )
+                )
+                try:
+                    terminal_confirmation = _run_terminal_holdout_reproduction(
+                        manifest=manifest,
+                        reproduced_report=(reproduced_terminal_selection_report),
+                        db_path=db_path,
+                        manager=isolated_paths,
+                        strategy_registry=strategy_registry,
+                        progress_callback=progress_callback,
+                        pre_holdout_gate_hash=(reproduced_pre_holdout_gate_hash),
+                        final_holdout_reservation=(final_holdout_reservation),
+                    )
+                except Exception:
+                    # Never strand an issued fence in a pending state.  The
+                    # immutable abort consumes this signed exposure attempt;
+                    # a retry requires a new independently signed assertion.
+                    try:
+                        abort_operated_final_holdout(
+                            paths=context.paths,
+                            reservation=final_holdout_reservation,
+                            reason="independent_reproduction_failed",
+                        )
+                    except (OSError, ValueError):
+                        # A completed/previously terminal fence cannot be
+                        # aborted; retain the original reproduction failure.
+                        pass
+                    raise
         except _ReproductionExecutionError as wrapped:
             status = "REPRODUCTION_FAILED"
             payload = _reproduction_error_payload(
@@ -1181,6 +1187,23 @@ def cmd_research_reproduce_run(
         )
         mismatches = [dict(item) for item in comparison.mismatches]
         if receipt.get("evidence_scope") == "validated_research_result":
+            if terminal_validation_execution is None:
+                mismatches.append(
+                    {
+                        "path": "terminal_validation_experiments.execution",
+                        "expected": "independently reproduced native execution",
+                        "actual": None,
+                        "kind": "missing_value",
+                    }
+                )
+            else:
+                mismatches.extend(
+                    _terminal_validation_experiment_reproduction_mismatches(
+                        receipt=receipt,
+                        execution=terminal_validation_execution,
+                        pre_holdout_gate_hash=reproduced_pre_holdout_gate_hash,
+                    )
+                )
             if terminal_confirmation is None:
                 mismatches.append(
                     {
@@ -1233,6 +1256,23 @@ def cmd_research_reproduce_run(
                     ),
                     "reproduced_final_holdout_result_hash": str(
                         terminal_confirmation["final_holdout_result_hash"]
+                    ),
+                }
+            )
+        if terminal_validation_execution is not None:
+            payload.update(
+                {
+                    "reproduced_validation_experiment_bundle_hash": (
+                        terminal_validation_execution.bundle.content_hash
+                    ),
+                    "reproduced_native_validation_computation_receipt_path": (
+                        terminal_validation_execution.computation_receipt_path
+                    ),
+                    "reproduced_native_validation_computation_receipt_hash": (
+                        terminal_validation_execution.computation_receipt_hash
+                    ),
+                    "reproduced_pre_holdout_gate_hash": (
+                        reproduced_pre_holdout_gate_hash
                     ),
                 }
             )
@@ -1308,17 +1348,12 @@ def cmd_research_reproduce_run(
         )
 
 
-def _run_terminal_holdout_reproduction(
+def _terminal_reproduction_candidates(
     *,
     manifest: Any,
     reproduced_report: dict[str, Any],
-    db_path: Path | None,
     manager: Any,
-    strategy_registry: Any,
-    progress_callback: Any,
-) -> dict[str, Any]:
-    """Replay the frozen candidate on holdout inside the isolated root."""
-
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for candidate in reproduced_report.get("candidates") or []:
         if not isinstance(candidate, dict):
@@ -1340,6 +1375,240 @@ def _run_terminal_holdout_reproduction(
             )
         else:
             candidates.append(candidate)
+    return candidates
+
+
+def _primary_completion_row_hash_for_reproduction(
+    *,
+    context: "ResearchAppContext",
+    manifest: Any,
+    receipt: dict[str, object],
+) -> str:
+    """Resolve the primary completion bound by a terminal receipt.
+
+    The trusted reservation boundary revalidates the assertion, receipt,
+    confirmation, registry path, and completion row under its lock.  This
+    helper only resolves the exact primary row identity that it must verify;
+    it never creates an authorization from an untrusted caller string.
+    """
+
+    binding = receipt.get("source_evidence_binding")
+    if not isinstance(binding, dict):
+        raise ReproductionContractError(
+            "terminal reproduction source evidence binding missing"
+        )
+    expected_confirmation_hash = binding.get("final_holdout_confirmation_hash")
+    if not isinstance(expected_confirmation_hash, str) or not (
+        expected_confirmation_hash.startswith("sha256:")
+    ):
+        raise ReproductionContractError(
+            "terminal reproduction confirmation binding invalid"
+        )
+    confirmation_path = context.paths.report_path(
+        "research",
+        manifest.experiment_id,
+        "final_holdout_confirmation.json",
+    )
+    if confirmation_path.is_symlink():
+        raise ReproductionContractError(
+            "terminal reproduction primary confirmation path invalid"
+        )
+    try:
+        confirmation = json.loads(confirmation_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReproductionContractError(
+            "terminal reproduction primary confirmation unreadable"
+        ) from exc
+    if (
+        not isinstance(confirmation, dict)
+        or confirmation.get("manifest_hash") != manifest.manifest_hash()
+        or confirmation.get("content_hash") != expected_confirmation_hash
+    ):
+        raise ReproductionContractError(
+            "terminal reproduction primary confirmation binding mismatch"
+        )
+    completion_row_hash = confirmation.get("experiment_registry_completion_row_hash")
+    if not isinstance(completion_row_hash, str) or not (
+        completion_row_hash.startswith("sha256:")
+    ):
+        raise ReproductionContractError(
+            "terminal reproduction primary completion row missing"
+        )
+    return completion_row_hash
+
+
+def _run_terminal_validation_experiment_reproduction(
+    *,
+    manifest: Any,
+    reproduced_report: dict[str, Any],
+    baseline_receipt: dict[str, object],
+    db_path: Path | None,
+    manager: Any,
+    strategy_registry: Any,
+    progress_callback: Any,
+) -> tuple[
+    NativeValidationExperimentExecution,
+    str,
+    dict[str, Any],
+]:
+    """Replay all manifest-native pre-holdout experiments in isolation."""
+
+    candidates = _terminal_reproduction_candidates(
+        manifest=manifest,
+        reproduced_report=reproduced_report,
+        manager=manager,
+    )
+    preliminary_selection_artifact = reproduced_report.get("selection_artifact")
+    if not isinstance(preliminary_selection_artifact, dict):
+        raise ReproductionContractError(
+            "terminal validation reproduction selection artifact missing"
+        )
+    capability = derive_validation_experiment_capability(
+        manifest_hash=manifest.manifest_hash(),
+        research_classification=manifest.research_classification,
+    )
+    execution = execute_manifest_validation_experiments(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        candidates=candidates,
+        preliminary_selection_artifact_hash=str(
+            preliminary_selection_artifact.get("content_hash") or ""
+        ),
+        dataset_snapshot_hash=str(reproduced_report.get("dataset_content_hash") or ""),
+        capability=capability,
+        strategy_registry=strategy_registry,
+        progress_callback=progress_callback,
+    )
+    if execution.bundle.gate_result.value != "PASS":
+        raise ReproductionContractError(
+            "terminal validation reproduction experiment gate not passed"
+        )
+    authoritative_selection_artifact = _freeze_native_nested_selection_artifact(
+        manifest=manifest,
+        selection_report=reproduced_report,
+        candidates=candidates,
+        preliminary_selection_artifact=preliminary_selection_artifact,
+        execution=execution,
+    )
+    selection_reasons = validate_selection_artifact(authoritative_selection_artifact)
+    if selection_reasons:
+        raise ReproductionContractError(
+            "terminal validation reproduction selection artifact invalid:"
+            + ",".join(selection_reasons)
+        )
+    terminal_selection_path = reproduced_terminal_selection_artifact_path(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+    )
+    try:
+        write_json_atomic_create_or_verify(
+            terminal_selection_path,
+            authoritative_selection_artifact,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ReproductionContractError(
+            "terminal validation reproduction selection artifact publication failed"
+        ) from exc
+    selected = next(
+        (
+            item
+            for item in candidates
+            if str(item.get("parameter_candidate_id") or "")
+            == execution.selected_candidate_id
+        ),
+        None,
+    )
+    if selected is None:
+        raise ReproductionContractError(
+            "terminal validation reproduction selected candidate missing"
+        )
+    authoritative_report = {
+        **reproduced_report,
+        "preliminary_selected_candidate_id": (
+            preliminary_selection_artifact.get("selected_candidate_id")
+        ),
+        "preliminary_selection_artifact_hash": (
+            preliminary_selection_artifact.get("content_hash")
+        ),
+        "preliminary_final_selection_contract": reproduced_report.get(
+            "final_selection_contract"
+        ),
+        "preliminary_final_selection_contract_hash": reproduced_report.get(
+            "final_selection_contract_hash"
+        ),
+        "preliminary_candidate_final_scores": reproduced_report.get(
+            "candidate_final_scores"
+        ),
+        "preliminary_candidate_final_scores_hash": reproduced_report.get(
+            "candidate_final_scores_hash"
+        ),
+        "preliminary_selected_candidate_score_hash": reproduced_report.get(
+            "selected_candidate_score_hash"
+        ),
+        **_native_nested_final_selection_result(
+            manifest=manifest,
+            execution=execution,
+        ),
+        "selection_artifact": authoritative_selection_artifact,
+        "selection_artifact_hash": authoritative_selection_artifact["content_hash"],
+        "candidates": candidates,
+    }
+    source_binding = baseline_receipt.get("source_evidence_binding")
+    if not isinstance(source_binding, dict):
+        raise ReproductionContractError(
+            "terminal validation reproduction source binding missing"
+        )
+    gate_material = {
+        "schema_version": 1,
+        "artifact_type": "pre_holdout_validation_gate",
+        "final_holdout_authority_scope_hash": (
+            final_holdout_authority_scope_hash(manifest)
+        ),
+        "manifest_hash": manifest.manifest_hash(),
+        # The terminal gate binds the original immutable selection artifact.
+        # Isolated report locations may legitimately differ, while their stable
+        # fingerprints are compared independently above.
+        "selection_report_hash": source_binding.get("selection_report_hash"),
+        "selection_artifact_hash": authoritative_selection_artifact.get("content_hash"),
+        "validation_experiment_bundle_hash": execution.bundle.content_hash,
+        "native_validation_computation_receipt_hash": (
+            execution.computation_receipt_hash
+        ),
+        "selected_candidate_id": execution.selected_candidate_id,
+        "gate_result": "PASS",
+        "gate_reasons": [],
+    }
+    gate_artifact = publish_pre_holdout_gate_artifact(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+        material=gate_material,
+    )
+    return (
+        execution,
+        str(gate_artifact["content_hash"]),
+        authoritative_report,
+    )
+
+
+def _run_terminal_holdout_reproduction(
+    *,
+    manifest: Any,
+    reproduced_report: dict[str, Any],
+    db_path: Path | None,
+    manager: Any,
+    strategy_registry: Any,
+    progress_callback: Any,
+    pre_holdout_gate_hash: str,
+    final_holdout_reservation: dict[str, Any],
+) -> dict[str, Any]:
+    """Replay the frozen candidate on holdout inside the isolated root."""
+
+    candidates = _terminal_reproduction_candidates(
+        manifest=manifest,
+        reproduced_report=reproduced_report,
+        manager=manager,
+    )
     selection_evidence = dict(reproduced_report)
     selection_evidence["candidates"] = candidates
     confirmation = run_final_holdout_confirmation(
@@ -1349,6 +1618,8 @@ def _run_terminal_holdout_reproduction(
         manager=manager,
         progress_callback=progress_callback,
         strategy_registry=strategy_registry,
+        pre_holdout_gate_hash=pre_holdout_gate_hash,
+        final_holdout_reservation=final_holdout_reservation,
     )
     expected_path = manager.report_path(
         "research", manifest.experiment_id, "final_holdout_confirmation.json"
@@ -1424,6 +1695,48 @@ def _terminal_holdout_reproduction_mismatches(
             mismatches.append(
                 {
                     "path": f"terminal_holdout.{field}",
+                    "expected": expected,
+                    "actual": actual,
+                    "kind": "value_mismatch",
+                }
+            )
+    return mismatches
+
+
+def _terminal_validation_experiment_reproduction_mismatches(
+    *,
+    receipt: dict[str, object],
+    execution: NativeValidationExperimentExecution,
+    pre_holdout_gate_hash: str | None,
+) -> list[dict[str, object]]:
+    binding = receipt.get("source_evidence_binding")
+    if not isinstance(binding, dict):
+        raise ReproductionContractError(
+            "terminal validation reproduction source binding missing"
+        )
+    actual_by_field = {
+        "validation_experiment_bundle_hash": execution.bundle.content_hash,
+        "native_validation_computation_receipt_hash": (
+            execution.computation_receipt_hash
+        ),
+        "pre_holdout_gate_hash": pre_holdout_gate_hash,
+    }
+    mismatches: list[dict[str, object]] = []
+    for field, actual in actual_by_field.items():
+        expected = binding.get(field)
+        if (
+            not isinstance(expected, str)
+            or not expected.startswith("sha256:")
+            or not isinstance(actual, str)
+            or not actual.startswith("sha256:")
+        ):
+            raise ReproductionContractError(
+                f"terminal validation reproduction {field} binding invalid"
+            )
+        if expected != actual:
+            mismatches.append(
+                {
+                    "path": "terminal_validation_experiments." + field,
                     "expected": expected,
                     "actual": actual,
                     "kind": "value_mismatch",
@@ -1772,12 +2085,20 @@ def cmd_research_registry_validate(
     ok = not registry_chain_reasons
     report_candidates = [
         (
-            report_kind,
+            "validation_summary",
             context.paths.report_path(
-                "research", experiment_id, f"{report_kind}_report.json"
+                "research", experiment_id, "validation_summary.json"
             ),
-        )
-        for report_kind in ("backtest", "walk_forward")
+        ),
+        *[
+            (
+                report_kind,
+                context.paths.report_path(
+                    "research", experiment_id, f"{report_kind}_report.json"
+                ),
+            )
+            for report_kind in ("backtest", "walk_forward")
+        ],
     ]
     report_loads = [
         (
@@ -1790,11 +2111,15 @@ def cmd_research_registry_validate(
         )
         for report_kind, candidate_path in report_candidates
     ]
-    loaded_reports = [
+    all_loaded_reports = [
         (report_kind, candidate_path, payload)
         for report_kind, candidate_path, payload, _error in report_loads
         if isinstance(payload, dict)
     ]
+    terminal_reports = [
+        item for item in all_loaded_reports if item[0] == "validation_summary"
+    ]
+    loaded_reports = terminal_reports or all_loaded_reports
     artifact_load_errors = [
         error
         for _report_kind, _candidate_path, _payload, error in report_loads
@@ -1807,6 +2132,47 @@ def cmd_research_registry_validate(
         report_kind = None
         report_path = report_candidates[0][1]
         report = None
+    terminal_selection_binding_reasons: list[str] = []
+    if report_kind == "validation_summary" and isinstance(report, dict):
+        selection_report_kind = str(report.get("report_kind") or "").strip()
+        if selection_report_kind not in {"backtest", "walk_forward"}:
+            terminal_selection_binding_reasons.append(
+                "terminal_selection_report_kind_invalid"
+            )
+        else:
+            selection_report = next(
+                (
+                    payload
+                    for candidate_kind, _path, payload, _error in report_loads
+                    if candidate_kind == selection_report_kind
+                    and isinstance(payload, dict)
+                ),
+                None,
+            )
+            if not isinstance(selection_report, dict):
+                terminal_selection_binding_reasons.append(
+                    "terminal_selection_report_missing"
+                )
+            else:
+                terminal_selection_binding_reasons.extend(
+                    _content_hash_reasons(
+                        selection_report,
+                        report_hash=True,
+                        label=f"terminal_selection_{selection_report_kind}_report",
+                    )
+                )
+                selection_report_hash = selection_report.get("content_hash")
+                if report.get("selection_report_hash") != selection_report_hash:
+                    terminal_selection_binding_reasons.append(
+                        "terminal_selection_report_content_hash_mismatch"
+                    )
+                if (
+                    report.get(f"{selection_report_kind}_report_hash")
+                    != selection_report_hash
+                ):
+                    terminal_selection_binding_reasons.append(
+                        "terminal_selection_report_lineage_hash_mismatch"
+                    )
     confirmation_path = context.paths.report_path(
         "research", experiment_id, "final_holdout_confirmation.json"
     )
@@ -1840,6 +2206,7 @@ def cmd_research_registry_validate(
     artifact_reasons: list[str] = [
         *artifact_load_errors,
         *registry_chain_reasons,
+        *terminal_selection_binding_reasons,
     ]
     if report_resolution_error:
         artifact_reasons.append("multiple_research_reports_found")
@@ -1916,6 +2283,10 @@ def cmd_research_registry_validate(
                 label=f"{report_kind}_report",
             )
         )
+        if report_kind == "validation_summary":
+            artifact_reasons.extend(
+                validate_validated_research_result(report, manager=context.paths)
+            )
         artifact_reasons.extend(validate_final_selection_report(report))
         evidence_required = bool(report.get("statistical_validation_required")) or bool(
             report.get("statistical_evidence_hash")

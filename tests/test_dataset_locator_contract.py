@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+from tests.dataset_provenance_fixture import (
+    TEST_SOURCE_PROVENANCE,
+    freeze_bound_test_dataset as freeze_sqlite_candles_dataset,
+)
 import pytest
 import sqlite3
 from market_research.research.datasets.locators import (
     LocatorValidationError,
     parse_immutable_locator,
 )
-from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.validation_protocol import (
     validate_immutable_dataset_locator,
 )

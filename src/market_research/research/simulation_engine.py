@@ -24,7 +24,6 @@ from .dataset_snapshot import DatasetSnapshot
 from .corporate_action_portfolio import (
     CASH_INCOME_EVENT_TYPES,
     QUANTITY_ADJUSTMENT_EVENT_TYPES,
-    TERMINAL_PORTFOLIO_EVENT_TYPES,
     CorporateActionPortfolioEvent,
     CorporateActionPortfolioPlan,
     latest_causally_applicable_events,
@@ -436,9 +435,7 @@ def _run_common_simulation_backtest(
     source_dataset_period_start = str(dataset.date_range.start)
     source_dataset_period_end = str(dataset.date_range.end)
     source_dataset_artifact_manifest_hash = dataset.artifact_manifest_hash
-    source_corporate_action_evidence = (
-        dataset.corporate_action_transformation_evidence
-    )
+    source_corporate_action_evidence = dataset.corporate_action_transformation_evidence
     corporate_action_plan: CorporateActionPortfolioPlan | None = None
     corporate_action_materialization_hash: str | None = None
     if source_corporate_action_evidence is not None:
@@ -446,9 +443,10 @@ def _run_common_simulation_backtest(
         if not isinstance(raw_plan, dict):
             raise ValueError("corporate_action_portfolio_event_plan_missing")
         corporate_action_plan = parse_corporate_action_portfolio_plan(raw_plan)
-        if source_corporate_action_evidence.get(
-            "portfolio_event_plan_hash"
-        ) != corporate_action_plan.plan_hash:
+        if (
+            source_corporate_action_evidence.get("portfolio_event_plan_hash")
+            != corporate_action_plan.plan_hash
+        ):
             raise ValueError("corporate_action_portfolio_event_plan_binding_mismatch")
         corporate_action_materialization_hash = cast(
             str | None,
@@ -467,6 +465,10 @@ def _run_common_simulation_backtest(
     dataset, point_in_time_evidence = point_in_time_execution_snapshot(
         snapshot=dataset,
         expected_decision_guard_ms=int(timing.decision_guard_ms),
+        require_validation_eligible=bool(
+            context is not None
+            and context.policy_materialization_mode == "research_validation"
+        ),
     )
     raw_point_in_time_rows = (
         point_in_time_evidence.get("rows") if point_in_time_evidence is not None else []
@@ -489,6 +491,12 @@ def _run_common_simulation_backtest(
             ),
             "point_in_time_authority_binding_hash": point_in_time_evidence.get(
                 "authority_binding_hash"
+            ),
+            "point_in_time_universe_schema_version": point_in_time_evidence.get(
+                "universe_schema_version"
+            ),
+            "point_in_time_promotion_classification": point_in_time_evidence.get(
+                "promotion_classification"
             ),
             "point_in_time_evidence_content_hash": point_in_time_evidence.get(
                 "content_hash"
@@ -544,6 +552,11 @@ def _run_common_simulation_backtest(
     ledger = PortfolioLedger(
         starting_cash=float(policy.starting_cash_krw),
         initial_position_qty=float(policy.initial_position_qty),
+        initial_instrument_id=(
+            corporate_action_plan.instrument_id
+            if corporate_action_plan is not None
+            else None
+        ),
     )
     decisions: list[ResearchDecisionEvent] = []
     intents: list[OrderIntent] = []
@@ -683,12 +696,15 @@ def _run_common_simulation_backtest(
             )
         if terminal_event is not None:
             raise ValueError("corporate_action_event_after_terminal_unsupported")
-        if corporate_event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES and pending:
+        if corporate_event.is_terminal and pending:
             raise ValueError(
                 "corporate_action_terminal_with_pending_execution_unsupported"
             )
         before = ledger.snapshot()
-        if corporate_event.event_type in QUANTITY_ADJUSTMENT_EVENT_TYPES:
+        if (
+            corporate_event.accounting_terms is None
+            and corporate_event.event_type in QUANTITY_ADJUSTMENT_EVENT_TYPES
+        ):
             ratio = float(corporate_event.ratio_value or 0.0)
             quantity_step = float(corporate_action_plan.quantity_step)
             projected_qty = before.asset_qty * ratio
@@ -697,7 +713,10 @@ def _run_common_simulation_backtest(
                 raise ValueError(
                     "corporate_action_fractional_entitlement_cash_in_lieu_terms_required"
                 )
-        entry = ledger.apply_corporate_action(corporate_event)
+        entry = ledger.apply_corporate_action(
+            corporate_event,
+            quantity_step=corporate_action_plan.quantity_step,
+        )
         after = ledger.snapshot()
         applied_corporate_action_versions[corporate_event.event_id] = (
             corporate_event.event_version_id
@@ -706,7 +725,81 @@ def _run_common_simulation_backtest(
             effective_ts=entry.effective_ts,
             realized_pnl=entry.realized_pnl,
         )
-        if corporate_event.event_type in QUANTITY_ADJUSTMENT_EVENT_TYPES:
+        if corporate_event.is_terminal:
+            terminal_event = corporate_event
+            tradability_state = "terminal"
+            pending_buy = False
+            if open_entry is not None:
+                (
+                    entry_ts,
+                    entry_price,
+                    _entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl,
+                ) = open_entry
+                accumulated_pnl += float(entry.realized_pnl or 0.0)
+                closed.append(
+                    ClosedTradeRecord(
+                        exit_ts=entry.effective_ts,
+                        entry_ts=entry_ts,
+                        net_pnl=accumulated_pnl,
+                        entry_price=entry_price,
+                        exit_price=float(corporate_event.cash_amount_value or 0.0),
+                        fee_total=accumulated_fee,
+                        slippage_total=accumulated_slippage,
+                        exit_rule="corporate_action_terminal_recovery",
+                        exit_reason=corporate_event.event_type,
+                    )
+                )
+                if not intervals:
+                    raise ValueError("corporate_action_open_position_interval_missing")
+                intervals[-1] = PositionInterval(
+                    open_ts=intervals[-1].open_ts,
+                    close_ts=entry.effective_ts,
+                )
+                open_entry = None
+        elif corporate_event.accounting_terms is not None:
+            if corporate_event.event_type == "trading_halt":
+                if tradability_state != "tradable":
+                    raise ValueError(
+                        "corporate_action_tradability_transition_invalid:halt"
+                    )
+                tradability_state = "halted"
+            elif corporate_event.event_type == "trading_resume":
+                if tradability_state != "halted":
+                    raise ValueError(
+                        "corporate_action_tradability_transition_invalid:resume"
+                    )
+                tradability_state = "tradable"
+            if open_entry is not None:
+                (
+                    entry_ts,
+                    entry_price,
+                    entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl,
+                ) = open_entry
+                if corporate_event.accounting_terms.position_effect in {
+                    "scale",
+                    "replace",
+                }:
+                    entry_qty = after.asset_qty
+                    entry_price = (
+                        after.cost_basis / after.asset_qty
+                        if after.asset_qty > 0
+                        else entry_price
+                    )
+                open_entry = (
+                    entry_ts,
+                    entry_price,
+                    entry_qty,
+                    accumulated_fee,
+                    accumulated_slippage,
+                    accumulated_pnl + float(entry.realized_pnl or 0.0),
+                )
+        elif corporate_event.event_type in QUANTITY_ADJUSTMENT_EVENT_TYPES:
             ratio = float(corporate_event.ratio_value or 0.0)
             if open_entry is not None:
                 (
@@ -745,9 +838,7 @@ def _run_common_simulation_backtest(
                 )
         elif corporate_event.event_type == "trading_halt":
             if tradability_state != "tradable":
-                raise ValueError(
-                    "corporate_action_tradability_transition_invalid:halt"
-                )
+                raise ValueError("corporate_action_tradability_transition_invalid:halt")
             tradability_state = "halted"
         elif corporate_event.event_type == "trading_resume":
             if tradability_state != "halted":
@@ -755,40 +846,6 @@ def _run_common_simulation_backtest(
                     "corporate_action_tradability_transition_invalid:resume"
                 )
             tradability_state = "tradable"
-        elif corporate_event.event_type in TERMINAL_PORTFOLIO_EVENT_TYPES:
-            terminal_event = corporate_event
-            tradability_state = "terminal"
-            pending_buy = False
-            if open_entry is not None:
-                (
-                    entry_ts,
-                    entry_price,
-                    _entry_qty,
-                    accumulated_fee,
-                    accumulated_slippage,
-                    accumulated_pnl,
-                ) = open_entry
-                accumulated_pnl += float(entry.realized_pnl or 0.0)
-                closed.append(
-                    ClosedTradeRecord(
-                        exit_ts=entry.effective_ts,
-                        entry_ts=entry_ts,
-                        net_pnl=accumulated_pnl,
-                        entry_price=entry_price,
-                        exit_price=float(corporate_event.cash_amount_value or 0.0),
-                        fee_total=accumulated_fee,
-                        slippage_total=accumulated_slippage,
-                        exit_rule="corporate_action_terminal_recovery",
-                        exit_reason=corporate_event.event_type,
-                    )
-                )
-                if not intervals:
-                    raise ValueError("corporate_action_open_position_interval_missing")
-                intervals[-1] = PositionInterval(
-                    open_ts=intervals[-1].open_ts,
-                    close_ts=entry.effective_ts,
-                )
-                open_entry = None
         application = {
             "event_id": corporate_event.event_id,
             "event_version_id": corporate_event.event_version_id,
@@ -798,6 +855,7 @@ def _run_common_simulation_backtest(
             "effective_ts": corporate_event.effective_ts_ms,
             "observed_ts": corporate_event.observed_ts_ms,
             "ledger_entry_id": entry.ledger_entry_id,
+            "accounting_application": entry.corporate_action_accounting,
             "state_before": before.__dict__.copy(),
             "state_after": after.__dict__.copy(),
             "tradability_state_after": tradability_state,
@@ -823,9 +881,7 @@ def _run_common_simulation_backtest(
                 effective_ts=int(entry.effective_ts),
                 realized_pnl=entry.realized_pnl,
             )
-            trace_lineage_event(
-                context, stream="ledger_entry", payload=entry.as_dict()
-            )
+            trace_lineage_event(context, stream="ledger_entry", payload=entry.as_dict())
         last_execution_status = fill.fill_status
         trade = _trade_from_fill(fill, ledger, entry)
         trades.append(trade)
@@ -909,15 +965,21 @@ def _run_common_simulation_backtest(
                     "corporate_action_correction_after_application_unsupported"
                 )
             ready.append(corporate_event)
-        effective_counts: dict[int, int] = {}
+        by_effective_time: dict[int, list[CorporateActionPortfolioEvent]] = {}
         for corporate_event in ready:
-            effective_counts[corporate_event.effective_ts_ms] = (
-                effective_counts.get(corporate_event.effective_ts_ms, 0) + 1
+            by_effective_time.setdefault(corporate_event.effective_ts_ms, []).append(
+                corporate_event
             )
-        if any(count > 1 for count in effective_counts.values()):
-            raise ValueError(
-                "corporate_action_same_timestamp_event_ordering_terms_required"
-            )
+        for simultaneous in by_effective_time.values():
+            if len(simultaneous) <= 1:
+                continue
+            sequences = [item.same_timestamp_sequence for item in simultaneous]
+            if any(item is None for item in sequences) or len(sequences) != len(
+                set(sequences)
+            ):
+                raise ValueError(
+                    "corporate_action_same_timestamp_event_ordering_terms_required"
+                )
         return tuple(ready)
 
     def apply_ready(
@@ -932,13 +994,20 @@ def _run_common_simulation_backtest(
                 pending_status.remove(resolved)
                 last_execution_status = resolved.fill_status
         timeline: list[
-            tuple[int, int, str, CorporateActionPortfolioEvent | ExecutionFill]
+            tuple[
+                int,
+                int,
+                int,
+                str,
+                CorporateActionPortfolioEvent | ExecutionFill,
+            ]
         ] = []
         for corporate_event in _unapplied_corporate_action_events(boundary):
             timeline.append(
                 (
                     corporate_event.effective_ts_ms,
                     0,
+                    corporate_event.same_timestamp_sequence or 0,
                     corporate_event.event_id,
                     corporate_event,
                 )
@@ -953,8 +1022,8 @@ def _run_common_simulation_backtest(
                 and fill.fill_reference_policy == "next_candle_open"
             ):
                 continue
-            timeline.append((effective_ts, 1, fill.fill_id, fill))
-        for _ts, precedence, _identity, item in sorted(timeline):
+            timeline.append((effective_ts, 1, 0, fill.fill_id, fill))
+        for _ts, precedence, _sequence, _identity, item in sorted(timeline):
             if precedence == 0:
                 if not isinstance(item, CorporateActionPortfolioEvent):
                     raise ValueError("corporate_action_timeline_item_invalid")
@@ -1439,9 +1508,9 @@ def _run_common_simulation_backtest(
             if dataset.candles
             else 0
         )
-        split_end_exclusive = datetime.fromisoformat(
-            source_dataset_period_end
-        ).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        split_end_exclusive = datetime.fromisoformat(source_dataset_period_end).replace(
+            tzinfo=timezone.utc
+        ) + timedelta(days=1)
         split_end_boundary_ts = int(split_end_exclusive.timestamp() * 1000) - 1
         terminal_before_final_drain = terminal_event
         for corporate_event in _unapplied_corporate_action_events(
@@ -1449,8 +1518,8 @@ def _run_common_simulation_backtest(
         ):
             if (
                 corporate_event.effective_ts_ms > last_market_boundary_ts
-                and corporate_event.event_type
-                in QUANTITY_ADJUSTMENT_EVENT_TYPES | CASH_INCOME_EVENT_TYPES
+                and corporate_event.has_economic_effect
+                and not corporate_event.is_terminal
             ):
                 raise ValueError(
                     "corporate_action_economic_event_after_last_market_observation_unsupported"
@@ -1564,6 +1633,20 @@ def _run_common_simulation_backtest(
     replayed = PortfolioLedger.replay(
         starting_cash=float(policy.starting_cash_krw),
         initial_position_qty=float(policy.initial_position_qty),
+        initial_instrument_id=(
+            corporate_action_plan.instrument_id
+            if corporate_action_plan is not None
+            else None
+        ),
+        quantity_step=(
+            corporate_action_plan.quantity_step
+            if corporate_action_plan is not None
+            else None
+        ),
+        corporate_action_plan=corporate_action_plan,
+        causal_boundary_ms=(
+            split_end_boundary_ts if corporate_action_plan is not None else None
+        ),
         entries=ledger_entries,
     )
     if replayed != final:
@@ -1715,7 +1798,7 @@ def _run_common_simulation_backtest(
     )
     if corporate_action_plan is not None:
         portfolio_event_evidence: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": corporate_action_plan.schema_version,
             "portfolio_event_plan_hash": corporate_action_plan.plan_hash,
             "action_set_id": corporate_action_plan.action_set_id,
             "action_set_hash": corporate_action_plan.action_set_hash,
@@ -1726,10 +1809,21 @@ def _run_common_simulation_backtest(
             "event_time_policy": (
                 "latest_version_known_and_effective_at_decision_boundary"
             ),
-            "same_timestamp_precedence": (
-                "corporate_action_before_execution_fill"
-            ),
+            "same_timestamp_precedence": ("corporate_action_before_execution_fill"),
             "accounting_authority": "portfolio_ledger",
+            "embedded_event_material_binding": (
+                "recomputed_and_hash_bound"
+                if corporate_action_plan.schema_version == 2
+                else "legacy_event_contract_hash_only"
+            ),
+            "external_source_lineage_status": (
+                "UNVERIFIED_NO_PROVIDER_SOURCE_ARTIFACT_CONTRACT"
+            ),
+            "accounting_terms_policy": (
+                "explicit_schema_v2_terms_only"
+                if corporate_action_plan.schema_version == 2
+                else "legacy_schema_v1_supported_subset"
+            ),
             "application_evidence": corporate_action_application_evidence,
             "application_stream_hash": canonical_payload_hash(
                 corporate_action_application_evidence
@@ -1745,10 +1839,9 @@ def _run_common_simulation_backtest(
                 for event in corporate_action_application_evidence
             ],
             "final_tradability_state": tradability_state,
+            "final_active_instrument_id": final.asset_instrument_id,
             "terminal_event_version_id": (
-                terminal_event.event_version_id
-                if terminal_event is not None
-                else None
+                terminal_event.event_version_id if terminal_event is not None else None
             ),
             "accounting_replay_invariant_status": "PASS",
             "tradability_decision_evidence": tradability_decision_evidence,
@@ -1836,6 +1929,12 @@ def _run_common_simulation_backtest(
                     "point_in_time_evidence_content_hash": summary[
                         "point_in_time_evidence_content_hash"
                     ],
+                    "point_in_time_universe_schema_version": summary[
+                        "point_in_time_universe_schema_version"
+                    ],
+                    "point_in_time_promotion_classification": summary[
+                        "point_in_time_promotion_classification"
+                    ],
                 }
                 if point_in_time_evidence is not None
                 else {}
@@ -1862,6 +1961,7 @@ def _run_common_simulation_backtest(
             "runtime_seconds": time.perf_counter() - context.started_at,
             "final_cash": final.cash,
             "final_asset_qty": final.asset_qty,
+            "final_asset_instrument_id": final.asset_instrument_id,
             "final_marked_equity": final.cash + final.asset_qty * last_price,
             "open_position_at_end": final.asset_qty > 0,
             "final_position_marked_to_market": final.asset_qty > 0,
@@ -1905,11 +2005,26 @@ def _run_common_simulation_backtest(
         materialized_parameters_hash=compiled.materialized_parameters_hash,
         parameter_source_map_hash=sha256_prefixed(compiled.parameter_source_map),
         point_in_time_decision_evidence=point_in_time_rows,
+        point_in_time_evidence=cast(
+            dict[str, object] | None,
+            deep_freeze(point_in_time_evidence)
+            if point_in_time_evidence is not None
+            else None,
+        ),
         point_in_time_decision_stream_hash=cast(
             str | None, summary.get("point_in_time_decision_stream_hash")
         ),
         point_in_time_authority_binding_hash=cast(
             str | None, summary.get("point_in_time_authority_binding_hash")
+        ),
+        point_in_time_evidence_content_hash=cast(
+            str | None, summary.get("point_in_time_evidence_content_hash")
+        ),
+        point_in_time_universe_schema_version=cast(
+            int | None, summary.get("point_in_time_universe_schema_version")
+        ),
+        point_in_time_promotion_classification=cast(
+            str | None, summary.get("point_in_time_promotion_classification")
         ),
         metrics_hash=sha256_prefixed(
             metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2

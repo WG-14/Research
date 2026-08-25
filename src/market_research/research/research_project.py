@@ -10,6 +10,9 @@ repository-external roots.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import stat
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -28,7 +31,7 @@ from .hash_chain import (
 from .hashing import canonical_json_bytes, sha256_prefixed
 
 
-RESEARCH_PROJECT_SCHEMA_VERSION = 1
+RESEARCH_PROJECT_SCHEMA_VERSION = 2
 RESEARCH_PROJECT_REGISTRY_SCHEMA_VERSION = 1
 RESEARCH_PROJECT_REGISTRY_HASH_LABEL = "research_project_registry"
 RESEARCH_PROJECT_ARTIFACT_TYPE = "research_project"
@@ -258,6 +261,8 @@ class ResearchProjectObjectRef:
     object_id: str
     version: str
     content_hash: str
+    artifact_uri: str
+    artifact_file_hash: str
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -281,6 +286,20 @@ class ResearchProjectObjectRef:
             "content_hash",
             _sha256(self.content_hash, "research_project_ref_content_hash"),
         )
+        artifact_path = Path(self.artifact_uri).expanduser()
+        if not artifact_path.is_absolute():
+            raise ResearchProjectError(
+                "research_project_ref_artifact_uri_must_be_absolute"
+            )
+        object.__setattr__(self, "artifact_uri", str(artifact_path))
+        object.__setattr__(
+            self,
+            "artifact_file_hash",
+            _sha256(
+                self.artifact_file_hash,
+                "research_project_ref_artifact_file_hash",
+            ),
+        )
 
     @property
     def identity_key(self) -> tuple[str, str, str]:
@@ -297,6 +316,8 @@ class ResearchProjectObjectRef:
             "object_id": self.object_id,
             "version": self.version,
             "content_hash": self.content_hash,
+            "artifact_uri": self.artifact_uri,
+            "artifact_file_hash": self.artifact_file_hash,
         }
 
     @classmethod
@@ -309,6 +330,8 @@ class ResearchProjectObjectRef:
                 "object_id",
                 "version",
                 "content_hash",
+                "artifact_uri",
+                "artifact_file_hash",
             },
             label="research_project_object_ref",
         )
@@ -324,6 +347,13 @@ class ResearchProjectObjectRef:
             content_hash=_string(
                 payload["content_hash"], "research_project_ref_content_hash"
             ),
+            artifact_uri=_string(
+                payload["artifact_uri"], "research_project_ref_artifact_uri"
+            ),
+            artifact_file_hash=_string(
+                payload["artifact_file_hash"],
+                "research_project_ref_artifact_file_hash",
+            ),
         )
 
 
@@ -338,6 +368,14 @@ class ResearchProject:
     version: int
     asset_classes: tuple[str, ...]
     markets: tuple[str, ...]
+    investment_horizon: str
+    expected_phenomenon: str
+    economic_explanation: str
+    prior_research_relationship: str
+    required_data: tuple[str, ...]
+    expected_challenges: tuple[str, ...]
+    similar_research_assessment: str
+    similar_research_refs: tuple[ResearchProjectObjectRef, ...]
     members: tuple[ResearchProjectMember, ...]
     object_refs: tuple[ResearchProjectObjectRef, ...]
     status_reason: str
@@ -388,6 +426,55 @@ class ResearchProject:
             "markets",
             _normalized_scope(self.markets, label="research_project_markets"),
         )
+        for field_name, maximum in (
+            ("investment_horizon", 2_000),
+            ("expected_phenomenon", 10_000),
+            ("economic_explanation", 10_000),
+            ("prior_research_relationship", 10_000),
+            ("similar_research_assessment", 4_000),
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _required_text(
+                    cast(str, getattr(self, field_name)),
+                    f"research_project_{field_name}",
+                    maximum=maximum,
+                ),
+            )
+        object.__setattr__(
+            self,
+            "required_data",
+            _normalized_scope(
+                self.required_data,
+                label="research_project_required_data",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "expected_challenges",
+            _normalized_scope(
+                self.expected_challenges,
+                label="research_project_expected_challenges",
+            ),
+        )
+        similar_refs = tuple(
+            sorted(self.similar_research_refs, key=lambda item: item.sort_key)
+        )
+        if any(ref.project_id != self.project_id for ref in similar_refs):
+            raise ResearchProjectError(
+                "research_project_cross_project_similar_ref_forbidden"
+            )
+        if len({ref.identity_key for ref in similar_refs}) != len(similar_refs):
+            raise ResearchProjectError("research_project_similar_ref_duplicate")
+        assessment = self.similar_research_assessment.casefold()
+        if assessment == "none_identified" and similar_refs:
+            raise ResearchProjectError(
+                "research_project_similar_ref_conflicts_with_assessment"
+            )
+        if assessment != "none_identified" and not similar_refs:
+            raise ResearchProjectError("research_project_similar_ref_required")
+        object.__setattr__(self, "similar_research_refs", similar_refs)
         members = tuple(sorted(self.members, key=lambda item: item.actor_id))
         if len({member.actor_id for member in members}) != len(members):
             raise ResearchProjectError("research_project_member_actor_duplicate")
@@ -456,6 +543,16 @@ class ResearchProject:
             "version": self.version,
             "asset_classes": list(self.asset_classes),
             "markets": list(self.markets),
+            "investment_horizon": self.investment_horizon,
+            "expected_phenomenon": self.expected_phenomenon,
+            "economic_explanation": self.economic_explanation,
+            "prior_research_relationship": self.prior_research_relationship,
+            "required_data": list(self.required_data),
+            "expected_challenges": list(self.expected_challenges),
+            "similar_research_assessment": self.similar_research_assessment,
+            "similar_research_refs": [
+                ref.as_dict() for ref in self.similar_research_refs
+            ],
             "members": [member.as_dict() for member in self.members],
             "object_refs": [ref.as_dict() for ref in self.object_refs],
             "status_reason": self.status_reason,
@@ -477,6 +574,14 @@ class ResearchProject:
         owner_id: str,
         asset_classes: tuple[str, ...],
         markets: tuple[str, ...],
+        investment_horizon: str,
+        expected_phenomenon: str,
+        economic_explanation: str,
+        prior_research_relationship: str,
+        required_data: tuple[str, ...],
+        expected_challenges: tuple[str, ...],
+        similar_research_assessment: str,
+        similar_research_refs: tuple[ResearchProjectObjectRef, ...],
         members: tuple[ResearchProjectMember, ...],
         recorded_at: str,
         status_reason: str,
@@ -491,6 +596,14 @@ class ResearchProject:
             version=1,
             asset_classes=asset_classes,
             markets=markets,
+            investment_horizon=investment_horizon,
+            expected_phenomenon=expected_phenomenon,
+            economic_explanation=economic_explanation,
+            prior_research_relationship=prior_research_relationship,
+            required_data=required_data,
+            expected_challenges=expected_challenges,
+            similar_research_assessment=similar_research_assessment,
+            similar_research_refs=similar_research_refs,
             members=members,
             object_refs=(),
             status_reason=status_reason,
@@ -512,6 +625,14 @@ class ResearchProject:
             "version",
             "asset_classes",
             "markets",
+            "investment_horizon",
+            "expected_phenomenon",
+            "economic_explanation",
+            "prior_research_relationship",
+            "required_data",
+            "expected_challenges",
+            "similar_research_assessment",
+            "similar_research_refs",
             "members",
             "object_refs",
             "status_reason",
@@ -529,6 +650,10 @@ class ResearchProject:
             raise ResearchProjectError("research_project_artifact_type_invalid")
         members_value = _list(payload["members"], "research_project_members")
         refs_value = _list(payload["object_refs"], "research_project_object_refs")
+        similar_refs_value = _list(
+            payload["similar_research_refs"],
+            "research_project_similar_research_refs",
+        )
         asset_classes = _string_tuple(
             payload["asset_classes"], "research_project_asset_classes"
         )
@@ -558,6 +683,36 @@ class ResearchProject:
             version=version,
             asset_classes=asset_classes,
             markets=markets,
+            investment_horizon=_string(
+                payload["investment_horizon"],
+                "research_project_investment_horizon",
+            ),
+            expected_phenomenon=_string(
+                payload["expected_phenomenon"],
+                "research_project_expected_phenomenon",
+            ),
+            economic_explanation=_string(
+                payload["economic_explanation"],
+                "research_project_economic_explanation",
+            ),
+            prior_research_relationship=_string(
+                payload["prior_research_relationship"],
+                "research_project_prior_research_relationship",
+            ),
+            required_data=_string_tuple(
+                payload["required_data"], "research_project_required_data"
+            ),
+            expected_challenges=_string_tuple(
+                payload["expected_challenges"],
+                "research_project_expected_challenges",
+            ),
+            similar_research_assessment=_string(
+                payload["similar_research_assessment"],
+                "research_project_similar_research_assessment",
+            ),
+            similar_research_refs=tuple(
+                ResearchProjectObjectRef.from_dict(ref) for ref in similar_refs_value
+            ),
             members=tuple(
                 ResearchProjectMember.from_dict(member) for member in members_value
             ),
@@ -656,6 +811,221 @@ def research_project_namespaces(
     )
 
 
+def research_project_object_content_hash(
+    *,
+    kind: ResearchProjectObjectKind,
+    object_payload: Mapping[str, Any],
+) -> str:
+    """Derive the authoritative semantic hash for a resolved object."""
+
+    normalized_kind = ResearchProjectObjectKind(kind)
+    if normalized_kind is ResearchProjectObjectKind.HYPOTHESIS:
+        from .hypothesis_contract import parse_hypothesis_spec
+
+        return parse_hypothesis_spec(dict(object_payload)).contract_hash()
+    recorded = object_payload.get("content_hash")
+    if isinstance(recorded, str) and recorded.startswith("sha256:"):
+        material = dict(object_payload)
+        material.pop("content_hash", None)
+        generic = sha256_prefixed(
+            material,
+            label=f"research_project_{normalized_kind.value.casefold()}_object",
+        )
+        if recorded != generic:
+            raise ResearchProjectIntegrityError(
+                "research_project_resolved_object_content_hash_invalid"
+            )
+        return recorded
+    return sha256_prefixed(
+        dict(object_payload),
+        label=f"research_project_{normalized_kind.value.casefold()}_object",
+    )
+
+
+def resolved_research_object_envelope(
+    *,
+    kind: ResearchProjectObjectKind,
+    object_id: str,
+    version: str,
+    object_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized_kind = ResearchProjectObjectKind(kind)
+    normalized_object_id = _identifier(object_id, "research_project_resolved_object_id")
+    normalized_version = _identifier(
+        version, "research_project_resolved_object_version"
+    )
+    payload = dict(object_payload)
+    if normalized_kind is ResearchProjectObjectKind.HYPOTHESIS:
+        from .hypothesis_contract import parse_hypothesis_spec
+
+        hypothesis = parse_hypothesis_spec(payload)
+        if (
+            hypothesis.hypothesis_id != normalized_object_id
+            or hypothesis.version != normalized_version
+        ):
+            raise ResearchProjectIntegrityError(
+                "research_project_resolved_object_payload_identity_mismatch"
+            )
+    elif (
+        payload.get("logical_id") != normalized_object_id
+        or payload.get("version") != normalized_version
+    ):
+        raise ResearchProjectIntegrityError(
+            "research_project_resolved_object_payload_identity_mismatch"
+        )
+    return {
+        "schema_version": 1,
+        "artifact_type": "research_project_resolved_object",
+        "kind": normalized_kind.value,
+        "object_id": normalized_object_id,
+        "version": normalized_version,
+        "content_hash": research_project_object_content_hash(
+            kind=normalized_kind,
+            object_payload=payload,
+        ),
+        "object_payload": payload,
+    }
+
+
+def research_project_object_file_hash(envelope: Mapping[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(dict(envelope))).hexdigest()
+
+
+def resolve_research_project_object(
+    *,
+    manager: ResearchPathManager,
+    reference: ResearchProjectObjectRef,
+) -> Mapping[str, Any]:
+    """Resolve and verify one repository-external immutable object envelope."""
+
+    path = Path(reference.artifact_uri)
+    if not path.is_absolute() or manager.is_within(path, manager.project_root):
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_must_be_repository_external"
+        )
+    root = next(
+        (
+            candidate
+            for candidate in (
+                manager.data_root,
+                manager.artifact_root,
+                manager.report_root,
+            )
+            if manager.is_within(path, candidate)
+        ),
+        None,
+    )
+    if root is None:
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_outside_managed_roots"
+        )
+    _reject_symlink_components(path=path, root=root)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_unreadable"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) & 0o022
+        ):
+            raise ResearchProjectIntegrityError(
+                "research_project_ref_artifact_not_immutable_regular_file"
+            )
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise ResearchProjectIntegrityError(
+                "research_project_ref_artifact_changed_during_read"
+            )
+    finally:
+        os.close(descriptor)
+    raw = b"".join(chunks)
+    actual_file_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual_file_hash != reference.artifact_file_hash:
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_file_hash_mismatch"
+        )
+    try:
+        envelope = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_json_invalid"
+        ) from exc
+    if not isinstance(envelope, Mapping) or set(envelope) != {
+        "schema_version",
+        "artifact_type",
+        "kind",
+        "object_id",
+        "version",
+        "content_hash",
+        "object_payload",
+    }:
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_envelope_invalid"
+        )
+    payload = envelope.get("object_payload")
+    if not isinstance(payload, Mapping):
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_payload_invalid"
+        )
+    expected = resolved_research_object_envelope(
+        kind=reference.kind,
+        object_id=reference.object_id,
+        version=reference.version,
+        object_payload=payload,
+    )
+    if (
+        dict(envelope) != expected
+        or envelope.get("content_hash") != reference.content_hash
+    ):
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_identity_mismatch"
+        )
+    return dict(payload)
+
+
+def _reject_symlink_components(*, path: Path, root: Path) -> None:
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError as exc:
+        raise ResearchProjectIntegrityError(
+            "research_project_ref_artifact_outside_managed_roots"
+        ) from exc
+    current = root.absolute()
+    for part in relative.parts:
+        current = current / part
+        try:
+            if stat.S_ISLNK(current.lstat().st_mode):
+                raise ResearchProjectIntegrityError(
+                    "research_project_ref_artifact_symlink_forbidden"
+                )
+        except FileNotFoundError as exc:
+            raise ResearchProjectIntegrityError(
+                "research_project_ref_artifact_missing"
+            ) from exc
+
+
 def project_permission_for_reference(
     kind: ResearchProjectObjectKind,
 ) -> ResearchProjectPermission:
@@ -718,6 +1088,8 @@ def create_or_verify_research_project(
         raise ResearchProjectError("research_project_create_snapshot_invalid")
     if project.created_at != recorded_at or project.updated_at != recorded_at:
         raise ResearchProjectError("research_project_create_timestamp_mismatch")
+    for reference in project.similar_research_refs:
+        resolve_research_project_object(manager=manager, reference=reference)
     change = {"project": project.as_dict()}
     return _append_project_event(
         manager=manager,
@@ -795,6 +1167,14 @@ def revise_research_project(
     research_question: str,
     asset_classes: tuple[str, ...],
     markets: tuple[str, ...],
+    investment_horizon: str,
+    expected_phenomenon: str,
+    economic_explanation: str,
+    prior_research_relationship: str,
+    required_data: tuple[str, ...],
+    expected_challenges: tuple[str, ...],
+    similar_research_assessment: str,
+    similar_research_refs: tuple[ResearchProjectObjectRef, ...],
     event_id: str,
     recorded_at: str,
     reason: str,
@@ -809,12 +1189,54 @@ def revise_research_project(
         asset_classes, label="research_project_asset_classes"
     )
     normalized_markets = _normalized_scope(markets, label="research_project_markets")
+    normalized_horizon = _required_text(
+        investment_horizon,
+        "research_project_investment_horizon",
+        maximum=2_000,
+    )
+    normalized_phenomenon = _required_text(
+        expected_phenomenon,
+        "research_project_expected_phenomenon",
+        maximum=10_000,
+    )
+    normalized_explanation = _required_text(
+        economic_explanation,
+        "research_project_economic_explanation",
+        maximum=10_000,
+    )
+    normalized_prior_relationship = _required_text(
+        prior_research_relationship,
+        "research_project_prior_research_relationship",
+        maximum=10_000,
+    )
+    normalized_required_data = _normalized_scope(
+        required_data, label="research_project_required_data"
+    )
+    normalized_challenges = _normalized_scope(
+        expected_challenges, label="research_project_expected_challenges"
+    )
+    normalized_similar_assessment = _required_text(
+        similar_research_assessment,
+        "research_project_similar_research_assessment",
+        maximum=4_000,
+    )
+    normalized_similar_refs = tuple(
+        sorted(similar_research_refs, key=lambda item: item.sort_key)
+    )
     change = {
         "expected_version": _positive_version(expected_version),
         "title": normalized_title,
         "research_question": normalized_question,
         "asset_classes": list(normalized_assets),
         "markets": list(normalized_markets),
+        "investment_horizon": normalized_horizon,
+        "expected_phenomenon": normalized_phenomenon,
+        "economic_explanation": normalized_explanation,
+        "prior_research_relationship": normalized_prior_relationship,
+        "required_data": list(normalized_required_data),
+        "expected_challenges": list(normalized_challenges),
+        "similar_research_assessment": normalized_similar_assessment,
+        "similar_research_refs": [ref.as_dict() for ref in normalized_similar_refs],
     }
 
     def build(current: ResearchProject | None) -> ResearchProject:
@@ -826,6 +1248,8 @@ def revise_research_project(
             actor_id=actor_id,
             permission=ResearchProjectPermission.REVISE,
         )
+        for reference in normalized_similar_refs:
+            resolve_research_project_object(manager=manager, reference=reference)
         return replace(
             project,
             version=project.version + 1,
@@ -833,6 +1257,14 @@ def revise_research_project(
             research_question=normalized_question,
             asset_classes=normalized_assets,
             markets=normalized_markets,
+            investment_horizon=normalized_horizon,
+            expected_phenomenon=normalized_phenomenon,
+            economic_explanation=normalized_explanation,
+            prior_research_relationship=normalized_prior_relationship,
+            required_data=normalized_required_data,
+            expected_challenges=normalized_challenges,
+            similar_research_assessment=normalized_similar_assessment,
+            similar_research_refs=normalized_similar_refs,
             updated_at=recorded_at,
         )
 
@@ -880,6 +1312,7 @@ def attach_research_project_reference(
             actor_id=actor_id,
             permission=project_permission_for_reference(reference.kind),
         )
+        resolve_research_project_object(manager=manager, reference=reference)
         for existing in project.object_refs:
             if existing.identity_key != reference.identity_key:
                 continue
@@ -1049,7 +1482,18 @@ def search_research_projects(
         ):
             continue
         searchable = " ".join(
-            (project.project_id, project.title, project.research_question)
+            (
+                project.project_id,
+                project.title,
+                project.research_question,
+                project.investment_horizon,
+                project.expected_phenomenon,
+                project.economic_explanation,
+                project.prior_research_relationship,
+                project.similar_research_assessment,
+                *project.required_data,
+                *project.expected_challenges,
+            )
         ).casefold()
         if normalized_query and normalized_query not in searchable:
             continue
@@ -1096,7 +1540,7 @@ def impacted_research_projects(
             and ref.object_id == normalized_object_id
             and (normalized_version is None or ref.version == normalized_version)
             and (normalized_hash is None or ref.content_hash == normalized_hash)
-            for ref in project.object_refs
+            for ref in (*project.object_refs, *project.similar_research_refs)
         ):
             matches.append(project)
     return tuple(sorted(matches, key=lambda item: item.project_id))
@@ -1468,6 +1912,16 @@ def _validate_event(
             "research_question": project.research_question,
             "asset_classes": list(project.asset_classes),
             "markets": list(project.markets),
+            "investment_horizon": project.investment_horizon,
+            "expected_phenomenon": project.expected_phenomenon,
+            "economic_explanation": project.economic_explanation,
+            "prior_research_relationship": project.prior_research_relationship,
+            "required_data": list(project.required_data),
+            "expected_challenges": list(project.expected_challenges),
+            "similar_research_assessment": project.similar_research_assessment,
+            "similar_research_refs": [
+                ref.as_dict() for ref in project.similar_research_refs
+            ],
         }
         _assert_change(change, expected_revision_change)
         _assert_only_project_fields_changed(
@@ -1479,6 +1933,14 @@ def _validate_event(
                 "research_question",
                 "asset_classes",
                 "markets",
+                "investment_horizon",
+                "expected_phenomenon",
+                "economic_explanation",
+                "prior_research_relationship",
+                "required_data",
+                "expected_challenges",
+                "similar_research_assessment",
+                "similar_research_refs",
                 "updated_at",
             },
         )

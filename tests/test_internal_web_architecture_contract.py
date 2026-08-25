@@ -37,6 +37,9 @@ EXPECTED_GUI_POLICY = {
     "research-registry-validate": "admin_only",
     "research-mark-attempt-aborted": "cli_only",
     "research-export-strategy-package": "admin_only",
+    "research-build-portable-package": "cli_only",
+    "research-verify-portable-package": "cli_only",
+    "research-reproduce-portable-package": "cli_only",
     "research-compare": "required",
     "research-render-report": "cli_only",
     "research-governance-transition": "admin_only",
@@ -107,6 +110,22 @@ def test_research_package_does_not_import_web_framework_or_internal_web() -> Non
     assert violations == []
 
 
+def test_authenticated_governance_capability_issuer_is_web_adapter_private() -> None:
+    imports: list[str] = []
+    roots = (ROOT / "src", ROOT / "apps/internal_web/src", ROOT / "services")
+    for source_root in roots:
+        for path in sorted(source_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and any(
+                    alias.name == "_authenticated_web_governance_context"
+                    for alias in node.names
+                ):
+                    imports.append(path.relative_to(ROOT).as_posix())
+
+    assert imports == ["apps/internal_web/src/portal/governance.py"]
+
+
 def test_root_distribution_has_no_web_runtime_dependencies() -> None:
     payload = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     requirements = list(payload.get("project", {}).get("dependencies", []))
@@ -174,6 +193,7 @@ def test_every_required_capability_has_an_explicit_web_workflow_contract() -> No
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
+        "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH",
         "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
         "RESEARCH_DB_PATH",
     ),
@@ -188,6 +208,7 @@ def test_research_environment_rejects_relative_storage_paths(
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
         "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
+        "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH",
         "RESEARCH_INDEPENDENT_VERIFIER_TRUST_STORE_PATH",
         "RESEARCH_DB_PATH",
     ):

@@ -196,6 +196,13 @@ jobs:
           version: "0.11.2"
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - name: Install the operated child sandbox runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap util-linux coreutils
+          command -v bwrap
+          command -v prlimit
+          command -v timeout
       - name: Reject old sibling paths, tracked secrets, and symlinks
         run: |
           set -euo pipefail
@@ -387,11 +394,21 @@ jobs:
           cd "$tmpdir"
           env -u PYTHONPATH "$tmpdir/venv/bin/python" - <<'PY'
           from importlib import resources
+          import os
+          from pathlib import Path
+          import sys
 
           import market_research
           import market_research_web
           import portal
           import research_operations
+          from market_research.application.process_sandbox import (
+              IsolatedProcessPolicy,
+              run_isolated_command,
+          )
+          from research_operations.research_job_worker import (
+              runtime_package_import_roots,
+          )
 
           assert market_research.__name__ == "market_research"
           assert market_research_web.__name__ == "market_research_web"
@@ -400,6 +417,46 @@ jobs:
           migrations = resources.files("research_operations.migrations")
           assert migrations.joinpath("0005_recovery_activation_event.sql").is_file()
           assert migrations.joinpath("0006_service_alert_workflow.sql").is_file()
+
+          os.environ["RESEARCH_RUNTIME_PROFILE"] = "operated"
+          import_roots = runtime_package_import_roots()
+          assert import_roots
+          assert all(root.is_relative_to(Path(sys.prefix)) for root in import_roots)
+          assert not (Path(sys.prefix) / "src").exists()
+          sandbox_root = Path.cwd() / "installed-wheel-sandbox"
+          sandbox_root.mkdir()
+          result = run_isolated_command(
+              (
+                  sys.executable,
+                  "-c",
+                  "import market_research, market_research_web, portal, research_operations",
+              ),
+              cwd=sandbox_root,
+              env={
+                  "PATH": os.pathsep.join(
+                      (str(Path(sys.executable).parent), "/usr/bin", "/bin")
+                  ),
+                  "VIRTUAL_ENV": str(Path(sys.prefix).resolve()),
+                  "PYTHONPATH": os.pathsep.join(str(path) for path in import_roots),
+                  "LANG": "C.UTF-8",
+                  "LC_ALL": "C.UTF-8",
+                  "TZ": "UTC",
+                  "PYTHONHASHSEED": "0",
+                  "TMPDIR": "/tmp",
+              },
+              readable_roots=(Path(sys.prefix), *import_roots),
+              writable_roots=(sandbox_root,),
+              policy=IsolatedProcessPolicy(
+                  wall_timeout_seconds=30,
+                  memory_limit_mb=512,
+                  output_limit_bytes=65536,
+                  process_limit=16,
+                  file_descriptor_limit=128,
+                  network_access=False,
+              ),
+              output_path=sandbox_root / "sandbox.log",
+          )
+          assert result.status == "succeeded", result.output
           PY
           "$tmpdir/venv/bin/python" \
             "$GITHUB_WORKSPACE/tools/verify_installed_release.py" \
@@ -578,6 +635,14 @@ jobs:
           version: "0.11.2"
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - name: Install and probe the Operations sandbox runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap util-linux coreutils
+          command -v bwrap
+          command -v prlimit
+          command -v timeout
+          systemd-run --user --wait --pipe /usr/bin/true
       - name: Sync the complete workspace from the root lock
         run: |
           uv lock --check

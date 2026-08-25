@@ -45,7 +45,11 @@ market-research = { workspace = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "market_research_web.settings_test"
-pythonpath = ["src"]
+# The Web distribution remains dependent only on the published Research
+# package.  Monorepo tests additionally share signed immutable-dataset fixture
+# issuers from the root ``tests`` package; make that test-only path explicit so
+# the package-specific CI config does not silently depend on the caller's cwd.
+pythonpath = ["../..", "src"]
 testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [

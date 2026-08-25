@@ -156,6 +156,68 @@ class ResearchPathManager:
             )
         return path
 
+    def final_holdout_registry_path(self) -> Path:
+        """Return the durable authority for final-holdout exposure.
+
+        The path is deliberately independent of an experiment or operated-job
+        output namespace.  A sandbox may replace its artifact/report/cache
+        roots, but it must retain this explicitly supplied shared authority.
+        """
+
+        configured = self.settings.final_holdout_registry_path
+        if configured is None:
+            artifact_parent = self.artifact_root.resolve().parent
+            report_parent = self.report_root.resolve().parent
+            if artifact_parent != report_parent:
+                raise ResearchPathError(
+                    "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH is required when "
+                    "RESEARCH_ARTIFACT_ROOT and RESEARCH_REPORT_ROOT do not "
+                    "share one parent"
+                )
+            path = (
+                artifact_parent
+                / "_holdout_authority"
+                / "final_holdout_authority.jsonl"
+            )
+        else:
+            raw = configured.expanduser()
+            if not raw.is_absolute():
+                raise ResearchPathError(
+                    "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH must be an absolute path"
+                )
+            path = Path(os.path.abspath(os.fspath(raw)))
+        cursor = path
+        while True:
+            try:
+                if cursor.is_symlink():
+                    raise ResearchPathError(
+                        "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH must not use "
+                        "symbolic links"
+                    )
+            except OSError as exc:
+                raise ResearchPathError(
+                    "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH is not inspectable"
+                ) from exc
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+        project_root = self.project_root.resolve()
+        try:
+            path.relative_to(project_root)
+        except ValueError:
+            pass
+        else:
+            raise ResearchPathError(
+                "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH must be outside the "
+                f"repository: {path}"
+            )
+        if self.is_within(path, project_root):
+            raise ResearchPathError(
+                "RESEARCH_FINAL_HOLDOUT_REGISTRY_PATH must be outside the "
+                f"repository: {path}"
+            )
+        return path
+
     def external_output_path(self, value: str | Path, *, label: str) -> Path:
         """Validate an explicit output override without bypassing repository boundaries."""
         raw = Path(value).expanduser()

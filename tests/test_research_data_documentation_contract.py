@@ -17,7 +17,7 @@ def test_checked_in_provenance_example_is_a_valid_supported_contract() -> None:
     )
 
     assert provenance.source_priority == ("replace-with-provider-id",)
-    assert provenance.schema_version == 3
+    assert provenance.schema_version == 4
     assert provenance.source_catalog.catalog_id == "research-source-catalog"
     assert provenance.source_catalog.catalog_hash.startswith("sha256:")
     catalog_entry = provenance.source_catalog.resolve("replace-with-provider-id")
@@ -52,12 +52,15 @@ def test_checked_in_provenance_example_is_a_valid_supported_contract() -> None:
     }
 
 
-def test_readme_freeze_workflow_requires_provenance_and_artifact_directory() -> None:
+def test_readme_freeze_workflow_requires_operated_signed_provenance() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "--provenance-manifest /abs/dataset-source-provenance.json" in readme
-    assert "--out /abs/datasets\n" in readme
-    assert "--out /abs/datasets/krw-btc-1m.json" not in readme
+    assert "exact root-owned transformation trust store" in readme
+    assert "root-owned Ed25519 public keys" in readme
+    assert "Neither a" in readme
+    assert "provenance manifest nor a CLI" in readme
+    assert "argument can select that authority" in readme
+    assert "fails closed on an ordinary researcher workstation" in readme
     assert "dataset.source=frozen_sqlite_candles" in readme
 
 

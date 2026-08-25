@@ -431,7 +431,7 @@ def _validate_terminal_source_evidence_binding(
         raise ReproductionContractError(
             "reproduction receipt scoped evidence binding is invalid"
         )
-    required_fields = {
+    common_fields = {
         "schema_version",
         "artifact_type",
         "terminal_source_report_hash",
@@ -449,13 +449,22 @@ def _validate_terminal_source_evidence_binding(
         "reproduction_binding_hash",
         "content_hash",
     }
+    native_fields = {
+        "pre_holdout_gate_hash",
+        "validation_experiment_bundle_hash",
+        "native_validation_computation_receipt_hash",
+    }
+    schema_version = binding.get("schema_version")
+    required_fields = (
+        common_fields | native_fields if schema_version == 2 else common_fields
+    )
     if set(binding) != required_fields:
         raise ReproductionContractError(
             "reproduction receipt terminal evidence fields are invalid"
         )
     source_path = binding.get("terminal_source_report_path")
     if (
-        binding.get("schema_version") != 1
+        schema_version not in {1, 2}
         or binding.get("artifact_type") != "validated_research_reproduction_binding"
         or not isinstance(source_path, str)
         or not source_path
@@ -539,7 +548,16 @@ def validate_reproduction_receipt_report_binding(
             )
     if receipt.get("evidence_scope") is not None:
         _validate_terminal_source_evidence_binding(receipt)
-    actual = _report_bound_fingerprint(report=report, contract=stable)
+        _validate_terminal_source_report_binding(receipt=receipt, report=report)
+    fingerprint_report = report
+    source_binding = receipt.get("source_evidence_binding")
+    if (
+        receipt.get("evidence_scope") == "validated_research_result"
+        and isinstance(source_binding, Mapping)
+        and source_binding.get("schema_version") == 2
+    ):
+        fingerprint_report = _terminal_selection_fingerprint_projection(report)
+    actual = _report_bound_fingerprint(report=fingerprint_report, contract=stable)
     comparison = compare_reproduction_fingerprints(stable, actual)
     if comparison.status != "PASS":
         paths = ",".join(
@@ -547,6 +565,111 @@ def validate_reproduction_receipt_report_binding(
         )
         raise ReproductionContractError(
             "reproduction receipt report fingerprint mismatch:" + paths
+        )
+
+
+def _terminal_selection_fingerprint_projection(
+    report: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recover the pre-holdout executable projection from a terminal report.
+
+    A schema-2 terminal receipt deliberately compares the independently rerun
+    pre-holdout computation through the ordinary stable fingerprint.  Native
+    nested selection and final-holdout evidence are compared separately through
+    the terminal source binding.  The terminal report therefore preserves the
+    exact preliminary selection fields from which that fingerprint was built;
+    recomputing from the terminal winner would conflate two separately governed
+    evidence domains and make a valid independent replay impossible.
+    """
+
+    preliminary_best = _required_string(
+        report,
+        "preliminary_best_candidate_id",
+        "terminal report",
+    )
+    preliminary_selected = _required_string(
+        report,
+        "preliminary_selected_candidate_id",
+        "terminal report",
+    )
+    preliminary_artifact_hash = _required_sha256(
+        report,
+        "preliminary_selection_artifact_hash",
+        "terminal report",
+    )
+    return {
+        **dict(report),
+        "best_candidate_id": preliminary_best,
+        "selected_candidate_id": preliminary_selected,
+        "selection_artifact_hash": preliminary_artifact_hash,
+        "final_holdout_confirmation_hash": None,
+    }
+
+
+def _validate_terminal_source_report_binding(
+    *,
+    receipt: Mapping[str, Any],
+    report: Mapping[str, Any],
+) -> None:
+    """Bind terminal-only evidence fields back to their source report."""
+
+    binding = receipt.get("source_evidence_binding")
+    if not isinstance(binding, Mapping):
+        raise ReproductionContractError(
+            "reproduction receipt terminal source binding is missing"
+        )
+    if binding.get("schema_version") != 2:
+        # Schema 1 remains a read-only compatibility receipt.  New production
+        # terminal receipts use schema 2 and bind native experiment evidence.
+        return
+    confirmation = report.get("final_holdout_confirmation")
+    confirmation_payload = confirmation if isinstance(confirmation, Mapping) else {}
+    reproduction_binding = report.get("reproduction_binding")
+    reproduction_payload = (
+        reproduction_binding if isinstance(reproduction_binding, Mapping) else {}
+    )
+    expected = {
+        "terminal_source_report_hash": report.get("content_hash"),
+        "manifest_hash": report.get("manifest_hash"),
+        "selection_report_hash": report.get("selection_report_hash"),
+        "selection_artifact_hash": report.get("selection_artifact_hash"),
+        "final_holdout_confirmation_hash": report.get(
+            "final_holdout_confirmation_hash"
+        ),
+        "final_holdout_result_hash": confirmation_payload.get(
+            "final_holdout_result_hash"
+        ),
+        "final_holdout_query_hash": confirmation_payload.get(
+            "final_holdout_query_hash"
+        ),
+        "final_holdout_data_hash": confirmation_payload.get("final_holdout_data_hash"),
+        "final_holdout_fingerprint_hash": confirmation_payload.get(
+            "final_holdout_fingerprint_hash"
+        ),
+        "final_holdout_quality_hash": confirmation_payload.get(
+            "final_holdout_quality_hash"
+        ),
+        "reproduction_binding_hash": reproduction_payload.get("content_hash"),
+    }
+    if binding.get("schema_version") == 2:
+        expected.update(
+            {
+                "pre_holdout_gate_hash": report.get("pre_holdout_gate_hash"),
+                "validation_experiment_bundle_hash": report.get(
+                    "validation_experiment_bundle_hash"
+                ),
+                "native_validation_computation_receipt_hash": report.get(
+                    "native_validation_computation_receipt_hash"
+                ),
+            }
+        )
+    mismatched = sorted(
+        name for name, value in expected.items() if binding.get(name) != value
+    )
+    if mismatched:
+        raise ReproductionContractError(
+            "reproduction receipt terminal source report binding mismatch:"
+            + ",".join(mismatched)
         )
 
 

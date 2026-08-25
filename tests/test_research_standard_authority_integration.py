@@ -47,7 +47,11 @@ from market_research.research.strategy_package import (
     StrategyPackageError,
     _research_standard_package_contract,
 )
-from market_research.research.study_lifecycle import admit_study_validation
+from market_research.research.study_lifecycle import (
+    admit_study_validation,
+    preregister_study,
+    record_study_stage,
+)
 from market_research.research.validation_pipeline import (
     _validated_research_standard_binding_reasons,
     run_research_validation,
@@ -61,6 +65,7 @@ from market_research.settings import ResearchSettings
 from tests.hypothesis_lineage_fixture import hypothesis_spec_v2
 from tests.test_hypothesis_contract import _structured_manifest_payload
 from tests.test_validation_admission_integration import _install_fast_validation
+from tests.test_study_lifecycle import _design
 from tests.data_governance_fixture import (
     attach_immutable_dataset_artifact,
     seed_confirmatory_data_governance,
@@ -315,7 +320,13 @@ class _ManifestStub:
 
 
 def _manifest_stub(tmp_path: Path) -> _ManifestStub:
-    spec = parse_hypothesis_spec(hypothesis_spec_v2())
+    spec = parse_hypothesis_spec(
+        hypothesis_spec_v2(
+            registration_status="pre_registered",
+            pre_registered_at="2025-12-20T00:00:00+00:00",
+            registration_evidence_hash=_hash("e"),
+        )
+    )
     binding = _binding(spec)
     split = {
         "train": {"start": "2025-01-01", "end": "2025-06-30"},
@@ -432,6 +443,26 @@ def test_admission_lifecycle_and_package_bind_standard_registry_lineage(
         lambda *_args, **_kwargs: None,
     )
     seed_confirmatory_data_governance(manager=manager, manifest=manifest)
+    for state, recorded_at, exploration_hash in (
+        ("IDEA", "2025-12-05T00:00:00+00:00", None),
+        ("STRUCTURED", "2025-12-06T00:00:00+00:00", None),
+        ("EXPLORATORY", "2025-12-07T00:00:00+00:00", _hash("d")),
+    ):
+        record_study_stage(
+            manager=manager,
+            hypothesis=manifest.hypothesis_spec,
+            to_state=state,
+            actor_id="researcher-a",
+            recorded_at=recorded_at,
+            reason=f"Record independent {state} work.",
+            exploration_evidence_hash=exploration_hash,
+        )
+    preregister_study(
+        manager=manager,
+        hypothesis=manifest.hypothesis_spec,
+        design=_design(manifest),
+        reason="Freeze the reviewed design before validation access.",
+    )
 
     admission = freeze_validation_admission(
         manager=manager,
@@ -642,6 +673,11 @@ def test_validation_artifact_exposes_and_verifies_standard_lineage(
             encoding="utf-8"
         )
     )
+    # The checked-in SQLite example is explicitly exploratory and cannot own
+    # an authoritative final-holdout identity.  This case verifies research
+    # standard lineage only, so keep it on pre-holdout splits; the shared
+    # holdout authority is exercised with frozen artifacts in its own E2E.
+    payload["dataset"].pop("final_holdout", None)
     spec = parse_hypothesis_spec(payload["hypothesis_spec"])
     binding = _binding(spec)
     payload["hypothesis"] = spec.hypothesis_text

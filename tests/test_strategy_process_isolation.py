@@ -129,3 +129,52 @@ def test_missing_sandbox_runtime_fails_before_strategy_code(
     with pytest.raises(IsolatedProcessError, match="runtime_missing:bwrap"):
         _run(tmp_path, f"open({str(sentinel)!r}, 'w').write('ran')")
     assert not sentinel.exists()
+
+
+def test_operated_sandbox_uses_only_preflight_attested_absolute_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from market_research.research import isolated_process
+
+    monkeypatch.setenv("RESEARCH_RUNTIME_PROFILE", "operated")
+    monkeypatch.setattr(
+        isolated_process.shutil,
+        "which",
+        lambda name: f"/tmp/path-poison/{name}",
+    )
+
+    assert isolated_process._sandbox_tools() == {
+        "bwrap": "/usr/bin/bwrap",
+        "prlimit": "/usr/bin/prlimit",
+        "timeout": "/usr/bin/timeout",
+    }
+
+
+def test_writable_bind_rejects_world_writable_nonregular_and_aliased_targets(
+    tmp_path: Path,
+) -> None:
+    from market_research.research import isolated_process
+
+    world_writable = tmp_path / "world-writable-authority.jsonl"
+    world_writable.write_text("reserved\n", encoding="utf-8")
+    world_writable.chmod(0o666)
+    with pytest.raises(
+        IsolatedProcessError, match="writable_root_world_writable"
+    ):
+        isolated_process._resolved_writable_roots((world_writable,))
+
+    # Directories are valid writable roots, but device/FIFO/socket-like targets
+    # are not.  A FIFO is opened only through lstat, so this check cannot block.
+    fifo = tmp_path / "authority.fifo"
+    import os
+
+    os.mkfifo(fifo)
+    with pytest.raises(IsolatedProcessError, match="writable_root_invalid"):
+        isolated_process._resolved_writable_roots((fifo,))
+
+    canonical = tmp_path / "canonical-authority.jsonl"
+    canonical.write_text("reserved\n", encoding="utf-8")
+    alias = tmp_path / "authority-alias.jsonl"
+    alias.hardlink_to(canonical)
+    with pytest.raises(IsolatedProcessError, match="writable_root_aliased"):
+        isolated_process._resolved_writable_roots((canonical,))

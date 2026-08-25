@@ -930,7 +930,8 @@ def _machine_result(
         "score_cap": evaluation.score_cap,
         "canonical_source": matrix["canonical_source"],
         "audit_history": {
-            "logical_phase_count": matrix["assessment"]["iteration"],
+            "session_id": matrix["canonical_source"]["audit_session_id"],
+            "iteration_count": matrix["assessment"]["iteration"],
             "current_surface_iteration": matrix["assessment"]["iteration"],
             "retained_snapshot_iterations": [
                 entry["iteration"]
@@ -1055,10 +1056,11 @@ def _render_report(
             f"(raw {evaluation.raw_score:.4f}, cap {evaluation.score_cap:.0f}) |"
         ),
         (
-            f"| 논리적 감사 단계 수 | {matrix['assessment']['iteration']} "
-            "(단계 1–5 별도 source snapshot/receipt 미보존; "
-            f"retained={retained_iterations}; "
-            f"현재 판정은 단계 {matrix['assessment']['iteration']}) |"
+            "| 감사 session / iteration | "
+            f"`{matrix['canonical_source']['audit_session_id']}` / "
+            f"{matrix['assessment']['iteration']} "
+            f"(retained={retained_iterations}; current="
+            f"{matrix['assessment']['iteration']}) |"
         ),
         f"| 완전 충족(authenticated VERIFIED) 기준 수 | {verified_count}/{len(criteria)} |",
         f"| 로컬 M4 포함 판정 기준 수 | {local_verified_count}/{len(criteria)} |",

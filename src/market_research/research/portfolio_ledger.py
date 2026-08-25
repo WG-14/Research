@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from math import isfinite
 from typing import Any
 
 from .corporate_action_portfolio import (
     CASH_INCOME_EVENT_TYPES,
+    LEGACY_SUPPORTED_PORTFOLIO_EVENT_TYPES,
     QUANTITY_ADJUSTMENT_EVENT_TYPES,
     SUPPORTED_PORTFOLIO_EVENT_TYPES,
     TERMINAL_PORTFOLIO_EVENT_TYPES,
     CorporateActionPortfolioEvent,
+    CorporateActionPortfolioPlan,
+    latest_causally_applicable_events,
+    parse_corporate_action_portfolio_plan,
 )
 from .execution_model.base import ExecutionFill
 from .hashing import sha256_prefixed
@@ -43,18 +48,25 @@ class LedgerEntry:
     slippage_total_after: float
     entry_type: str = "fill"
     corporate_action_event: dict[str, object] | None = None
+    corporate_action_accounting: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload = {
             key: value
             for key, value in self.__dict__.items()
-            if key not in {"entry_type", "corporate_action_event"}
+            if key
+            not in {
+                "entry_type",
+                "corporate_action_event",
+                "corporate_action_accounting",
+            }
         }
         if self.entry_type != "fill":
             payload.update(
                 {
                     "entry_type": self.entry_type,
                     "corporate_action_event": self.corporate_action_event,
+                    "corporate_action_accounting": self.corporate_action_accounting,
                 }
             )
         return payload
@@ -68,6 +80,7 @@ class PortfolioSnapshot:
     realized_pnl: float
     fee_total: float
     slippage_total: float
+    asset_instrument_id: str | None = None
 
 
 class PortfolioLedger:
@@ -79,7 +92,11 @@ class PortfolioLedger:
     """
 
     def __init__(
-        self, *, starting_cash: float, initial_position_qty: float = 0.0
+        self,
+        *,
+        starting_cash: float,
+        initial_position_qty: float = 0.0,
+        initial_instrument_id: str | None = None,
     ) -> None:
         resolved_cash = float(starting_cash)
         resolved_qty = float(initial_position_qty)
@@ -89,15 +106,24 @@ class PortfolioLedger:
             raise ValueError("ledger_initial_position_qty_invalid")
         if resolved_qty > 0.0:
             raise ValueError("ledger_initial_position_cost_basis_required")
+        if initial_instrument_id is not None and (
+            not isinstance(initial_instrument_id, str)
+            or not initial_instrument_id.strip()
+        ):
+            raise ValueError("ledger_initial_instrument_id_invalid")
         self.cash = resolved_cash
         self.asset_qty = resolved_qty
         self.cost_basis = 0.0
         self.realized_pnl = 0.0
         self.fee_total = 0.0
         self.slippage_total = 0.0
+        self.asset_instrument_id = (
+            initial_instrument_id.strip() if initial_instrument_id is not None else None
+        )
         self.entries: list[LedgerEntry] = []
         self._fill_ids: set[str] = set()
         self._corporate_action_event_version_ids: set[str] = set()
+        self._corporate_action_event_ids: set[str] = set()
 
     def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
@@ -107,6 +133,7 @@ class PortfolioLedger:
             self.realized_pnl,
             self.fee_total,
             self.slippage_total,
+            self.asset_instrument_id,
         )
 
     def apply(self, fill: ExecutionFill) -> LedgerEntry | None:
@@ -198,7 +225,10 @@ class PortfolioLedger:
         return entry
 
     def apply_corporate_action(
-        self, event: CorporateActionPortfolioEvent
+        self,
+        event: CorporateActionPortfolioEvent,
+        *,
+        quantity_step: str | float | None = None,
     ) -> LedgerEntry:
         """Apply one timely, causally selected event to the authoritative ledger."""
 
@@ -206,8 +236,19 @@ class PortfolioLedger:
             raise ValueError(
                 f"corporate_action_portfolio_event_unsupported:{event.event_type}"
             )
+        if (
+            event.accounting_terms is None
+            and event.event_type not in LEGACY_SUPPORTED_PORTFOLIO_EVENT_TYPES
+        ):
+            raise ValueError(
+                f"corporate_action_portfolio_event_unsupported:{event.event_type}"
+            )
         if event.event_version_id in self._corporate_action_event_version_ids:
             raise ValueError("duplicate_corporate_action_event_version_id")
+        if event.event_id in self._corporate_action_event_ids:
+            raise ValueError(
+                "corporate_action_correction_after_application_unsupported"
+            )
         if event.observed_ts_ms > event.effective_ts_ms:
             raise ValueError(
                 "corporate_action_late_observation_retroactive_accounting_unsupported"
@@ -215,12 +256,23 @@ class PortfolioLedger:
         effective_ts = event.effective_ts_ms
         if self.entries and effective_ts < self.entries[-1].effective_ts:
             raise ValueError("ledger_corporate_action_timestamp_out_of_order")
+        if (
+            event.accounting_terms is not None
+            and self.asset_instrument_id is not None
+            and self.asset_instrument_id != event.instrument_id
+        ):
+            raise ValueError("corporate_action_active_instrument_mismatch")
         before = self.snapshot()
-        transition = _corporate_action_transition(before, event)
+        transition = _corporate_action_transition(
+            before,
+            event,
+            quantity_step=quantity_step,
+        )
         self.cash = transition["cash"]
         self.asset_qty = transition["asset_qty"]
         self.cost_basis = transition["cost_basis"]
         self.realized_pnl = transition["realized_pnl"]
+        self.asset_instrument_id = transition["asset_instrument_id"]
         action_fill_id = f"corporate_action:{event.event_version_id}"
         entry = LedgerEntry(
             ledger_entry_id=_corporate_action_ledger_entry_id(event),
@@ -247,9 +299,11 @@ class PortfolioLedger:
             slippage_total_after=self.slippage_total,
             entry_type="corporate_action",
             corporate_action_event=event.as_dict(),
+            corporate_action_accounting=transition["accounting"],
         )
         self.entries.append(entry)
         self._corporate_action_event_version_ids.add(event.event_version_id)
+        self._corporate_action_event_ids.add(event.event_id)
         return entry
 
     @classmethod
@@ -259,13 +313,40 @@ class PortfolioLedger:
         starting_cash: float,
         entries: tuple[LedgerEntry, ...] | list[LedgerEntry],
         initial_position_qty: float = 0.0,
+        initial_instrument_id: str | None = None,
+        quantity_step: str | float | None = None,
+        corporate_action_plan: CorporateActionPortfolioPlan | None = None,
+        causal_boundary_ms: int | None = None,
     ) -> PortfolioSnapshot:
         """Reconstruct and validate the portfolio solely from authoritative entries."""
+        expected_events: dict[str, CorporateActionPortfolioEvent] | None = None
+        if corporate_action_plan is not None:
+            validated_plan = parse_corporate_action_portfolio_plan(
+                corporate_action_plan.as_dict()
+            )
+            if causal_boundary_ms is None or causal_boundary_ms < 0:
+                raise ValueError("ledger_replay_causal_boundary_required")
+            if initial_instrument_id != validated_plan.instrument_id:
+                raise ValueError(
+                    "ledger_replay_corporate_action_plan_instrument_mismatch"
+                )
+            expected_events = {
+                event.event_id: event
+                for event in latest_causally_applicable_events(
+                    validated_plan.events,
+                    boundary_ms=causal_boundary_ms,
+                )
+            }
+        elif causal_boundary_ms is not None and causal_boundary_ms < 0:
+            raise ValueError("ledger_replay_causal_boundary_invalid")
         snapshot = cls(
             starting_cash=starting_cash,
             initial_position_qty=initial_position_qty,
+            initial_instrument_id=initial_instrument_id,
         ).snapshot()
         seen: set[str] = set()
+        seen_corporate_action_event_ids: set[str] = set()
+        seen_corporate_action_event_version_ids: set[str] = set()
         seen_effective_ts: int | None = None
         for entry in entries:
             if entry.ledger_entry_id in seen:
@@ -296,11 +377,43 @@ class PortfolioLedger:
                 event = CorporateActionPortfolioEvent.from_payload(
                     entry.corporate_action_event
                 )
+                if event.observed_ts_ms > event.effective_ts_ms:
+                    raise ValueError(
+                        "corporate_action_late_observation_retroactive_accounting_unsupported"
+                    )
+                if causal_boundary_ms is not None and (
+                    event.observed_ts_ms > causal_boundary_ms
+                    or event.effective_ts_ms > causal_boundary_ms
+                ):
+                    raise ValueError(
+                        "ledger_replay_corporate_action_after_causal_boundary"
+                    )
+                if event.event_version_id in seen_corporate_action_event_version_ids:
+                    raise ValueError("duplicate_corporate_action_event_version_id")
+                if event.event_id in seen_corporate_action_event_ids:
+                    raise ValueError(
+                        "corporate_action_correction_after_application_unsupported"
+                    )
+                if expected_events is not None:
+                    expected_event = expected_events.get(event.event_id)
+                    if expected_event is None or (
+                        event.version != expected_event.version
+                        or event.event_version_id != expected_event.event_version_id
+                        or event.event_contract_hash
+                        != expected_event.event_contract_hash
+                    ):
+                        raise ValueError(
+                            "ledger_replay_corporate_action_latest_version_mismatch"
+                        )
                 if entry.ledger_entry_id != _corporate_action_ledger_entry_id(event):
                     raise ValueError("ledger_entry_id_content_mismatch")
                 if entry.fill_id != f"corporate_action:{event.event_version_id}":
                     raise ValueError("ledger_corporate_action_lineage_mismatch")
-                calculated_values = _corporate_action_transition(snapshot, event)
+                calculated_values = _corporate_action_transition(
+                    snapshot,
+                    event,
+                    quantity_step=quantity_step,
+                )
                 calculated = PortfolioSnapshot(
                     calculated_values["cash"],
                     calculated_values["asset_qty"],
@@ -308,6 +421,7 @@ class PortfolioLedger:
                     calculated_values["realized_pnl"],
                     snapshot.fee_total,
                     snapshot.slippage_total,
+                    calculated_values["asset_instrument_id"],
                 )
                 _validate_corporate_action_entry(
                     entry=entry,
@@ -315,9 +429,15 @@ class PortfolioLedger:
                     after=calculated,
                     transition=calculated_values,
                 )
+                seen_corporate_action_event_ids.add(event.event_id)
+                seen_corporate_action_event_version_ids.add(event.event_version_id)
                 snapshot = calculated
                 continue
-            if entry.entry_type != "fill" or entry.corporate_action_event is not None:
+            if (
+                entry.entry_type != "fill"
+                or entry.corporate_action_event is not None
+                or entry.corporate_action_accounting is not None
+            ):
                 raise ValueError("ledger_entry_type_invalid")
             if entry.ledger_entry_id != _ledger_entry_id(
                 entry.fill_id, entry.effective_ts
@@ -380,6 +500,7 @@ class PortfolioLedger:
                 snapshot.realized_pnl + realized_delta,
                 snapshot.fee_total + fee,
                 snapshot.slippage_total + float(entry.slippage),
+                snapshot.asset_instrument_id,
             )
             if abs(float(entry.cash_delta) - cash_delta) > 1e-8:
                 raise ValueError("ledger_replay_cash_delta_mismatch")
@@ -391,9 +512,16 @@ class PortfolioLedger:
                 entry.fee_total_after,
                 entry.slippage_total_after,
             )
+            calculated_recorded_fields = (
+                calculated.cash,
+                calculated.asset_qty,
+                calculated.cost_basis,
+                calculated.realized_pnl,
+                calculated.fee_total,
+                calculated.slippage_total,
+            )
             if any(
-                abs(a - b) > 1e-8
-                for a, b in zip(recorded, calculated.__dict__.values())
+                abs(a - b) > 1e-8 for a, b in zip(recorded, calculated_recorded_fields)
             ):
                 raise ValueError("ledger_replay_after_state_mismatch")
             expected_realized = realized_delta if entry.side == "SELL" else None
@@ -402,6 +530,10 @@ class PortfolioLedger:
             snapshot = calculated
             if snapshot.cash < -1e-8 or snapshot.asset_qty < -1e-8:
                 raise ValueError("ledger_replay_invalid_state")
+        if expected_events is not None and seen_corporate_action_event_ids != set(
+            expected_events
+        ):
+            raise ValueError("ledger_replay_corporate_action_event_set_mismatch")
         return snapshot
 
 
@@ -425,11 +557,20 @@ def _corporate_action_ledger_entry_id(
 def _corporate_action_transition(
     before: PortfolioSnapshot,
     event: CorporateActionPortfolioEvent,
+    *,
+    quantity_step: str | float | None = None,
 ) -> dict[str, Any]:
+    if event.accounting_terms is not None:
+        return _corporate_action_transition_v2(
+            before,
+            event,
+            quantity_step=quantity_step,
+        )
     cash = before.cash
     asset_qty = before.asset_qty
     cost_basis = before.cost_basis
     realized_pnl = before.realized_pnl
+    asset_instrument_id = before.asset_instrument_id
     unit_value = 0.0
     notional = 0.0
     basis_allocation = 0.0
@@ -462,6 +603,7 @@ def _corporate_action_transition(
         realized_pnl += entry_realized_pnl
         asset_qty = 0.0
         cost_basis = 0.0
+        asset_instrument_id = None
     return {
         "cash": cash,
         "asset_qty": asset_qty,
@@ -471,7 +613,194 @@ def _corporate_action_transition(
         "notional": notional,
         "basis_allocation": basis_allocation,
         "entry_realized_pnl": entry_realized_pnl,
+        "asset_instrument_id": asset_instrument_id,
+        "accounting": None,
     }
+
+
+def _corporate_action_transition_v2(
+    before: PortfolioSnapshot,
+    event: CorporateActionPortfolioEvent,
+    *,
+    quantity_step: str | float | None,
+) -> dict[str, Any]:
+    terms = event.accounting_terms
+    if terms is None:  # pragma: no cover - caller dispatch is the guard
+        raise ValueError("corporate_action_accounting_terms_required")
+    if before.asset_instrument_id != event.instrument_id:
+        raise ValueError("corporate_action_active_instrument_mismatch")
+    step = _positive_decimal(quantity_step, "corporate_action_quantity_step_required")
+    before_cash = Decimal(str(before.cash))
+    before_qty = Decimal(str(before.asset_qty))
+    before_basis = Decimal(str(before.cost_basis))
+    before_realized = Decimal(str(before.realized_pnl))
+
+    gross_cash = before_qty * terms.cash_per_pre_event_unit
+    cash_basis = before_basis * terms.cash_basis_fraction
+    tax = _corporate_action_tax(
+        gross_cash=gross_cash,
+        allocated_basis=cash_basis,
+        policy=terms.tax_policy,
+        rate=terms.tax_rate,
+    )
+    next_instrument_id: str | None
+    if terms.position_effect == "unchanged":
+        exact_after_qty = before_qty
+        next_instrument_id = before.asset_instrument_id
+    elif terms.position_effect == "scale":
+        exact_after_qty = before_qty * terms.position_ratio
+        next_instrument_id = before.asset_instrument_id
+    elif terms.position_effect == "replace":
+        exact_after_qty = before_qty * terms.position_ratio
+        next_instrument_id = event.replacement_instrument_id
+    elif terms.position_effect == "close":
+        exact_after_qty = Decimal("0")
+        next_instrument_id = None
+    else:  # pragma: no cover - contract construction rejects this
+        raise ValueError("corporate_action_position_effect_unknown")
+
+    delivered_qty = exact_after_qty
+    fractional_qty = Decimal("0")
+    if terms.position_effect in {"scale", "replace"}:
+        step_units = exact_after_qty / step
+        aligned = step_units == step_units.to_integral_value()
+        if not aligned and terms.fractional_policy == "reject_non_step":
+            raise ValueError(
+                "corporate_action_fractional_entitlement_cash_in_lieu_terms_required"
+            )
+        if not aligned and terms.fractional_policy == "round_down_cash_in_lieu":
+            delivered_qty = step_units.to_integral_value(rounding=ROUND_DOWN) * step
+            fractional_qty = exact_after_qty - delivered_qty
+
+    if terms.basis_policy == "preserve":
+        position_basis_before_fractional = before_basis
+    elif terms.basis_policy == "allocate_cash_fraction":
+        position_basis_before_fractional = before_basis - cash_basis
+    elif terms.basis_policy == "add_cash_outflow":
+        position_basis_before_fractional = before_basis - gross_cash
+    elif terms.basis_policy == "close":
+        position_basis_before_fractional = Decimal("0")
+    else:  # pragma: no cover - contract construction rejects this
+        raise ValueError("corporate_action_basis_policy_unknown")
+
+    fractional_basis = Decimal("0")
+    if fractional_qty > 0 and exact_after_qty > 0:
+        fractional_basis = (
+            position_basis_before_fractional * fractional_qty / exact_after_qty
+        )
+    cost_basis = position_basis_before_fractional - fractional_basis
+    cash_in_lieu_gross = Decimal("0")
+    cash_in_lieu_tax = Decimal("0")
+    if fractional_qty > 0:
+        if terms.cash_in_lieu_price is None:
+            raise ValueError("corporate_action_cash_in_lieu_price_required")
+        cash_in_lieu_gross = fractional_qty * terms.cash_in_lieu_price
+        cash_in_lieu_tax = (
+            max(
+                cash_in_lieu_gross - fractional_basis,
+                Decimal("0"),
+            )
+            * terms.cash_in_lieu_tax_rate
+        )
+
+    net_primary_cash = gross_cash - tax
+    net_cash_in_lieu = cash_in_lieu_gross - cash_in_lieu_tax
+    cash_delta = net_primary_cash + net_cash_in_lieu
+    cash = before_cash + cash_delta
+    if cash < Decimal("-0.00000001"):
+        raise ValueError("corporate_action_cash_outflow_exceeds_ledger_cash")
+
+    if terms.basis_policy == "add_cash_outflow":
+        realized_delta = net_cash_in_lieu - fractional_basis
+    elif terms.basis_policy == "preserve":
+        realized_delta = net_primary_cash + net_cash_in_lieu - fractional_basis
+    else:
+        realized_delta = (
+            net_primary_cash - cash_basis + net_cash_in_lieu - fractional_basis
+        )
+    realized_pnl = before_realized + realized_delta
+    accounting_material: dict[str, object] = {
+        "schema_version": 1,
+        "accounting_authority": "corporate_action_accounting_terms_v1",
+        "event_contract_hash": event.event_contract_hash,
+        "quantity_step": _decimal_text(step),
+        "source_instrument_id": event.instrument_id,
+        "result_instrument_id": next_instrument_id,
+        "pre_event_quantity": _decimal_text(before_qty),
+        "exact_post_event_quantity": _decimal_text(exact_after_qty),
+        "delivered_post_event_quantity": _decimal_text(delivered_qty),
+        "fractional_quantity": _decimal_text(fractional_qty),
+        "gross_primary_cash": _decimal_text(gross_cash),
+        "primary_tax": _decimal_text(tax),
+        "cash_in_lieu_gross": _decimal_text(cash_in_lieu_gross),
+        "cash_in_lieu_tax": _decimal_text(cash_in_lieu_tax),
+        "net_cash_delta": _decimal_text(cash_delta),
+        "cash_basis_released": _decimal_text(cash_basis),
+        "fractional_basis_released": _decimal_text(fractional_basis),
+        "post_event_cost_basis": _decimal_text(cost_basis),
+        "realized_pnl_delta": _decimal_text(realized_delta),
+        "identity_equation": (
+            "ending_cash=beginning_cash+gross_primary_cash-primary_tax+"
+            "cash_in_lieu_gross-cash_in_lieu_tax"
+        ),
+        "accounting_identity_status": "PASS",
+    }
+    accounting = {
+        **accounting_material,
+        "accounting_hash": sha256_prefixed(
+            accounting_material,
+            label="corporate_action_accounting_application",
+        ),
+    }
+    unit_value = (
+        terms.cash_per_pre_event_unit
+        if terms.cash_per_pre_event_unit != 0
+        else terms.position_ratio
+    )
+    return {
+        "cash": float(cash),
+        "asset_qty": float(delivered_qty),
+        "cost_basis": float(cost_basis),
+        "realized_pnl": float(realized_pnl),
+        "unit_value": float(unit_value),
+        "notional": float(gross_cash + cash_in_lieu_gross),
+        "basis_allocation": float(cash_basis + fractional_basis),
+        "entry_realized_pnl": float(realized_delta),
+        "asset_instrument_id": next_instrument_id,
+        "accounting": accounting,
+    }
+
+
+def _corporate_action_tax(
+    *,
+    gross_cash: Decimal,
+    allocated_basis: Decimal,
+    policy: str,
+    rate: Decimal,
+) -> Decimal:
+    if policy == "none":
+        return Decimal("0")
+    if policy == "gross_cash_rate":
+        return max(gross_cash, Decimal("0")) * rate
+    if policy == "gain_over_allocated_basis_rate":
+        return max(gross_cash - allocated_basis, Decimal("0")) * rate
+    raise ValueError("corporate_action_tax_policy_unknown")
+
+
+def _positive_decimal(value: object, error: str) -> Decimal:
+    if value is None:
+        raise ValueError(error)
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(error) from exc
+    if not parsed.is_finite() or parsed <= 0:
+        raise ValueError(error)
+    return parsed
+
+
+def _decimal_text(value: Decimal) -> str:
+    return format(value.normalize(), "f") if value != 0 else "0"
 
 
 def _validate_corporate_action_entry(
@@ -511,9 +840,13 @@ def _validate_corporate_action_entry(
     )
     if any(abs(float(a) - float(b)) > 1e-8 for a, b in zip(expected, recorded)):
         raise ValueError("ledger_corporate_action_transition_mismatch")
+    if entry.corporate_action_accounting != transition["accounting"]:
+        raise ValueError("ledger_corporate_action_accounting_mismatch")
     expected_realized = transition["entry_realized_pnl"]
     if expected_realized is None:
         if entry.realized_pnl is not None:
             raise ValueError("ledger_corporate_action_realized_pnl_mismatch")
-    elif entry.realized_pnl is None or abs(entry.realized_pnl - expected_realized) > 1e-8:
+    elif (
+        entry.realized_pnl is None or abs(entry.realized_pnl - expected_realized) > 1e-8
+    ):
         raise ValueError("ledger_corporate_action_realized_pnl_mismatch")
